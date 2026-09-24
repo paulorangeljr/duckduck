@@ -547,27 +547,37 @@ catalog = Catalog.load("semantic_catalog.yaml")
 search = SemanticSearch(catalog, duck, extractor=LLMExtractor(catalog, llm))  # LLM extraction
 ```
 
-**One LLM per stage.** The top-level `llm` is the default. Each stage can
-have its own block, which inherits everything it doesn't set: provider,
-credentials, endpoint. So `{"model": "..."}` alone just switches the model.
-A block that names a different `provider` inherits nothing.
-
-| Block | Stage | Calls |
-|---|---|---|
-| `extractor.llm` | pulls values out of each question (`extractor.type: "llm"`) | 1 per question |
-| `catalog_generation.llm` | drafts each table | 1 per table |
-| `catalog_generation.link_llm` | entities, activities and joins across all tables (layered on `catalog_generation.llm`) | 1 per run |
+**A different LLM per stage.** Declare your LLMs once under `llms`, each
+with a name and a complete configuration (provider, model, credentials).
+Then refer to them by name:
 
 ```json
-"llm": {"provider": "anthropic", "model": "claude-opus-5"},
-"extractor": {"type": "llm", "llm": {"model": "claude-haiku-4-5"}},
-"catalog_generation": {
-  "llm": {"model": "claude-sonnet-5"},
-  "link_llm": {"model": "claude-opus-5"}
-}
+"llms": {
+  "claude_strong": {"provider": "anthropic", "model": "claude-opus-5"},
+  "claude_fast":   {"provider": "anthropic", "model": "claude-haiku-4-5"},
+  "azure_gpt":     {"provider": "azure_openai", "endpoint": "https://my-resource.openai.azure.com",
+                    "deployment": "gpt-mini",
+                    "authentication": {"type": "azure", "vault_url": "https://kv.vault.azure.net/",
+                                       "secret_id": "azure-openai", "api_key": "$secret.key"}}
+},
+"llm": "claude_strong",
+"extractor":          {"type": "llm", "llm": "azure_gpt"},
+"catalog_generation": {"llm": "claude_fast", "link_llm": "claude_strong"}
 ```
 
-With `-v`, each stage logs which model it got (`llm for extractor: anthropic claude-haiku-4-5`).
+| Where | Stage | Calls | If omitted |
+|---|---|---|---|
+| `llm` | the default for every stage below | | no LLM |
+| `extractor.llm` | pulls values out of each question (`extractor.type: "llm"`) | 1 per question | `llm` |
+| `catalog_generation.llm` | drafts each table | 1 per table | `llm` |
+| `catalog_generation.link_llm` | entities, activities and joins across all tables | 1 per run | `catalog_generation.llm`, then `llm` |
+
+Any of these can be an inline block instead of a name (`"llm": {"model":
+"claude-opus-5"}`), so a single-LLM config needs no `llms` section. A
+block is always a complete LLM: nothing is inherited from elsewhere. A
+name that `llms` doesn't declare fails when the config loads, and the
+error lists the declared names. With `-v`, each stage logs the LLM it got
+(`llm for extractor: azure_gpt (azure_openai gpt-mini)`).
 
 Anything else (another cloud, a local model) plugs in by implementing
 `generate(system, prompt, output_model)`: it must return `output_model`

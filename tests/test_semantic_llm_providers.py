@@ -231,67 +231,70 @@ def _semantic(tmp_path, **semantic):
     return SemanticConfig.load(DuckAPI(), str(path))
 
 
-def test_stage_block_inherits_everything_it_does_not_set(tmp_path):
+LLMS = {
+    "strong": {"model": "claude-opus-5"},
+    "fast": {"model": "claude-haiku-4-5", "max_tokens": 4000},
+    "azure": {"provider": "azure_openai", "endpoint": "https://res.openai.azure.com", "deployment": "gpt-mini"},
+}
+
+
+def test_stages_reference_declared_llms_by_name(tmp_path):
+    cfg = _semantic(
+        tmp_path, llms=LLMS, llm="strong",
+        extractor={"type": "llm", "llm": "azure"},
+        catalog_generation={"llm": "fast", "link_llm": "strong"},
+    )
+    assert cfg.llm_config()[0] == "strong"
+    name, extractor = cfg.llm_config("extractor")
+    assert name == "azure" and extractor.deployment == "gpt-mini"
+    assert cfg.llm_config("catalog_generation")[0] == "fast"
+    assert cfg.llm_config("catalog_link")[0] == "strong"
+
+
+def test_unset_stages_fall_back(tmp_path):
+    cfg = _semantic(tmp_path, llms=LLMS, llm="strong", catalog_generation={"llm": "fast"})
+    assert cfg.llm_config("extractor")[0] == "strong"      # → the default
+    assert cfg.llm_config("catalog_link")[0] == "fast"     # → catalog_generation.llm, then the default
+
+
+def test_inline_blocks_still_work_and_are_complete(tmp_path):
     cfg = _semantic(
         tmp_path,
-        llm={"provider": "azure_openai", "endpoint": "https://res.openai.azure.com", "deployment": "gpt-big",
-             "authentication": {"type": "local", "api_key": "k"}},
-        extractor={"type": "llm", "llm": {"deployment": "gpt-mini"}},
+        llm={"model": "claude-opus-5", "authentication": {"type": "local", "api_key": "k"}},
+        extractor={"type": "llm", "llm": {"model": "claude-haiku-4-5"}},
     )
-    extractor = cfg.llm_config("extractor")
-    assert extractor.provider == "azure_openai" and extractor.deployment == "gpt-mini"
-    assert extractor.endpoint == "https://res.openai.azure.com" and extractor.authentication == {"type": "local", "api_key": "k"}
-    assert cfg.llm_config("catalog_generation").deployment == "gpt-big"  # untouched stages keep the default
+    name, extractor = cfg.llm_config("extractor")
+    assert name is None and extractor.model == "claude-haiku-4-5"
+    assert extractor.authentication is None  # nothing inherited: one block = one complete LLM
 
 
-def test_link_llm_layers_on_the_catalog_generation_block(tmp_path):
-    cfg = _semantic(
-        tmp_path,
-        llm={"model": "claude-opus-5"},
-        catalog_generation={"llm": {"model": "claude-haiku-4-5", "max_tokens": 4000},
-                            "link_llm": {"model": "claude-opus-5"}},
-    )
-    assert cfg.llm_config("catalog_generation").model == "claude-haiku-4-5"
-    link = cfg.llm_config("catalog_link")
-    assert link.model == "claude-opus-5" and link.max_tokens == 4000
+def test_unknown_llm_name_fails_at_load_listing_the_declared_ones(tmp_path):
+    with pytest.raises(ValueError, match=r"extractor.llm refers to LLM 'fsat'.*declared: azure, fast, strong"):
+        _semantic(tmp_path, llms=LLMS, extractor={"type": "llm", "llm": "fsat"})
 
 
-def test_stage_block_with_another_provider_inherits_nothing(tmp_path):
-    cfg = _semantic(
-        tmp_path,
-        llm={"provider": "anthropic", "model": "claude-opus-5", "authentication": {"type": "local", "api_key": "k"}},
-        extractor={"type": "llm", "llm": {"provider": "azure_openai", "deployment": "gpt-mini"}},
-    )
-    extractor = cfg.llm_config("extractor")
-    assert extractor.provider == "azure_openai" and extractor.authentication is None
+def test_invalid_declared_llm_fails_at_load(tmp_path):
+    with pytest.raises(ValueError, match="deployment"):
+        _semantic(tmp_path, llms={"bad": {"deployment": "x"}})
 
 
-def test_stage_block_alone_without_a_top_level_llm(tmp_path):
-    cfg = _semantic(tmp_path, catalog_generation={"llm": {"model": "claude-haiku-4-5"}})
-    assert cfg.llm_config("catalog_generation").model == "claude-haiku-4-5"
-    assert cfg.llm_config("extractor") is None
-    with pytest.raises(ValueError, match="'extractor.llm'"):
+def test_no_llm_anywhere_explains_both_ways_to_declare_one(tmp_path):
+    cfg = _semantic(tmp_path, llms=LLMS)
+    with pytest.raises(ValueError, match=r"(?s)'extractor.llm'.*\"llms\""):
         cfg.build_llm(DuckAPI(), "extractor")
-
-
-def test_invalid_stage_block_fails_at_load_naming_it(tmp_path):
-    with pytest.raises(ValueError, match="semantic.extractor.llm"):
-        _semantic(tmp_path, llm={"model": "claude-opus-5"}, extractor={"type": "llm", "llm": {"deployment": "x"}})
 
 
 def test_each_stage_gets_its_own_client(tmp_path, monkeypatch):
     cfg = _semantic(
-        tmp_path,
-        llm={"model": "claude-opus-5"},
-        extractor={"type": "llm", "llm": {"model": "claude-haiku-4-5"}},
-        catalog_generation={"llm": {"model": "claude-sonnet-5"}, "link_llm": {"model": "claude-opus-5"}},
+        tmp_path, llms=LLMS, llm="strong",
+        extractor={"type": "llm", "llm": "fast"},
+        catalog_generation={"llm": "fast", "link_llm": "strong"},
     )
-    monkeypatch.setattr(SemanticConfig, "build_llm",
-                        lambda self, duck, stage=None: self.llm_config(stage).model)
+    monkeypatch.setattr(SemanticConfig, "build_llm", lambda self, duck, stage=None: self.llm_config(stage)[0])
     gen = cfg.build_generator(DuckAPI())
-    assert (gen.llm, gen.link_llm) == ("claude-sonnet-5", "claude-opus-5")
+    assert (gen.llm, gen.link_llm) == ("fast", "strong")
     from duckduck.semantic import Catalog
-    assert cfg.build_extractor(Catalog.load(CATALOG_PATH), DuckAPI()).llm == "claude-haiku-4-5"
+    assert cfg.build_extractor(Catalog.load(CATALOG_PATH), DuckAPI()).llm == "fast"
 
 
 def test_generator_uses_the_link_llm_for_the_final_call():

@@ -145,19 +145,35 @@
         "api_key": "$secret.jev_api_key"
       }
     },
-    "llm": {
-      "provider": "anthropic",
-      "model": "claude-opus-5",
-      "effort": "high",
-      "authentication": {
-        "type": "azure",
-        "vault_url": "https://my-vault.vault.azure.net/",
-        "secret_id": "anthropic-api",
-        "api_key": "$secret.key"
+    "llms": {
+      "claude": {
+        "provider": "anthropic",
+        "model": "claude-opus-5",
+        "effort": "high",
+        "authentication": {
+          "type": "azure",
+          "vault_url": "https://my-vault.vault.azure.net/",
+          "secret_id": "anthropic-api",
+          "api_key": "$secret.key"
+        }
+      },
+      "azure_gpt": {
+        "provider": "azure_openai",
+        "endpoint": "https://my-resource.openai.azure.com",
+        "deployment": "gpt-mini",
+        "api_version": "2024-10-21",
+        "authentication": {
+          "type": "azure",
+          "vault_url": "https://my-vault.vault.azure.net/",
+          "secret_id": "azure-openai",
+          "api_key": "$secret.key"
+        }
       }
     },
+    "llm": "claude",
     "extractor": {
       "type": "llm",
+      "llm": "azure_gpt",
       "on_error": "fallback"
     },
     "catalog_generation": {

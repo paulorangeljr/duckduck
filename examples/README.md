@@ -42,7 +42,7 @@ duck.sql("SELECT a.hostname, o.owner FROM assets a JOIN owners o ON a.ip = o.ip 
 | `evaluation.json` | the 6 MVP questions with their expected answers |
 | `demo.py` | answers + scores the 6 questions (fixed clock, so the expected answers always hold) |
 | `duckduck.local.json` | offline: lexical decision engine + rule-based extraction |
-| `duckduck.online.json` | Jev + Claude; also drafts a catalog into `generated_catalog.yaml` (git-ignored) |
+| `duckduck.online.json` | Jev + two Claude models declared under `llms` (`claude_strong` by default and for catalog drafting, `claude_fast` for extraction); drafts a catalog into `generated_catalog.yaml` (git-ignored) |
 | `prompts/` | the default system prompts, as files to customize (used by `duckduck.online.json`) |
 
 ### Offline
