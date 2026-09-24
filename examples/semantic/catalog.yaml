@@ -1,0 +1,154 @@
+# Example semantic catalog for duckduck.semantic.
+#
+# Every source's `table:` is a table registered in DuckAPI — in production
+# that's whatever `duck.auto_register()` created from duckduck.json (e.g.
+# `glue_table` + `args: {database: ..., table_name: ...}` for a Glue/S3
+# table, `sqlserver_table` + `args: {table_name: dbo.Assets}` for a
+# database). Here they point at the in-memory sample tables registered by
+# examples/semantic/sample_sources.py.
+#
+# `relation:` (instead of `table:`) scans anything DuckDB reads natively,
+# e.g. `relation: "read_parquet('s3://bucket/proxy/*.parquet')"`.
+
+entities:
+  user:
+    description: A person or account — employee or service account.
+    keywords: [user, users, person, people, employee, employees, account, accounts, who, username]
+  host:
+    description: A machine — server, workstation, laptop or VM.
+    keywords: [host, hosts, hostname, machine, machines, server, servers, computer, computers, device, devices, workstation, workstations, endpoint, endpoints]
+  ip_address:
+    description: An IPv4 or IPv6 address.
+    keywords: [ip, ips, address, addresses]
+  domain:
+    description: A DNS domain or website.
+    keywords: [domain, domains, website, websites, site, sites, url, urls]
+  event:
+    description: The individual log records themselves.
+    keywords: [event, events, connection, connections, log, logs, record, records, request, requests, attempt, attempts]
+    row_level: true
+
+activities:
+  web_access:
+    description: Reaching a website over HTTP/HTTPS through the web proxy.
+    keywords: [access, accessed, visit, visited, browse, browsed, web, http, https, download, downloaded]
+    resource: domain
+    resource_role: destination
+    actor_role: source
+  dns_resolution:
+    description: Resolving a name through DNS.
+    keywords: [query, queried, resolve, resolved, lookup, looked, dns]
+    resource: domain
+    resource_role: destination
+    actor_role: source
+  authentication:
+    description: Logging in or signing in.
+    keywords: [authentication, authenticate, authenticated, login, logged, logon, signin, auth]
+    actor_role: actor
+  network_connection:
+    description: Network traffic between two IP addresses through the firewall.
+    keywords: [connect, connected, connection, connections, communicate, communicated, talk, talked, traffic, reach, reached]
+    resource: ip_address
+    resource_role: destination
+    actor_role: source
+
+sources:
+  proxy_logs:
+    type: parquet
+    table: proxy_logs
+    description: HTTP and HTTPS web proxy traffic, one row per request.
+    entities: [user, domain, ip_address, event]
+    activities: [web_access]
+    time_field: timestamp
+    examples:
+      - Who visited a phishing site this week?
+      - Top domains browsed by the finance team
+    fields:
+      timestamp: {type: datetime, semantic_type: event_time, description: When the request happened}
+      username: {semantic_type: user, role: source, description: Authenticated user who made the request}
+      source_ip: {semantic_type: ip_address, role: source, description: Client IP that made the request}
+      destination_domain: {semantic_type: domain, role: destination, match: contains, description: Requested domain}
+      action:
+        description: Proxy verdict
+        values:
+          ALLOW: [allowed, permitted]
+          BLOCK: [blocked]
+
+  dns_logs:
+    type: parquet
+    table: dns_logs
+    description: DNS resolver logs, one row per lookup.
+    entities: [host, domain, ip_address, event]
+    activities: [dns_resolution]
+    time_field: timestamp
+    examples:
+      - Which clients looked up a newly registered domain?
+    fields:
+      timestamp: {type: datetime, semantic_type: event_time}
+      client_ip: {semantic_type: ip_address, role: source, description: IP of the client doing the lookup}
+      query_name: {semantic_type: domain, role: destination, match: contains, description: Name being resolved}
+      response_code: {description: DNS response code}
+
+  firewall_logs:
+    type: postgres
+    table: firewall_logs
+    description: Perimeter and internal firewall connection logs.
+    entities: [host, ip_address, event]
+    activities: [network_connection]
+    time_field: timestamp
+    examples:
+      - Blocked inbound traffic on port 22
+    fields:
+      timestamp: {type: datetime, semantic_type: event_time}
+      src_ip: {semantic_type: ip_address, role: source, description: Initiating IP}
+      dst_ip: {semantic_type: ip_address, role: destination, description: Target IP}
+      dst_port: {type: integer, description: Target port}
+      action:
+        param: action
+        description: Firewall verdict
+        values:
+          ALLOW: [allowed, permitted, accepted]
+          DENY: [denied, blocked, dropped, rejected]
+
+  auth_logs:
+    type: postgres
+    table: auth_logs
+    description: Identity provider sign-in logs.
+    entities: [user, host, event]
+    activities: [authentication]
+    critical: false
+    time_field: timestamp
+    examples:
+      - Sign-ins from an unusual country
+    fields:
+      timestamp: {type: datetime, semantic_type: event_time}
+      username: {semantic_type: user, role: actor, description: Account signing in}
+      source_ip: {semantic_type: ip_address, role: source}
+      outcome:
+        description: Result of the sign-in attempt
+        values:
+          success: [successful, succeeded]
+          failure: [failed, failure, unsuccessful]
+
+  asset_inventory:
+    type: postgres
+    table: asset_inventory
+    description: Corporate asset inventory (CMDB).
+    entities: [host, user, ip_address]
+    fields:
+      ip_address: {semantic_type: ip_address, description: Current IP of the asset}
+      hostname: {semantic_type: host, description: Asset hostname}
+      owner: {semantic_type: user, description: Primary user of the asset}
+      environment:
+        description: Deployment environment
+        values:
+          production: [production, prod]
+          staging: [staging]
+          development: [development, dev]
+
+relationships:
+  - {from: proxy_logs.source_ip, to: asset_inventory.ip_address, type: same_entity, confidence: 0.95}
+  - {from: dns_logs.client_ip, to: asset_inventory.ip_address, type: same_entity, confidence: 0.95}
+  - {from: firewall_logs.src_ip, to: asset_inventory.ip_address, type: same_entity, confidence: 0.95}
+  - {from: firewall_logs.dst_ip, to: asset_inventory.ip_address, type: same_entity, confidence: 0.90}
+  - {from: asset_inventory.owner, to: user, type: represents, confidence: 0.99}

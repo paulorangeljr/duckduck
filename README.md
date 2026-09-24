@@ -306,6 +306,41 @@ docstring). Handy right after `auto_register()` to see what actually got
 wired up, or from a notebook where you've lost track of what's been
 registered.
 
+## Natural-language search (`duckduck.semantic`)
+
+On top of the tables above, `duckduck.semantic` answers questions in
+plain language. It uses a hand-maintained **semantic catalog** (YAML:
+what each source's fields mean, entities, activities, and how sources
+join). Questions go through independent, probability-scored decisions,
+then a validated logical plan, and only then SQL. Low-confidence
+decisions come back as a clarification request and never execute.
+
+```bash
+pip install -e ".[semantic]"
+python examples/semantic/demo.py   # the 6 MVP questions against sample data
+```
+
+```python
+from duckduck import DuckAPI
+from duckduck.semantic import SemanticSearch
+
+duck = DuckAPI()
+duck.auto_register()                               # the virtualization layer
+search = SemanticSearch("catalog.yaml", duck)      # table: names = registered tables
+
+result = search.search("Which users accessed github in the last 24hrs?")
+result.status      # "ok" | "needs_clarification" | "invalid_plan"
+result.sql         # the SQL that ran
+result.results     # pd.DataFrame
+result.decisions   # every judgment, with its probability
+```
+
+The default decision engine is an offline lexical baseline. To use JEV,
+implement its two-method `JEVBackend` protocol and pass
+`engine=JEVAdapter(backend)`. See `examples/semantic/catalog.yaml` for the
+catalog format and the "Semantic search" section of `CLAUDE.md` for the
+design.
+
 ## Adding your own API wrapper
 
 Any Python object works as long as its methods follow the convention:

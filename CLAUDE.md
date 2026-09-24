@@ -469,3 +469,45 @@ A backend just needs `get_secret(secret_id: str) -> dict` — see `SecretsManage
 | `connector: "glue"` | `boto3>=1.28` (`pip install "duckduck[aws]"`) for the `get_table` lookup; DuckDB's own `httpfs`/`delta`/`iceberg` extensions auto-install on first use (needs outbound internet) |
 | `connector: "blob_storage"` | none as a Python package — DuckDB's own `azure`/`delta`/`iceberg` extensions auto-install on first use (needs outbound internet) |
 | `authentication.type: "local"` | none — fully offline |
+
+---
+
+## Semantic search (`duckduck/semantic/`)
+
+Natural-language questions → a validated logical plan → SQL executed on the DuckAPI virtualization layer above. Needs `pip install -e ".[semantic]"` (pydantic, PyYAML); never imported by `duckduck/__init__.py`, so the base package doesn't need them. Architecture follows `semantic_search_jev_architecture.md` (Phases 1–2: catalog, decision engine, interpreter, relationship graph, planner, validator, DuckDB execution).
+
+```
+question ─► RuleBasedExtractor (values: time, IPs, domains, enums, free text)
+         ─► LexicalRetriever (top-N sources, BM25)
+         ─► SemanticInterpreter (independent decisions: entity, activity, value types, source relevance)
+         ─► QueryPlanner (+ RelationshipGraph paths, field/relationship confirmations)
+         ─► QueryValidator ─► compiler (per-source CTEs) ─► PlanExecutor (per-source push-down) ─► DataFrame
+```
+
+| Module | Role |
+|---|---|
+| `catalog.py` | Pydantic models + YAML/JSON loader; cross-reference checks run at load time. Sources bind to a DuckAPI table (`table:` + `args:`) or a native DuckDB `relation:` |
+| `decisions.py` | `DecisionEngine` protocol; `JEVAdapter` (wraps a `JEVBackend` with retries/timeout/normalization/logging); `LexicalDecisionEngine` (offline baseline) |
+| `extraction.py` | Deterministic value extraction — the decision engine never generates text |
+| `interpreter.py` | NL → `SemanticIntent`, every judgment recorded as a `DecisionRecord` with probability + threshold |
+| `graph.py` | Joinable relationships as edges; Dijkstra over `-log(confidence)` + hop penalty |
+| `planner.py` | Picks the primary source, types filters to fields, joins in whatever the question needs from other sources |
+| `plan.py` / `validator.py` | Structural (Pydantic) + semantic (catalog) validation, authorization via `allowed_sources` |
+| `compiler.py` / `executor.py` | SQL generation; per-source fetch with push-down |
+| `engine.py` | `SemanticSearch` — the pipeline; `search()` / `plan()` → `SearchResult` |
+| `evaluation.py` | Per-stage accuracy over a labeled dataset |
+
+### Invariants — don't break these
+
+- **Nothing upstream writes SQL.** Only `compiler.py` emits SQL, only from a validated `LogicalQueryPlan`. Identifiers come from the catalog (pattern-constrained, and quoted anyway); values always go through `render_literal`.
+- **Low confidence never executes.** Any decision under its `Thresholds` value raises `ClarificationNeeded` → `status="needs_clarification"`. That includes a value the interpreter can't type: it must *ask*, never silently drop the filter (that would answer a broader question than the one asked). `tests/test_semantic_search.py::test_untypeable_value_asks_instead_of_being_dropped` guards this.
+- **Execution does not go through `DuckAPI.sql()`.** Its push-down is global (one LIMIT/WHERE handed to every function in the query), wrong for joins. `PlanExecutor` calls `DuckAPI.fetch()` per source instead: `eq` filters → API kwargs when the function accepts them; `limit` only for a single-source, non-DISTINCT plan with **no residual filter and no ORDER BY** (an API's first N rows aren't the newest N). DuckDB re-applies every filter regardless.
+- **Unavailable sources degrade, not crash.** A catalog source whose DuckAPI table isn't registered (e.g. its connector failed `auto_register(on_error="warn")`) is dropped with an always-shown `RuntimeWarning`; `strict=True` raises instead.
+
+### The lexical baseline and JEV
+
+`LexicalDecisionEngine` scores token overlap against catalog text (entity/activity keywords, source descriptions) and returns the caller's `prior` for structural confirmations (field/relationship relevance). It's what makes the MVP set in `examples/semantic/evaluation.json` pass offline, and it's deliberately crude — richer phrasing is what JEV is for. To plug JEV in, implement `JEVBackend` (`decide(state, question, options)` / `classify(...)`, returning a score per option label) and pass `engine=JEVAdapter(backend)`. The real JEV API contract wasn't available when this was built, so there's no bundled HTTP client for it.
+
+### Example + evaluation
+
+`examples/semantic/catalog.yaml` (5 security sources), `sample_sources.py` (in-memory data registered in DuckAPI), `evaluation.json` (the 6 MVP questions), `demo.py` (`python examples/semantic/demo.py`). Tests load these same files via `tests/semantic_helpers.py`, so the example can't rot. Catalog field names are post-normalization column names (DuckAPI turns `.` into `_`); use `column:` when the logical name differs.

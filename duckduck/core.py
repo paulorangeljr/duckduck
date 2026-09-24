@@ -715,7 +715,9 @@ class DuckAPI:
     # Conversion to DataFrame
     # ------------------------------------------------------------------
 
-    def _to_dataframe(self, data: Any, function_name: str) -> pd.DataFrame:
+    def _to_dataframe(
+        self, data: Any, function_name: str, allow_empty: bool = False
+    ) -> pd.DataFrame:
         """
         Normalizes the function's return value into a DataFrame.
 
@@ -723,7 +725,7 @@ class DuckAPI:
         - list[dict]
         - dict with a ``resources``, ``items``, ``data`` or ``results`` key
         - pd.DataFrame
-        - None  (treated as empty, raises an error)
+        - None  (treated as empty, raises an error unless ``allow_empty``)
         """
         if data is None:
             data = []
@@ -741,7 +743,7 @@ class DuckAPI:
         else:
             df = pd.json_normalize(data)
 
-        if df.empty or len(df.columns) == 0:
+        if (df.empty or len(df.columns) == 0) and not allow_empty:
             raise ValueError(
                 f"Table '{function_name}' returned no data. "
                 "Cannot determine the columns."
@@ -776,6 +778,24 @@ class DuckAPI:
         table_name = f"_api_{function_name}_{self._table_counter}"
         self.conn.register(table_name, df)
         return table_name, list(df.columns)
+
+    def fetch(self, name: str, **kwargs) -> pd.DataFrame:
+        """
+        Calls a registered table's function directly with explicit
+        ``kwargs`` — no SQL parsing, no push-down inference — and returns
+        its result as a DataFrame (column names normalized the same way
+        ``sql()`` does, ``.`` → ``_``).
+
+        Unlike ``sql()``, an empty result is not an error: it comes back
+        as an empty DataFrame (with no columns when the function gave no
+        way to infer them). Meant for callers that do their own push-down
+        planning per source, e.g. ``duckduck.semantic``'s executor.
+        """
+        fn = self.functions.get(name.lower())
+        if fn is None:
+            raise KeyError(f"No table registered as '{name}'.")
+        validated = self._validate_arguments(name, fn, kwargs)
+        return self._to_dataframe(fn(**validated), name, allow_empty=True)
 
     def _strip_where_conditions(self, query: str, keys: set) -> str:
         """

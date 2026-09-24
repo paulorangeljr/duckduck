@@ -1,0 +1,44 @@
+[
+  {
+    "question": "Which users accessed github in the last 24hrs?",
+    "expected_sources": ["proxy_logs"],
+    "expected_entity": "user",
+    "expected_activity": "web_access",
+    "expected_results": ["alice", "bob"]
+  },
+  {
+    "question": "Which hosts queried example.com?",
+    "expected_sources": ["asset_inventory", "dns_logs"],
+    "expected_entity": "host",
+    "expected_activity": "dns_resolution",
+    "expected_results": ["ws-alice", "ws-dave"]
+  },
+  {
+    "question": "Which IPs connected to 10.0.0.5?",
+    "expected_sources": ["firewall_logs"],
+    "expected_entity": "ip_address",
+    "expected_activity": "network_connection",
+    "expected_results": ["10.0.0.11", "10.0.0.12"]
+  },
+  {
+    "question": "Which users generated failed authentication events?",
+    "expected_sources": ["auth_logs"],
+    "expected_entity": "user",
+    "expected_activity": "authentication",
+    "expected_results": ["bob", "erin"]
+  },
+  {
+    "question": "Which machines communicated with 203.0.113.9?",
+    "expected_sources": ["asset_inventory", "firewall_logs"],
+    "expected_entity": "host",
+    "expected_activity": "network_connection",
+    "expected_results": ["srv-build", "ws-dave"]
+  },
+  {
+    "question": "Show me denied connections from production machines.",
+    "expected_sources": ["asset_inventory", "firewall_logs"],
+    "expected_entity": "event",
+    "expected_activity": "network_connection",
+    "expected_results": ["2026-09-24T08:00:00", "2026-09-24T07:00:00"]
+  }
+]
