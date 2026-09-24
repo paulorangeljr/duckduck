@@ -1,0 +1,141 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Commands
+
+```bash
+# Install (editable, with dev deps)
+pip install -e ".[dev]"
+
+# Run all tests
+python -m pytest tests/
+
+# Run a single test
+python -m pytest tests/test_core.py::test_limit_pushdown
+```
+
+## Architecture
+
+`duckduck` is a thin SQL engine that lets callers query HTTP APIs as if they were tables. The two main layers are:
+
+1. **`duckduck/core.py` — `DuckAPI`**: Parses SQL with `sqlglot`, extracts push-down predicates, rewrites the query replacing `func(...)` / `FROM func` patterns with in-memory DuckDB table names, then executes the rewritten SQL against registered DataFrames.
+
+2. **`duckduck/rapid7.py` — `InsightVM`**: An example API client whose public methods are registered as DuckAPI tables. Each method accepts the push-down kwargs that DuckAPI injects and returns `list[dict]` or `pd.DataFrame`.
+
+### Push-down flow
+
+```
+sql("SELECT * FROM assets WHERE hostname = 'web' LIMIT 10")
+        │
+        ▼
+_extract_pushdown()   →  PushDownContext(limit=10, filters={"hostname": "web"})
+        │
+        ▼
+_merge_kwargs()       →  intersects filters with function signature
+                         explicit inline kwargs always win
+        │
+        ▼
+fetch_function(**kwargs)  →  single API call (limit set) or full pagination
+        │
+        ▼
+_to_dataframe()       →  normalises list[dict] / paged dict / DataFrame
+        │
+        ▼
+conn.register(tmp_table, df)
+        │
+        ▼
+conn.sql(rewritten_query)   ←  DuckDB applies remaining predicates
+```
+
+`PushDownContext` carries `limit: int | None` and `filters: dict[str, Any]`. Only equality/LIKE/comparison conditions on bare column names are extracted; OR, NOT, and nested expressions are left entirely to DuckDB.
+
+### SQL rewriting
+
+`DuckAPI.sql()` iterates registered functions and rewrites the query with two regex passes per function:
+
+1. `func(kwargs)` — replaces the entire call expression with the temp table name.
+2. `FROM/JOIN func` (no parens) — replaces the bare name after the keyword.
+
+Temp table names are `_api_{fn_name}_{counter}`, unique per materialisation.
+
+### Inline syntax convention
+
+`func(param=val)` is **only for structural parameters** — those that determine the API URL path and are not columns in the result (e.g. `asset_id` → `/assets/{id}/vulnerabilities`).
+
+Column filters belong in the `WHERE` clause; DuckAPI pushes them down automatically if the function accepts a matching parameter name.
+
+```sql
+-- CORRECT: structural param inline, column filter in WHERE
+SELECT * FROM asset_vulnerabilities(asset_id=42) WHERE severity = 'critical'
+
+-- CORRECT: column filter in WHERE, pushed down to assets()
+SELECT * FROM assets WHERE hostname = 'web-prod' LIMIT 50
+```
+
+### `_fetch` vs full pagination
+
+Every API method calls `self._fetch(path, limit=limit)`:
+
+- **`limit` set** → one request, `size=limit, page=0`. Returns immediately.
+- **`limit` not set** → iterates all pages with `default_page_size`.
+
+Never pass `limit` as `page_size` to `_paginate`-style loops — that fetches everything N records at a time.
+
+---
+
+## Adding a new API wrapper
+
+Follow the same contract as `InsightVM`:
+
+```python
+class MyAPI:
+    def __init__(self, ...):
+        self.session = requests.Session()
+        self.default_page_size = 500
+
+    def _fetch(self, path, params=None, limit=None):
+        # single page if limit set, paginate otherwise
+        ...
+
+    def records(
+        self,
+        # structural params (form URL path) — REQUIRED, no default
+        resource_id: int,
+        # column-filter params (WHERE push-down) — always Optional
+        status: Optional[str] = None,
+        name: Optional[str] = None,
+        # limit is always the last param and always Optional
+        limit: Optional[int] = None,
+    ) -> pd.DataFrame:
+        resources = self._fetch(f"/resources/{resource_id}/items", limit=limit)
+        df = pd.json_normalize(resources, sep="_")
+        if status and "status" in df.columns:
+            df = df[df["status"] == status]
+        return df
+```
+
+**Rules for each method:**
+
+| Concern | Rule |
+|---|---|
+| Structural param (URL path) | Required positional, no default, document as "obrigatório" |
+| Column-filter param | `Optional[X] = None`; filter the DataFrame after fetching |
+| `limit` | Always `Optional[int] = None`, always last; pass straight to `_fetch` |
+| Return type | `pd.DataFrame`; dot-separated nested keys become `_` via `sep="_"` |
+| Server-side filter | Use it when the API supports it (fewer bytes over the wire) |
+| Client-side filter | When the API has no filter param; filter the DataFrame, never slice with `head(limit)` — `_fetch` already capped the rows |
+
+**Registration:**
+
+```python
+from duckduck import DuckAPI
+from duckduck.myapi import MyAPI
+
+api = MyAPI(...)
+duck = DuckAPI()
+duck.register_api_function("records", api.records)
+duck.register_api_function("other",   api.other_method)
+```
+
+**Tests:** mock the HTTP session (`requests.Session`) and assert that push-down kwargs reach the method. See `tests/test_core.py` for the `tracked_*` wrapper pattern used to spy on calls.
