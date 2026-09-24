@@ -830,3 +830,61 @@ def test_auto_register_axonius_connector():
     assert "axonius_users" in duck.functions
     assert "axonius_devices" in duck._streaming_functions
     duck.close()
+
+
+# ---------------------------------------------------------------------------
+# connector = "glue" — S3 + AWS Glue Data Catalog
+# ---------------------------------------------------------------------------
+
+
+def test_auto_register_glue_connector(monkeypatch):
+    import duckduck.glue as glue_module
+    import duckduck.lakehouse as lakehouse_module
+
+    monkeypatch.setattr(lakehouse_module.duckdb, "connect", MagicMock(return_value=MagicMock()))
+    fake_boto3 = MagicMock()
+    monkeypatch.setattr(glue_module, "boto3", fake_boto3)
+
+    duck = DuckAPI()
+    instances = duck.auto_register({
+        "s3_data": {
+            "connector": "glue",
+            "authentication": {
+                "type": "local",
+                "region_name": "us-east-1",
+            },
+        },
+    })
+
+    assert instances["s3_data"] is not None
+    assert "s3_data_table" in duck.functions
+    assert "s3_data_path" in duck.functions
+    assert "s3_data_table" in duck._streaming_functions
+    duck.close()
+
+
+# ---------------------------------------------------------------------------
+# connector = "blob_storage" — Azure Blob Storage / ADLS Gen2
+# ---------------------------------------------------------------------------
+
+
+def test_auto_register_blob_storage_connector(monkeypatch):
+    import duckduck.lakehouse as lakehouse_module
+
+    monkeypatch.setattr(lakehouse_module.duckdb, "connect", MagicMock(return_value=MagicMock()))
+
+    duck = DuckAPI()
+    instances = duck.auto_register({
+        "adls": {
+            "connector": "blob_storage",
+            "authentication": {
+                "type": "local",
+                "account_name": "mystorageacct",
+            },
+        },
+    })
+
+    assert instances["adls"] is not None
+    assert "adls_table" in duck.functions
+    assert "adls_table" in duck._streaming_functions
+    duck.close()

@@ -73,6 +73,21 @@
         "api_key": "...",
         "api_secret": "..."
       }
+    },
+    "s3_data": {
+      "connector": "glue",
+      "authentication": {
+        "type": "local",
+        "region_name": "us-east-1",
+        "profile_name": "prod-account"
+      }
+    },
+    "adls": {
+      "connector": "blob_storage",
+      "authentication": {
+        "type": "local",
+        "account_name": "mystorageacct"
+      }
     }
   }
 }

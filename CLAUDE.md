@@ -427,6 +427,15 @@ SELECT * FROM mysql_query(sql='SELECT * FROM orders WHERE total > 100')
 
 **Caveat**: this session's network policy blocked fetching `docs.axonius.com` while building this wrapper, so the request/response shape is based on published examples (the header auth and `entity_request_schema` body are confirmed) rather than a full read of the reference docs. `_normalize_assets`'s assumed `{"id", "type", "attributes"}` response envelope and the AQL syntax in the convenience filters are the parts most likely to need adjusting against a real instance's own API docs (usually `https://<instance>/api-docs`).
 
+### Lakehouse connectors: `glue` (S3) and `blob_storage` (Azure)
+
+`duckduck/lakehouse.py` — `LakehouseConnection` — is shared scanning plumbing used by both. Unlike every other wrapper, these don't fetch data into Python at all: they build a `read_parquet`/`delta_scan`/`iceberg_scan` expression and run it through a **private DuckDB connection** (`INSTALL`/`LOAD` the `httpfs`/`delta`/`iceberg`/`azure` extensions, `CREATE SECRET` for auth), so the actual scan is native DuckDB reading S3/Blob directly — only the final result crosses into a `pd.DataFrame`, same contract as every other wrapper from DuckAPI's point of view. `INSTALL` needs outbound internet the first time each extension is used (downloaded from DuckDB's own extension repository and cached under `~/.duckdb/extensions`).
+
+- **`glue`** (`duckduck/glue.py` — `GlueTable`): `table(database=, table_name=)` (both structural) looks up the table's location + format in the **AWS Glue Data Catalog** via `boto3`'s `get_table`, then auto-detects Parquet vs Delta (`Parameters.table_type == "DELTA"` or `spark.sql.sources.provider == "delta"`) vs Iceberg (`Parameters.table_type == "ICEBERG"` or a `metadata_location` parameter — the Spark/Athena/PyIceberg Glue-catalog convention) and scans accordingly. `path(s3_path=, format=)` bypasses Glue for ad hoc reads. S3 auth is a `CREATE SECRET` built either from explicit `aws_access_key_id`/`aws_secret_access_key` or `PROVIDER credential_chain` (+ `PROFILE`/`REGION`) — the same credentials boto3's own Glue lookup uses, kept in sync deliberately.
+- **`blob_storage`** (`duckduck/blob_storage.py` — `BlobStorage`): `table(container=, path=, format="parquet")` (both structural) reads `az://{container}/{path}` directly; `format` also accepts `csv`/`json`/`delta`/`iceberg`. Auth is `CREATE SECRET (TYPE AZURE, ...)`, either `CONNECTION_STRING` or `PROVIDER CREDENTIAL_CHAIN` + `ACCOUNT_NAME` (Azure CLI login / managed identity — no Glue-Data-Catalog equivalent here, so there's no format auto-detection, just the `format` parameter).
+
+Neither pushes `WHERE` column filters down through the scan — DuckDB applies them on the already-scanned result, same as any push-down parameter a wrapper doesn't recognize (the Parquet/Delta/Iceberg readers do their own internal filter/projection push-down during the scan, independent of DuckAPI's push-down layer). `iter_table()` on both is a post-hoc chunk split of the full scanned result (same trade-off as `SQLDatabase.query()`'s client-side `limit`), not true incremental streaming.
+
 ### Adding a wrapper to auto-registration
 
 1. Implement `Wrapper.from_secret(cls, secret: dict, **overrides) -> "Wrapper"` on the wrapper class — it decides the authentication mode from the keys in `secret` and passes `overrides` (hostname, site_path, default_page_size, etc.) through to the constructor.
@@ -443,4 +452,6 @@ A backend just needs `get_secret(secret_id: str) -> dict` — see `SecretsManage
 | AWS Secrets Manager | `boto3>=1.28` (`pip install "duckduck[aws]"`) |
 | Azure Key Vault | `azure-identity>=1.15`, `azure-keyvault-secrets>=4.7` (`pip install "duckduck[azure]"`) |
 | `connector: "database"` | `sqlalchemy>=2.0` (`pip install "duckduck[database]"`) + the driver for your engine (`pyodbc` for SQL Server, `PyMySQL` for MySQL, `psycopg2-binary` for PostgreSQL, ...) |
+| `connector: "glue"` | `boto3>=1.28` (`pip install "duckduck[aws]"`) for the `get_table` lookup; DuckDB's own `httpfs`/`delta`/`iceberg` extensions auto-install on first use (needs outbound internet) |
+| `connector: "blob_storage"` | none as a Python package — DuckDB's own `azure`/`delta`/`iceberg` extensions auto-install on first use (needs outbound internet) |
 | `authentication.type: "local"` | none — fully offline |

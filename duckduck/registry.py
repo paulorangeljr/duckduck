@@ -3,7 +3,7 @@ Central registry of the API wrappers supported by
 ``DuckAPI.auto_register`` (see ``core.py``).
 
 Each entry maps a "type" (``"sharepoint"``, ``"insightvm"``, ``"database"``,
-``"servicenow"``, ``"axonius"``) to:
+``"servicenow"``, ``"axonius"``, ``"glue"``, ``"blob_storage"``) to:
 
 - ``factory``          : classmethod that builds the instance from a
                           credentials dict (``Wrapper.from_secret``)
@@ -18,7 +18,9 @@ becomes available in ``DuckAPI.auto_register()``.
 from typing import Any, Callable, Dict, NamedTuple
 
 from .axonius import Axonius
+from .blob_storage import BlobStorage
 from .database import SQLDatabase
+from .glue import GlueTable
 from .rapid7 import InsightVM
 from .servicenow import ServiceNow
 from .sharepoint import SharePoint
@@ -116,6 +118,25 @@ SERVICE_REGISTRY: Dict[str, ServiceSpec] = {
         streaming_tables={
             "devices": "iter_devices",
             "users": "iter_users",
+        },
+    ),
+    "glue": ServiceSpec(
+        factory=GlueTable.from_secret,
+        tables={
+            "table": "table",
+            "path": "path",
+        },
+        streaming_tables={
+            "table": "iter_table",
+        },
+    ),
+    "blob_storage": ServiceSpec(
+        factory=BlobStorage.from_secret,
+        tables={
+            "table": "table",
+        },
+        streaming_tables={
+            "table": "iter_table",
         },
     ),
 }
