@@ -425,6 +425,15 @@ the same local/AWS/Azure `authentication` blocks the connectors use:
 - **An LLM** (Claude by default, `pip install -e ".[llm]"`) drafts the
   semantic catalog from your registered tables and extracts values from
   questions (`extractor.type: "llm"`). You can replace every system prompt.
+  Without an explicit table list, it drafts every plain table **and every
+  table behind your connectors**, found through their catalogs (each Glue
+  table via `glue_table(database=…, table_name=…)`, each ADX table, each
+  table/view of a SQL database). Narrow it down and cap the LLM calls in
+  `catalog_generation`:
+
+  ```json
+  "catalog_generation": {"include": ["security.*", "ProxyLogs"], "exclude": ["*_tmp"], "max_tables": 50}
+  ```
 
 Every command works from the terminal **and** from Python — the CLI is a
 thin wrapper over the same functions, so both run identical code:

@@ -455,3 +455,118 @@ def test_example_config_semantic_section_is_valid():
         cfg = SemanticConfig.model_validate(json.load(f)["semantic"])
     assert cfg.decision_engine.type == "jev" and cfg.extractor.type == "llm"
     assert cfg.catalog_generation.tables[0].args == {"database": "security", "table_name": "proxy_logs"}
+
+
+# ---------------------------------------------------------------------------
+# Catalog-driven discovery: the tables *behind* a connector
+# ---------------------------------------------------------------------------
+
+from typing import Optional as _Opt  # noqa: E402
+
+import pandas as _pd  # noqa: E402
+
+from duckduck.kinds import catalog as _catalog  # noqa: E402
+
+
+class FakeLake:
+    """A Glue-like connector: a catalog listing (database, table_name) and the table function it feeds."""
+
+    DATA = {("security", "proxy_logs"): [{"user": "a", "url": "x"}],
+            ("security", "dns_logs"): [{"client": "1.1.1.1"}],
+            ("sales", "orders"): [{"id": 1}]}
+
+    @_catalog(lists="table")
+    def tables(self, database: _Opt[str] = None, limit: _Opt[int] = None):
+        """Lists tables."""
+        return _pd.DataFrame([{"database": d, "table_name": t, "format": "parquet"} for d, t in self.DATA])
+
+    def table(self, database: str, table_name: str, where=None, limit: _Opt[int] = None):
+        """Reads one table."""
+        return self.DATA[(database, table_name)][: limit or None]
+
+    @_catalog
+    def databases(self, limit: _Opt[int] = None):
+        """Lists databases (no `lists=`: nothing to discover from it)."""
+        return [{"database": "security"}, {"database": "sales"}]
+
+
+def _discovery_duck(tmp_path):
+    import sqlalchemy as sa
+
+    from duckduck.database import SQLDatabase
+
+    duck = DuckAPI()
+    lake = FakeLake()
+    for n in ("tables", "table", "databases"):
+        duck.register_api_function(f"glue_{n}", getattr(lake, n))
+    db = SQLDatabase(f"sqlite:///{tmp_path}/crm.db")
+    with db.engine.begin() as c:
+        c.execute(sa.text("CREATE TABLE customers (id INTEGER, name TEXT)"))
+        c.execute(sa.text("INSERT INTO customers VALUES (1, 'acme')"))
+    for n in ("tables", "table", "query"):
+        duck.register_api_function(f"crm_{n}", getattr(db, n))
+    duck.register_api_function("vulns_of", lambda asset_id, limit=None: [])  # table function, no catalog
+    duck.register_api_function("assets", lambda limit=None: [{"hostname": "h"}])  # plain table
+    return duck
+
+
+def test_plan_specs_discovers_tables_through_catalogs(tmp_path):
+    duck = _discovery_duck(tmp_path)
+    specs, notes = CatalogGenerator(FakeLLM(), duck).plan_specs()
+    by_name = {s.name: (s.table, s.args) for s in specs}
+    assert by_name == {
+        "assets": ("assets", {}),
+        "security_proxy_logs": ("glue_table", {"database": "security", "table_name": "proxy_logs"}),
+        "security_dns_logs": ("glue_table", {"database": "security", "table_name": "dns_logs"}),
+        "sales_orders": ("glue_table", {"database": "sales", "table_name": "orders"}),
+        "customers": ("crm_table", {"table_name": "customers"}),
+    }
+    # catalogs / raw queries are never described as data
+    assert not {"glue_tables", "glue_databases", "crm_tables", "crm_query"} & set(by_name)
+    assert any("vulns_of" in n and "catalog_generation.tables" in n for n in notes)
+
+
+def test_include_exclude_and_max_tables(tmp_path):
+    duck = _discovery_duck(tmp_path)
+    gen = CatalogGenerator(FakeLLM(), duck, include=["security.*"], exclude=["*dns*"])
+    assert [s.name for s in gen.plan_specs()[0]] == ["security_proxy_logs"]
+    specs, notes = CatalogGenerator(FakeLLM(), duck, max_tables=2).plan_specs()
+    assert len(specs) == 2 and any("5 tables matched; drafting only the first 2" in n for n in notes)
+    assert [s.name for s in CatalogGenerator(FakeLLM(), duck, discover=False).plan_specs()[0]] == ["assets"]
+
+
+def test_generate_profiles_discovered_tables_with_their_args(tmp_path):
+    duck = _discovery_duck(tmp_path)
+    prompts = []
+
+    class Recorder:
+        def generate(self, system, prompt, output_model):
+            if output_model is GenVocabulary:
+                return GenVocabulary()
+            prompts.append(prompt)
+            profile = json.loads(prompt.split("Table profile:\n", 1)[1])
+            return GenSource(description="d", fields=[GenField(name=next(iter(profile["columns"])))])
+
+    result = CatalogGenerator(Recorder(), duck, include=["security.proxy_logs", "customers"]).generate()
+    source = result.catalog.sources["security_proxy_logs"]
+    assert source.table == "glue_table" and source.args == {"database": "security", "table_name": "proxy_logs"}
+    assert result.catalog.sources["customers"].table == "crm_table"
+    assert any('"user"' in p for p in prompts)  # the real table's columns were sampled
+    # and the drafted binding is usable as-is by SemanticSearch
+    assert set(SemanticSearch(result.catalog, duck).catalog.sources) == {"security_proxy_logs", "customers"}
+
+
+def test_failing_catalog_is_a_note_not_a_crash(tmp_path):
+    class DeniedLake(FakeLake):
+        @_catalog(lists="table")
+        def tables(self, database=None, limit=None):
+            raise PermissionError("no glue:GetTables")
+
+    duck = _discovery_duck(tmp_path)
+    lake = DeniedLake()
+    duck.register_api_function("glue_tables", lake.tables)  # same instance as its table function
+    duck.register_api_function("glue_table", lake.table)
+    specs, notes = CatalogGenerator(FakeLLM(), duck).plan_specs()
+    assert any("catalog 'glue_tables' failed (PermissionError: no glue:GetTables)" in n for n in notes)
+    assert "customers" in {s.name for s in specs}  # other sources still discovered
+    assert not any(s.table == "glue_table" for s in specs)

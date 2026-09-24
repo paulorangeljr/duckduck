@@ -55,7 +55,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import pandas as pd
 
-from .kinds import raw_query
+from .kinds import catalog, raw_query
 from .logs import get_logger
 from .pushdown import Condition
 
@@ -239,6 +239,37 @@ class SQLDatabase:
         logger.info("%s: %s", self.engine.dialect.name, " ".join(str(compiled).split()))
         if compiled.params:
             logger.debug("    params: %s", compiled.params)
+
+    #: Schemas that hold the engine's own metadata, never user data.
+    _SYSTEM_SCHEMAS = {
+        "information_schema", "pg_catalog", "pg_toast", "sys", "guest", "mysql",
+        "performance_schema", "db_owner", "db_accessadmin", "db_securityadmin",
+        "db_ddladmin", "db_backupoperator", "db_datareader", "db_datawriter",
+        "db_denydatareader", "db_denydatawriter",
+    }
+
+    @catalog(lists="table")
+    def tables(self, schema: Optional[str] = None, limit: Optional[int] = None) -> pd.DataFrame:
+        """
+        Lists tables and views (every non-system schema, or just ``schema``).
+        ``table_name`` is what ``table(table_name=...)`` takes — schema-
+        qualified outside the connection's default schema.
+        """
+        inspector = sa.inspect(self.engine)
+        default = inspector.default_schema_name
+        schemas = [schema] if schema else [
+            s for s in inspector.get_schema_names() if s.lower() not in self._SYSTEM_SCHEMAS
+        ]
+        rows = []
+        for sch in schemas:
+            for object_type, names in (("table", inspector.get_table_names(schema=sch)),
+                                       ("view", inspector.get_view_names(schema=sch))):
+                for name in names:
+                    qualified = name if sch in (None, default) else f"{sch}.{name}"
+                    rows.append({"table_name": qualified, "schema": sch, "name": name, "object_type": object_type})
+                    if limit is not None and len(rows) >= limit:
+                        return pd.DataFrame(rows)
+        return pd.DataFrame(rows, columns=["table_name", "schema", "name", "object_type"])
 
     @raw_query
     def query(

@@ -96,6 +96,7 @@ SERVICE_REGISTRY: Dict[str, ServiceSpec] = {
         tables={
             "table": "table",
             "query": "query",
+            "tables": "tables",
         },
         streaming_tables={
             "table": "iter_table",

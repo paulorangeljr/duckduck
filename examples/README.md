@@ -91,6 +91,10 @@ print(draft.summary())                           # compare it with the hand-writ
 print(ask("Which users accessed github in the last 24hrs?", config_path=CONFIG, verbose="info").report())
 ```
 
+Without `catalog_generation.tables`, the draft covers every plain table plus every table
+discovered through connector catalogs (Glue, ADX, SQL databases); `include` / `exclude` /
+`max_tables` narrow it down (see the main README). Here the sample sources are plain tables.
+
 The drafted catalog is written next to — never over — `catalog.yaml`:
 review it, then point `catalog_path` at it once you trust it. The keys
 never live in the file: without an `authentication` block, the LLM key

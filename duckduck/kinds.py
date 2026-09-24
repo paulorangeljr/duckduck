@@ -37,10 +37,30 @@ _RAW_PARAMS = {"query", "filter"}
 _SUFFIXES = [("_ilike", "LIKE/ILIKE"), ("_like", "LIKE"), ("_gte", ">="), ("_gt", ">"), ("_lte", "<="), ("_lt", "<")]
 
 
-def catalog(fn: Callable) -> Callable:
-    """Marks a method that lists what its source contains."""
-    setattr(fn, _ATTR, CATALOG)
-    return fn
+_LISTS_ATTR = "__duckduck_lists__"
+
+
+def catalog(fn: Optional[Callable] = None, *, lists: Optional[str] = None):
+    """
+    Marks a method that lists what its source contains. Used bare
+    (``@catalog``) or with ``lists=`` — the name of the sibling *table
+    function* its rows are arguments for (``@catalog(lists="table")`` on
+    ``GlueTable.tables``: each row's ``database``/``table_name`` columns
+    are ``GlueTable.table``'s required parameters). That link is what lets
+    catalog generation discover every table behind a connector.
+    """
+    def mark(f: Callable) -> Callable:
+        setattr(f, _ATTR, CATALOG)
+        if lists:
+            setattr(f, _LISTS_ATTR, lists)
+        return f
+
+    return mark(fn) if fn is not None else mark
+
+
+def lists_of(fn: Callable) -> Optional[str]:
+    """The table-function method name a catalog's rows feed, if declared."""
+    return getattr(fn, _LISTS_ATTR, None)
 
 
 def raw_query(fn: Callable) -> Callable:

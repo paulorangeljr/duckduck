@@ -80,8 +80,18 @@ class CatalogGenerationConfig(_Strict):
     source_prompt_file: Optional[str] = None
     link_prompt: Optional[str] = None
     link_prompt_file: Optional[str] = None
-    #: Omitted → every registered table callable without structural args.
+    #: Explicit list of tables to draft. Omitted → every plain table plus
+    #: every table discovered through connector catalogs (Glue, ADX, SQL
+    #: databases), filtered by include/exclude and capped by max_tables.
     tables: Optional[List[TableSpec]] = None
+    #: Walk connector catalogs to find the tables behind table functions.
+    discover: bool = True
+    #: fnmatch patterns (case-insensitive) on the registered name, or the
+    #: joined arguments of a discovered table ("security.proxy_*").
+    include: List[str] = Field(default_factory=list)
+    exclude: List[str] = Field(default_factory=list)
+    #: Cap on tables drafted per run — each one is an LLM call.
+    max_tables: int = Field(default=50, ge=1)
 
 
 class SemanticConfig(_Strict):
@@ -186,4 +196,8 @@ class SemanticConfig(_Strict):
             source_prompt=self.prompt(cfg.source_prompt, cfg.source_prompt_file, DEFAULT_SOURCE_PROMPT),
             link_prompt=self.prompt(cfg.link_prompt, cfg.link_prompt_file, DEFAULT_LINK_PROMPT),
             sample_rows=cfg.sample_rows,
+            discover=cfg.discover,
+            include=cfg.include,
+            exclude=cfg.exclude,
+            max_tables=cfg.max_tables,
         )

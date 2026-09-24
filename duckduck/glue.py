@@ -283,7 +283,7 @@ class GlueTable:
         df = pd.DataFrame(rows, columns=["database", "description", "location", "created"])
         return df.head(limit) if limit is not None else df
 
-    @catalog
+    @catalog(lists="table")
     def tables(
         self,
         database: Optional[str] = None,

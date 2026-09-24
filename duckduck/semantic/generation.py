@@ -24,14 +24,17 @@ column names and types.
 """
 
 import datetime as _dt
+import fnmatch
 import inspect
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
+from ..kinds import CATALOG, TABLE, TABLE_FUNCTION, kind_of, lists_of, required_params
+from ..local_files import table_name_for
 from .catalog import Catalog, FieldType
 from .llm import LLMClient
 
@@ -192,27 +195,122 @@ class CatalogGenerator:
         source_prompt: str = DEFAULT_SOURCE_PROMPT,
         link_prompt: str = DEFAULT_LINK_PROMPT,
         sample_rows: int = 5,
+        discover: bool = True,
+        include: Optional[List[str]] = None,
+        exclude: Optional[List[str]] = None,
+        max_tables: int = 50,
     ):
         self.llm = llm
         self.duck = duck
         self.source_prompt = source_prompt
         self.link_prompt = link_prompt
         self.sample_rows = sample_rows
+        self.discover = discover
+        self.include = list(include or [])
+        self.exclude = list(exclude or [])
+        self.max_tables = max_tables
 
     # ------------------------------------------------------------------
 
     def default_specs(self) -> List[TableSpec]:
-        """Every registered table callable without structural args."""
-        specs = []
+        """The tables ``generate()`` drafts when none are given (see ``plan_specs``)."""
+        return self.plan_specs()[0]
+
+    def plan_specs(self) -> Tuple[List[TableSpec], List[str]]:
+        """
+        What to draft when no explicit table list is given, plus notes:
+
+        1. every plain data table (``kind == "table"``) — catalogs and raw
+           queries are never data to describe;
+        2. every table *behind* a connector, discovered through its catalog:
+           a catalog declaring ``lists=`` (``glue_tables`` → ``glue_table``,
+           ``adx_tables`` → ``adx_table``, ``<db>_tables`` → ``<db>_table``)
+           is called, and each row becomes a call of that table function,
+           its required arguments taken from the row's columns.
+
+        ``include`` / ``exclude`` (fnmatch patterns, case-insensitive) match
+        the registered name for plain tables, or the joined arguments for
+        discovered ones (``security.proxy_logs`` for Glue, ``ProxyLogs`` for
+        ADX); ``max_tables`` caps the total — each table is an LLM call.
+        """
+        notes: List[str] = []
+        candidates: List[Tuple[str, TableSpec]] = []  # (pattern label, spec)
+        undiscoverable: List[str] = []
+
         for name, fn in self.duck.functions.items():
-            required = [
-                p for p in inspect.signature(fn).parameters.values()
-                if p.default is inspect.Parameter.empty
-                and p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)
-            ]
-            if not required:
-                specs.append(TableSpec(name=name, table=name))
-        return specs
+            kind = kind_of(fn)
+            if kind == TABLE:
+                candidates.append((name, TableSpec(name=name, table=name)))
+            elif kind == TABLE_FUNCTION and not self._has_catalog(fn):
+                undiscoverable.append(name)
+
+        if self.discover:
+            for catalog_name, catalog_fn in self.duck.functions.items():
+                target_method = lists_of(catalog_fn)
+                if kind_of(catalog_fn) != CATALOG or not target_method:
+                    continue
+                target_name = self._sibling_name(catalog_fn, target_method)
+                if target_name is None:
+                    notes.append(f"catalog '{catalog_name}' lists '{target_method}', which isn't registered — skipped")
+                    continue
+                required = [p.name for p in required_params(self.duck.functions[target_name])]
+                try:
+                    listing = self.duck.fetch(catalog_name)
+                except Exception as exc:
+                    notes.append(f"catalog '{catalog_name}' failed ({exc.__class__.__name__}: {exc}) — its tables skipped")
+                    continue
+                missing = [r for r in required if r not in listing.columns]
+                if missing:
+                    notes.append(f"catalog '{catalog_name}' has no column(s) {missing} for '{target_name}' — skipped")
+                    continue
+                for row in listing[required].to_dict(orient="records"):
+                    args = {r: row[r] for r in required}
+                    label = ".".join(str(v) for v in args.values())
+                    candidates.append((label, TableSpec(name=table_name_for(label), table=target_name, args=args)))
+
+        chosen = [(label, spec) for label, spec in candidates if self._wanted(label)]
+        if len(chosen) > self.max_tables:
+            notes.append(
+                f"{len(chosen)} tables matched; drafting only the first {self.max_tables} "
+                f"(raise max_tables or narrow include/exclude)"
+            )
+            chosen = chosen[: self.max_tables]
+        if undiscoverable:
+            notes.append(
+                "table functions with no catalog to discover their arguments were skipped: "
+                + ", ".join(undiscoverable) + " — list them in catalog_generation.tables with their args"
+            )
+
+        specs: List[TableSpec] = []
+        used: Dict[str, int] = {}
+        for _, spec in chosen:
+            base = spec.name
+            used[base] = used.get(base, 0) + 1
+            if used[base] > 1:  # two sources discovered under the same name
+                spec = spec.model_copy(update={"name": f"{base}_{used[base]}"})
+            specs.append(spec)
+        return specs, notes
+
+    def _wanted(self, label: str) -> bool:
+        low = label.lower()
+        if self.include and not any(fnmatch.fnmatch(low, p.lower()) for p in self.include):
+            return False
+        return not any(fnmatch.fnmatch(low, p.lower()) for p in self.exclude)
+
+    def _has_catalog(self, fn: Any) -> bool:
+        owner = getattr(fn, "__self__", None)
+        return owner is not None and any(
+            getattr(c, "__self__", None) is owner and lists_of(c) == getattr(fn, "__name__", None)
+            for c in self.duck.functions.values()
+        )
+
+    def _sibling_name(self, catalog_fn: Any, method: str) -> Optional[str]:
+        """The registered name of ``method`` on the same connector instance as ``catalog_fn``."""
+        owner = getattr(catalog_fn, "__self__", None)
+        for name, fn in self.duck.functions.items():
+            if owner is not None and getattr(fn, "__self__", None) is owner and getattr(fn, "__name__", None) == method:
+                return name
+        return None
 
     def profile(self, spec: TableSpec) -> Dict[str, Any]:
         """Columns, dtypes, sample rows and connector description for one table."""
@@ -239,10 +337,15 @@ class CatalogGenerator:
         }
 
     def generate(self, specs: Optional[List[TableSpec]] = None) -> GenerationResult:
-        specs = specs if specs is not None else self.default_specs()
-        if not specs:
-            raise ValueError("nothing to catalog: no table specs and no registered table callable without args")
         warnings: List[str] = []
+        if specs is None:
+            specs, notes = self.plan_specs()
+            warnings.extend(notes)
+        if not specs:
+            raise ValueError(
+                "nothing to catalog: no table specs given, no plain tables registered, and no catalog "
+                "discovered any table" + (f" ({'; '.join(warnings)})" if warnings else "")
+            )
         drafts: Dict[str, GenSource] = {}
         columns: Dict[str, List[str]] = {}
         for spec in specs:

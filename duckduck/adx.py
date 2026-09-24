@@ -387,7 +387,7 @@ class DataExplorer:
             kql = f"{kql.rstrip().rstrip(';')}\n| take {int(limit)}"
         return self._run(kql)
 
-    @catalog
+    @catalog(lists="table")
     def tables(self, folder: Optional[str] = None, limit: Optional[int] = None) -> pd.DataFrame:
         """
         Lists the database's tables: name, folder, description, row count,
