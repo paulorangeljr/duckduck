@@ -17,8 +17,9 @@ import inspect
 import json
 import os
 import re
+import warnings
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import duckdb
 import pandas as pd
@@ -214,6 +215,7 @@ class DuckAPI:
         services: Optional[Dict[str, Dict[str, Any]]] = None,
         secrets: Optional[Dict[str, Any]] = None,
         config_path: Optional[str] = None,
+        on_error: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Instantiates and registers known API wrappers automatically
@@ -277,12 +279,32 @@ class DuckAPI:
             Path to the JSON config file, used only when ``services`` is
             omitted. Defaults to the ``DUCKDUCK_CONFIG`` environment
             variable, or ``"duckduck.json"`` in the current directory.
+        on_error : {"raise", "warn"}, optional
+            What to do when a single service fails to initialize (bad
+            credentials, a missing optional dependency, an unreachable
+            host, a config mistake specific to that service, ...):
+
+            - ``"raise"`` (the default): the exception propagates and
+              ``auto_register()`` stops immediately — nothing gets
+              registered from that call.
+            - ``"warn"``: the exception is caught, turned into a
+              ``RuntimeWarning`` naming the service and what went wrong,
+              and that service is skipped — every other service is still
+              registered normally, so one dead connector doesn't take
+              down the rest. Check the return value's keys (or
+              ``list_tables()``) to see what actually made it.
+
+            When ``services`` is loaded from a JSON file, a top-level
+            ``"on_error"`` key in that file is used as the default —
+            still overridden by explicitly passing this parameter.
 
         Returns
         -------
         dict
             ``{name: instance}`` — to access wrapper methods that didn't
             become a table (e.g. ``instances["sharepoint"].site_by_path``).
+            Only successfully-initialized services are present; with
+            ``on_error="warn"``, that may be a subset of ``services``.
 
         Loading from a JSON file
         -------------------------
@@ -358,39 +380,56 @@ class DuckAPI:
         """
         from .registry import SERVICE_REGISTRY
 
+        file_on_error = None
         if services is None:
-            services = self._load_auto_register_config(config_path)
+            services, file_on_error = self._load_auto_register_config(config_path)
+
+        if on_error is None:
+            on_error = file_on_error or "raise"
+        if on_error not in ("raise", "warn"):
+            raise ValueError(f"on_error must be 'raise' or 'warn' (got '{on_error}').")
 
         overrides = dict(secrets) if secrets else {}
         backend_cache: Dict[Any, Any] = {}
         instances: Dict[str, Any] = {}
 
         for name, raw_config in services.items():
-            config = dict(raw_config)
-            connector = config.pop("connector", name)
-            spec = SERVICE_REGISTRY.get(connector)
-            if spec is None:
-                raise ValueError(
-                    f"Service '{name}' (connector='{connector}') is not recognized. "
-                    f"Available: {', '.join(SERVICE_REGISTRY)}"
-                )
+            try:
+                config = dict(raw_config)
+                connector = config.pop("connector", name)
+                spec = SERVICE_REGISTRY.get(connector)
+                if spec is None:
+                    raise ValueError(
+                        f"Service '{name}' (connector='{connector}') is not recognized. "
+                        f"Available: {', '.join(SERVICE_REGISTRY)}"
+                    )
 
-            auth = config.pop("authentication", None)
-            if not auth:
-                raise ValueError(f"'{name}': missing 'authentication' block.")
-            credentials = self._resolve_authentication(name, auth, overrides, backend_cache)
+                auth = config.pop("authentication", None)
+                if not auth:
+                    raise ValueError(f"'{name}': missing 'authentication' block.")
+                credentials = self._resolve_authentication(name, auth, overrides, backend_cache)
 
-            instance = spec.factory(credentials, **config)
+                instance = spec.factory(credentials, **config)
+
+                for table_name, method_name in spec.tables.items():
+                    self.register_api_function(
+                        f"{name}_{table_name}", getattr(instance, method_name)
+                    )
+                for table_name, method_name in spec.streaming_tables.items():
+                    self.register_streaming_function(
+                        f"{name}_{table_name}", getattr(instance, method_name)
+                    )
+            except Exception as exc:
+                if on_error == "warn":
+                    warnings.warn(
+                        f"auto_register: service '{name}' failed to initialize "
+                        f"({exc.__class__.__name__}: {exc}) — skipping.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    continue
+                raise
             instances[name] = instance
-
-            for table_name, method_name in spec.tables.items():
-                self.register_api_function(
-                    f"{name}_{table_name}", getattr(instance, method_name)
-                )
-            for table_name, method_name in spec.streaming_tables.items():
-                self.register_streaming_function(
-                    f"{name}_{table_name}", getattr(instance, method_name)
-                )
 
         return instances
 
@@ -512,10 +551,11 @@ class DuckAPI:
     def _load_auto_register_config(
         self,
         config_path: Optional[str],
-    ) -> Dict[str, Dict[str, Any]]:
+    ) -> Tuple[Dict[str, Dict[str, Any]], Optional[str]]:
         """
-        Resolves the ``services`` dict for ``auto_register()`` from a
-        JSON file when no ``services`` dict was passed in code.
+        Resolves the ``services`` dict (and an optional default
+        ``on_error``) for ``auto_register()`` from a JSON file when no
+        ``services`` dict was passed in code.
 
         Path lookup order: ``config_path`` argument → ``DUCKDUCK_CONFIG``
         env var → ``DEFAULT_CONFIG_PATH`` ("duckduck.json"), searched from
@@ -545,7 +585,7 @@ class DuckAPI:
         if not file_services:
             raise ValueError(f"Config file '{path}' has no 'services' key.")
 
-        return file_services
+        return file_services, config.get("on_error")
 
     # ------------------------------------------------------------------
     # Inline kwargs parsing:  func(x=1, y="a")

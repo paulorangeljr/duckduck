@@ -1,10 +1,18 @@
 """
 ServiceNow Table API wrapper for use with DuckAPI.
 
-Authenticates via HTTP Basic auth and queries any ServiceNow table
-through the generic Table API (``/api/now/table/{tableName}``), plus
-dedicated methods with real server-side push-down for the tables most
-commonly queried (incidents, problems, changes, users, CIs).
+Authenticates via HTTP Basic auth (``ServiceNow(...)``) or OAuth2
+client-credentials (``ServiceNow.from_oauth2(...)``) and queries any
+ServiceNow table through the Table API, plus dedicated methods with real
+server-side push-down for the tables most commonly queried (incidents,
+problems, changes, users, CIs).
+
+Many enterprise ServiceNow deployments front the API with an external
+identity provider (e.g. Azure AD issuing the OAuth2 token) and/or an API
+gateway that isn't ``{instance}.service-now.com`` at all — ``from_oauth2``
+takes the token URL and the data API's base URL as separate, fully
+independent parameters to cover that, rather than assuming ServiceNow's
+own ``/oauth_token.do`` and ``/api/now`` path.
 
 Usage convention
 -----------------
@@ -43,6 +51,7 @@ Notes on the Table API
   ``STARTSWITH``, ``CONTAINS``, date ranges, etc.).
 """
 
+from datetime import datetime, timedelta
 from typing import Any, Dict, Iterator, List, Optional
 
 import pandas as pd
@@ -52,6 +61,10 @@ import requests
 class ServiceNow:
     """
     Client for the ServiceNow Table API.
+
+    This constructor is HTTP Basic auth. For OAuth2 client-credentials
+    (Azure AD, ServiceNow's own OAuth2 endpoint, or a gateway in front of
+    either), use ``ServiceNow.from_oauth2(...)`` instead.
 
     Parameters
     ----------
@@ -87,13 +100,75 @@ class ServiceNow:
             raise ValueError("Provide either 'instance' or 'host'.")
 
         resolved_host = host or f"{instance}.service-now.com"
-        self.base_url = f"https://{resolved_host}/api/now"
-        self.default_page_size = default_page_size
-
-        self.session = requests.Session()
+        self._setup(f"https://{resolved_host}/api/now", default_page_size, verify)
         self.session.auth = (username, password)
-        self.session.verify = verify
-        self.session.headers.update({"Accept": "application/json"})
+        self._auth_mode = "basic"
+
+    @classmethod
+    def from_oauth2(
+        cls,
+        token_url: str,
+        client_id: str,
+        client_secret: str,
+        instance: Optional[str] = None,
+        host: Optional[str] = None,
+        api_base: Optional[str] = None,
+        resource: Optional[str] = None,
+        scope: Optional[str] = None,
+        default_page_size: int = 200,
+        verify: bool = True,
+    ) -> "ServiceNow":
+        """
+        Authentication via OAuth2 client-credentials — for deployments
+        where an external identity provider issues the token (e.g. Azure
+        AD in front of ServiceNow or an API gateway), or ServiceNow's own
+        OAuth2 endpoint.
+
+        ``token_url`` and the data API's base URL are independent: the
+        token issuer is often a completely different host (and sometimes
+        a different API path convention, e.g. ``/v1/now/table/...``
+        behind a gateway rather than ``/api/now/table/...`` straight
+        against ServiceNow) than where records are actually read from.
+
+        Parameters
+        ----------
+        token_url : str
+            Full URL of the OAuth2 token endpoint (client-credentials
+            grant), e.g. ``https://login.microsoftonline.com/{tenant}/oauth2/token``
+            or ``https://{instance}.service-now.com/oauth_token.do``.
+        client_id, client_secret : str
+        instance / host : str, optional
+            Same as ``__init__`` — used to build the data API's base URL
+            when ``api_base`` isn't given directly. Provide one of
+            ``instance``, ``host``, or ``api_base``.
+        api_base : str, optional
+            Full base URL for the Table API, used as-is (no ``/api/now``
+            appended) — for a gateway/proxy in front of ServiceNow that
+            uses its own path convention. E.g.
+            ``"https://internal-gateway.mycompany.com/v1/now"``.
+        resource : str, optional
+            Sent as the ``resource`` form field — Azure AD's audience
+            parameter for the client-credentials grant.
+        scope : str, optional
+            Sent as the ``scope`` form field, for identity providers that
+            use OAuth2 scopes instead of (or alongside) ``resource``.
+        """
+        obj = cls.__new__(cls)
+        if api_base:
+            base_url = api_base.rstrip("/")
+        else:
+            if not instance and not host:
+                raise ValueError("Provide 'instance', 'host', or 'api_base'.")
+            base_url = f"https://{host or f'{instance}.service-now.com'}/api/now"
+        obj._setup(base_url, default_page_size, verify)
+        obj._auth_mode = "oauth2"
+        obj._token_url = token_url
+        obj._client_id = client_id
+        obj._client_secret = client_secret
+        obj._resource = resource
+        obj._scope = scope
+        obj._token_expires_at = None
+        return obj
 
     @classmethod
     def from_secret(cls, secret: Dict[str, Any], **overrides) -> "ServiceNow":
@@ -101,12 +176,34 @@ class ServiceNow:
         Builds ServiceNow from a credentials dict (e.g. a secret fetched
         by ``auto_register()``).
 
+        Detects the authentication mode from the keys present:
+
+        - ``client_id`` + ``client_secret`` + ``token_url`` → ``from_oauth2``
+        - ``username`` + ``password`` (+ ``instance``/``host``) → Basic auth
+
         Parameters
         ----------
         secret : dict
-            Expected keys: ``username``, ``password``, plus **either**
-            ``instance`` **or** ``host`` (see ``__init__``).
+            OAuth2: ``token_url``, ``client_id``, ``client_secret``, plus
+            optional ``instance``/``host``/``api_base``/``resource``/``scope``.
+            Basic auth: ``username``, ``password``, plus **either**
+            ``instance`` **or** ``host``.
         """
+        if "client_id" in secret and "client_secret" in secret and (
+            "token_url" in secret or "token_url" in overrides
+        ):
+            return cls.from_oauth2(
+                token_url=overrides.pop("token_url", None) or secret["token_url"],
+                client_id=overrides.pop("client_id", None) or secret["client_id"],
+                client_secret=overrides.pop("client_secret", None) or secret["client_secret"],
+                instance=overrides.pop("instance", None) or secret.get("instance"),
+                host=overrides.pop("host", None) or secret.get("host"),
+                api_base=overrides.pop("api_base", None) or secret.get("api_base"),
+                resource=overrides.pop("resource", None) or secret.get("resource"),
+                scope=overrides.pop("scope", None) or secret.get("scope"),
+                **overrides,
+            )
+
         instance = overrides.pop("instance", None) or secret.get("instance")
         host = overrides.pop("host", None) or secret.get("host")
         username = overrides.pop("username", None) or secret["username"]
@@ -114,10 +211,55 @@ class ServiceNow:
         return cls(instance=instance, username=username, password=password, host=host, **overrides)
 
     # ------------------------------------------------------------------
+    # Internal setup
+    # ------------------------------------------------------------------
+
+    def _setup(self, base_url: str, default_page_size: int, verify: bool) -> None:
+        self.base_url = base_url
+        self.default_page_size = default_page_size
+        self.session = requests.Session()
+        self.session.verify = verify
+        self.session.headers.update({"Accept": "application/json"})
+
+    # ------------------------------------------------------------------
+    # OAuth2 token handling
+    # ------------------------------------------------------------------
+
+    def _ensure_token(self) -> None:
+        """Acquires (or refreshes, with a 60s buffer before expiry) the OAuth2 token."""
+        if self._token_expires_at is not None and datetime.now() < self._token_expires_at:
+            return
+
+        body = {
+            "grant_type": "client_credentials",
+            "client_id": self._client_id,
+            "client_secret": self._client_secret,
+        }
+        if self._resource:
+            body["resource"] = self._resource
+        if self._scope:
+            body["scope"] = self._scope
+
+        r = requests.post(
+            self._token_url,
+            data=body,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=30,
+        )
+        r.raise_for_status()
+        payload = r.json()
+
+        self.session.headers["Authorization"] = f"Bearer {payload['access_token']}"
+        expires_in = int(payload.get("expires_in", 3600))
+        self._token_expires_at = datetime.now() + timedelta(seconds=max(expires_in - 60, 0))
+
+    # ------------------------------------------------------------------
     # HTTP helpers
     # ------------------------------------------------------------------
 
     def _get(self, table_name: str, params: Dict[str, Any]) -> Dict:
+        if self._auth_mode == "oauth2":
+            self._ensure_token()
         r = self.session.get(
             f"{self.base_url}/table/{table_name}",
             params=params,

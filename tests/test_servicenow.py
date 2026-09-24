@@ -79,6 +79,122 @@ def test_from_secret_with_host():
 
 
 # ---------------------------------------------------------------------------
+# OAuth2 client-credentials (from_oauth2)
+# ---------------------------------------------------------------------------
+
+
+def test_from_oauth2_builds_base_url_from_instance():
+    sn = ServiceNow.from_oauth2(
+        token_url="https://login.microsoftonline.com/tenant/oauth2/token",
+        client_id="cid", client_secret="csecret", instance="dev12345",
+    )
+    assert sn.base_url == "https://dev12345.service-now.com/api/now"
+    assert sn._auth_mode == "oauth2"
+
+
+def test_from_oauth2_api_base_used_as_is():
+    sn = ServiceNow.from_oauth2(
+        token_url="https://login.microsoftonline.com/tenant/oauth2/token",
+        client_id="cid", client_secret="csecret",
+        api_base="https://internal-gateway.mycompany.com/v1/now",
+    )
+    assert sn.base_url == "https://internal-gateway.mycompany.com/v1/now"
+
+
+def test_from_oauth2_missing_instance_host_and_api_base_raises():
+    with pytest.raises(ValueError, match="instance.*host.*api_base"):
+        ServiceNow.from_oauth2(
+            token_url="https://login.microsoftonline.com/tenant/oauth2/token",
+            client_id="cid", client_secret="csecret",
+        )
+
+
+def test_ensure_token_fetches_and_caches():
+    sn = ServiceNow.from_oauth2(
+        token_url="https://login.microsoftonline.com/tenant/oauth2/token",
+        client_id="cid", client_secret="csecret", instance="dev12345",
+        resource="api://resource-id",
+    )
+    token_response = _response({"access_token": "tok123", "expires_in": 3600})
+
+    with patch("duckduck.servicenow.requests.post", return_value=token_response) as mock_post:
+        sn._ensure_token()
+        sn._ensure_token()  # second call should use the cached token
+
+    mock_post.assert_called_once()
+    body = mock_post.call_args[1]["data"]
+    assert body["client_id"] == "cid"
+    assert body["client_secret"] == "csecret"
+    assert body["grant_type"] == "client_credentials"
+    assert body["resource"] == "api://resource-id"
+    assert sn.session.headers["Authorization"] == "Bearer tok123"
+
+
+def test_ensure_token_refreshes_after_expiry():
+    sn = ServiceNow.from_oauth2(
+        token_url="https://login.microsoftonline.com/tenant/oauth2/token",
+        client_id="cid", client_secret="csecret", instance="dev12345",
+    )
+    with patch(
+        "duckduck.servicenow.requests.post",
+        return_value=_response({"access_token": "tok1", "expires_in": 3600}),
+    ):
+        sn._ensure_token()
+
+    # Force the cached token to look expired
+    from datetime import datetime, timedelta
+    sn._token_expires_at = datetime.now() - timedelta(seconds=1)
+
+    with patch(
+        "duckduck.servicenow.requests.post",
+        return_value=_response({"access_token": "tok2", "expires_in": 3600}),
+    ) as mock_post:
+        sn._ensure_token()
+
+    mock_post.assert_called_once()
+    assert sn.session.headers["Authorization"] == "Bearer tok2"
+
+
+def test_get_calls_ensure_token_in_oauth2_mode():
+    sn = ServiceNow.from_oauth2(
+        token_url="https://login.microsoftonline.com/tenant/oauth2/token",
+        client_id="cid", client_secret="csecret", instance="dev12345",
+    )
+    with patch.object(sn, "_ensure_token") as mock_ensure, \
+         patch.object(sn.session, "get", return_value=_response({"result": []})):
+        sn._get("incident", {})
+
+    mock_ensure.assert_called_once()
+
+
+def test_basic_auth_mode_never_calls_ensure_token():
+    sn = _make_sn()
+    with patch.object(sn, "_ensure_token") as mock_ensure, \
+         patch.object(sn.session, "get", return_value=_response({"result": []})):
+        sn._get("incident", {})
+
+    mock_ensure.assert_not_called()
+
+
+def test_from_secret_detects_oauth2_mode():
+    sn = ServiceNow.from_secret({
+        "token_url": "https://login.microsoftonline.com/tenant/oauth2/token",
+        "client_id": "cid",
+        "client_secret": "csecret",
+        "instance": "dev12345",
+    })
+    assert sn._auth_mode == "oauth2"
+    assert sn.base_url == "https://dev12345.service-now.com/api/now"
+
+
+def test_from_secret_detects_basic_auth_mode():
+    sn = ServiceNow.from_secret({
+        "instance": "dev12345", "username": "admin", "password": "secret",
+    })
+    assert sn._auth_mode == "basic"
+
+
+# ---------------------------------------------------------------------------
 # _build_query
 # ---------------------------------------------------------------------------
 

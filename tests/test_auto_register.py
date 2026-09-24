@@ -807,6 +807,27 @@ def test_auto_register_servicenow_connector():
     duck.close()
 
 
+def test_auto_register_servicenow_oauth2_connector():
+    duck = DuckAPI()
+    instances = duck.auto_register({
+        "snow": {
+            "connector": "servicenow",
+            "authentication": {
+                "type": "local",
+                "token_url": "https://login.microsoftonline.com/tenant/oauth2/token",
+                "client_id": "cid",
+                "client_secret": "csecret",
+                "api_base": "https://internal-gateway.company.com/v1/now",
+            },
+        },
+    })
+
+    assert instances["snow"].base_url == "https://internal-gateway.company.com/v1/now"
+    assert instances["snow"]._auth_mode == "oauth2"
+    assert "snow_incidents" in duck.functions
+    duck.close()
+
+
 # ---------------------------------------------------------------------------
 # connector = "axonius"
 # ---------------------------------------------------------------------------
@@ -887,4 +908,123 @@ def test_auto_register_blob_storage_connector(monkeypatch):
     assert instances["adls"] is not None
     assert "adls_table" in duck.functions
     assert "adls_table" in duck._streaming_functions
+    duck.close()
+
+
+# ---------------------------------------------------------------------------
+# on_error — resilient auto_register (warn + skip vs raise)
+# ---------------------------------------------------------------------------
+
+
+def test_on_error_default_still_raises():
+    """Default behavior is unchanged: a bad service raises immediately."""
+    duck = DuckAPI()
+    with pytest.raises(ValueError, match="is not recognized"):
+        duck.auto_register({
+            "insightvm": {
+                "host": "h",
+                "authentication": {"type": "local", "username": "u", "password": "p"},
+            },
+            "broken": {"connector": "does_not_exist", "authentication": {"type": "local"}},
+        })
+    duck.close()
+
+
+def test_on_error_warn_skips_broken_service_and_registers_the_rest():
+    duck = DuckAPI()
+    with pytest.warns(RuntimeWarning, match="broken"):
+        instances = duck.auto_register(
+            {
+                "insightvm": {
+                    "host": "h",
+                    "authentication": {"type": "local", "username": "u", "password": "p"},
+                },
+                "broken": {"connector": "does_not_exist", "authentication": {"type": "local"}},
+            },
+            on_error="warn",
+        )
+
+    assert "insightvm" in instances
+    assert "broken" not in instances
+    assert "insightvm_assets" in duck.functions
+    assert "broken_assets" not in duck.functions
+    duck.close()
+
+
+def test_on_error_warn_message_names_service_and_exception():
+    duck = DuckAPI()
+    with pytest.warns(RuntimeWarning, match=r"'broken'.*ValueError"):
+        duck.auto_register(
+            {"broken": {"connector": "does_not_exist", "authentication": {"type": "local"}}},
+            on_error="warn",
+        )
+    duck.close()
+
+
+def test_on_error_warn_still_skips_on_missing_authentication():
+    duck = DuckAPI()
+    with pytest.warns(RuntimeWarning, match="broken"):
+        instances = duck.auto_register(
+            {
+                "broken": {"host": "h"},  # missing authentication entirely
+                "insightvm": {
+                    "host": "h2",
+                    "authentication": {"type": "local", "username": "u", "password": "p"},
+                },
+            },
+            on_error="warn",
+        )
+    assert "insightvm" in instances
+    assert "broken" not in instances
+    duck.close()
+
+
+def test_on_error_invalid_value_raises():
+    duck = DuckAPI()
+    with pytest.raises(ValueError, match="on_error must be"):
+        duck.auto_register(
+            {"insightvm": {"host": "h", "authentication": {"type": "local", "username": "u", "password": "p"}}},
+            on_error="ignore",
+        )
+    duck.close()
+
+
+def test_on_error_from_json_file_default(tmp_path):
+    """A top-level "on_error" in the JSON file is used when the parameter isn't passed."""
+    config = {
+        "on_error": "warn",
+        "services": {
+            "broken": {"connector": "does_not_exist", "authentication": {"type": "local"}},
+            "insightvm": {
+                "host": "h",
+                "authentication": {"type": "local", "username": "u", "password": "p"},
+            },
+        },
+    }
+    config_file = tmp_path / "duckduck.json"
+    config_file.write_text(json.dumps(config))
+
+    duck = DuckAPI()
+    with pytest.warns(RuntimeWarning, match="broken"):
+        instances = duck.auto_register(config_path=str(config_file))
+
+    assert "insightvm" in instances
+    assert "broken" not in instances
+    duck.close()
+
+
+def test_on_error_explicit_argument_overrides_json_file_default(tmp_path):
+    """Passing on_error= explicitly wins over the JSON file's own "on_error"."""
+    config = {
+        "on_error": "warn",
+        "services": {
+            "broken": {"connector": "does_not_exist", "authentication": {"type": "local"}},
+        },
+    }
+    config_file = tmp_path / "duckduck.json"
+    config_file.write_text(json.dumps(config))
+
+    duck = DuckAPI()
+    with pytest.raises(ValueError, match="is not recognized"):
+        duck.auto_register(config_path=str(config_file), on_error="raise")
     duck.close()

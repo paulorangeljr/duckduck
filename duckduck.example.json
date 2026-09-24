@@ -65,6 +65,17 @@
         "secret_id": "prod/servicenow"
       }
     },
+    "servicenow_oauth2": {
+      "connector": "servicenow",
+      "authentication": {
+        "type": "local",
+        "token_url": "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/oauth2/token",
+        "client_id": "...",
+        "client_secret": "...",
+        "resource": "api://your-servicenow-app-id",
+        "api_base": "https://internal-gateway.company.com/v1/now"
+      }
+    },
     "axonius": {
       "connector": "axonius",
       "authentication": {
