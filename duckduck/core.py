@@ -499,7 +499,10 @@ class DuckAPI:
                 if spec is None:
                     raise ValueError(
                         f"Service '{name}' (connector='{connector}') is not recognized. "
-                        f"Available: {', '.join(SERVICE_REGISTRY)}"
+                        f"Available: {', '.join(SERVICE_REGISTRY)}. (duckduck loaded from "
+                        f"{os.path.dirname(os.path.abspath(__file__))} — if the connector should "
+                        f"exist, that copy may be outdated: update it and reinstall with "
+                        f"`pip install -e .`, then restart the Python process/kernel.)"
                     )
 
                 # "" registers tables under their bare names (handy for local
