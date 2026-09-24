@@ -242,6 +242,36 @@ def test_validate_missing_required_arg():
 
 
 # ---------------------------------------------------------------------------
+# WHERE com parâmetros estruturais (não são colunas no resultado)
+# ---------------------------------------------------------------------------
+
+
+def test_structural_where_param_stripped_from_query(duck):
+    """
+    Parâmetros que estão no WHERE mas não são colunas do resultado
+    (ex: site_name, list_name) devem ser consumidos pelo push-down
+    e removidos antes de o DuckDB executar a query.
+    """
+    calls = []
+
+    def tracked_vulns(severity=None, site_name=None, limit=None):
+        calls.append({"severity": severity, "site_name": site_name})
+        return make_vulns(severity=severity, limit=limit)
+
+    duck.register_api_function("vulns", tracked_vulns)
+
+    # site_name não é coluna no resultado — deve ser removido do WHERE
+    df = duck.sql(
+        "SELECT * FROM vulns WHERE site_name = 'Intranet' AND severity = 'critical'"
+    ).df()
+
+    assert calls[0]["site_name"] == "Intranet"    # chegou na função
+    assert calls[0]["severity"] == "critical"      # também chegou
+    assert all(df["severity"] == "critical")       # DuckDB filtrou severity
+    assert "site_name" not in df.columns           # não é coluna do resultado
+
+
+# ---------------------------------------------------------------------------
 # context manager
 # ---------------------------------------------------------------------------
 

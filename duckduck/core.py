@@ -352,8 +352,14 @@ class DuckAPI:
         function_name: str,
         fetch_function,
         kwargs: Dict[str, Any],
-    ) -> str:
-        """Chama a função, converte para DataFrame e registra no DuckDB."""
+    ) -> tuple:
+        """
+        Chama a função, converte para DataFrame e registra no DuckDB.
+
+        Returns
+        -------
+        (table_name, df_columns) : (str, list[str])
+        """
         validated = self._validate_arguments(function_name, fetch_function, kwargs)
         data = fetch_function(**validated)
         df = self._to_dataframe(data, function_name)
@@ -361,7 +367,52 @@ class DuckAPI:
         self._table_counter += 1
         table_name = f"_api_{function_name}_{self._table_counter}"
         self.conn.register(table_name, df)
-        return table_name
+        return table_name, list(df.columns)
+
+    def _strip_where_conditions(self, query: str, keys: set) -> str:
+        """
+        Remove condições do WHERE que referenciam colunas em ``keys``.
+
+        Usado para descartar filtros push-down que foram consumidos pela
+        função mas não existem como colunas no DataFrame resultado —
+        tipicamente parâmetros estruturais como ``site_name``, ``list_name``.
+        """
+        if not keys:
+            return query
+        try:
+            tree = sqlglot.parse_one(query, dialect="duckdb")
+        except Exception:
+            return query
+
+        where = tree.find(exp.Where)
+        if not where:
+            return query
+
+        def _should_keep(node: exp.Expression) -> bool:
+            if isinstance(node, (exp.EQ, exp.Like, exp.GT, exp.LT, exp.GTE, exp.LTE)):
+                if isinstance(node.this, exp.Column):
+                    if node.this.name.lower() in keys:
+                        return False
+            return True
+
+        def _rebuild(node: exp.Expression):
+            if isinstance(node, exp.And):
+                left = _rebuild(node.this)
+                right = _rebuild(node.expression)
+                if left is None:
+                    return right
+                if right is None:
+                    return left
+                return exp.And(this=left, expression=right)
+            return node if _should_keep(node) else None
+
+        new_condition = _rebuild(where.this)
+        if new_condition is None:
+            where.pop()
+        else:
+            where.set("this", new_condition)
+
+        return tree.sql(dialect="duckdb")
 
     # ------------------------------------------------------------------
     # SQL principal
@@ -379,9 +430,10 @@ class DuckAPI:
         - ``JOIN func(struct_id=1)``   → idem
         - Múltiplas referências à mesma função ou funções diferentes
 
-        A sintaxe ``func(param=val)`` deve ser usada apenas para parâmetros
-        que **não são colunas** do resultado (ex: IDs que determinam o
-        endpoint da API). Filtros de colunas pertencem ao ``WHERE``.
+        Parâmetros estruturais (``site_name``, ``list_name``, etc.) podem
+        aparecer tanto inline quanto no ``WHERE``. Quando estão no WHERE e
+        não são colunas do resultado, são automaticamente removidos da
+        query antes de o DuckDB executá-la.
 
         Returns
         -------
@@ -390,6 +442,7 @@ class DuckAPI:
         """
         pushdown = self._extract_pushdown(query)
         rewritten = query
+        structural_used: set = set()  # filtros WHERE consumidos que não são colunas
 
         for fn_name, fn in self.functions.items():
 
@@ -402,7 +455,12 @@ class DuckAPI:
             while m := with_args_pat.search(rewritten):
                 explicit = self._parse_kwargs(m.group(1))
                 kwargs = self._merge_kwargs(fn, pushdown, explicit)
-                tname = self._materialize(fn_name, fn, kwargs)
+                tname, df_cols = self._materialize(fn_name, fn, kwargs)
+                # Filtros de WHERE que foram para a função mas não são colunas resultado
+                structural_used.update(
+                    k for k in pushdown.filters
+                    if k in kwargs and k not in df_cols
+                )
                 rewritten = rewritten[: m.start()] + tname + rewritten[m.end() :]
 
             # ---- 2. FROM/JOIN func  (sem parênteses) ------------------
@@ -413,9 +471,16 @@ class DuckAPI:
 
             while m := bare_pat.search(rewritten):
                 kwargs = self._merge_kwargs(fn, pushdown, {})
-                tname = self._materialize(fn_name, fn, kwargs)
+                tname, df_cols = self._materialize(fn_name, fn, kwargs)
+                structural_used.update(
+                    k for k in pushdown.filters
+                    if k in kwargs and k not in df_cols
+                )
                 op = m.group(1)
                 rewritten = rewritten[: m.start()] + f"{op} {tname}" + rewritten[m.end() :]
+
+        if structural_used:
+            rewritten = self._strip_where_conditions(rewritten, structural_used)
 
         return self.conn.sql(rewritten)
 
