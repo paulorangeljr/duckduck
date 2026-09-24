@@ -340,6 +340,51 @@ class SharePoint:
         return pd.json_normalize(records, sep="_")
 
     # ------------------------------------------------------------------
+    # Resolução de nome → ID
+    # ------------------------------------------------------------------
+
+    def _resolve_site(
+        self,
+        site_id: Optional[str],
+        site_name: Optional[str],
+    ) -> str:
+        """Devolve site_id; faz lookup pelo displayName se só site_name fornecido."""
+        if site_id:
+            return site_id
+        if not site_name:
+            raise ValueError("Forneça site_id ou site_name.")
+        all_sites = self._fetch(f"{GRAPH_BASE}/sites?search=*")
+        name_lower = site_name.lower()
+        for s in all_sites:
+            if s.get("displayName", "").lower() == name_lower:
+                return s["id"]
+        raise ValueError(
+            f"Site '{site_name}' não encontrado. "
+            "Use SELECT * FROM sites para ver os nomes disponíveis."
+        )
+
+    def _resolve_list(
+        self,
+        site_id: str,
+        list_id: Optional[str],
+        list_name: Optional[str],
+    ) -> str:
+        """Devolve list_id; faz lookup pelo displayName se só list_name fornecido."""
+        if list_id:
+            return list_id
+        if not list_name:
+            raise ValueError("Forneça list_id ou list_name.")
+        all_lists = self._fetch(f"{GRAPH_BASE}/sites/{site_id}/lists")
+        name_lower = list_name.lower()
+        for lst in all_lists:
+            if lst.get("displayName", "").lower() == name_lower:
+                return lst["id"]
+        raise ValueError(
+            f"Lista '{list_name}' não encontrada no site '{site_id}'. "
+            "Use SELECT * FROM lists(site_id=...) para ver as listas disponíveis."
+        )
+
+    # ------------------------------------------------------------------
     # Sites
     # ------------------------------------------------------------------
 
@@ -350,7 +395,8 @@ class SharePoint:
         """
         Lista todos os sites SharePoint acessíveis (requer Sites.Read.All).
 
-        Use o ``id`` retornado como ``site_id`` nos outros métodos.
+        Use o ``id`` retornado como ``site_id``, ou o ``displayName``
+        como ``site_name``, nos outros métodos.
         """
         url = f"{GRAPH_BASE}/sites?search=*"
         return pd.json_normalize(self._fetch(url, limit=limit), sep="_")
@@ -379,7 +425,8 @@ class SharePoint:
 
     def lists(
         self,
-        site_id: str,
+        site_id: Optional[str] = None,
+        site_name: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -387,35 +434,56 @@ class SharePoint:
 
         Parameters
         ----------
-        site_id : str
-            ID do site (obrigatório). Obtenha via ``SELECT * FROM sites``.
+        site_id : str, optional
+            ID do site. Use ``site_id`` **ou** ``site_name``.
+        site_name : str, optional
+            Nome de exibição do site (``displayName``). Faz lookup automático do ID.
+
+        Exemplos
+        --------
+        ::
+
+            # por ID (inline)
+            duck.sql("SELECT * FROM lists(site_id='abc123')")
+
+            # por nome (WHERE push-down)
+            duck.sql("SELECT * FROM lists WHERE site_name = 'Intranet'")
         """
-        url = f"{GRAPH_BASE}/sites/{site_id}/lists"
+        sid = self._resolve_site(site_id, site_name)
+        url = f"{GRAPH_BASE}/sites/{sid}/lists"
         return pd.json_normalize(self._fetch(url, limit=limit), sep="_")
 
     def list_columns(
         self,
-        site_id: str,
-        list_id: str,
+        site_id: Optional[str] = None,
+        list_id: Optional[str] = None,
+        site_name: Optional[str] = None,
+        list_name: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
         Colunas (schema) de uma SharePoint List.
 
+        Aceita IDs diretos ou nomes de exibição (lookup automático).
+
         Parameters
         ----------
-        site_id : str
-            ID do site (obrigatório).
-        list_id : str
-            ID ou nome da lista (obrigatório).
+        site_id / site_name : str
+            Identificação do site — forneça um dos dois.
+        list_id / list_name : str
+            Identificação da lista — forneça um dos dois.
         """
-        url = f"{GRAPH_BASE}/sites/{site_id}/lists/{list_id}/columns"
+        sid = self._resolve_site(site_id, site_name)
+        lid = self._resolve_list(sid, list_id, list_name)
+        url = f"{GRAPH_BASE}/sites/{sid}/lists/{lid}/columns"
         return pd.json_normalize(self._fetch(url, limit=limit), sep="_")
 
     def list_items(
         self,
-        site_id: str,
-        list_id: str,
+        site_id: Optional[str] = None,
+        list_id: Optional[str] = None,
+        site_name: Optional[str] = None,
+        list_name: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -425,14 +493,31 @@ class SharePoint:
         colunas de primeiro nível. Metadados internos do Graph ficam
         prefixados com ``_`` (``_item_id``, ``_created_at``, etc.).
 
+        Aceita IDs diretos ou nomes de exibição (lookup automático).
+
         Parameters
         ----------
-        site_id : str
-            ID do site (obrigatório).
-        list_id : str
-            ID ou nome da lista (obrigatório).
+        site_id / site_name : str
+            Identificação do site — forneça um dos dois.
+        list_id / list_name : str
+            Identificação da lista — forneça um dos dois.
+
+        Exemplos
+        --------
+        ::
+
+            # por IDs (inline)
+            duck.sql("SELECT * FROM list_items(site_id='abc', list_id='def')")
+
+            # por nomes (WHERE push-down — lookup automático)
+            duck.sql(
+                "SELECT * FROM list_items"
+                " WHERE site_name = 'Intranet' AND list_name = 'Tarefas'"
+            )
         """
-        url = f"{GRAPH_BASE}/sites/{site_id}/lists/{list_id}/items?expand=fields"
+        sid = self._resolve_site(site_id, site_name)
+        lid = self._resolve_list(sid, list_id, list_name)
+        url = f"{GRAPH_BASE}/sites/{sid}/lists/{lid}/items?expand=fields"
         return self._normalize_list_items(self._fetch(url, limit=limit))
 
     # ------------------------------------------------------------------
@@ -441,7 +526,8 @@ class SharePoint:
 
     def drives(
         self,
-        site_id: str,
+        site_id: Optional[str] = None,
+        site_name: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -449,16 +535,18 @@ class SharePoint:
 
         Parameters
         ----------
-        site_id : str
-            ID do site (obrigatório).
+        site_id / site_name : str
+            Identificação do site — forneça um dos dois.
         """
-        url = f"{GRAPH_BASE}/sites/{site_id}/drives"
+        sid = self._resolve_site(site_id, site_name)
+        url = f"{GRAPH_BASE}/sites/{sid}/drives"
         return pd.json_normalize(self._fetch(url, limit=limit), sep="_")
 
     def drive_items(
         self,
-        site_id: str,
-        drive_id: str,
+        site_id: Optional[str] = None,
+        drive_id: Optional[str] = None,
+        site_name: Optional[str] = None,
         folder_path: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
@@ -470,18 +558,21 @@ class SharePoint:
 
         Parameters
         ----------
-        site_id : str
-            ID do site (obrigatório).
+        site_id / site_name : str
+            Identificação do site — forneça um dos dois.
         drive_id : str
-            ID do drive. Obtenha via ``SELECT * FROM drives(site_id=...)``.
+            ID do drive (obrigatório). Obtenha via ``SELECT * FROM drives(...)``.
         folder_path : str, optional
             Caminho relativo à raiz. Ex: ``/Documents/Reports``.
             Sem este parâmetro lista a raiz do drive.
         """
+        if not drive_id:
+            raise ValueError("drive_id é obrigatório.")
+        sid = self._resolve_site(site_id, site_name)
         if folder_path:
-            path = f"/sites/{site_id}/drives/{drive_id}/root:{folder_path}:/children"
+            path = f"/sites/{sid}/drives/{drive_id}/root:{folder_path}:/children"
         else:
-            path = f"/sites/{site_id}/drives/{drive_id}/root/children"
+            path = f"/sites/{sid}/drives/{drive_id}/root/children"
 
         items = self._fetch(f"{GRAPH_BASE}{path}", limit=limit)
         df = pd.json_normalize(items, sep="_")
@@ -497,8 +588,9 @@ class SharePoint:
 
     def search_files(
         self,
-        site_id: str,
-        query: str,
+        site_id: Optional[str] = None,
+        query: Optional[str] = None,
+        site_name: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -506,20 +598,23 @@ class SharePoint:
 
         Parameters
         ----------
-        site_id : str
-            ID do site (obrigatório).
+        site_id / site_name : str
+            Identificação do site — forneça um dos dois.
         query : str
-            Termo de busca (obrigatório). Parâmetro estrutural pois
-            determina a URL. Ex: ``search_files(site_id='...', query='budget')``
+            Termo de busca (obrigatório).
         """
-        url = f"{GRAPH_BASE}/sites/{site_id}/drive/search(q='{query}')"
+        if not query:
+            raise ValueError("query é obrigatório.")
+        sid = self._resolve_site(site_id, site_name)
+        url = f"{GRAPH_BASE}/sites/{sid}/drive/search(q='{query}')"
         return pd.json_normalize(self._fetch(url, limit=limit), sep="_")
 
     def file_versions(
         self,
-        site_id: str,
-        drive_id: str,
-        item_id: str,
+        site_id: Optional[str] = None,
+        drive_id: Optional[str] = None,
+        item_id: Optional[str] = None,
+        site_name: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -527,11 +622,16 @@ class SharePoint:
 
         Parameters
         ----------
-        site_id, drive_id, item_id : str
-            Todos obrigatórios. ``item_id`` vem da coluna ``id`` de ``drive_items()``.
+        site_id / site_name : str
+            Identificação do site — forneça um dos dois.
+        drive_id, item_id : str
+            Obrigatórios. ``item_id`` vem da coluna ``id`` de ``drive_items()``.
         """
+        if not drive_id or not item_id:
+            raise ValueError("drive_id e item_id são obrigatórios.")
+        sid = self._resolve_site(site_id, site_name)
         url = (
-            f"{GRAPH_BASE}/sites/{site_id}"
+            f"{GRAPH_BASE}/sites/{sid}"
             f"/drives/{drive_id}/items/{item_id}/versions"
         )
         return pd.json_normalize(self._fetch(url, limit=limit), sep="_")
@@ -545,32 +645,45 @@ class SharePoint:
         for page in self._iter_pages(f"{GRAPH_BASE}/sites?search=*"):
             yield pd.json_normalize(page, sep="_")
 
-    def iter_lists(self, site_id: str) -> Iterator[pd.DataFrame]:
+    def iter_lists(
+        self,
+        site_id: Optional[str] = None,
+        site_name: Optional[str] = None,
+    ) -> Iterator[pd.DataFrame]:
         """Faz yield de uma página de listas por vez."""
-        for page in self._iter_pages(f"{GRAPH_BASE}/sites/{site_id}/lists"):
+        sid = self._resolve_site(site_id, site_name)
+        for page in self._iter_pages(f"{GRAPH_BASE}/sites/{sid}/lists"):
             yield pd.json_normalize(page, sep="_")
 
     def iter_list_items(
         self,
-        site_id: str,
-        list_id: str,
+        site_id: Optional[str] = None,
+        list_id: Optional[str] = None,
+        site_name: Optional[str] = None,
+        list_name: Optional[str] = None,
     ) -> Iterator[pd.DataFrame]:
         """Faz yield de uma página de items por vez (campos expandidos)."""
-        url = f"{GRAPH_BASE}/sites/{site_id}/lists/{list_id}/items?expand=fields"
+        sid = self._resolve_site(site_id, site_name)
+        lid = self._resolve_list(sid, list_id, list_name)
+        url = f"{GRAPH_BASE}/sites/{sid}/lists/{lid}/items?expand=fields"
         for page in self._iter_pages(url):
             yield self._normalize_list_items(page)
 
     def iter_drive_items(
         self,
-        site_id: str,
-        drive_id: str,
+        site_id: Optional[str] = None,
+        drive_id: Optional[str] = None,
+        site_name: Optional[str] = None,
         folder_path: Optional[str] = None,
     ) -> Iterator[pd.DataFrame]:
         """Faz yield de uma página de arquivos/pastas por vez."""
+        if not drive_id:
+            raise ValueError("drive_id é obrigatório.")
+        sid = self._resolve_site(site_id, site_name)
         if folder_path:
-            path = f"/sites/{site_id}/drives/{drive_id}/root:{folder_path}:/children"
+            path = f"/sites/{sid}/drives/{drive_id}/root:{folder_path}:/children"
         else:
-            path = f"/sites/{site_id}/drives/{drive_id}/root/children"
+            path = f"/sites/{sid}/drives/{drive_id}/root/children"
 
         for page in self._iter_pages(f"{GRAPH_BASE}{path}"):
             df = pd.json_normalize(page, sep="_")

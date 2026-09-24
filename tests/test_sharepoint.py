@@ -325,7 +325,11 @@ def test_duckapi_stream_list_items(msal_cls):
 
     with patch.object(sp, "_iter_pages", return_value=iter(pages)):
         duck = DuckAPI()
-        duck.register_api_function("list_items", lambda site_id, list_id, limit=None: [])
+
+        def _stub(site_id=None, list_id=None, site_name=None, list_name=None, limit=None):
+            return []
+
+        duck.register_api_function("list_items", _stub)
         duck.register_streaming_function("list_items", sp.iter_list_items)
 
         chunks = list(
@@ -336,3 +340,71 @@ def test_duckapi_stream_list_items(msal_cls):
 
     assert len(chunks) == 2
     duck.close()
+
+
+# ---------------------------------------------------------------------------
+# Resolução por nome (_resolve_site / _resolve_list)
+# ---------------------------------------------------------------------------
+
+
+@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+def test_resolve_site_by_name(msal_cls):
+    sp = _make_sp(msal_cls)
+
+    sites_data = [
+        {"id": "s1", "displayName": "Intranet"},
+        {"id": "s2", "displayName": "Marketing"},
+    ]
+    with patch.object(sp, "_fetch", return_value=sites_data):
+        resolved = sp._resolve_site(None, "Marketing")
+
+    assert resolved == "s2"
+
+
+@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+def test_resolve_site_id_wins_over_name(msal_cls):
+    sp = _make_sp(msal_cls)
+
+    with patch.object(sp, "_fetch") as mock_fetch:
+        resolved = sp._resolve_site("explicit-id", "Marketing")
+
+    mock_fetch.assert_not_called()
+    assert resolved == "explicit-id"
+
+
+@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+def test_resolve_site_not_found_raises(msal_cls):
+    sp = _make_sp(msal_cls)
+
+    with patch.object(sp, "_fetch", return_value=[{"id": "s1", "displayName": "Intranet"}]):
+        with pytest.raises(ValueError, match="não encontrado"):
+            sp._resolve_site(None, "Unknown")
+
+
+@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+def test_resolve_list_by_name(msal_cls):
+    sp = _make_sp(msal_cls)
+
+    lists_data = [
+        {"id": "l1", "displayName": "Tarefas"},
+        {"id": "l2", "displayName": "Documentos"},
+    ]
+    with patch.object(sp, "_fetch", return_value=lists_data):
+        resolved = sp._resolve_list(SITE_ID, None, "Tarefas")
+
+    assert resolved == "l1"
+
+
+@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+def test_list_items_by_name_end_to_end(msal_cls):
+    sp = _make_sp(msal_cls)
+
+    sites_data = [{"id": SITE_ID, "displayName": "Intranet"}]
+    lists_data = [{"id": LIST_ID, "displayName": "Tarefas"}]
+    items_data = [{"id": "i1", "fields": {"Title": "Fix bug"}}]
+
+    fetch_calls = iter([sites_data, lists_data, items_data])
+    with patch.object(sp, "_fetch", side_effect=fetch_calls):
+        df = sp.list_items(site_name="Intranet", list_name="Tarefas")
+
+    assert list(df["Title"]) == ["Fix bug"]
