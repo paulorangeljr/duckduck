@@ -1,0 +1,15 @@
+{
+  "services": {
+    "synthetic": {
+      "connector": "python",
+      "module": "synthetic.py",
+      "kwargs": {"rows": 1000, "seed": 7},
+      "table_prefix": ""
+    },
+    "files": {
+      "connector": "files",
+      "path": "data",
+      "table_prefix": ""
+    }
+  }
+}

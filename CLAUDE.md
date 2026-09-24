@@ -494,6 +494,15 @@ Both take the `where` push-down param: the query's simple WHERE conditions go *i
 - **Auth** (`from_secret` picks by keys present): `client_id` + `client_secret` + `tenant_id` → app registration (`with_aad_application_key_authentication`); otherwise `DefaultAzureCredential` (managed identity, `az login`, `AZURE_*` env vars), optionally pinned by `tenant_id` (`with_azure_token_credential`). `cluster` accepts `mycluster.region` or a full URL.
 - **Truncation**: ADX fails queries over its default result limits; `notruncation=True` sets the `notruncation` request option. `iter_table` is a post-hoc chunk split (ADX returns the filtered result in one response).
 
+### Local autoloading: `files` and `python` connectors
+
+For running with no external system at all — development, demos, synthetic data — two connectors plug into the same `auto_register()` / `duckduck.json` flow (`examples/local/duckduck.local.json`, `examples/semantic/duckduck.local.json`):
+
+- **`files`** (`duckduck/local_files.py` — `LocalFiles`): `path` is a directory; every top-level `.csv`/`.tsv`/`.parquet`/`.json`/`.jsonl`/`.ndjson` file becomes a table (`table_name_for` sanitizes the name), and every top-level sub-directory becomes one table over all files of its dominant format (Hive `key=value` partitions become columns). Names starting with `.`/`_` are skipped. Each table is a `FileTable` callable taking `where`/`limit`, scanned through `LakehouseConnection` (conditions inside the DuckDB scan). Also registers `tables` and `columns`.
+- **`python`** (`duckduck/python_source.py` — `PythonSource`): `module` is a `.py` path or dotted module; its `tables(**kwargs)` factory (or `factory=` name, or a `TABLES` dict) returns `{table: callable}`, each a normal DuckAPI function — so column-filter/`*_ilike`/`where`/`limit` params get real push-down, and the same SQL keeps working when the config later points at the real connector. Files load under `duckduck.python_source.<stem>` (labelled "Python module" by `list_tables()`), never into `sys.modules`.
+
+`auto_register` support for them (generic, in `ServiceSpec`): `dynamic_tables` (method returning `{table: callable}` — tables known only at runtime), `requires_authentication=False` (the block becomes optional), `path_options` (relative paths in a JSON config resolve against the config file's directory via `DuckAPI._config_base_dir`). Any service may set `table_prefix` (`""` → bare table names); two services producing the same table name in one `auto_register()` call raise instead of silently overwriting.
+
 ### Listing what exists: `tables` / `columns`
 
 Both `glue` and `adx` register discovery tables, queryable like any other (filters push down):
@@ -528,6 +537,7 @@ A backend just needs `get_secret(secret_id: str) -> dict` — see `SecretsManage
 | `connector: "adx"` | `azure-kusto-data>=4.0`, `azure-identity>=1.15` (`pip install "duckduck[adx]"`) |
 | `connector: "blob_storage"` | none as a Python package — DuckDB's own `azure`/`delta`/`iceberg` extensions auto-install on first use (needs outbound internet) |
 | `authentication.type: "local"` | none — fully offline |
+| `connector: "files"` / `"python"` | none — fully offline (DuckDB reads CSV/Parquet/JSON natively) |
 
 ---
 

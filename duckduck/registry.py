@@ -3,7 +3,8 @@ Central registry of the API wrappers supported by
 ``DuckAPI.auto_register`` (see ``core.py``).
 
 Each entry maps a "type" (``"sharepoint"``, ``"insightvm"``, ``"database"``,
-``"servicenow"``, ``"axonius"``, ``"glue"``, ``"blob_storage"``, ``"adx"``) to:
+``"servicenow"``, ``"axonius"``, ``"glue"``, ``"blob_storage"``, ``"adx"``,
+``"files"``, ``"python"``) to:
 
 - ``factory``          : classmethod that builds the instance from a
                           credentials dict (``Wrapper.from_secret``)
@@ -15,13 +16,15 @@ CLAUDE.md), also add a ``from_secret`` to it and an entry here so it
 becomes available in ``DuckAPI.auto_register()``.
 """
 
-from typing import Any, Callable, Dict, NamedTuple
+from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple
 
 from .adx import DataExplorer
 from .axonius import Axonius
 from .blob_storage import BlobStorage
 from .database import SQLDatabase
 from .glue import GlueTable
+from .local_files import LocalFiles
+from .python_source import PythonSource
 from .rapid7 import InsightVM
 from .servicenow import ServiceNow
 from .sharepoint import SharePoint
@@ -31,6 +34,14 @@ class ServiceSpec(NamedTuple):
     factory: Callable[..., Any]
     tables: Dict[str, str]
     streaming_tables: Dict[str, str]
+    #: Method returning ``{table_name: callable}`` for connectors whose
+    #: tables are only known at runtime (one per file, per module function).
+    dynamic_tables: Optional[str] = None
+    #: False for local sources, where an ``authentication`` block is optional.
+    requires_authentication: bool = True
+    #: Config options holding filesystem paths — resolved against the JSON
+    #: config file's directory when the config comes from a file.
+    path_options: Tuple[str, ...] = ()
 
 
 SERVICE_REGISTRY: Dict[str, ServiceSpec] = {
@@ -145,6 +156,22 @@ SERVICE_REGISTRY: Dict[str, ServiceSpec] = {
         streaming_tables={
             "table": "iter_table",
         },
+    ),
+    "files": ServiceSpec(
+        factory=LocalFiles.from_secret,
+        tables={"tables": "tables", "columns": "columns"},
+        streaming_tables={},
+        dynamic_tables="table_functions",
+        requires_authentication=False,
+        path_options=("path",),
+    ),
+    "python": ServiceSpec(
+        factory=PythonSource.from_secret,
+        tables={},
+        streaming_tables={},
+        dynamic_tables="table_functions",
+        requires_authentication=False,
+        path_options=("module",),
     ),
     "blob_storage": ServiceSpec(
         factory=BlobStorage.from_secret,

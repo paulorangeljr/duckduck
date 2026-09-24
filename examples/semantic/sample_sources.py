@@ -76,6 +76,12 @@ def build_sources(now: datetime) -> dict:
     }
 
 
+def tables(now: Optional[str] = None) -> dict:
+    """Entry point for the `python` connector (see duckduck.local.json)."""
+    moment = datetime.fromisoformat(now) if now else datetime.utcnow().replace(microsecond=0)
+    return build_sources(moment)
+
+
 def register_sample_sources(duck, now: datetime) -> None:
     for name, fn in build_sources(now).items():
         duck.register_api_function(name, fn)

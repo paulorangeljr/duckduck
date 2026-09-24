@@ -312,6 +312,36 @@ duck.auto_register()
 variable to point elsewhere. Passing a `services=` dict explicitly (as in
 every example above) always skips the file lookup.
 
+## Running locally with no connectors
+
+Two connectors load local data through the same `auto_register()` config
+— no credentials, no network:
+
+```json
+{
+  "services": {
+    "synthetic": {"connector": "python", "module": "synthetic.py", "kwargs": {"rows": 1000}, "table_prefix": ""},
+    "files":     {"connector": "files",  "path": "data",                                       "table_prefix": ""}
+  }
+}
+```
+
+- `files`: every CSV / TSV / Parquet / JSON / JSONL in the folder is a
+  table (a sub-folder of partitioned Parquet is one table); WHERE runs
+  inside the DuckDB scan.
+- `python`: your module's `tables(**kwargs)` returns `{name: function}`;
+  each function is a table with normal push-down — a stand-in for an API.
+
+```python
+duck = DuckAPI()
+duck.auto_register(config_path="examples/local/duckduck.local.json")
+duck.sql("SELECT a.hostname, o.owner FROM assets a JOIN owners o ON a.ip = o.ip WHERE a.os = 'linux'").df()
+```
+
+`table_prefix: ""` keeps bare table names (the default prefixes them with
+the service name). The semantic CLI runs the same way:
+`python -m duckduck.semantic --config examples/semantic/duckduck.local.json ask "Which machines communicated with 203.0.113.9?"`.
+
 ## Discovering what's registered
 
 ```python

@@ -476,8 +476,10 @@ class DuckAPI:
         from .registry import SERVICE_REGISTRY
 
         file_on_error = None
+        base_dir = None  # relative paths in a JSON config resolve against its directory
         if services is None:
             services, file_on_error = self._load_auto_register_config(config_path)
+            base_dir = self._config_base_dir
 
         if on_error is None:
             on_error = file_on_error or "raise"
@@ -487,6 +489,7 @@ class DuckAPI:
         overrides = dict(secrets) if secrets else {}
         backend_cache: Dict[Any, Any] = {}
         instances: Dict[str, Any] = {}
+        registered_by: Dict[str, str] = {}  # table name → service, to catch collisions
 
         for name, raw_config in services.items():
             try:
@@ -499,21 +502,47 @@ class DuckAPI:
                         f"Available: {', '.join(SERVICE_REGISTRY)}"
                     )
 
+                # "" registers tables under their bare names (handy for local
+                # sources); anything else replaces the service name as prefix.
+                prefix = config.pop("table_prefix", name)
+
                 auth = config.pop("authentication", None)
                 if not auth:
-                    raise ValueError(f"'{name}': missing 'authentication' block.")
+                    if spec.requires_authentication:
+                        raise ValueError(f"'{name}': missing 'authentication' block.")
+                    auth = {"type": "local"}
                 credentials = self._resolve_authentication(name, auth, overrides, backend_cache)
+
+                for option in spec.path_options:
+                    value = config.get(option)
+                    if isinstance(value, str) and base_dir and self._looks_like_path(option, value):
+                        config[option] = os.path.join(base_dir, value)
 
                 instance = spec.factory(credentials, **config)
 
-                for table_name, method_name in spec.tables.items():
-                    self.register_api_function(
-                        f"{name}_{table_name}", getattr(instance, method_name)
+                tables = {t: getattr(instance, m) for t, m in spec.tables.items()}
+                if spec.dynamic_tables:
+                    for t, fn in getattr(instance, spec.dynamic_tables)().items():
+                        if t in tables:
+                            raise ValueError(f"'{name}': data table '{t}' clashes with the built-in '{t}' table")
+                        tables[t] = fn
+                streaming = {t: getattr(instance, m) for t, m in spec.streaming_tables.items()}
+
+                full = (lambda t: f"{prefix}_{t}") if prefix else (lambda t: t)
+                clashes = [
+                    f"{full(t)} (already from '{registered_by[full(t)]}')"
+                    for t in tables if full(t) in registered_by
+                ]
+                if clashes:
+                    raise ValueError(
+                        f"'{name}': table name(s) already registered by this auto_register() call: "
+                        f"{', '.join(clashes)} — give one of the services a table_prefix"
                     )
-                for table_name, method_name in spec.streaming_tables.items():
-                    self.register_streaming_function(
-                        f"{name}_{table_name}", getattr(instance, method_name)
-                    )
+                for t, fn in tables.items():
+                    self.register_api_function(full(t), fn)
+                    registered_by[full(t)] = name
+                for t, fn in streaming.items():
+                    self.register_streaming_function(full(t), fn)
             except Exception as exc:
                 if on_error == "warn":
                     # Every warning here shares the same call site (this line), so
@@ -646,6 +675,13 @@ class DuckAPI:
 
         return backend_cache[backend_key]
 
+    @staticmethod
+    def _looks_like_path(option: str, value: str) -> bool:
+        """A relative filesystem path (not absolute, not a dotted module name)."""
+        if os.path.isabs(value):
+            return False
+        return option == "path" or value.endswith(".py") or "/" in value or os.sep in value
+
     def _find_default_config_file(self) -> Optional[str]:
         """
         Walks from the current directory up to the filesystem root
@@ -695,6 +731,7 @@ class DuckAPI:
 
         with open(path, "r", encoding="utf-8") as f:
             config = json.load(f)
+        self._config_base_dir = os.path.dirname(os.path.abspath(path))
 
         file_services = config.get("services")
         if not file_services:
@@ -1087,6 +1124,8 @@ class DuckAPI:
         "duckduck.glue": "S3 / Glue Data Catalog",
         "duckduck.blob_storage": "Azure Blob Storage",
         "duckduck.adx": "Azure Data Explorer (KQL)",
+        "duckduck.local_files": "Local files",
+        "duckduck.python_source": "Python module",
     }
 
     @classmethod
@@ -1109,7 +1148,9 @@ class DuckAPI:
         """
         instance = getattr(fn, "__self__", None)
         if instance is None:
-            return None
+            # a callable object (e.g. a local FileTable) may carry it itself
+            own = getattr(fn, "base_url", None)
+            return str(own) if isinstance(own, str) else None
 
         base_url = getattr(instance, "base_url", None)
         if base_url:

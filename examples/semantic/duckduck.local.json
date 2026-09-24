@@ -1,0 +1,14 @@
+{
+  "services": {
+    "samples": {
+      "connector": "python",
+      "module": "sample_sources.py",
+      "table_prefix": ""
+    }
+  },
+  "semantic": {
+    "catalog_path": "catalog.yaml",
+    "decision_engine": {"type": "lexical"},
+    "extractor": {"type": "rules"}
+  }
+}
