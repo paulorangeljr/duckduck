@@ -88,3 +88,62 @@ def test_client_built_with_vault_url_and_credential():
     with_client_mock.assert_called_once_with(
         vault_url="https://my-vault.vault.azure.net/", credential=fake_credential
     )
+
+
+# ---------------------------------------------------------------------------
+# tenant_id — pinning DefaultAzureCredential to a specific Azure AD tenant
+# ---------------------------------------------------------------------------
+
+
+def test_tenant_id_passed_to_default_azure_credential(monkeypatch):
+    import duckduck.azure_secrets as azure_secrets_module
+
+    fake_default_credential_cls = MagicMock()
+    fake_secret_client_cls = MagicMock()
+    monkeypatch.setattr(azure_secrets_module, "DefaultAzureCredential", fake_default_credential_cls)
+    monkeypatch.setattr(azure_secrets_module, "SecretClient", fake_secret_client_cls)
+
+    AzureKeyVaultSecrets(vault_url="https://my-vault.vault.azure.net/", tenant_id="tenant-123")
+
+    fake_default_credential_cls.assert_called_once_with(
+        interactive_browser_tenant_id="tenant-123",
+        additionally_allowed_tenants=["tenant-123"],
+    )
+    fake_secret_client_cls.assert_called_once_with(
+        vault_url="https://my-vault.vault.azure.net/",
+        credential=fake_default_credential_cls.return_value,
+    )
+
+
+def test_no_tenant_id_uses_plain_default_credential(monkeypatch):
+    import duckduck.azure_secrets as azure_secrets_module
+
+    fake_default_credential_cls = MagicMock()
+    fake_secret_client_cls = MagicMock()
+    monkeypatch.setattr(azure_secrets_module, "DefaultAzureCredential", fake_default_credential_cls)
+    monkeypatch.setattr(azure_secrets_module, "SecretClient", fake_secret_client_cls)
+
+    AzureKeyVaultSecrets(vault_url="https://my-vault.vault.azure.net/")
+
+    fake_default_credential_cls.assert_called_once_with()
+
+
+def test_explicit_credential_skips_default_azure_credential(monkeypatch):
+    import duckduck.azure_secrets as azure_secrets_module
+
+    fake_default_credential_cls = MagicMock()
+    fake_secret_client_cls = MagicMock()
+    monkeypatch.setattr(azure_secrets_module, "DefaultAzureCredential", fake_default_credential_cls)
+    monkeypatch.setattr(azure_secrets_module, "SecretClient", fake_secret_client_cls)
+
+    my_credential = MagicMock()
+    AzureKeyVaultSecrets(
+        vault_url="https://my-vault.vault.azure.net/",
+        tenant_id="tenant-123",
+        credential=my_credential,
+    )
+
+    fake_default_credential_cls.assert_not_called()
+    fake_secret_client_cls.assert_called_once_with(
+        vault_url="https://my-vault.vault.azure.net/", credential=my_credential
+    )

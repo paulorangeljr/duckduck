@@ -59,6 +59,15 @@ class AzureKeyVaultSecrets:
     ----------
     vault_url : str
         E.g. ``"https://my-vault.vault.azure.net/"``.
+    tenant_id : str, optional
+        Azure AD tenant to authenticate against, when the caller (or the
+        machine's ``az login`` session) has access to more than one.
+        Passed to ``DefaultAzureCredential`` as both
+        ``interactive_browser_tenant_id`` and via
+        ``additionally_allowed_tenants`` — covers the interactive-browser
+        and CLI/env credentials in the default chain, but not every
+        possible one; for full control over tenant selection, build the
+        credential yourself and pass it via ``credential=``.
     credential : optional
         An azure-identity credential. Defaults to
         ``DefaultAzureCredential()`` (env vars, managed identity,
@@ -66,14 +75,15 @@ class AzureKeyVaultSecrets:
         own hardcoded secret in the config.
     client : optional
         An already-built ``SecretClient`` (or a mock, for tests). When
-        provided, ``vault_url``/``credential`` are ignored and the
-        ``azure-identity``/``azure-keyvault-secrets`` packages don't need
-        to be installed.
+        provided, ``vault_url``/``tenant_id``/``credential`` are ignored
+        and the ``azure-identity``/``azure-keyvault-secrets`` packages
+        don't need to be installed.
     """
 
     def __init__(
         self,
         vault_url: Optional[str] = None,
+        tenant_id: Optional[str] = None,
         credential: Optional[Any] = None,
         client: Optional[Any] = None,
     ):
@@ -84,8 +94,19 @@ class AzureKeyVaultSecrets:
                 "Install with:  pip install \"duckduck[azure]\"\n"
                 "or use authentication.type='local' in your config for offline mode."
             )
+        if credential is None and client is None:
+            credential = DefaultAzureCredential(
+                **(
+                    {
+                        "interactive_browser_tenant_id": tenant_id,
+                        "additionally_allowed_tenants": [tenant_id],
+                    }
+                    if tenant_id
+                    else {}
+                )
+            )
         self._client = client if client is not None else SecretClient(
-            vault_url=vault_url, credential=credential or DefaultAzureCredential()
+            vault_url=vault_url, credential=credential
         )
         self._cache: Dict[str, Dict[str, Any]] = {}
 

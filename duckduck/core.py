@@ -424,14 +424,21 @@ class DuckAPI:
                 f"'{name}': authentication.type='{auth_type}' requires 'secret_id'."
             )
 
-        backend_kwarg = "region_name" if auth_type == "aws" else "vault_url"
-        backend_value = auth.pop(backend_kwarg, None)
-        if auth_type == "azure" and not backend_value:
-            raise ValueError(
-                f"'{name}': authentication.type='azure' requires 'vault_url'."
-            )
+        if auth_type == "aws":
+            # profile_name selects a specific AWS account (~/.aws/credentials)
+            # when more than one is configured locally.
+            backend_key = ("aws", auth.pop("region_name", None), auth.pop("profile_name", None))
+        else:
+            vault_url = auth.pop("vault_url", None)
+            if not vault_url:
+                raise ValueError(
+                    f"'{name}': authentication.type='azure' requires 'vault_url'."
+                )
+            # tenant_id pins DefaultAzureCredential to a specific Azure AD
+            # tenant when the caller has access to more than one.
+            backend_key = ("azure", vault_url, auth.pop("tenant_id", None))
 
-        backend = self._get_secrets_backend(auth_type, backend_value, overrides, backend_cache)
+        backend = self._get_secrets_backend(auth_type, backend_key, overrides, backend_cache)
         secret = backend.get_secret(secret_id)
 
         credentials = dict(secret)
@@ -451,7 +458,7 @@ class DuckAPI:
     def _get_secrets_backend(
         self,
         auth_type: str,
-        backend_value: Optional[str],
+        backend_key: tuple,
         overrides: Dict[str, Any],
         backend_cache: Dict[Any, Any],
     ) -> Any:
@@ -459,25 +466,31 @@ class DuckAPI:
         Returns the secrets backend for ``auth_type``: an explicit
         override from ``auto_register(secrets=...)`` if one was given for
         this ``auth_type``, otherwise a cached instance built from
-        ``backend_value`` (``region_name`` for aws, ``vault_url`` for
-        azure) — one instance per distinct value, so services in
-        different regions/vaults don't share a client.
+        ``backend_key`` — ``("aws", region_name, profile_name)`` or
+        ``("azure", vault_url, tenant_id)`` — one instance per distinct
+        combination, so services in different regions/vaults/accounts
+        don't share a client.
         """
         if auth_type in overrides:
             return overrides[auth_type]
 
-        cache_key = (auth_type, backend_value)
-        if cache_key not in backend_cache:
+        if backend_key not in backend_cache:
             if auth_type == "aws":
                 from .secrets import SecretsManager
 
-                backend_cache[cache_key] = SecretsManager(region_name=backend_value)
+                _, region_name, profile_name = backend_key
+                backend_cache[backend_key] = SecretsManager(
+                    region_name=region_name, profile_name=profile_name
+                )
             else:
                 from .azure_secrets import AzureKeyVaultSecrets
 
-                backend_cache[cache_key] = AzureKeyVaultSecrets(vault_url=backend_value)
+                _, vault_url, tenant_id = backend_key
+                backend_cache[backend_key] = AzureKeyVaultSecrets(
+                    vault_url=vault_url, tenant_id=tenant_id
+                )
 
-        return backend_cache[cache_key]
+        return backend_cache[backend_key]
 
     def _find_default_config_file(self) -> Optional[str]:
         """

@@ -7,6 +7,7 @@
       "authentication": {
         "type": "aws",
         "region_name": "us-east-1",
+        "profile_name": "prod-account",
         "secret_id": "prod/sharepoint/duckduck"
       }
     },
@@ -16,6 +17,7 @@
       "authentication": {
         "type": "azure",
         "vault_url": "https://my-vault.vault.azure.net/",
+        "tenant_id": "00000000-0000-0000-0000-000000000000",
         "secret_id": "prod-insightvm",
         "password": "$secret.svc_password"
       }
@@ -42,6 +44,17 @@
         "type": "aws",
         "region_name": "us-east-1",
         "secret_id": "prod/mysql"
+      }
+    },
+    "sqlserver_from_rds_secret": {
+      "connector": "database",
+      "authentication": {
+        "type": "aws",
+        "region_name": "us-east-1",
+        "secret_id": "prod/sqlserver-rds",
+        "drivername": "mssql+pyodbc",
+        "database": "$secret.dbname",
+        "query": { "driver": "ODBC Driver 17 for SQL Server" }
       }
     }
   }

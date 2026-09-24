@@ -367,8 +367,10 @@ duck.sql("SELECT * FROM insightvm_dev_assets WHERE hostname = 'web-prod'")
 | `type` | Extra required keys | Where credential values come from |
 |---|---|---|
 | `"local"` | none | Every other field in the block, used exactly as written — hardcoded, no secret store involved |
-| `"aws"` | `secret_id` (plus optional `region_name`) | AWS Secrets Manager, via `SecretsManager` (`duckduck/secrets.py`) |
-| `"azure"` | `secret_id`, `vault_url` | Azure Key Vault, via `AzureKeyVaultSecrets` (`duckduck/azure_secrets.py`) |
+| `"aws"` | `secret_id` (plus optional `region_name`, `profile_name`) | AWS Secrets Manager, via `SecretsManager` (`duckduck/secrets.py`) |
+| `"azure"` | `secret_id`, `vault_url` (plus optional `tenant_id`) | Azure Key Vault, via `AzureKeyVaultSecrets` (`duckduck/azure_secrets.py`) |
+
+`profile_name` (aws) selects a named AWS profile/account from `~/.aws/credentials` when more than one is configured locally — without it, the default profile (or instance/task role) is used. `tenant_id` (azure) pins `DefaultAzureCredential` to a specific Azure AD tenant when the caller has access to more than one; it covers the interactive-browser and CLI/env credentials in the default chain but not every possible one — for full control, build the credential yourself and pass it via `auto_register(secrets={"azure": AzureKeyVaultSecrets(vault_url=..., credential=your_credential)})`.
 
 For `"aws"`/`"azure"`, the fetched secret (a JSON object) is used as the base credentials dict. Any other field in the `authentication` block layers on top of that:
 
@@ -379,7 +381,7 @@ This resolution lives in `DuckAPI._resolve_authentication`, and only touches the
 
 ### Secret backends and caching
 
-`auto_register(secrets=...)` takes an optional `{"aws": <SecretsManager>, "azure": <AzureKeyVaultSecrets>}` override dict — when a service's `authentication.type` has a matching entry, that instance is used as-is (handy for tests, or to reuse a client across calls). Otherwise `DuckAPI._get_secrets_backend` builds one automatically and caches it per distinct `(auth_type, region_name_or_vault_url)`, so N services in the same region/vault share one client, while different regions/vaults each get their own.
+`auto_register(secrets=...)` takes an optional `{"aws": <SecretsManager>, "azure": <AzureKeyVaultSecrets>}` override dict — when a service's `authentication.type` has a matching entry, that instance is used as-is (handy for tests, or to reuse a client across calls). Otherwise `DuckAPI._get_secrets_backend` builds one automatically and caches it per distinct `("aws", region_name, profile_name)` / `("azure", vault_url, tenant_id)` key, so N services with the same region+profile (or vault+tenant) share one client, while different ones each get their own.
 
 ### Loading from a JSON file (`duck.auto_register()` with no arguments)
 
@@ -412,6 +414,8 @@ SELECT * FROM mysql_query(sql='SELECT * FROM orders WHERE total > 100')
 ```
 
 `table_name`/`sql` are structural (required, no default); `limit` on `table()` is pushed down server-side via SQLAlchemy's `.limit()` (translates to `TOP`/`LIMIT`/`FETCH` per dialect); `limit` on `query()` is applied client-side after the raw query runs. Column filters in `WHERE` aren't pushed down server-side for either — DuckDB applies them on the fetched result, same as any push-down parameter a wrapper doesn't recognize. `from_secret` accepts either a full `connection_string` or discrete `drivername`/`username`/`password`/`host`/`port`/`database` fields (the latter matches what managed secrets, e.g. AWS RDS, already store).
+
+**Sourcing the connection string from a secret manager**: if the secret already has a `connection_string` key, `authentication` needs nothing else — `"authentication": {"type": "aws", "secret_id": "prod/sqlserver"}` is enough, since the fetched secret becomes the credentials dict as-is. A managed secret with discrete fields (RDS-style: `username`/`password`/`host`/`port`/`dbname`) needs `drivername` added (RDS never stores it) and any mismatched key renamed via `"$secret.<key>"` — e.g. `"database": "$secret.dbname"` bridges RDS's `dbname` to the `database` field `from_secret` reads. See `duckduck.example.json`'s `sqlserver_from_rds_secret` entry for the full example.
 
 ### Adding a wrapper to auto-registration
 

@@ -239,7 +239,7 @@ def test_auto_register_aws_without_override_builds_secrets_manager(monkeypatch):
 
     fake_client = _fake_aws_client({"host": "x.local", "username": "u", "password": "p"})
     fake_boto3 = MagicMock()
-    fake_boto3.client.return_value = fake_client
+    fake_boto3.Session.return_value.client.return_value = fake_client
     monkeypatch.setattr(secrets_module, "boto3", fake_boto3)
 
     duck = DuckAPI()
@@ -251,7 +251,7 @@ def test_auto_register_aws_without_override_builds_secrets_manager(monkeypatch):
         },
     })
 
-    fake_boto3.client.assert_called_once_with("secretsmanager", region_name="us-east-1")
+    fake_boto3.Session.return_value.client.assert_called_once_with("secretsmanager", region_name="us-east-1")
     assert instances["insightvm"].base_url == "https://x.local/api/3"
     duck.close()
 
@@ -280,7 +280,7 @@ def test_auto_register_aws_backend_shared_across_same_region(monkeypatch):
         {"SecretString": json.dumps({"host": "b.local", "username": "u", "password": "p"})},
     ]
     fake_boto3 = MagicMock()
-    fake_boto3.client.return_value = fake_client
+    fake_boto3.Session.return_value.client.return_value = fake_client
     monkeypatch.setattr(secrets_module, "boto3", fake_boto3)
 
     duck = DuckAPI()
@@ -299,7 +299,7 @@ def test_auto_register_aws_backend_shared_across_same_region(monkeypatch):
         },
     })
 
-    fake_boto3.client.assert_called_once_with("secretsmanager", region_name="us-east-1")
+    fake_boto3.Session.return_value.client.assert_called_once_with("secretsmanager", region_name="us-east-1")
     duck.close()
 
 
@@ -308,7 +308,7 @@ def test_auto_register_aws_backend_separate_per_region(monkeypatch):
     import duckduck.secrets as secrets_module
 
     fake_boto3 = MagicMock()
-    fake_boto3.client.side_effect = [
+    fake_boto3.Session.return_value.client.side_effect = [
         _fake_aws_client({"host": "a.local", "username": "u", "password": "p"}),
         _fake_aws_client({"host": "b.local", "username": "u", "password": "p"}),
     ]
@@ -330,7 +330,67 @@ def test_auto_register_aws_backend_separate_per_region(monkeypatch):
         },
     })
 
-    assert fake_boto3.client.call_count == 2
+    assert fake_boto3.Session.return_value.client.call_count == 2
+    duck.close()
+
+
+def test_auto_register_aws_profile_name_passed_through(monkeypatch):
+    """authentication.profile_name selects a specific AWS account via boto3.Session."""
+    import duckduck.secrets as secrets_module
+
+    fake_boto3 = MagicMock()
+    fake_boto3.Session.return_value.client.return_value = _fake_aws_client(
+        {"host": "prod.local", "username": "u", "password": "p"}
+    )
+    monkeypatch.setattr(secrets_module, "boto3", fake_boto3)
+
+    duck = DuckAPI()
+    instances = duck.auto_register({
+        "insightvm": {
+            "authentication": {
+                "type": "aws",
+                "region_name": "us-east-1",
+                "profile_name": "prod-account",
+                "secret_id": "prod/insightvm",
+            },
+        },
+    })
+
+    fake_boto3.Session.assert_called_once_with(profile_name="prod-account")
+    assert instances["insightvm"].base_url == "https://prod.local/api/3"
+    duck.close()
+
+
+def test_auto_register_aws_backend_separate_per_profile(monkeypatch):
+    """Same region, different profile_name: two separate SecretsManager/client instances."""
+    import duckduck.secrets as secrets_module
+
+    fake_boto3 = MagicMock()
+    fake_boto3.Session.return_value.client.side_effect = [
+        _fake_aws_client({"host": "a.local", "username": "u", "password": "p"}),
+        _fake_aws_client({"host": "b.local", "username": "u", "password": "p"}),
+    ]
+    monkeypatch.setattr(secrets_module, "boto3", fake_boto3)
+
+    duck = DuckAPI()
+    duck.auto_register({
+        "insightvm_a": {
+            "connector": "insightvm",
+            "authentication": {
+                "type": "aws", "region_name": "us-east-1", "profile_name": "account-a",
+                "secret_id": "svc-a",
+            },
+        },
+        "insightvm_b": {
+            "connector": "insightvm",
+            "authentication": {
+                "type": "aws", "region_name": "us-east-1", "profile_name": "account-b",
+                "secret_id": "svc-b",
+            },
+        },
+    })
+
+    assert fake_boto3.Session.return_value.client.call_count == 2
     duck.close()
 
 
@@ -370,6 +430,75 @@ def test_auto_register_azure_missing_vault_url_raises():
                 "authentication": {"type": "azure", "secret_id": "prod-insightvm"},
             },
         })
+    duck.close()
+
+
+def test_auto_register_azure_tenant_id_passed_through(monkeypatch):
+    """authentication.tenant_id pins DefaultAzureCredential to a specific Azure AD tenant."""
+    import duckduck.azure_secrets as azure_secrets_module
+
+    fake_credential_cls = MagicMock()
+    fake_client = _fake_azure_client({"host": "x.local", "username": "u", "password": "p"})
+    fake_secret_client_cls = MagicMock(return_value=fake_client)
+    monkeypatch.setattr(azure_secrets_module, "DefaultAzureCredential", fake_credential_cls)
+    monkeypatch.setattr(azure_secrets_module, "SecretClient", fake_secret_client_cls)
+
+    duck = DuckAPI()
+    instances = duck.auto_register({
+        "insightvm": {
+            "authentication": {
+                "type": "azure",
+                "vault_url": "https://my-vault.vault.azure.net/",
+                "tenant_id": "tenant-123",
+                "secret_id": "prod-insightvm",
+            },
+        },
+    })
+
+    fake_credential_cls.assert_called_once_with(
+        interactive_browser_tenant_id="tenant-123",
+        additionally_allowed_tenants=["tenant-123"],
+    )
+    assert instances["insightvm"].base_url == "https://x.local/api/3"
+    duck.close()
+
+
+def test_auto_register_azure_backend_separate_per_tenant(monkeypatch):
+    """Same vault_url, different tenant_id: two separate AzureKeyVaultSecrets instances."""
+    import duckduck.azure_secrets as azure_secrets_module
+
+    fake_credential_cls = MagicMock()
+    fake_secret_client_cls = MagicMock()
+    fake_secret_client_cls.side_effect = [
+        _fake_azure_client({"host": "a.local", "username": "u", "password": "p"}),
+        _fake_azure_client({"host": "b.local", "username": "u", "password": "p"}),
+    ]
+    monkeypatch.setattr(azure_secrets_module, "DefaultAzureCredential", fake_credential_cls)
+    monkeypatch.setattr(azure_secrets_module, "SecretClient", fake_secret_client_cls)
+
+    duck = DuckAPI()
+    duck.auto_register({
+        "insightvm_a": {
+            "connector": "insightvm",
+            "authentication": {
+                "type": "azure",
+                "vault_url": "https://my-vault.vault.azure.net/",
+                "tenant_id": "tenant-a",
+                "secret_id": "svc-a",
+            },
+        },
+        "insightvm_b": {
+            "connector": "insightvm",
+            "authentication": {
+                "type": "azure",
+                "vault_url": "https://my-vault.vault.azure.net/",
+                "tenant_id": "tenant-b",
+                "secret_id": "svc-b",
+            },
+        },
+    })
+
+    assert fake_secret_client_cls.call_count == 2
     duck.close()
 
 
@@ -590,7 +719,7 @@ def test_auto_register_json_file_with_aws_secret(tmp_path, monkeypatch):
 
     fake_client = _fake_aws_client({"host": "x.local", "username": "u", "password": "p"})
     fake_boto3 = MagicMock()
-    fake_boto3.client.return_value = fake_client
+    fake_boto3.Session.return_value.client.return_value = fake_client
     monkeypatch.setattr(secrets_module, "boto3", fake_boto3)
 
     config = {
@@ -608,7 +737,7 @@ def test_auto_register_json_file_with_aws_secret(tmp_path, monkeypatch):
     duck = DuckAPI()
     instances = duck.auto_register(config_path=str(config_file))
 
-    fake_boto3.client.assert_called_once_with("secretsmanager", region_name="us-east-1")
+    fake_boto3.Session.return_value.client.assert_called_once_with("secretsmanager", region_name="us-east-1")
     assert instances["insightvm"].base_url == "https://x.local/api/3"
     duck.close()
 

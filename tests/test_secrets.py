@@ -62,3 +62,33 @@ def test_without_client_or_boto3_raises_import_error(monkeypatch):
     monkeypatch.setattr(secrets_module, "boto3", None)
     with pytest.raises(ImportError, match="boto3"):
         SecretsManager()
+
+
+# ---------------------------------------------------------------------------
+# profile_name — selecting a specific AWS account
+# ---------------------------------------------------------------------------
+
+
+def test_profile_name_builds_session_with_profile(monkeypatch):
+    import duckduck.secrets as secrets_module
+
+    fake_boto3 = MagicMock()
+    monkeypatch.setattr(secrets_module, "boto3", fake_boto3)
+
+    SecretsManager(region_name="us-east-1", profile_name="prod")
+
+    fake_boto3.Session.assert_called_once_with(profile_name="prod")
+    fake_boto3.Session.return_value.client.assert_called_once_with(
+        "secretsmanager", region_name="us-east-1"
+    )
+
+
+def test_no_profile_name_uses_default_session(monkeypatch):
+    import duckduck.secrets as secrets_module
+
+    fake_boto3 = MagicMock()
+    monkeypatch.setattr(secrets_module, "boto3", fake_boto3)
+
+    SecretsManager(region_name="us-east-1")
+
+    fake_boto3.Session.assert_called_once_with(profile_name=None)
