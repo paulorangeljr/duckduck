@@ -150,10 +150,17 @@ def _body_text(body: Any) -> Optional[str]:
 
 
 def log_http(component: str, response: Any, log_body: bool = True) -> None:
-    """One INFO line per HTTP response (+ the request body at DEBUG)."""
+    """One INFO line per HTTP response (+ the request body at DEBUG). Never raises."""
     logger = get_logger(component)
     if not logger.isEnabledFor(logging.INFO):
         return
+    try:
+        _log_http(logger, response, log_body)
+    except Exception as exc:  # diagnostics must never break the request they describe
+        logger.debug("could not log HTTP response: %r", exc)
+
+
+def _log_http(logger: logging.Logger, response: Any, log_body: bool) -> None:
     request = response.request
     try:
         size = human_bytes(len(response.content))
@@ -201,6 +208,12 @@ class PageProgress:
         self.rows += rows
         if not self.logger.isEnabledFor(logging.INFO):
             return
+        try:
+            self._log(total_pages, total_rows)
+        except Exception as exc:  # e.g. a malformed total from the API — never fail the fetch over it
+            self.logger.debug("could not log page progress: %r", exc)
+
+    def _log(self, total_pages: Optional[int], total_rows: Optional[int]) -> None:
         elapsed = time.perf_counter() - self.started
         left = None
         if total_pages and self.pages < total_pages:

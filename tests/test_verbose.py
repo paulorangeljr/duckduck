@@ -188,3 +188,16 @@ def test_quiet_by_default(logs, monkeypatch):
 
 def test_redact_url():
     assert redact_url("https://h/p?size=1&api_key=x&token=y") == "https://h/p?size=1&api_key=***&token=***"
+
+
+def test_logging_never_breaks_the_request_it_describes(logs):
+    from unittest.mock import MagicMock
+
+    from duckduck.logs import log_http
+
+    set_verbose("info")
+    weird = MagicMock()  # elapsed/status/content that can't be formatted
+    log_http("x", weird)  # must not raise
+    p = PageProgress("x", "things")
+    p.page(10, total_pages=MagicMock())  # a malformed total from an API: must not raise
+    assert p.pages == 1 and p.rows == 10

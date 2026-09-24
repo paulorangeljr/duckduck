@@ -9,5 +9,8 @@ build/
 
 # Real auto_register() config — copy duckduck.example.json to duckduck.json
 # and fill in your own secret_id / credentials. Never commit the real one:
-# the "credentials" offline mode can hold literal passwords/client secrets.
+# an authentication block of type "local" can hold literal passwords/secrets.
 duckduck.json
+
+# Catalogs drafted by `generate-catalog` (review them, then promote by hand)
+generated_catalog.yaml

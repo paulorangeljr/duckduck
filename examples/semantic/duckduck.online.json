@@ -1,0 +1,30 @@
+{
+  "services": {
+    "samples": {
+      "connector": "python",
+      "module": "sample_sources.py",
+      "table_prefix": ""
+    }
+  },
+  "semantic": {
+    "catalog_path": "catalog.yaml",
+    "decision_engine": {
+      "type": "jev",
+      "model": "typesafe-ai/jev"
+    },
+    "llm": {
+      "provider": "anthropic",
+      "model": "claude-opus-5"
+    },
+    "extractor": {
+      "type": "llm",
+      "system_prompt_file": "prompts/extraction.md"
+    },
+    "catalog_generation": {
+      "output_path": "generated_catalog.yaml",
+      "sample_rows": 5,
+      "source_prompt_file": "prompts/catalog_source.md",
+      "link_prompt_file": "prompts/catalog_link.md"
+    }
+  }
+}

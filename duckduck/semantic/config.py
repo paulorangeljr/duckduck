@@ -96,6 +96,8 @@ class SemanticConfig(_Strict):
     strict: bool = False
     #: Directory relative paths resolve against (the config file's own).
     base_dir: str = "."
+    #: The file this was loaded from (for error messages).
+    config_file: Optional[str] = None
 
     @classmethod
     def load(cls, duck: Any, config_path: Optional[str] = None, section: str = "semantic") -> "SemanticConfig":
@@ -111,7 +113,11 @@ class SemanticConfig(_Strict):
             data = json.load(f)
         if section not in data:
             raise ValueError(f"config file '{path}' has no '{section}' section")
-        return cls.model_validate({**data[section], "base_dir": os.path.dirname(os.path.abspath(path))})
+        return cls.model_validate({
+            **data[section],
+            "base_dir": os.path.dirname(os.path.abspath(path)),
+            "config_file": os.path.abspath(path),
+        })
 
     def path(self, relative: str) -> str:
         return relative if os.path.isabs(relative) else os.path.join(self.base_dir, relative)
@@ -146,7 +152,15 @@ class SemanticConfig(_Strict):
         from .llm import ClaudeLLM
 
         if self.llm is None:
-            raise ValueError("this needs an LLM: add an 'llm' block to the semantic config")
+            where = f"the 'semantic' section of {self.config_file}" if self.config_file else "the semantic config"
+            raise ValueError(
+                f"This needs an LLM (catalog generation / extractor type 'llm'), but {where} has no "
+                f"'llm' block. Add one, e.g.\n"
+                f'    "llm": {{"model": "claude-opus-5"}}\n'
+                f"(API key from the ANTHROPIC_API_KEY environment variable, or an \"authentication\" "
+                f"block like the connectors'), and `pip install -e \".[llm]\"`. "
+                f"See examples/semantic/duckduck.online.json."
+            )
         cfg = self.llm
         creds = duck.resolve_credentials(cfg.authentication, "semantic.llm") if cfg.authentication else {}
         return ClaudeLLM(

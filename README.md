@@ -20,10 +20,17 @@ pip install -e ".[cert]"    # SharePoint auth via PFX/P12 or PEM certificate
 pip install -e ".[aws]"     # AWS Secrets Manager support (auto_register)
 pip install -e ".[azure]"   # Azure Key Vault support (auto_register)
 pip install -e ".[adx]"     # Azure Data Explorer (Kusto) connector
+pip install -e ".[database]"  # SQL databases (+ your engine's driver, e.g. pyodbc)
+pip install -e ".[semantic]"  # natural-language search (duckduck.semantic)
+pip install -e ".[llm]"     # Claude, for catalog drafting / LLM extraction
 pip install -e ".[dev]"     # pytest, for running the test suite
 ```
 
 Requires Python 3.10+.
+
+**Examples**: [`examples/README.md`](examples/README.md) lists every
+example — which ones run fully offline, which need keys — with the
+commands to run each from the terminal and from Python.
 
 ## Quickstart
 
