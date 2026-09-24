@@ -470,6 +470,30 @@ SELECT * FROM mysql_query(sql='SELECT * FROM orders WHERE total > 100')
 
 Both take the `where` push-down param: the query's simple WHERE conditions go *into* the DuckDB scan (`LakehouseConnection.scan` renders them with `conditions_to_sql` after a metadata-only `DESCRIBE` to skip columns the scan doesn't have), so Parquet row-group/file pruning happens before anything reaches Python. `iter_table()` on both is a post-hoc chunk split of the full scanned result (same trade-off as `SQLDatabase.query()`'s client-side `limit`), not true incremental streaming.
 
+### Azure Data Explorer connector (`connector: "adx"`)
+
+`duckduck/adx.py` — `DataExplorer`, on Microsoft's official `azure-kusto-data` SDK (`pip install "duckduck[adx]"`). Tables: `{name}_table(table_name=...)` (structural `table_name`, takes the `where` push-down param), `{name}_query(kql=...)` (KQL passthrough, `limit` appended as `| take n`), `{name}_tables` (`.show tables details`, falling back to `.show tables` without the permission for details) and `{name}_columns(table_name=...)` (`getschema`).
+
+- **Push-down → KQL**: `=` → `==`; LIKE → `contains_cs`/`startswith_cs`/`endswith_cs` (case-sensitive, like SQL LIKE), ILIKE → `contains`/`startswith`/`endswith`/`=~`; any other LIKE pattern → `matches regex` with `%`→`.*`, `_`→`.` (exact, never approximated — `where` consumes every condition, so an untranslated one would make LIMIT unsafe); comparisons as-is; LIMIT → `| take n`.
+- **Typing via schema**: `getschema` (cached per table) maps DuckAPI's lowercased column names back to ADX's real case and gives each column's type; every value becomes an escaped string literal wrapped in the column's converter (`todatetime("...")`, `tolong("...")`), so `WHERE Timestamp >= '2026-09-23'` compares as datetime on the cluster. Conditions on unknown columns are skipped.
+- **Injection**: values are always `kql_string` literals (`\\`, `\"`, `\n`, `\r`, `\t` escaped; other control characters rejected); table names must match `_TABLE_NAME_RE` and are bracket-quoted; queries go through `execute_query` (never `execute`, which routes anything starting with `.` to control commands), and `query()` refuses control commands outright. Query parameters (`declare query_parameters`) were deliberately *not* used: their string-value format couldn't be verified while building this (docs host blocked), and escaped literals are unambiguous.
+- **Auth** (`from_secret` picks by keys present): `client_id` + `client_secret` + `tenant_id` → app registration (`with_aad_application_key_authentication`); otherwise `DefaultAzureCredential` (managed identity, `az login`, `AZURE_*` env vars), optionally pinned by `tenant_id` (`with_azure_token_credential`). `cluster` accepts `mycluster.region` or a full URL.
+- **Truncation**: ADX fails queries over its default result limits; `notruncation=True` sets the `notruncation` request option. `iter_table` is a post-hoc chunk split (ADX returns the filtered result in one response).
+
+### Listing what exists: `tables` / `columns`
+
+Both `glue` and `adx` register discovery tables, queryable like any other (filters push down):
+
+```sql
+SELECT * FROM glue_tables WHERE database = 'security' AND table_name LIKE 'proxy%'
+SELECT * FROM glue_columns(database='security', table_name='proxy_logs')
+SELECT * FROM glue_databases
+SELECT * FROM adx_tables WHERE folder = 'network'
+SELECT * FROM adx_columns(table_name='ProxyLogs')
+```
+
+`GlueTable.tables()` returns database, table_name, detected `format` (`_detect_format`: parquet / delta / iceberg — the same rule `table()` scans by), `table_type`, S3 `location`, `partition_keys`, `column_count`, description, owner and timestamps; `database` omitted → every database in the catalog. `GlueTable.columns()` includes partition keys (`partition_key=True`).
+
 ### Adding a wrapper to auto-registration
 
 1. Implement `Wrapper.from_secret(cls, secret: dict, **overrides) -> "Wrapper"` on the wrapper class — it decides the authentication mode from the keys in `secret` and passes `overrides` (hostname, site_path, default_page_size, etc.) through to the constructor.
@@ -487,6 +511,7 @@ A backend just needs `get_secret(secret_id: str) -> dict` — see `SecretsManage
 | Azure Key Vault | `azure-identity>=1.15`, `azure-keyvault-secrets>=4.7` (`pip install "duckduck[azure]"`) |
 | `connector: "database"` | `sqlalchemy>=2.0` (`pip install "duckduck[database]"`) + the driver for your engine (`pyodbc` for SQL Server, `PyMySQL` for MySQL, `psycopg2-binary` for PostgreSQL, ...) |
 | `connector: "glue"` | `boto3>=1.28` (`pip install "duckduck[aws]"`) for the `get_table` lookup; DuckDB's own `httpfs`/`delta`/`iceberg` extensions auto-install on first use (needs outbound internet) |
+| `connector: "adx"` | `azure-kusto-data>=4.0`, `azure-identity>=1.15` (`pip install "duckduck[adx]"`) |
 | `connector: "blob_storage"` | none as a Python package — DuckDB's own `azure`/`delta`/`iceberg` extensions auto-install on first use (needs outbound internet) |
 | `authentication.type: "local"` | none — fully offline |
 

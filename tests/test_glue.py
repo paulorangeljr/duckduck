@@ -7,7 +7,7 @@ import pytest
 
 import duckduck.glue as glue_module
 import duckduck.lakehouse as lakehouse_module
-from duckduck import GlueTable
+from duckduck import DuckAPI, GlueTable
 
 
 def _make_glue(monkeypatch, aws_access_key_id=None, aws_secret_access_key=None, **kwargs):
@@ -243,3 +243,99 @@ def test_iter_table_chunks_result(monkeypatch):
     chunks = list(gt.iter_table("analytics", "events", chunksize=2))
 
     assert [len(c) for c in chunks] == [2, 2, 1]
+
+
+# ---------------------------------------------------------------------------
+# Catalog discovery: databases / tables / columns
+# ---------------------------------------------------------------------------
+
+
+def _paginated(glue_client, pages_by_operation):
+    def get_paginator(operation):
+        paginator = MagicMock()
+
+        def paginate(**kwargs):
+            pages = pages_by_operation[operation]
+            return pages(**kwargs) if callable(pages) else pages
+
+        paginator.paginate.side_effect = paginate
+        return paginator
+
+    glue_client.get_paginator.side_effect = get_paginator
+
+
+_GLUE_TABLES = {
+    "security": [
+        {"Name": "proxy_logs", "TableType": "EXTERNAL_TABLE", "Description": "Zscaler",
+         "StorageDescriptor": {"Location": "s3://lake/proxy/", "Columns": [{"Name": "ts"}, {"Name": "url"}]},
+         "PartitionKeys": [{"Name": "dt"}]},
+        {"Name": "dns_logs", "Parameters": {"table_type": "ICEBERG", "metadata_location": "s3://m.json"},
+         "StorageDescriptor": {"Location": "s3://lake/dns/"}},
+    ],
+    "sales": [
+        {"Name": "orders", "Parameters": {"spark.sql.sources.provider": "delta"},
+         "StorageDescriptor": {"Location": "s3://lake/orders/"}},
+    ],
+}
+
+
+def _glue_with_catalog(monkeypatch):
+    gt, _, client, _ = _make_glue(monkeypatch)
+    _paginated(client, {
+        "get_databases": [{"DatabaseList": [{"Name": "security", "Description": "SecOps"}, {"Name": "sales"}]}],
+        # two pages for "security" to exercise pagination
+        "get_tables": lambda DatabaseName: (
+            [{"TableList": _GLUE_TABLES[DatabaseName][:1]}, {"TableList": _GLUE_TABLES[DatabaseName][1:]}]
+        ),
+    })
+    return gt, client
+
+
+def test_databases(monkeypatch):
+    gt, _ = _glue_with_catalog(monkeypatch)
+    df = gt.databases()
+    assert df["database"].tolist() == ["security", "sales"]
+    assert df["description"].tolist()[0] == "SecOps"
+
+
+def test_tables_across_all_databases_with_detected_format(monkeypatch):
+    gt, _ = _glue_with_catalog(monkeypatch)
+    df = gt.tables()
+    assert df[["database", "table_name", "format"]].values.tolist() == [
+        ["security", "proxy_logs", "parquet"],
+        ["security", "dns_logs", "iceberg"],
+        ["sales", "orders", "delta"],
+    ]
+    proxy = df.iloc[0]
+    assert proxy["location"] == "s3://lake/proxy/" and proxy["partition_keys"] == "dt"
+    assert proxy["column_count"] == 2 and proxy["description"] == "Zscaler"
+
+
+def test_tables_filters_push_down(monkeypatch):
+    duck = DuckAPI()  # before _make_glue mocks duckdb.connect (module-global)
+    gt, client = _glue_with_catalog(monkeypatch)
+    duck.register_api_function("glue_tables", gt.tables)
+    df = duck.sql("SELECT table_name FROM glue_tables WHERE database = 'security' AND table_name LIKE '%_logs'").df()
+    assert sorted(df["table_name"]) == ["dns_logs", "proxy_logs"]
+    # database pushed down: only one get_tables pagination, no get_databases
+    ops = [c.args[0] for c in client.get_paginator.call_args_list]
+    assert ops == ["get_tables"]
+
+
+def test_tables_name_pattern_and_limit(monkeypatch):
+    gt, _ = _glue_with_catalog(monkeypatch)
+    assert gt.tables(table_name_ilike="PROXY%")["table_name"].tolist() == ["proxy_logs"]
+    assert len(gt.tables(limit=2)) == 2
+
+
+def test_columns_include_partition_keys(monkeypatch):
+    gt, client = _make_glue(monkeypatch)[0], None
+    gt._glue.get_table.return_value = {"Table": {
+        "StorageDescriptor": {"Columns": [{"Name": "ts", "Type": "timestamp", "Comment": "event time"}]},
+        "PartitionKeys": [{"Name": "dt", "Type": "string"}],
+    }}
+    df = gt.columns("security", "proxy_logs")
+    assert df[["column_name", "data_type", "partition_key"]].values.tolist() == [
+        ["ts", "timestamp", False], ["dt", "string", True],
+    ]
+    assert set(df["database"]) == {"security"}

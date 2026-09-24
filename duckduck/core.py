@@ -938,6 +938,7 @@ class DuckAPI:
         "duckduck.database": "SQL database",
         "duckduck.glue": "S3 / Glue Data Catalog",
         "duckduck.blob_storage": "Azure Blob Storage",
+        "duckduck.adx": "Azure Data Explorer (KQL)",
     }
 
     @classmethod

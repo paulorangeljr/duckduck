@@ -46,7 +46,20 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from .lakehouse import LakehouseConnection
-from .pushdown import Condition
+from .pushdown import Condition, LikePattern, require_like
+
+_TABLE_COLUMNS = [
+    "database", "table_name", "format", "table_type", "location", "partition_keys",
+    "column_count", "description", "owner", "created", "updated",
+]
+
+
+def _like_matches(pattern: LikePattern, name: str) -> bool:
+    text, name = pattern.text.lower(), name.lower()
+    return {
+        "contains": text in name, "startswith": name.startswith(text),
+        "endswith": name.endswith(text), "equals": name == text,
+    }[pattern.kind]
 
 try:
     import boto3
@@ -142,6 +155,17 @@ class GlueTable:
             self._table_cache[cache_key] = response["Table"]
         return self._table_cache[cache_key]
 
+    @staticmethod
+    def _detect_format(table: Dict[str, Any]) -> str:
+        """``iceberg`` / ``delta`` / ``parquet`` from a Glue table's metadata."""
+        params = table.get("Parameters", {}) or {}
+        table_type = (params.get("table_type") or params.get("spark.sql.sources.provider") or "").upper()
+        if table_type == "ICEBERG" or "metadata_location" in params:
+            return "iceberg"
+        if table_type == "DELTA":
+            return "delta"
+        return "parquet"
+
     def _scan_expression(self, database: str, table_name: str) -> str:
         table = self._describe(database, table_name)
         storage = table.get("StorageDescriptor", {}) or {}
@@ -151,16 +175,16 @@ class GlueTable:
                 f"Glue table '{database}.{table_name}' has no StorageDescriptor.Location."
             )
         params = table.get("Parameters", {}) or {}
-        table_type = (params.get("table_type") or params.get("spark.sql.sources.provider") or "").upper()
+        table_format = self._detect_format(table)
 
-        if table_type == "ICEBERG" or "metadata_location" in params:
+        if table_format == "iceberg":
             self._lake.ensure_extension("iceberg")
             metadata_location = params.get("metadata_location")
             if metadata_location:
                 return f"iceberg_scan('{metadata_location}')"
             return f"iceberg_scan('{location}', allow_moved_paths => true)"
 
-        if table_type == "DELTA":
+        if table_format == "delta":
             self._lake.ensure_extension("delta")
             return f"delta_scan('{location}')"
 
@@ -232,6 +256,92 @@ class GlueTable:
         else:
             raise ValueError(f"Unsupported format '{format}'. Use parquet, delta, or iceberg.")
         return self._lake.scan(scan_expr, limit=limit, where=where)
+
+    # ------------------------------------------------------------------
+    # Catalog discovery
+    # ------------------------------------------------------------------
+
+    def _paginate(self, operation: str, key: str, **kwargs) -> List[Dict[str, Any]]:
+        items: List[Dict[str, Any]] = []
+        for page in self._glue.get_paginator(operation).paginate(**kwargs):
+            items.extend(page.get(key, []))
+        return items
+
+    def databases(self, limit: Optional[int] = None) -> pd.DataFrame:
+        """Lists the Glue Data Catalog's databases."""
+        rows = [
+            {
+                "database": db.get("Name"),
+                "description": db.get("Description"),
+                "location": db.get("LocationUri"),
+                "created": db.get("CreateTime"),
+            }
+            for db in self._paginate("get_databases", "DatabaseList")
+        ]
+        df = pd.DataFrame(rows, columns=["database", "description", "location", "created"])
+        return df.head(limit) if limit is not None else df
+
+    def tables(
+        self,
+        database: Optional[str] = None,
+        table_name_ilike: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> pd.DataFrame:
+        """
+        Lists Glue tables with what's needed to query them: database,
+        name, detected format (parquet / delta / iceberg), S3 location,
+        partition keys, column count, description, owner and timestamps.
+
+        Parameters
+        ----------
+        database : str, optional
+            One database (``WHERE database = 'x'`` pushes down here). Omitted,
+            every database in the catalog is listed.
+        table_name_ilike : str, optional
+            SQL LIKE pattern on the table name (``WHERE table_name LIKE
+            'proxy%'`` pushes down here), case-insensitive.
+        """
+        names = [database] if database else [db["Name"] for db in self._paginate("get_databases", "DatabaseList")]
+        pattern = require_like(table_name_ilike, "table_name_ilike") if table_name_ilike else None
+        rows = []
+        for db_name in names:
+            for t in self._paginate("get_tables", "TableList", DatabaseName=db_name):
+                name = t.get("Name", "")
+                if pattern and not _like_matches(pattern, name):
+                    continue
+                storage = t.get("StorageDescriptor", {}) or {}
+                rows.append({
+                    "database": db_name,
+                    "table_name": name,
+                    "format": self._detect_format(t),
+                    "table_type": t.get("TableType"),
+                    "location": storage.get("Location"),
+                    "partition_keys": ", ".join(k.get("Name", "") for k in t.get("PartitionKeys", []) or []),
+                    "column_count": len(storage.get("Columns", []) or []),
+                    "description": t.get("Description"),
+                    "owner": t.get("Owner"),
+                    "created": t.get("CreateTime"),
+                    "updated": t.get("UpdateTime"),
+                })
+                if limit is not None and len(rows) >= limit:
+                    return pd.DataFrame(rows, columns=_TABLE_COLUMNS)
+        return pd.DataFrame(rows, columns=_TABLE_COLUMNS)
+
+    def columns(self, database: str, table_name: str) -> pd.DataFrame:
+        """A Glue table's columns (partition keys included), with types and comments."""
+        t = self._describe(database, table_name)
+        storage = t.get("StorageDescriptor", {}) or {}
+        rows = [
+            {"column_name": c.get("Name"), "data_type": c.get("Type"), "comment": c.get("Comment"), "partition_key": False}
+            for c in storage.get("Columns", []) or []
+        ] + [
+            {"column_name": c.get("Name"), "data_type": c.get("Type"), "comment": c.get("Comment"), "partition_key": True}
+            for c in t.get("PartitionKeys", []) or []
+        ]
+        df = pd.DataFrame(rows, columns=["column_name", "data_type", "comment", "partition_key"])
+        df.insert(0, "table_name", table_name)
+        df.insert(0, "database", database)
+        return df
 
     # ------------------------------------------------------------------
     # Streaming (iter_*) — for use with DuckAPI.stream()

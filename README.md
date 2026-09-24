@@ -19,6 +19,7 @@ pip install -e .
 pip install -e ".[cert]"    # SharePoint auth via PFX/P12 or PEM certificate
 pip install -e ".[aws]"     # AWS Secrets Manager support (auto_register)
 pip install -e ".[azure]"   # Azure Key Vault support (auto_register)
+pip install -e ".[adx]"     # Azure Data Explorer (Kusto) connector
 pip install -e ".[dev]"     # pytest, for running the test suite
 ```
 

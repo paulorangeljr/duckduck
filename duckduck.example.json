@@ -101,6 +101,26 @@
         "type": "local",
         "account_name": "mystorageacct"
       }
+    },
+    "adx_app_registration": {
+      "connector": "adx",
+      "cluster": "mycluster.westeurope",
+      "database": "SecurityLogs",
+      "authentication": {
+        "type": "azure",
+        "vault_url": "https://my-vault.vault.azure.net/",
+        "secret_id": "adx-app"
+      }
+    },
+    "adx_managed_identity": {
+      "connector": "adx",
+      "cluster": "https://mycluster.westeurope.kusto.windows.net",
+      "database": "SecurityLogs",
+      "notruncation": false,
+      "authentication": {
+        "type": "local",
+        "tenant_id": "00000000-0000-0000-0000-000000000000"
+      }
     }
   },
   "semantic": {

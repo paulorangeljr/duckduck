@@ -1,3 +1,4 @@
+from .adx import DataExplorer
 from .axonius import Axonius
 from .azure_secrets import AzureKeyVaultSecrets
 from .blob_storage import BlobStorage
@@ -10,6 +11,7 @@ from .servicenow import ServiceNow
 from .sharepoint import SharePoint
 
 __all__ = [
+    "DataExplorer",
     "DuckAPI",
     "PushDownContext",
     "InsightVM",

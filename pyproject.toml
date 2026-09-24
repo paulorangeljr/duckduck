@@ -30,6 +30,10 @@ azure = [
 database = [
     "sqlalchemy>=2.0",
 ]
+adx = [
+    "azure-kusto-data>=4.0",
+    "azure-identity>=1.15",
+]
 semantic = [
     "pydantic>=2.0",
     "pyyaml>=6.0",
