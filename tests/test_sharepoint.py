@@ -594,3 +594,54 @@ def test_site_name_as_path_without_hostname_raises(msal_cls):
 
     with pytest.raises(ValueError, match="hostname"):
         sp._resolve_site(None, "/sites/marketing")
+
+
+# ---------------------------------------------------------------------------
+# from_secret — construção a partir de um dict de credenciais
+# ---------------------------------------------------------------------------
+
+
+@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+def test_from_secret_client_secret(msal_cls):
+    msal_cls.return_value = MagicMock()
+
+    sp = SharePoint.from_secret({
+        "tenant_id": TENANT, "client_id": CLIENT, "client_secret": SECRET,
+    })
+
+    assert isinstance(sp, SharePoint)
+    call_credential = msal_cls.call_args[1]["client_credential"]
+    assert call_credential == SECRET
+
+
+@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+def test_from_secret_thumbprint(msal_cls):
+    msal_cls.return_value = MagicMock()
+
+    sp = SharePoint.from_secret({
+        "tenant_id": TENANT, "client_id": CLIENT,
+        "thumbprint": "AA:BB", "private_key_pem": "-----BEGIN PRIVATE KEY-----\n...",
+    })
+
+    assert isinstance(sp, SharePoint)
+    call_credential = msal_cls.call_args[1]["client_credential"]
+    assert call_credential["thumbprint"] == "AABB"
+
+
+@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+def test_from_secret_passes_overrides(msal_cls):
+    msal_cls.return_value = MagicMock()
+
+    sp = SharePoint.from_secret(
+        {"tenant_id": TENANT, "client_id": CLIENT, "client_secret": SECRET},
+        hostname="empresa.sharepoint.com",
+        site_path="/teams/meutime",
+    )
+
+    assert sp._default_hostname == "empresa.sharepoint.com"
+    assert sp._default_site_path == "/teams/meutime"
+
+
+def test_from_secret_unrecognized_credentials_raises():
+    with pytest.raises(ValueError, match="não contém credenciais reconhecidas"):
+        SharePoint.from_secret({"tenant_id": TENANT, "client_id": CLIENT})

@@ -20,6 +20,9 @@ dependencies = [
 cert = [
     "cryptography>=41.0",
 ]
+aws = [
+    "boto3>=1.28",
+]
 dev = [
     "pytest>=8.0",
     "pytest-mock>=3.14",

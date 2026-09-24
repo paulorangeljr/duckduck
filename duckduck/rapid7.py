@@ -79,6 +79,26 @@ class InsightVM:
         self.session.auth = (username, password)
         self.session.verify = verify
 
+    @classmethod
+    def from_secret(cls, secret: Dict[str, Any], **overrides) -> "InsightVM":
+        """
+        Constrói InsightVM a partir de um dict de credenciais (ex: um
+        segredo do AWS Secrets Manager via ``SecretsManager.get_secret``).
+
+        Parameters
+        ----------
+        secret : dict
+            Chaves esperadas: ``host``, ``username``, ``password``.
+        **overrides
+            Sobrescreve/adiciona kwargs do construtor (ex: ``verify``,
+            ``default_page_size``) — útil quando esses valores não estão
+            no segredo, e sim na config de ``auto_register``.
+        """
+        host = overrides.pop("host", None) or secret["host"]
+        username = overrides.pop("username", None) or secret["username"]
+        password = overrides.pop("password", None) or secret["password"]
+        return cls(host, username, password, **overrides)
+
     # ------------------------------------------------------------------
     # HTTP helpers
     # ------------------------------------------------------------------

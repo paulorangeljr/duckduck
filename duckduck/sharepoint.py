@@ -247,6 +247,57 @@ class SharePoint:
             site_path=site_path,
         )
 
+    @classmethod
+    def from_secret(cls, secret: Dict[str, Any], **overrides) -> "SharePoint":
+        """
+        Constrói SharePoint a partir de um dict de credenciais (ex: um
+        segredo do AWS Secrets Manager via ``SecretsManager.get_secret``).
+
+        Detecta o modo de autenticação pelas chaves presentes em ``secret``:
+
+        - ``client_secret``                               → client secret
+        - ``thumbprint`` + ``private_key_pem``             → ``from_thumbprint``
+        - ``pfx_path``                                     → ``from_pfx``
+        - ``private_key_pem`` + ``cert_pem`` (sem thumbprint) → ``from_pem_cert``
+
+        ``tenant_id`` e ``client_id`` vêm do segredo por padrão, mas podem
+        ser sobrescritos via ``overrides`` (assim como ``hostname``,
+        ``site_path``, etc.).
+        """
+        tenant_id = overrides.pop("tenant_id", None) or secret["tenant_id"]
+        client_id = overrides.pop("client_id", None) or secret["client_id"]
+
+        if "client_secret" in secret:
+            return cls(tenant_id, client_id, secret["client_secret"], **overrides)
+
+        if "thumbprint" in secret and "private_key_pem" in secret:
+            return cls.from_thumbprint(
+                tenant_id, client_id,
+                secret["thumbprint"], secret["private_key_pem"],
+                passphrase=secret.get("passphrase"),
+                **overrides,
+            )
+
+        if "pfx_path" in secret:
+            return cls.from_pfx(
+                tenant_id, client_id, secret["pfx_path"],
+                pfx_password=secret.get("pfx_password"),
+                **overrides,
+            )
+
+        if "private_key_pem" in secret and "cert_pem" in secret:
+            return cls.from_pem_cert(
+                tenant_id, client_id,
+                secret["private_key_pem"], secret["cert_pem"],
+                **overrides,
+            )
+
+        raise ValueError(
+            "Segredo do SharePoint não contém credenciais reconhecidas. "
+            "Use client_secret, thumbprint+private_key_pem, pfx_path ou "
+            "private_key_pem+cert_pem."
+        )
+
     # ------------------------------------------------------------------
     # Inicialização interna
     # ------------------------------------------------------------------

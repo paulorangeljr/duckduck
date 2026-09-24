@@ -194,6 +194,130 @@ class DuckAPI:
         self._streaming_functions[name.lower()] = iter_function
 
     # ------------------------------------------------------------------
+    # Auto-registro de wrappers conhecidos (SharePoint, InsightVM, ...)
+    # ------------------------------------------------------------------
+
+    def auto_register(
+        self,
+        services: Dict[str, Dict[str, Any]],
+        secrets: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """
+        Instancia e registra automaticamente wrappers de API conhecidos
+        (ver ``duckduck.registry.SERVICE_REGISTRY``), sem precisar chamar
+        ``register_api_function`` manualmente método a método.
+
+        Parameters
+        ----------
+        services : dict
+            ``{nome: config}``. ``nome`` vira o prefixo das tabelas
+            registradas (``{nome}_{tabela}``) — permite múltiplas
+            instâncias do mesmo wrapper (ex: ``insightvm_prod`` e
+            ``insightvm_dev``).
+
+            ``config`` aceita:
+
+            - ``type`` : str, opcional
+                Chave em ``SERVICE_REGISTRY`` (``"sharepoint"``,
+                ``"insightvm"``). Default: o próprio ``nome``.
+            - ``secret_id`` : str, opcional
+                Nome/ARN do segredo no AWS Secrets Manager — requer
+                ``secrets=`` fornecido. A referência pode ficar
+                hardcoded aqui no código ou vir de env var/config em
+                runtime — ``auto_register`` não faz distinção.
+            - ``credentials`` : dict, opcional
+                Credenciais fornecidas diretamente, sem tocar o AWS
+                Secrets Manager (modo offline). Forneça **ou**
+                ``secret_id`` **ou** ``credentials``, nunca os dois.
+            - demais chaves
+                kwargs extras repassados ao construtor do wrapper (ex:
+                ``hostname``, ``site_path``, ``default_page_size``).
+        secrets : SecretsManager, optional
+            Necessário apenas quando algum serviço usa ``secret_id``.
+
+        Returns
+        -------
+        dict
+            ``{nome: instância}`` — para acessar métodos do wrapper que
+            não viraram tabela (ex: ``instances["sharepoint"].site_by_path``).
+
+        Exemplos
+        --------
+        ::
+
+            from duckduck import DuckAPI, SecretsManager
+
+            duck = DuckAPI()
+            instances = duck.auto_register(
+                {
+                    "sharepoint": {
+                        "secret_id": "prod/sharepoint/duckduck",  # hardcoded
+                        "hostname": "empresa.sharepoint.com",
+                        "site_path": "/teams/meutime",
+                    },
+                    "insightvm": {
+                        "credentials": {  # offline — sem AWS Secrets Manager
+                            "host": "console.local",
+                            "username": "a",
+                            "password": "b",
+                        },
+                    },
+                },
+                secrets=SecretsManager(region_name="us-east-1"),
+            )
+
+            duck.sql("SELECT * FROM sharepoint_list_items WHERE list_name = 'Tarefas'")
+            duck.sql("SELECT * FROM insightvm_assets WHERE hostname = 'web-prod'")
+        """
+        from .registry import SERVICE_REGISTRY
+
+        instances: Dict[str, Any] = {}
+
+        for name, raw_config in services.items():
+            config = dict(raw_config)
+            service_type = config.pop("type", name)
+            spec = SERVICE_REGISTRY.get(service_type)
+            if spec is None:
+                raise ValueError(
+                    f"Serviço '{name}' (type='{service_type}') não é reconhecido. "
+                    f"Disponíveis: {', '.join(SERVICE_REGISTRY)}"
+                )
+
+            secret_id = config.pop("secret_id", None)
+            credentials = config.pop("credentials", None)
+
+            if secret_id and credentials:
+                raise ValueError(
+                    f"'{name}': forneça 'secret_id' OU 'credentials', não ambos."
+                )
+            if secret_id:
+                if secrets is None:
+                    raise ValueError(
+                        f"'{name}' usa secret_id='{secret_id}' mas nenhum "
+                        "SecretsManager foi passado em auto_register(secrets=...)."
+                    )
+                credentials = secrets.get_secret(secret_id)
+            if credentials is None:
+                raise ValueError(
+                    f"'{name}': forneça 'secret_id' (AWS Secrets Manager) "
+                    "ou 'credentials' (offline)."
+                )
+
+            instance = spec.factory(credentials, **config)
+            instances[name] = instance
+
+            for table_name, method_name in spec.tables.items():
+                self.register_api_function(
+                    f"{name}_{table_name}", getattr(instance, method_name)
+                )
+            for table_name, method_name in spec.streaming_tables.items():
+                self.register_streaming_function(
+                    f"{name}_{table_name}", getattr(instance, method_name)
+                )
+
+        return instances
+
+    # ------------------------------------------------------------------
     # Parse de kwargs inline:  func(x=1, y="a")
     # ------------------------------------------------------------------
 

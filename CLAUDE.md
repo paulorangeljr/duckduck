@@ -300,3 +300,65 @@ SELECT * FROM list_items(site_id='abc', list_id='def') WHERE Title = 'Report'
 |---|---|
 | Base | `msal>=1.20` (já em `[dependencies]`) |
 | PFX / PEM cert auth | `cryptography>=41.0` (`pip install "duckduck[cert]"`) |
+
+---
+
+## Auto-registro (`DuckAPI.auto_register`)
+
+Registrar cada método manualmente (`register_api_function`/`register_streaming_function`
+método a método) fica repetitivo quando se quer subir todos os wrappers de
+uma vez. `DuckAPI.auto_register()` instancia os wrappers conhecidos (ver
+`duckduck/registry.py` → `SERVICE_REGISTRY`) e registra todas as tabelas
+automaticamente, resolvendo credenciais de três formas — a referência do
+segredo pode estar hardcoded no código, vir de uma variável de
+ambiente/config em runtime, ou as credenciais podem ser passadas direto
+(offline, sem tocar o AWS Secrets Manager):
+
+```python
+from duckduck import DuckAPI, SecretsManager
+
+duck = DuckAPI()
+instances = duck.auto_register(
+    {
+        "sharepoint": {
+            "secret_id": "prod/sharepoint/duckduck",   # referência hardcoded
+            "hostname": "empresa.sharepoint.com",
+            "site_path": "/teams/meutime",
+        },
+        "insightvm": {
+            "secret_id": os.environ["INSIGHTVM_SECRET_ID"],  # referência em runtime
+        },
+        "insightvm_dev": {
+            "type": "insightvm",       # múltiplas instâncias do mesmo wrapper
+            "credentials": {            # offline — sem AWS Secrets Manager
+                "host": "dev.local", "username": "a", "password": "b",
+            },
+        },
+    },
+    secrets=SecretsManager(region_name="us-east-1"),
+)
+
+duck.sql("SELECT * FROM sharepoint_list_items WHERE list_name = 'Tarefas'")
+duck.sql("SELECT * FROM insightvm_assets WHERE hostname = 'web-prod'")
+```
+
+### Regras
+
+| Concern | Regra |
+|---|---|
+| Prefixo de tabela | Sempre `{nome_no_dict}_{tabela}` — evita colisão quando dois serviços expõem a mesma tabela (ex: `sites` em SharePoint e InsightVM) e permite múltiplas instâncias do mesmo wrapper |
+| `type` | Opcional; default é o próprio `nome`. Use quando o `nome` não bate com uma chave de `SERVICE_REGISTRY` (ex: `insightvm_dev`) |
+| `secret_id` vs `credentials` | Mutuamente exclusivos; `secret_id` requer `secrets=SecretsManager(...)` |
+| Segredo do AWS Secrets Manager | JSON plano com as chaves esperadas pelo `from_secret` do wrapper (`tenant_id`/`client_id`/`client_secret` para SharePoint; `host`/`username`/`password` para InsightVM) |
+| Retorno | `{nome: instância}` — para chamar métodos que não viraram tabela (ex: `instances["sharepoint"].site_by_path(...)`) |
+
+### Adicionando um wrapper ao auto-registro
+
+1. Implemente `Wrapper.from_secret(cls, secret: dict, **overrides) -> "Wrapper"` na classe do wrapper — decide o modo de autenticação a partir das chaves de `secret` e repassa `overrides` (hostname, site_path, default_page_size, etc.) ao construtor.
+2. Acrescente uma entrada em `SERVICE_REGISTRY` (`duckduck/registry.py`) com `factory=Wrapper.from_secret` e os mapas `tables`/`streaming_tables`.
+
+### Dependências
+
+| Feature | Pacote |
+|---|---|
+| AWS Secrets Manager | `boto3>=1.28` (`pip install "duckduck[aws]"`) — não é necessário no modo offline (`credentials=`) |
