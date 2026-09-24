@@ -55,8 +55,9 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import pandas as pd
 
-from .pushdown import Condition
+from .kinds import raw_query
 from .logs import get_logger
+from .pushdown import Condition
 
 logger = get_logger("database")
 
@@ -239,6 +240,7 @@ class SQLDatabase:
         if compiled.params:
             logger.debug("    params: %s", compiled.params)
 
+    @raw_query
     def query(
         self,
         sql: str,

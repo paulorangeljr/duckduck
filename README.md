@@ -355,19 +355,30 @@ print(ask("Which machines communicated with 203.0.113.9?",
 ## Discovering what's registered
 
 ```python
-duck.list_tables()          # pd.DataFrame
-duck.sql("SHOW TABLES").df()
-duck.sql("list all tables").df()
+duck.sql("SHOW TABLES")          # or duck.list_tables() for a pd.DataFrame
 ```
 
-All three return the same thing — one row per registered table, with
-`table_name`, `source` (which connector, or the function's own module for
-a custom one), `endpoint` (its `base_url`/connection string when one
-exists — password redacted), `streaming` (whether `stream()` also works
-for it), `signature`, and `description` (the first line of its
-docstring). Handy right after `auto_register()` to see what actually got
-wired up, or from a notebook where you've lost track of what's been
-registered.
+Everything registered is queryable with `SELECT ... FROM`, but not
+everything is a plain table — the `kind` column says which is which, and
+`usage` shows how to query it:
+
+| `kind` | What it is | `usage` example |
+|---|---|---|
+| `table` | data, selectable as-is | `SELECT * FROM alerts LIMIT 10` |
+| `table function` | data behind required arguments that say *which* data | `SELECT * FROM glue_table(database='<database>', table_name='<table_name>') LIMIT 10` |
+| `catalog` | lists what a source contains — how you find those arguments | `SELECT * FROM glue_tables` |
+| `raw query` | runs a query you write in the source's own language | `SELECT * FROM db_query(sql='<sql>')` |
+
+The other columns: `pushdown` (which WHERE conditions / LIMIT the source
+applies itself — anything else still works, DuckDB filters after
+fetching), `source` (the connector), `endpoint` (URL, connection string
+with the password redacted, or file path) and `description`.
+
+```python
+duck.list_tables(kind="table")                        # only plain tables
+duck.list_tables(kind=["table", "table function"])    # only data
+duck.list_tables(details=True)                        # + streaming, raw Python signature
+```
 
 ## Natural-language search (`duckduck.semantic`)
 

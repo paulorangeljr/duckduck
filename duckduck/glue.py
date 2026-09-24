@@ -45,6 +45,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from .kinds import catalog
 from .lakehouse import LakehouseConnection
 from .pushdown import Condition, LikePattern, require_like
 
@@ -267,6 +268,7 @@ class GlueTable:
             items.extend(page.get(key, []))
         return items
 
+    @catalog
     def databases(self, limit: Optional[int] = None) -> pd.DataFrame:
         """Lists the Glue Data Catalog's databases."""
         rows = [
@@ -281,6 +283,7 @@ class GlueTable:
         df = pd.DataFrame(rows, columns=["database", "description", "location", "created"])
         return df.head(limit) if limit is not None else df
 
+    @catalog
     def tables(
         self,
         database: Optional[str] = None,
@@ -327,6 +330,7 @@ class GlueTable:
                     return pd.DataFrame(rows, columns=_TABLE_COLUMNS)
         return pd.DataFrame(rows, columns=_TABLE_COLUMNS)
 
+    @catalog
     def columns(self, database: str, table_name: str) -> pd.DataFrame:
         """A Glue table's columns (partition keys included), with types and comments."""
         t = self._describe(database, table_name)

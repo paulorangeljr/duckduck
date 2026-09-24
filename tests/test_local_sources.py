@@ -104,7 +104,7 @@ def test_python_factory_with_kwargs_and_pushdown(tmp_path):
     duck = DuckAPI()
     duck.auto_register({"syn": {"connector": "python", "module": path, "kwargs": {"rows": 10}}})
     assert duck.sql("SELECT count(*) AS n FROM syn_items WHERE kind = 'a'").df()["n"].tolist() == [5]
-    listed = duck.list_tables().set_index("table_name").loc["syn_items"]
+    listed = duck.list_tables().set_index("name").loc["syn_items"]
     assert listed["source"] == "Python module" and listed["endpoint"] == path
 
 

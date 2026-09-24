@@ -28,6 +28,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
+from .kinds import catalog
 from .lakehouse import LakehouseConnection
 from .pushdown import Condition
 
@@ -154,6 +155,7 @@ class LocalFiles:
         """``{table_name: callable}`` — what ``auto_register()`` registers."""
         return dict(self._tables)
 
+    @catalog
     def tables(self, limit: Optional[int] = None) -> pd.DataFrame:
         """Lists the discovered tables: name, format, path, size and last modification."""
         rows = []
@@ -174,6 +176,7 @@ class LocalFiles:
         df = pd.DataFrame(rows, columns=["table_name", "format", "path", "files", "size_bytes", "modified"])
         return df.head(limit) if limit is not None else df
 
+    @catalog
     def columns(self, table_name: str) -> pd.DataFrame:
         """A table's columns and DuckDB types (structural ``table_name``)."""
         if table_name not in self._tables:

@@ -279,9 +279,9 @@ def test_structural_where_param_stripped_from_query(duck):
 def test_list_tables_lists_registered_functions(duck):
     df = duck.list_tables()
 
-    assert set(df["table_name"]) == {"assets", "vulns"}
+    assert set(df["name"]) == {"assets", "vulns"}
     assert list(df.columns) == [
-        "table_name", "source", "endpoint", "streaming", "signature", "description",
+        "name", "kind", "usage", "pushdown", "source", "endpoint", "description",
     ]
 
 
@@ -291,7 +291,7 @@ def test_list_tables_flags_streaming_registration(duck):
 
     duck.register_streaming_function("assets", iter_assets)
 
-    df = duck.list_tables().set_index("table_name")
+    df = duck.list_tables(details=True).set_index("name")
     assert bool(df.loc["assets", "streaming"]) is True
     assert bool(df.loc["vulns", "streaming"]) is False
 
@@ -301,7 +301,7 @@ def test_list_tables_empty_when_nothing_registered():
     df = d.list_tables()
     assert len(df) == 0
     assert list(df.columns) == [
-        "table_name", "source", "endpoint", "streaming", "signature", "description",
+        "name", "kind", "usage", "pushdown", "source", "endpoint", "description",
     ]
     d.close()
 
@@ -310,13 +310,13 @@ def test_list_tables_source_for_plain_function_is_its_module():
     """A hand-rolled function (not from a bundled connector) shows its own __module__."""
     d = DuckAPI()
     d.register_api_function("v", lambda: [{"x": 1}])
-    df = d.list_tables().set_index("table_name")
+    df = d.list_tables().set_index("name")
     assert df.loc["v", "source"] == "test_core"
     d.close()
 
 
 def test_list_tables_endpoint_none_for_plain_function(duck):
-    df = duck.list_tables().set_index("table_name")
+    df = duck.list_tables().set_index("name")
     assert df.loc["assets", "endpoint"] is None
 
 
@@ -328,7 +328,7 @@ def test_list_tables_description_uses_docstring_first_line():
         return [{"x": 1}]
 
     d.register_api_function("documented", documented)
-    df = d.list_tables().set_index("table_name")
+    df = d.list_tables().set_index("name")
     assert df.loc["documented", "description"] == "Returns some rows. Second line is ignored."
     d.close()
 
@@ -336,7 +336,7 @@ def test_list_tables_description_uses_docstring_first_line():
 def test_list_tables_description_empty_without_docstring():
     d = DuckAPI()
     d.register_api_function("undocumented", lambda: [{"x": 1}])
-    df = d.list_tables().set_index("table_name")
+    df = d.list_tables().set_index("name")
     assert df.loc["undocumented", "description"] == ""
     d.close()
 
@@ -354,7 +354,7 @@ def test_list_tables_source_and_endpoint_for_bound_method_with_base_url():
     d = DuckAPI()
     d.register_api_function("incidents", FakeConnector().incidents)
 
-    df = d.list_tables().set_index("table_name")
+    df = d.list_tables().set_index("name")
     assert df.loc["incidents", "source"] == "ServiceNow (HTTP API)"
     assert df.loc["incidents", "endpoint"] == "https://example.service-now.com/api/now"
     assert df.loc["incidents", "description"] == "Lists incidents."
@@ -363,13 +363,13 @@ def test_list_tables_source_and_endpoint_for_bound_method_with_base_url():
 
 def test_sql_show_tables_shortcut(duck):
     df = duck.sql("SHOW TABLES").df()
-    assert set(df["table_name"]) == {"assets", "vulns"}
+    assert set(df["name"]) == {"assets", "vulns"}
 
 
 def test_sql_list_tables_shortcut_is_case_insensitive_and_flexible(duck):
     for query in ("list tables", "LIST ALL TABLES", "  Show Tables ; ", "show all tables"):
         df = duck.sql(query).df()
-        assert set(df["table_name"]) == {"assets", "vulns"}
+        assert set(df["name"]) == {"assets", "vulns"}
 
 
 def test_sql_show_tables_does_not_shadow_a_real_table_named_tables(duck):
@@ -475,3 +475,80 @@ def test_stream_inline_structural_param():
     list(d.stream("SELECT * FROM asset_vulns(asset_id=42)"))
     assert pages_received == [42]
     d.close()
+
+
+# ---------------------------------------------------------------------------
+# list_tables(): what each registered name *is*
+# ---------------------------------------------------------------------------
+
+from duckduck.kinds import catalog, raw_query  # noqa: E402
+
+
+class _Kinds:
+    def rows(self, status=None, name_ilike=None, risk_gte=None, limit=None):
+        """Plain data."""
+        return []
+
+    def rows_of(self, account_id: int, where=None, limit=None):
+        """Data behind a structural argument."""
+        return []
+
+    @catalog
+    def listing(self, folder=None, limit=None):
+        """What exists."""
+        return []
+
+    @raw_query
+    def run(self, sql, limit=None):
+        """Your own SQL."""
+        return []
+
+
+@pytest.fixture
+def kinds_duck():
+    k = _Kinds()
+    d = DuckAPI()
+    for name in ("rows", "rows_of", "listing", "run"):
+        d.register_api_function(name, getattr(k, name))
+    yield d
+    d.close()
+
+
+def test_list_tables_kind_usage_and_pushdown(kinds_duck):
+    df = kinds_duck.list_tables()
+    assert df["name"].tolist() == ["rows", "rows_of", "listing", "run"]  # ordered by kind
+    info = df.set_index("name")
+    assert info.loc["rows", "kind"] == "table"
+    assert info.loc["rows", "usage"] == "SELECT * FROM rows LIMIT 10"
+    assert info.loc["rows", "pushdown"] == "status =, name LIKE/ILIKE, risk >=, LIMIT"
+    assert info.loc["rows_of", "kind"] == "table function"
+    assert info.loc["rows_of", "usage"] == "SELECT * FROM rows_of(account_id=<account_id>) LIMIT 10"
+    assert info.loc["rows_of", "pushdown"] == "any column (=, LIKE, <, >...), LIMIT"
+    assert info.loc["listing", "kind"] == "catalog" and info.loc["listing", "usage"] == "SELECT * FROM listing"
+    assert info.loc["run", "kind"] == "raw query" and info.loc["run", "usage"] == "SELECT * FROM run(sql='<sql>')"
+
+
+def test_list_tables_kind_filter_and_details(kinds_duck):
+    assert kinds_duck.list_tables(kind="catalog")["name"].tolist() == ["listing"]
+    assert kinds_duck.list_tables(kind=["table", "raw query"])["name"].tolist() == ["rows", "run"]
+    with pytest.raises(ValueError, match="unknown kind"):
+        kinds_duck.list_tables(kind="view")
+    detailed = kinds_duck.list_tables(details=True)
+    assert {"streaming", "signature"} <= set(detailed.columns)
+
+
+def test_show_tables_has_the_same_columns(kinds_duck):
+    assert list(kinds_duck.sql("SHOW TABLES").df().columns) == list(kinds_duck.list_tables().columns)
+
+
+def test_bundled_connectors_mark_catalogs_and_raw_queries():
+    from duckduck.adx import DataExplorer
+    from duckduck.database import SQLDatabase
+    from duckduck.glue import GlueTable
+    from duckduck.kinds import kind_of
+    from duckduck.local_files import LocalFiles
+
+    assert kind_of(GlueTable.tables) == kind_of(GlueTable.columns) == kind_of(GlueTable.databases) == "catalog"
+    assert kind_of(LocalFiles.tables) == kind_of(DataExplorer.tables) == "catalog"
+    assert kind_of(DataExplorer.query) == kind_of(SQLDatabase.query) == "raw query"
+    assert kind_of(GlueTable.table) == kind_of(SQLDatabase.table) == "table function"

@@ -57,8 +57,9 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import pandas as pd
 
-from .pushdown import Condition, parse_like
+from .kinds import catalog, raw_query
 from .logs import get_logger
+from .pushdown import Condition, parse_like
 
 logger = get_logger("adx")
 
@@ -368,6 +369,7 @@ class DataExplorer:
         """
         return self._run(self._table_kql(table_name, where, limit))
 
+    @raw_query
     def query(self, kql: str, limit: Optional[int] = None) -> pd.DataFrame:
         """
         Runs a KQL query as-is (read-only: control commands are refused).
@@ -385,6 +387,7 @@ class DataExplorer:
             kql = f"{kql.rstrip().rstrip(';')}\n| take {int(limit)}"
         return self._run(kql)
 
+    @catalog
     def tables(self, folder: Optional[str] = None, limit: Optional[int] = None) -> pd.DataFrame:
         """
         Lists the database's tables: name, folder, description, row count,
@@ -404,6 +407,7 @@ class DataExplorer:
         df = df.sort_values("table_name").reset_index(drop=True)
         return df.head(limit) if limit is not None else df
 
+    @catalog
     def columns(self, table_name: str) -> pd.DataFrame:
         """A table's columns and their KQL types (structural ``table_name``)."""
         schema = self._schema(table_name)

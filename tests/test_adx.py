@@ -274,7 +274,7 @@ def test_auto_register_adx(fake_sdk):
             "authentication": {"type": "local", "tenant_id": "t", "client_id": "c", "client_secret": "s"},
         },
     })
-    listed = duck.list_tables().set_index("table_name")
+    listed = duck.list_tables().set_index("name")
     assert {"adx_table", "adx_query", "adx_tables", "adx_columns"} <= set(listed.index)
     assert listed.loc["adx_table", "source"] == "Azure Data Explorer (KQL)"
     assert listed.loc["adx_table", "endpoint"] == "https://mycluster.westeurope.kusto.windows.net"

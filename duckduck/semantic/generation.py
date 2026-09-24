@@ -227,7 +227,7 @@ class CatalogGenerator:
         if self.sample_rows > 0 and not df.empty:
             sample = df.head(self.sample_rows).astype(str).apply(lambda col: col.str.slice(0, 120))
             rows = sample.to_dict(orient="records")
-        described = self.duck.list_tables().set_index("table_name")
+        described = self.duck.list_tables().set_index("name")
         meta = described.loc[spec.table.lower()] if spec.table.lower() in described.index else None
         return {
             "source_name": spec.name,

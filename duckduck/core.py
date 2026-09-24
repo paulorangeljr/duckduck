@@ -1188,64 +1188,87 @@ class DuckAPI:
             return ""
         return doc.strip().splitlines()[0].strip()
 
-    def list_tables(self) -> pd.DataFrame:
+    def list_tables(self, kind=None, details: bool = False) -> pd.DataFrame:
         """
-        Lists every table currently registered via
-        ``register_api_function()`` / ``auto_register()``.
+        Lists everything registered via ``register_api_function()`` /
+        ``auto_register()`` — and, crucially, *what each one is*, since not
+        every name is a plain table (see ``duckduck.kinds``):
 
-        Useful to check what's available without digging through the code
-        that set up the ``DuckAPI`` instance — especially after
-        ``auto_register()``, which can register many tables at once.
+        - ``table``: data you can ``SELECT`` as-is.
+        - ``table function``: data behind required arguments —
+          ``SELECT * FROM glue_table(database='…', table_name='…')``.
+        - ``catalog``: lists what a source contains (tables, columns...),
+          which is how you find those arguments.
+        - ``raw query``: runs a query written in the source's own language.
+
+        ``SHOW TABLES`` / ``LIST TABLES`` in ``sql()`` return the same.
+
+        Parameters
+        ----------
+        kind : str or list of str, optional
+            Keep only these kinds, e.g. ``kind="table"`` or
+            ``kind=["table", "table function"]``.
+        details : bool
+            Add ``streaming`` (whether ``stream()`` works for it) and
+            ``signature`` (the raw Python signature).
 
         Returns
         -------
         pd.DataFrame
-            One row per table, with columns:
+            One row per registered name, ordered by kind then name:
 
-            - ``table_name``: name used in ``sql()``/``stream()`` queries.
-            - ``source``: what kind of thing this is — e.g. ``"SharePoint
-              (HTTP API)"``, ``"SQL database"``, ``"S3 / Glue Data
-              Catalog"`` for a bundled connector; the function's own
-              ``__module__`` for anything else (a hand-rolled wrapper, a
-              notebook lambda, ...).
-            - ``endpoint``: best-effort "where this actually points at" —
-              e.g. a SharePoint/ServiceNow/InsightVM/Axonius wrapper's
-              ``base_url``, or a ``database`` connector's connection URL
-              (password redacted). ``None`` when nothing recognizable
-              could be found (most custom functions, and the ``glue``/
-              ``blob_storage`` connectors, which don't have one fixed
-              endpoint to show).
-            - ``streaming``: whether ``stream()`` also works for this
-              table (i.e. a matching ``register_streaming_function()``
-              call was made).
-            - ``signature``: the registered function's signature, showing
-              which parameters are available for inline calls
-              (``func(param=val)``) or ``WHERE`` push-down.
-            - ``description``: first line of the function's docstring —
-              every bundled connector method documents what it does and
-              which filters push down, so this is usually a real
-              one-line summary, not just a repeat of the name.
-
-        Examples
-        --------
-        ::
-
-            duck.auto_register({"sharepoint": {"secret_id": "..."}}, secrets=secrets)
-            duck.list_tables().df()  # or: duck.sql("SHOW TABLES").df()
+            - ``name``: what goes after ``FROM``.
+            - ``kind``: one of the four above.
+            - ``usage``: a ready-to-edit example query, required arguments
+              included as ``'<placeholders>'``.
+            - ``pushdown``: which WHERE conditions / LIMIT the source applies
+              itself (everything else still works: DuckDB filters after
+              fetching).
+            - ``source``: the connector (``"ServiceNow (HTTP API)"``,
+              ``"Local files"``...) or, for anything else, the function's
+              module.
+            - ``endpoint``: where it points — base URL, connection string
+              (password redacted), file path — when there's one to show.
+            - ``description``: first line of the function's docstring.
         """
-        rows = [
-            {
-                "table_name": name,
+        from .kinds import ORDER, describe
+
+        wanted = None
+        if kind is not None:
+            wanted = {kind} if isinstance(kind, str) else set(kind)
+            unknown = wanted - set(ORDER)
+            if unknown:
+                raise ValueError(f"unknown kind(s) {sorted(unknown)} — use: {', '.join(ORDER)}")
+
+        rows = []
+        for name, fn in self.functions.items():
+            info = describe(name, fn)
+            if wanted is not None and info["kind"] not in wanted:
+                continue
+            row = {
+                "name": name,
+                **info,
                 "source": self._describe_source(fn),
                 "endpoint": self._describe_endpoint(fn),
-                "streaming": name in self._streaming_functions,
-                "signature": str(inspect.signature(fn)),
                 "description": self._describe_function(fn),
             }
-            for name, fn in self.functions.items()
-        ]
-        columns = ["table_name", "source", "endpoint", "streaming", "signature", "description"]
-        return pd.DataFrame(rows, columns=columns)
+            if details:
+                row["streaming"] = name in self._streaming_functions
+                try:
+                    row["signature"] = str(inspect.signature(fn))
+                except (TypeError, ValueError):
+                    row["signature"] = None
+            rows.append(row)
+
+        columns = ["name", "kind", "usage", "pushdown", "source", "endpoint", "description"]
+        if details:
+            columns += ["streaming", "signature"]
+        df = pd.DataFrame(rows, columns=columns)
+        if not df.empty:
+            rank = {k: i for i, k in enumerate(ORDER)}
+            df = df.sort_values(["kind", "name"], key=lambda col: col.map(rank) if col.name == "kind" else col)
+            df = df.reset_index(drop=True)
+        return df
 
     def sql(self, query: str):
         """
