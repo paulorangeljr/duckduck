@@ -56,6 +56,23 @@
         "database": "$secret.dbname",
         "query": { "driver": "ODBC Driver 17 for SQL Server" }
       }
+    },
+    "servicenow": {
+      "connector": "servicenow",
+      "authentication": {
+        "type": "aws",
+        "region_name": "us-east-1",
+        "secret_id": "prod/servicenow"
+      }
+    },
+    "axonius": {
+      "connector": "axonius",
+      "authentication": {
+        "type": "local",
+        "instance": "axonius.company.com",
+        "api_key": "...",
+        "api_secret": "..."
+      }
     }
   }
 }

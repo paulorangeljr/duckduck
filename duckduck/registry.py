@@ -2,7 +2,8 @@
 Central registry of the API wrappers supported by
 ``DuckAPI.auto_register`` (see ``core.py``).
 
-Each entry maps a "type" (``"sharepoint"``, ``"insightvm"``, ``"database"``) to:
+Each entry maps a "type" (``"sharepoint"``, ``"insightvm"``, ``"database"``,
+``"servicenow"``, ``"axonius"``) to:
 
 - ``factory``          : classmethod that builds the instance from a
                           credentials dict (``Wrapper.from_secret``)
@@ -16,8 +17,10 @@ becomes available in ``DuckAPI.auto_register()``.
 
 from typing import Any, Callable, Dict, NamedTuple
 
+from .axonius import Axonius
 from .database import SQLDatabase
 from .rapid7 import InsightVM
+from .servicenow import ServiceNow
 from .sharepoint import SharePoint
 
 
@@ -83,6 +86,36 @@ SERVICE_REGISTRY: Dict[str, ServiceSpec] = {
         streaming_tables={
             "table": "iter_table",
             "query": "iter_query",
+        },
+    ),
+    "servicenow": ServiceSpec(
+        factory=ServiceNow.from_secret,
+        tables={
+            "table": "table",
+            "incidents": "incidents",
+            "problems": "problems",
+            "change_requests": "change_requests",
+            "users": "users",
+            "cmdb_ci": "cmdb_ci",
+        },
+        streaming_tables={
+            "table": "iter_table",
+            "incidents": "iter_incidents",
+            "problems": "iter_problems",
+            "change_requests": "iter_change_requests",
+            "users": "iter_users",
+            "cmdb_ci": "iter_cmdb_ci",
+        },
+    ),
+    "axonius": ServiceSpec(
+        factory=Axonius.from_secret,
+        tables={
+            "devices": "devices",
+            "users": "users",
+        },
+        streaming_tables={
+            "devices": "iter_devices",
+            "users": "iter_users",
         },
     ),
 }

@@ -775,3 +775,58 @@ def test_auto_register_database_connector(monkeypatch):
     assert "sqlserver_table" in duck._streaming_functions
     assert instances["sqlserver"] is not None
     duck.close()
+
+
+# ---------------------------------------------------------------------------
+# connector = "servicenow"
+# ---------------------------------------------------------------------------
+
+
+def test_auto_register_servicenow_connector():
+    duck = DuckAPI()
+    instances = duck.auto_register({
+        "snow": {
+            "connector": "servicenow",
+            "authentication": {
+                "type": "local",
+                "instance": "dev12345",
+                "username": "admin",
+                "password": "secret",
+            },
+        },
+    })
+
+    assert instances["snow"].base_url == "https://dev12345.service-now.com/api/now"
+    assert "snow_incidents" in duck.functions
+    assert "snow_problems" in duck.functions
+    assert "snow_change_requests" in duck.functions
+    assert "snow_users" in duck.functions
+    assert "snow_cmdb_ci" in duck.functions
+    assert "snow_table" in duck.functions
+    assert "snow_incidents" in duck._streaming_functions
+    duck.close()
+
+
+# ---------------------------------------------------------------------------
+# connector = "axonius"
+# ---------------------------------------------------------------------------
+
+
+def test_auto_register_axonius_connector():
+    duck = DuckAPI()
+    instances = duck.auto_register({
+        "axonius": {
+            "authentication": {
+                "type": "local",
+                "instance": "axonius.example.com",
+                "api_key": "key123",
+                "api_secret": "secret456",
+            },
+        },
+    })
+
+    assert instances["axonius"].base_url == "https://axonius.example.com/api"
+    assert "axonius_devices" in duck.functions
+    assert "axonius_users" in duck.functions
+    assert "axonius_devices" in duck._streaming_functions
+    duck.close()
