@@ -84,7 +84,9 @@ Never pass `limit` as `page_size` to `_paginate`-style loops — that fetches ev
 
 ### Discovering registered tables
 
-`DuckAPI.list_tables()` returns a DataFrame (`table_name`, `streaming`, `signature`) for whatever's currently registered — handy after `auto_register()`, which can add many tables in one call. `sql()` intercepts `SHOW TABLES` / `LIST TABLES` (optionally `ALL`, case-insensitive, optional trailing `;`) as a shortcut for it, matched via `DuckAPI._LIST_TABLES_RE` **before** the regular push-down/rewrite path runs — so it never touches functions named literally `tables`, `show`, etc. (those still resolve as normal `FROM tables` queries).
+`DuckAPI.list_tables()` returns a DataFrame (`table_name`, `source`, `endpoint`, `streaming`, `signature`, `description`) for whatever's currently registered — handy after `auto_register()`, which can add many tables in one call. `sql()` intercepts `SHOW TABLES` / `LIST TABLES` (optionally `ALL`, case-insensitive, optional trailing `;`) as a shortcut for it, matched via `DuckAPI._LIST_TABLES_RE` **before** the regular push-down/rewrite path runs — so it never touches functions named literally `tables`, `show`, etc. (those still resolve as normal `FROM tables` queries).
+
+`source`/`endpoint`/`description` are all best-effort introspection over the registered function, never anything tracked at registration time — `_describe_source` maps `fn.__module__` through `_CONNECTOR_SOURCE_LABELS` for a bundled connector (e.g. `"duckduck.servicenow"` → `"ServiceNow (HTTP API)"`), falling back to the module name itself for anything else; `_describe_endpoint` looks at `fn.__self__` (the bound instance, for a bound method) for a `base_url` attribute (every HTTP wrapper has one) or a SQLAlchemy `engine.url` (password redacted via `render_as_string(hide_password=True)`), returning `None` when neither is found (plain functions, `glue`/`blob_storage`, which have no single fixed endpoint); `_describe_function` is just the first line of `inspect.getdoc(fn)`. Adding a new bundled connector: add its module to `_CONNECTOR_SOURCE_LABELS` so it gets a proper `source` label instead of falling back to its raw module path.
 
 ```python
 duck.list_tables()          # pd.DataFrame directly
@@ -382,6 +384,12 @@ This resolution lives in `DuckAPI._resolve_authentication`, and only touches the
 ### Secret backends and caching
 
 `auto_register(secrets=...)` takes an optional `{"aws": <SecretsManager>, "azure": <AzureKeyVaultSecrets>}` override dict — when a service's `authentication.type` has a matching entry, that instance is used as-is (handy for tests, or to reuse a client across calls). Otherwise `DuckAPI._get_secrets_backend` builds one automatically and caches it per distinct `("aws", region_name, profile_name)` / `("azure", vault_url, tenant_id)` key, so N services with the same region+profile (or vault+tenant) share one client, while different ones each get their own.
+
+### Resilience: `on_error`
+
+`on_error="raise"` (default) is unchanged — a bad service raises immediately and stops `auto_register()` cold. `on_error="warn"` wraps each service's entire block (connector lookup, `authentication` resolution, `from_secret`, table/streaming registration) in try/except: a failure becomes a `RuntimeWarning` naming the service and the underlying exception, that service is skipped, and every other service still registers normally. A JSON config file's top-level `"on_error"` key is the default when the parameter isn't passed explicitly; passing `on_error=` always wins over that.
+
+**Gotcha this warning had to work around**: every one of these warnings is raised from the exact same `warnings.warn(...)` call site (one line in `auto_register`). Python's default filter shows only the *first* occurrence of a given `(message, category, module, lineno)` per process — so a second identical failure (retrying a script/notebook cell against the same still-broken connector, or two services failing with the same message) would otherwise silently produce **no warning at all**. The fix is to scope `warnings.simplefilter("always", RuntimeWarning)` inside a `catch_warnings()` block around just this one `warnings.warn()` call, so it always displays regardless of `__warningregistry__` state or the caller's own filters. `tests/test_auto_register.py::test_on_error_warn_fires_every_time_even_for_identical_repeated_failures` guards this specifically — it deliberately avoids `pytest.warns()`/`recwarn`, since both reset filters to `"always"` internally and would mask a regression here even without the fix.
 
 ### Loading from a JSON file (`duck.auto_register()` with no arguments)
 

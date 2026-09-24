@@ -288,10 +288,13 @@ class DuckAPI:
               ``auto_register()`` stops immediately — nothing gets
               registered from that call.
             - ``"warn"``: the exception is caught, turned into a
-              ``RuntimeWarning`` naming the service and what went wrong,
-              and that service is skipped — every other service is still
-              registered normally, so one dead connector doesn't take
-              down the rest. Check the return value's keys (or
+              ``RuntimeWarning`` naming the service and what went wrong
+              (always displayed, even on a repeat of the exact same
+              failure — Python's own default filter would otherwise
+              silently show it only once per process), and that service
+              is skipped — every other service is still registered
+              normally, so one dead connector doesn't take down the
+              rest. Check the return value's keys (or
               ``list_tables()``) to see what actually made it.
 
             When ``services`` is loaded from a JSON file, a top-level
@@ -421,12 +424,22 @@ class DuckAPI:
                     )
             except Exception as exc:
                 if on_error == "warn":
-                    warnings.warn(
-                        f"auto_register: service '{name}' failed to initialize "
-                        f"({exc.__class__.__name__}: {exc}) — skipping.",
-                        RuntimeWarning,
-                        stacklevel=2,
-                    )
+                    # Every warning here shares the same call site (this line), so
+                    # Python's default filter — "show the first occurrence per
+                    # (message, category, module, lineno)" — would silently
+                    # swallow a repeat of the *same* failure on a later call (e.g.
+                    # retrying a script/notebook cell against the same bad
+                    # connector). Force this one to always display regardless of
+                    # what's already in __warningregistry__ or the caller's own
+                    # filters.
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("always", RuntimeWarning)
+                        warnings.warn(
+                            f"auto_register: service '{name}' failed to initialize "
+                            f"({exc.__class__.__name__}: {exc}) — skipping.",
+                            RuntimeWarning,
+                            stacklevel=2,
+                        )
                     continue
                 raise
             instances[name] = instance
@@ -819,6 +832,62 @@ class DuckAPI:
     #: recognizes for ``list_tables()``.
     _LIST_TABLES_RE = re.compile(r"^\s*(SHOW|LIST)(\s+ALL)?\s+TABLES\s*;?\s*$", re.IGNORECASE)
 
+    #: Maps a bundled connector's module name to a human-readable label,
+    #: used by ``list_tables()``'s ``source`` column. A function registered
+    #: from outside these modules (a hand-rolled wrapper, a lambda in a
+    #: notebook, ...) falls back to its own ``__module__``.
+    _CONNECTOR_SOURCE_LABELS = {
+        "duckduck.sharepoint": "SharePoint (HTTP API)",
+        "duckduck.rapid7": "InsightVM (HTTP API)",
+        "duckduck.servicenow": "ServiceNow (HTTP API)",
+        "duckduck.axonius": "Axonius (HTTP API)",
+        "duckduck.database": "SQL database",
+        "duckduck.glue": "S3 / Glue Data Catalog",
+        "duckduck.blob_storage": "Azure Blob Storage",
+    }
+
+    @classmethod
+    def _describe_source(cls, fn: Any) -> str:
+        """Human-readable label for what kind of thing a registered function is."""
+        module = getattr(fn, "__module__", None) or ""
+        for prefix, label in cls._CONNECTOR_SOURCE_LABELS.items():
+            if module == prefix or module.startswith(prefix + "."):
+                return label
+        return module or "custom function"
+
+    @staticmethod
+    def _describe_endpoint(fn: Any) -> Optional[str]:
+        """
+        Best-effort "where does this actually point at" for a registered
+        function, by inspecting the bound instance behind it (``fn.__self__``
+        for a bound method) for the attributes the bundled connectors
+        expose. Returns ``None`` when nothing recognizable is found —
+        never raises, since this is purely informational.
+        """
+        instance = getattr(fn, "__self__", None)
+        if instance is None:
+            return None
+
+        base_url = getattr(instance, "base_url", None)
+        if base_url:
+            return str(base_url)
+
+        engine = getattr(instance, "engine", None)
+        url = getattr(engine, "url", None) if engine is not None else None
+        if url is not None:
+            render = getattr(url, "render_as_string", None)
+            return render(hide_password=True) if render else str(url)
+
+        return None
+
+    @staticmethod
+    def _describe_function(fn: Any) -> str:
+        """First line of the function's docstring, or "" if it has none."""
+        doc = inspect.getdoc(fn)
+        if not doc:
+            return ""
+        return doc.strip().splitlines()[0].strip()
+
     def list_tables(self) -> pd.DataFrame:
         """
         Lists every table currently registered via
@@ -834,12 +903,28 @@ class DuckAPI:
             One row per table, with columns:
 
             - ``table_name``: name used in ``sql()``/``stream()`` queries.
+            - ``source``: what kind of thing this is — e.g. ``"SharePoint
+              (HTTP API)"``, ``"SQL database"``, ``"S3 / Glue Data
+              Catalog"`` for a bundled connector; the function's own
+              ``__module__`` for anything else (a hand-rolled wrapper, a
+              notebook lambda, ...).
+            - ``endpoint``: best-effort "where this actually points at" —
+              e.g. a SharePoint/ServiceNow/InsightVM/Axonius wrapper's
+              ``base_url``, or a ``database`` connector's connection URL
+              (password redacted). ``None`` when nothing recognizable
+              could be found (most custom functions, and the ``glue``/
+              ``blob_storage`` connectors, which don't have one fixed
+              endpoint to show).
             - ``streaming``: whether ``stream()`` also works for this
               table (i.e. a matching ``register_streaming_function()``
               call was made).
             - ``signature``: the registered function's signature, showing
               which parameters are available for inline calls
               (``func(param=val)``) or ``WHERE`` push-down.
+            - ``description``: first line of the function's docstring —
+              every bundled connector method documents what it does and
+              which filters push down, so this is usually a real
+              one-line summary, not just a repeat of the name.
 
         Examples
         --------
@@ -851,12 +936,16 @@ class DuckAPI:
         rows = [
             {
                 "table_name": name,
+                "source": self._describe_source(fn),
+                "endpoint": self._describe_endpoint(fn),
                 "streaming": name in self._streaming_functions,
                 "signature": str(inspect.signature(fn)),
+                "description": self._describe_function(fn),
             }
             for name, fn in self.functions.items()
         ]
-        return pd.DataFrame(rows, columns=["table_name", "streaming", "signature"])
+        columns = ["table_name", "source", "endpoint", "streaming", "signature", "description"]
+        return pd.DataFrame(rows, columns=columns)
 
     def sql(self, query: str):
         """

@@ -280,7 +280,9 @@ def test_list_tables_lists_registered_functions(duck):
     df = duck.list_tables()
 
     assert set(df["table_name"]) == {"assets", "vulns"}
-    assert list(df.columns) == ["table_name", "streaming", "signature"]
+    assert list(df.columns) == [
+        "table_name", "source", "endpoint", "streaming", "signature", "description",
+    ]
 
 
 def test_list_tables_flags_streaming_registration(duck):
@@ -298,7 +300,64 @@ def test_list_tables_empty_when_nothing_registered():
     d = DuckAPI()
     df = d.list_tables()
     assert len(df) == 0
-    assert list(df.columns) == ["table_name", "streaming", "signature"]
+    assert list(df.columns) == [
+        "table_name", "source", "endpoint", "streaming", "signature", "description",
+    ]
+    d.close()
+
+
+def test_list_tables_source_for_plain_function_is_its_module():
+    """A hand-rolled function (not from a bundled connector) shows its own __module__."""
+    d = DuckAPI()
+    d.register_api_function("v", lambda: [{"x": 1}])
+    df = d.list_tables().set_index("table_name")
+    assert df.loc["v", "source"] == "test_core"
+    d.close()
+
+
+def test_list_tables_endpoint_none_for_plain_function(duck):
+    df = duck.list_tables().set_index("table_name")
+    assert df.loc["assets", "endpoint"] is None
+
+
+def test_list_tables_description_uses_docstring_first_line():
+    d = DuckAPI()
+
+    def documented(limit=None):
+        """Returns some rows. Second line is ignored."""
+        return [{"x": 1}]
+
+    d.register_api_function("documented", documented)
+    df = d.list_tables().set_index("table_name")
+    assert df.loc["documented", "description"] == "Returns some rows. Second line is ignored."
+    d.close()
+
+
+def test_list_tables_description_empty_without_docstring():
+    d = DuckAPI()
+    d.register_api_function("undocumented", lambda: [{"x": 1}])
+    df = d.list_tables().set_index("table_name")
+    assert df.loc["undocumented", "description"] == ""
+    d.close()
+
+
+def test_list_tables_source_and_endpoint_for_bound_method_with_base_url():
+    """A registered bound method exposing base_url (the HTTP-wrapper convention) shows it."""
+    class FakeConnector:
+        base_url = "https://example.service-now.com/api/now"
+
+        def incidents(self, limit=None):
+            """Lists incidents."""
+            return [{"number": "INC0001"}]
+
+    FakeConnector.incidents.__module__ = "duckduck.servicenow"
+    d = DuckAPI()
+    d.register_api_function("incidents", FakeConnector().incidents)
+
+    df = d.list_tables().set_index("table_name")
+    assert df.loc["incidents", "source"] == "ServiceNow (HTTP API)"
+    assert df.loc["incidents", "endpoint"] == "https://example.service-now.com/api/now"
+    assert df.loc["incidents", "description"] == "Lists incidents."
     d.close()
 
 

@@ -1,6 +1,7 @@
 """Unit tests for DuckAPI.auto_register (automatic wrapper instantiation)."""
 
 import json
+import warnings
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -949,6 +950,33 @@ def test_on_error_warn_skips_broken_service_and_registers_the_rest():
     assert "insightvm_assets" in duck.functions
     assert "broken_assets" not in duck.functions
     duck.close()
+
+
+def test_on_error_warn_fires_every_time_even_for_identical_repeated_failures():
+    """
+    Regression test for a real bug: warnings.warn's default filter shows a
+    given (message, category, module, lineno) only once per process via
+    __warningregistry__, so a repeat of the exact same failure (retrying a
+    script/notebook cell against the same bad connector) silently produced
+    no warning at all on the second and later calls.
+
+    Deliberately avoids pytest.warns()/recwarn here: both reset the
+    warning filters to "always" internally, which would mask this bug
+    even without the fix (auto_register wrapping its own warnings.warn in
+    catch_warnings()+simplefilter("always")) -- this test instead mimics
+    a real caller's default filter state via simplefilter("default").
+    """
+    broken_config = {"broken": {"connector": "does_not_exist", "authentication": {"type": "local"}}}
+
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("default")
+        for _ in range(3):
+            duck = DuckAPI()
+            duck.auto_register(broken_config, on_error="warn")
+            duck.close()
+
+    runtime_warnings = [w for w in recorded if issubclass(w.category, RuntimeWarning)]
+    assert len(runtime_warnings) == 3
 
 
 def test_on_error_warn_message_names_service_and_exception():

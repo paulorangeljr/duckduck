@@ -292,14 +292,19 @@ every example above) always skips the file lookup.
 ## Discovering what's registered
 
 ```python
-duck.list_tables()          # pd.DataFrame: table_name, streaming, signature
+duck.list_tables()          # pd.DataFrame
 duck.sql("SHOW TABLES").df()
 duck.sql("list all tables").df()
 ```
 
-All three return the same thing — handy right after `auto_register()` to
-see what actually got wired up, or from a notebook where you've lost track
-of what's been registered.
+All three return the same thing — one row per registered table, with
+`table_name`, `source` (which connector, or the function's own module for
+a custom one), `endpoint` (its `base_url`/connection string when one
+exists — password redacted), `streaming` (whether `stream()` also works
+for it), `signature`, and `description` (the first line of its
+docstring). Handy right after `auto_register()` to see what actually got
+wired up, or from a notebook where you've lost track of what's been
+registered.
 
 ## Adding your own API wrapper
 
