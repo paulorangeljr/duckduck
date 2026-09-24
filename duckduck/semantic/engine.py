@@ -57,6 +57,24 @@ class SearchResult:
     def sources(self) -> List[ScoredSource]:
         return self.intent.candidate_sources if self.intent else []
 
+    def report(self) -> str:
+        """
+        Human-readable summary — exactly what ``python -m duckduck.semantic
+        ask`` prints: status, every decision with its probability, then the
+        clarification or the SQL and the results.
+        """
+        lines = [f"[{self.status}] ({self.elapsed_ms:.0f} ms)"]
+        for d in self.decisions:
+            lines.append(f"  {d.kind:<24} {str(d.subject)[:40]:<40} {str(d.answer):<20} {d.probability:.2f}")
+        if self.clarification:
+            lines += ["", self.clarification]
+            return "\n".join(lines)
+        if self.sql:
+            lines += ["", self.sql]
+        if self.results is not None:
+            lines += ["", self.results.to_string(index=False)]
+        return "\n".join(lines)
+
     def to_dict(self) -> Dict[str, Any]:
         """JSON-friendly shape (``POST /search`` response)."""
         return {

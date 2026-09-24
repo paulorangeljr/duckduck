@@ -339,8 +339,18 @@ duck.sql("SELECT a.hostname, o.owner FROM assets a JOIN owners o ON a.ip = o.ip 
 ```
 
 `table_prefix: ""` keeps bare table names (the default prefixes them with
-the service name). The semantic CLI runs the same way:
-`python -m duckduck.semantic --config examples/semantic/duckduck.local.json ask "Which machines communicated with 203.0.113.9?"`.
+the service name). Semantic search runs fully offline the same way:
+
+```bash
+python -m duckduck.semantic --config examples/semantic/duckduck.local.json ask "Which machines communicated with 203.0.113.9?"
+```
+
+```python
+from duckduck.semantic import ask
+
+print(ask("Which machines communicated with 203.0.113.9?",
+          config_path="examples/semantic/duckduck.local.json").report())
+```
 
 ## Discovering what's registered
 
@@ -398,6 +408,9 @@ the same local/AWS/Azure `authentication` blocks the connectors use:
   semantic catalog from your registered tables and extracts values from
   questions (`extractor.type: "llm"`). You can replace every system prompt.
 
+Every command works from the terminal **and** from Python — the CLI is a
+thin wrapper over the same functions, so both run identical code:
+
 ```bash
 python -m duckduck.semantic generate-catalog   # draft semantic_catalog.yaml, then review it
 python -m duckduck.semantic ask "Which users accessed github in the last 24hrs?"
@@ -405,7 +418,41 @@ python -m duckduck.semantic jev-check          # verify the Jev key/network
 ```
 
 ```python
-search = SemanticSearch.from_config(duck)      # reads the semantic section
+from duckduck.semantic import ask, generate_catalog, jev_check
+
+result = generate_catalog()                    # writes semantic_catalog.yaml
+print(result.summary())                        # what the CLI prints (+ result.warnings, result.catalog)
+
+result = ask("Which users accessed github in the last 24hrs?")
+print(result.report())                         # what the CLI prints
+result.results                                 # the answer as a pd.DataFrame
+result.sql, result.decisions                   # the SQL that ran, every judgment
+
+print(jev_check().ranked())                    # raises if the key/network/parsing fails
+```
+
+| CLI | Python |
+|---|---|
+| `ask "..."` | `ask("...")` → `SearchResult` (`.report()`, `.results`, `.sql`, `.decisions`) |
+| `ask "..." --plan-only` | `ask("...", execute=False)` |
+| `ask "..." --json` | `ask("...").to_dict()` |
+| `generate-catalog` | `generate_catalog()` → `GenerationResult` (`.summary()`, `.catalog`, `.warnings`, `.path`) |
+| `generate-catalog --out x.yaml` | `generate_catalog(out="x.yaml")` (`write=False` to keep it in memory) |
+| `jev-check` | `jev_check()` → `Classification` |
+| `--config path` | `config_path="path"` |
+| `-v` / `-v debug` | `verbose="info"` / `verbose="debug"` |
+
+Each call builds a `DuckAPI` from the config's `services`. In a notebook,
+build it once and pass it along instead:
+
+```python
+from duckduck.semantic import SemanticSearch, ask, connect
+
+duck = connect()                               # DuckAPI + auto_register() from duckduck.json
+ask("Which users accessed github in the last 24hrs?", duck=duck)
+
+search = SemanticSearch.from_config(duck)      # or keep the whole pipeline around
+search.search("Which hosts queried example.com?")
 ```
 
 See `examples/semantic/catalog.yaml` for the catalog format and the

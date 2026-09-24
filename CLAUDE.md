@@ -598,6 +598,8 @@ python -m duckduck.semantic ask "Which users accessed github in the last 24hrs?"
 python -m duckduck.semantic jev-check                 # one real Jev call: key + network + parsing
 ```
 
+**CLI ↔ Python parity**: every command is a public function in `commands.py` (`ask`, `generate_catalog`, `jev_check`, plus `connect` for the DuckAPI they start from), exported from `duckduck.semantic`; `__main__.py` only parses arguments and prints `SearchResult.report()` / `GenerationResult.summary()` — the same strings a script gets. Each subparser records its function as `python=` in `set_defaults`; `tests/test_commands.py` checks every subcommand has one, that the CLI and the function produce the same output, and that every `python -m duckduck.semantic <cmd>` in README.md has its Python equivalent documented. Adding a command: write the function in `commands.py` first, then the subparser, then both in the README table.
+
 ### Example + evaluation
 
 `examples/semantic/catalog.yaml` (5 security sources), `sample_sources.py` (in-memory data registered in DuckAPI), `evaluation.json` (the 6 MVP questions), `demo.py` (`python examples/semantic/demo.py`). Tests load these same files via `tests/semantic_helpers.py`, so the example can't rot. Catalog field names are post-normalization column names (DuckAPI turns `.` into `_`); use `column:` when the logical name differs.

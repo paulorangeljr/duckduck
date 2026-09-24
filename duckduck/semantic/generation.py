@@ -156,6 +156,8 @@ class TableSpec(BaseModel):
 class GenerationResult:
     catalog: Catalog
     warnings: List[str] = field(default_factory=list)
+    #: Where the YAML was written, once it has been.
+    path: Optional[str] = None
 
     def to_yaml(self) -> str:
         import yaml
@@ -172,6 +174,14 @@ class GenerationResult:
     def write(self, path: str) -> None:
         with open(path, "w", encoding="utf-8") as f:
             f.write(self.to_yaml())
+        self.path = path
+
+    def summary(self) -> str:
+        """What ``python -m duckduck.semantic generate-catalog`` prints."""
+        where = f"wrote {self.path}: " if self.path else ""
+        lines = [f"{where}{len(self.catalog.sources)} sources, {len(self.catalog.relationships)} relationships"]
+        lines += [f"  note: {w}" for w in self.warnings]
+        return "\n".join(lines)
 
 
 class CatalogGenerator:

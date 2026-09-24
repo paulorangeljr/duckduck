@@ -15,6 +15,7 @@ Requires ``pip install "duckduck[semantic]"`` (pydantic, PyYAML).
 """
 
 from .catalog import Catalog
+from .commands import ask, connect, generate_catalog, jev_check
 from .config import SemanticConfig
 from .decisions import (
     BinaryDecision,
@@ -78,6 +79,10 @@ __all__ = [
     "TableSpec",
     "Thresholds",
     "TimeRangeFilter",
+    "ask",
+    "connect",
     "evaluate",
+    "generate_catalog",
+    "jev_check",
     "load_dataset",
 ]
