@@ -82,6 +82,16 @@ Every API method calls `self._fetch(path, limit=limit)`:
 
 Never pass `limit` as `page_size` to `_paginate`-style loops — that fetches everything N records at a time.
 
+### Discovering registered tables
+
+`DuckAPI.list_tables()` returns a DataFrame (`table_name`, `streaming`, `signature`) for whatever's currently registered — handy after `auto_register()`, which can add many tables in one call. `sql()` intercepts `SHOW TABLES` / `LIST TABLES` (optionally `ALL`, case-insensitive, optional trailing `;`) as a shortcut for it, matched via `DuckAPI._LIST_TABLES_RE` **before** the regular push-down/rewrite path runs — so it never touches functions named literally `tables`, `show`, etc. (those still resolve as normal `FROM tables` queries).
+
+```python
+duck.list_tables()          # pd.DataFrame directly
+duck.sql("SHOW TABLES").df()
+duck.sql("list all tables").df()
+```
+
 ---
 
 ## Adding a new API wrapper
@@ -355,6 +365,33 @@ instances = duck.auto_register(
 duck.sql("SELECT * FROM sharepoint_list_items WHERE list_name = 'Tasks'")
 duck.sql("SELECT * FROM insightvm_assets WHERE hostname = 'web-prod'")
 ```
+
+### Loading from a JSON file (`duck.auto_register()` with no arguments)
+
+When `services` is omitted, `auto_register()` loads it from a JSON file instead — so a fully configured instance is just `DuckAPI().auto_register()`. File lookup order: `config_path` argument → `DUCKDUCK_CONFIG` env var → `DuckAPI.DEFAULT_CONFIG_PATH` (`"duckduck.json"`) in the current directory. Resolution happens in `DuckAPI._load_auto_register_config`.
+
+```json
+{
+  "region_name": "us-east-1",
+  "services": {
+    "sharepoint": {
+      "secret_id": "prod/sharepoint/duckduck",
+      "hostname": "company.sharepoint.com",
+      "site_path": "/teams/myteam"
+    },
+    "insightvm": {
+      "secret_id": "prod/insightvm"
+    }
+  }
+}
+```
+
+```python
+duck = DuckAPI()
+duck.auto_register()
+```
+
+`"region_name"` is optional and only used to build a `SecretsManager` automatically when `secrets=` isn't passed in code and at least one service uses `secret_id` — sparing the caller a second explicit step. A service can still use `"credentials"` inline in the JSON for fully offline entries, mixed freely with `"secret_id"` ones. Passing `services=` explicitly (the dict form above) always skips the file lookup entirely, even if no config file exists.
 
 ### Rules
 

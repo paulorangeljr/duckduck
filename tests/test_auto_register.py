@@ -188,3 +188,125 @@ def test_auto_register_two_different_services(msal_cls):
     assert "sharepoint_sites" in duck.functions
     assert "insightvm_sites" in duck.functions
     duck.close()
+
+
+# ---------------------------------------------------------------------------
+# Loading services from a JSON file — duck.auto_register() with no arguments
+# ---------------------------------------------------------------------------
+
+
+def test_auto_register_no_config_found_raises_helpful_error(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # empty dir, no duckduck.json
+    duck = DuckAPI()
+    with pytest.raises(ValueError, match="found no config file"):
+        duck.auto_register()
+    duck.close()
+
+
+def test_auto_register_loads_from_default_json_file(tmp_path, monkeypatch):
+    """With no services= and no config_path=, reads ./duckduck.json."""
+    monkeypatch.chdir(tmp_path)
+    config = {
+        "services": {
+            "insightvm": {
+                "credentials": {"host": "console.local", "username": "a", "password": "b"},
+            },
+        },
+    }
+    (tmp_path / "duckduck.json").write_text(json.dumps(config))
+
+    duck = DuckAPI()
+    instances = duck.auto_register()
+
+    assert instances["insightvm"].base_url == "https://console.local/api/3"
+    assert "insightvm_assets" in duck.functions
+    duck.close()
+
+
+def test_auto_register_config_path_argument(tmp_path):
+    config = {
+        "services": {
+            "insightvm": {
+                "credentials": {"host": "console.local", "username": "a", "password": "b"},
+            },
+        },
+    }
+    config_file = tmp_path / "custom.json"
+    config_file.write_text(json.dumps(config))
+
+    duck = DuckAPI()
+    instances = duck.auto_register(config_path=str(config_file))
+
+    assert instances["insightvm"].base_url == "https://console.local/api/3"
+    duck.close()
+
+
+def test_auto_register_duckduck_config_env_var(tmp_path, monkeypatch):
+    config = {
+        "services": {
+            "insightvm": {
+                "credentials": {"host": "console.local", "username": "a", "password": "b"},
+            },
+        },
+    }
+    config_file = tmp_path / "env-config.json"
+    config_file.write_text(json.dumps(config))
+    monkeypatch.setenv("DUCKDUCK_CONFIG", str(config_file))
+
+    duck = DuckAPI()
+    instances = duck.auto_register()
+
+    assert instances["insightvm"].base_url == "https://console.local/api/3"
+    duck.close()
+
+
+def test_auto_register_json_config_missing_services_key_raises(tmp_path):
+    config_file = tmp_path / "bad.json"
+    config_file.write_text(json.dumps({"region_name": "us-east-1"}))
+
+    duck = DuckAPI()
+    with pytest.raises(ValueError, match="'services' key"):
+        duck.auto_register(config_path=str(config_file))
+    duck.close()
+
+
+def test_auto_register_json_secret_id_builds_secrets_manager_automatically(tmp_path, monkeypatch):
+    """
+    A JSON config with secret_id + region_name but no secrets= passed in
+    should build a SecretsManager on its own, so `duck.auto_register()`
+    alone is enough even when AWS Secrets Manager is involved.
+    """
+    import duckduck.secrets as secrets_module
+
+    fake_client = MagicMock()
+    fake_client.get_secret_value.return_value = {
+        "SecretString": json.dumps({"host": "x.local", "username": "u", "password": "p"})
+    }
+    fake_boto3 = MagicMock()
+    fake_boto3.client.return_value = fake_client
+    monkeypatch.setattr(secrets_module, "boto3", fake_boto3)
+
+    config = {
+        "region_name": "us-east-1",
+        "services": {"insightvm": {"secret_id": "prod/insightvm"}},
+    }
+    config_file = tmp_path / "duckduck.json"
+    config_file.write_text(json.dumps(config))
+
+    duck = DuckAPI()
+    instances = duck.auto_register(config_path=str(config_file))
+
+    fake_boto3.client.assert_called_once_with("secretsmanager", region_name="us-east-1")
+    assert instances["insightvm"].base_url == "https://x.local/api/3"
+    duck.close()
+
+
+def test_auto_register_explicit_services_skips_json_lookup(tmp_path, monkeypatch):
+    """Passing services= directly never touches the filesystem, even with an empty cwd."""
+    monkeypatch.chdir(tmp_path)  # no duckduck.json here
+    duck = DuckAPI()
+    instances = duck.auto_register({
+        "insightvm": {"credentials": {"host": "h", "username": "u", "password": "p"}},
+    })
+    assert instances["insightvm"].base_url == "https://h/api/3"
+    duck.close()

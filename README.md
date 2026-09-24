@@ -221,6 +221,53 @@ duck.sql("SELECT * FROM insightvm_prod_assets WHERE hostname = 'web-prod'")
 instances["sharepoint"].site_by_path("company.sharepoint.com", "/sites/marketing")
 ```
 
+### Loading the config from a JSON file
+
+To avoid declaring the `services` dict in code at all, drop it in a JSON
+file and call `auto_register()` with no arguments:
+
+```json
+{
+  "region_name": "us-east-1",
+  "services": {
+    "sharepoint": {
+      "secret_id": "prod/sharepoint/duckduck",
+      "hostname": "company.sharepoint.com",
+      "site_path": "/teams/myteam"
+    },
+    "insightvm": {
+      "secret_id": "prod/insightvm"
+    }
+  }
+}
+```
+
+```python
+duck = DuckAPI()
+duck.auto_register()
+```
+
+`duckduck.json` in the current directory is used by default; pass
+`config_path="/path/to/file.json"` or set the `DUCKDUCK_CONFIG` environment
+variable to point elsewhere. Since a `secret_id` is present and no
+`secrets=` was passed, a `SecretsManager` is built automatically using the
+file's `"region_name"` — no extra Python needed. A service entry can still
+use `"credentials"` directly in the JSON for a fully offline setup, mixed
+freely with `"secret_id"` entries. Passing a `services=` dict explicitly (as
+in every example above) always skips the file lookup.
+
+## Discovering what's registered
+
+```python
+duck.list_tables()          # pd.DataFrame: table_name, streaming, signature
+duck.sql("SHOW TABLES").df()
+duck.sql("list all tables").df()
+```
+
+All three return the same thing — handy right after `auto_register()` to
+see what actually got wired up, or from a notebook where you've lost track
+of what's been registered.
+
 ## Adding your own API wrapper
 
 Any Python object works as long as its methods follow the convention:

@@ -272,6 +272,55 @@ def test_structural_where_param_stripped_from_query(duck):
 
 
 # ---------------------------------------------------------------------------
+# list_tables() / SHOW TABLES
+# ---------------------------------------------------------------------------
+
+
+def test_list_tables_lists_registered_functions(duck):
+    df = duck.list_tables()
+
+    assert set(df["table_name"]) == {"assets", "vulns"}
+    assert list(df.columns) == ["table_name", "streaming", "signature"]
+
+
+def test_list_tables_flags_streaming_registration(duck):
+    def iter_assets(hostname=None):
+        yield None
+
+    duck.register_streaming_function("assets", iter_assets)
+
+    df = duck.list_tables().set_index("table_name")
+    assert bool(df.loc["assets", "streaming"]) is True
+    assert bool(df.loc["vulns", "streaming"]) is False
+
+
+def test_list_tables_empty_when_nothing_registered():
+    d = DuckAPI()
+    df = d.list_tables()
+    assert len(df) == 0
+    assert list(df.columns) == ["table_name", "streaming", "signature"]
+    d.close()
+
+
+def test_sql_show_tables_shortcut(duck):
+    df = duck.sql("SHOW TABLES").df()
+    assert set(df["table_name"]) == {"assets", "vulns"}
+
+
+def test_sql_list_tables_shortcut_is_case_insensitive_and_flexible(duck):
+    for query in ("list tables", "LIST ALL TABLES", "  Show Tables ; ", "show all tables"):
+        df = duck.sql(query).df()
+        assert set(df["table_name"]) == {"assets", "vulns"}
+
+
+def test_sql_show_tables_does_not_shadow_a_real_table_named_tables(duck):
+    """A registered function literally named 'tables' must still work normally."""
+    duck.register_api_function("tables", lambda: [{"x": 1}])
+    df = duck.sql("SELECT * FROM tables").df()
+    assert list(df["x"]) == [1]
+
+
+# ---------------------------------------------------------------------------
 # context manager
 # ---------------------------------------------------------------------------
 

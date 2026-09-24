@@ -14,9 +14,11 @@ DataFrame.
 
 import ast
 import inspect
+import json
+import os
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import duckdb
 import pandas as pd
@@ -198,19 +200,29 @@ class DuckAPI:
     # Auto-registration of known wrappers (SharePoint, InsightVM, ...)
     # ------------------------------------------------------------------
 
+    #: Default JSON config file name, looked up in the current directory
+    #: when auto_register() is called with no ``services`` and no
+    #: ``DUCKDUCK_CONFIG`` environment variable is set.
+    DEFAULT_CONFIG_PATH = "duckduck.json"
+
     def auto_register(
         self,
-        services: Dict[str, Dict[str, Any]],
+        services: Optional[Dict[str, Dict[str, Any]]] = None,
         secrets: Optional[Any] = None,
+        config_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Instantiates and registers known API wrappers automatically
         (see ``duckduck.registry.SERVICE_REGISTRY``), without having to
         call ``register_api_function`` by hand for every method.
 
+        Can be called as just ``duck.auto_register()``: when ``services``
+        is omitted, the config is loaded from a JSON file instead (see
+        "Loading from a JSON file" below).
+
         Parameters
         ----------
-        services : dict
+        services : dict, optional
             ``{name: config}``. ``name`` becomes the prefix of the
             registered tables (``{name}_{table}``) — allowing multiple
             instances of the same wrapper (e.g. ``insightvm_prod`` and
@@ -223,10 +235,10 @@ class DuckAPI:
                 ``"insightvm"``). Default: ``name`` itself.
             - ``secret_id`` : str, optional
                 Name/ARN of the secret in AWS Secrets Manager — requires
-                ``secrets=`` to be provided. The reference can be
-                hardcoded here in the code or come from an env
-                var/config at runtime — ``auto_register`` doesn't care
-                which.
+                ``secrets=`` to be provided (or resolvable — see below).
+                The reference can be hardcoded here in the code or come
+                from an env var/config at runtime — ``auto_register``
+                doesn't care which.
             - ``credentials`` : dict, optional
                 Credentials provided directly, without touching AWS
                 Secrets Manager (offline mode). Provide **either**
@@ -234,8 +246,18 @@ class DuckAPI:
             - any other keys
                 Extra kwargs passed through to the wrapper's constructor
                 (e.g. ``hostname``, ``site_path``, ``default_page_size``).
+
+            When omitted, loaded from a JSON file — see below.
         secrets : SecretsManager, optional
-            Only needed when some service uses ``secret_id``.
+            Only needed when some service uses ``secret_id``. When
+            ``services`` is loaded from a JSON file that sets
+            ``"region_name"`` and some service needs a secret,
+            ``SecretsManager(region_name=...)`` is created automatically
+            if ``secrets`` isn't passed explicitly.
+        config_path : str, optional
+            Path to the JSON config file, used only when ``services`` is
+            omitted. Defaults to the ``DUCKDUCK_CONFIG`` environment
+            variable, or ``"duckduck.json"`` in the current directory.
 
         Returns
         -------
@@ -243,9 +265,39 @@ class DuckAPI:
             ``{name: instance}`` — to access wrapper methods that didn't
             become a table (e.g. ``instances["sharepoint"].site_by_path``).
 
+        Loading from a JSON file
+        -------------------------
+        ``duck.auto_register()`` with no arguments reads a JSON file
+        shaped like::
+
+            {
+                "region_name": "us-east-1",
+                "services": {
+                    "sharepoint": {
+                        "secret_id": "prod/sharepoint/duckduck",
+                        "hostname": "company.sharepoint.com",
+                        "site_path": "/teams/myteam"
+                    },
+                    "insightvm": {
+                        "secret_id": "prod/insightvm"
+                    }
+                }
+            }
+
+        ``"region_name"`` is optional and only used to build the
+        automatic ``SecretsManager`` when ``secrets`` isn't passed in and
+        at least one service uses ``secret_id``. A service can still use
+        ``"credentials"`` inline in the JSON for offline entries (no AWS
+        call at all) — mix and match freely, same as with the ``services``
+        dict.
+
+        The file is looked up, in order: ``config_path`` argument →
+        ``DUCKDUCK_CONFIG`` environment variable → ``duckduck.json`` in
+        the current directory.
+
         Examples
         --------
-        ::
+        Inline, from Python code::
 
             from duckduck import DuckAPI, SecretsManager
 
@@ -270,8 +322,17 @@ class DuckAPI:
 
             duck.sql("SELECT * FROM sharepoint_list_items WHERE list_name = 'Tasks'")
             duck.sql("SELECT * FROM insightvm_assets WHERE hostname = 'web-prod'")
+
+        From a JSON file (``duckduck.json`` in the current directory, or
+        ``$DUCKDUCK_CONFIG``)::
+
+            duck = DuckAPI()
+            duck.auto_register()
         """
         from .registry import SERVICE_REGISTRY
+
+        if services is None:
+            services, secrets = self._load_auto_register_config(config_path, secrets)
 
         instances: Dict[str, Any] = {}
 
@@ -318,6 +379,51 @@ class DuckAPI:
                 )
 
         return instances
+
+    def _load_auto_register_config(
+        self,
+        config_path: Optional[str],
+        secrets: Optional[Any],
+    ) -> Tuple[Dict[str, Dict[str, Any]], Optional[Any]]:
+        """
+        Resolves the ``services`` dict for ``auto_register()`` from a
+        JSON file when no ``services`` dict was passed in code.
+
+        Path lookup order: ``config_path`` → ``DUCKDUCK_CONFIG`` env var
+        → ``DEFAULT_CONFIG_PATH`` ("duckduck.json") in the current
+        directory.
+
+        If ``secrets`` is ``None``, the file's top-level ``region_name``
+        is not required, but when present (and at least one service uses
+        ``secret_id``) it's used to build a ``SecretsManager``
+        automatically — sparing the caller a second explicit step just to
+        call ``duck.auto_register()`` with nothing else.
+        """
+        path = config_path or os.environ.get("DUCKDUCK_CONFIG", self.DEFAULT_CONFIG_PATH)
+
+        if not os.path.isfile(path):
+            raise ValueError(
+                f"auto_register() got no 'services' dict and found no config "
+                f"file at '{path}'. Pass services=..., pass config_path=..., "
+                f"set the DUCKDUCK_CONFIG environment variable, or create "
+                f"'{self.DEFAULT_CONFIG_PATH}' in the current directory."
+            )
+
+        with open(path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+
+        file_services = config.get("services")
+        if not file_services:
+            raise ValueError(f"Config file '{path}' has no 'services' key.")
+
+        if secrets is None:
+            needs_secrets = any("secret_id" in cfg for cfg in file_services.values())
+            if needs_secrets:
+                from .secrets import SecretsManager
+
+                secrets = SecretsManager(region_name=config.get("region_name"))
+
+        return file_services, secrets
 
     # ------------------------------------------------------------------
     # Inline kwargs parsing:  func(x=1, y="a")
@@ -546,6 +652,50 @@ class DuckAPI:
     # Main SQL entry point
     # ------------------------------------------------------------------
 
+    #: Matches "SHOW TABLES", "LIST TABLES", "SHOW ALL TABLES", "LIST ALL
+    #: TABLES" (any case, optional trailing ";") — the shortcut ``sql()``
+    #: recognizes for ``list_tables()``.
+    _LIST_TABLES_RE = re.compile(r"^\s*(SHOW|LIST)(\s+ALL)?\s+TABLES\s*;?\s*$", re.IGNORECASE)
+
+    def list_tables(self) -> pd.DataFrame:
+        """
+        Lists every table currently registered via
+        ``register_api_function()`` / ``auto_register()``.
+
+        Useful to check what's available without digging through the code
+        that set up the ``DuckAPI`` instance — especially after
+        ``auto_register()``, which can register many tables at once.
+
+        Returns
+        -------
+        pd.DataFrame
+            One row per table, with columns:
+
+            - ``table_name``: name used in ``sql()``/``stream()`` queries.
+            - ``streaming``: whether ``stream()`` also works for this
+              table (i.e. a matching ``register_streaming_function()``
+              call was made).
+            - ``signature``: the registered function's signature, showing
+              which parameters are available for inline calls
+              (``func(param=val)``) or ``WHERE`` push-down.
+
+        Examples
+        --------
+        ::
+
+            duck.auto_register({"sharepoint": {"secret_id": "..."}}, secrets=secrets)
+            duck.list_tables().df()  # or: duck.sql("SHOW TABLES").df()
+        """
+        rows = [
+            {
+                "table_name": name,
+                "streaming": name in self._streaming_functions,
+                "signature": str(inspect.signature(fn)),
+            }
+            for name, fn in self.functions.items()
+        ]
+        return pd.DataFrame(rows, columns=["table_name", "streaming", "signature"])
+
     def sql(self, query: str):
         """
         Executes a SQL query, replacing references to registered
@@ -557,6 +707,8 @@ class DuckAPI:
                                          + WHERE/LIMIT push-down
         - ``JOIN func(struct_id=1)``   → same as above
         - Multiple references to the same function or different functions
+        - ``SHOW TABLES`` / ``LIST TABLES`` (optionally ``ALL``) → shortcut
+          for ``list_tables()``, listing every registered table
 
         Structural parameters (``site_name``, ``list_name``, etc.) can
         appear either inline or in the ``WHERE`` clause. When they're in
@@ -568,6 +720,10 @@ class DuckAPI:
         duckdb.DuckDBPyRelation
             DuckDB relation. Use ``.df()`` to get a DataFrame.
         """
+        if self._LIST_TABLES_RE.match(query):
+            self.conn.register("_duckduck_tables", self.list_tables())
+            return self.conn.sql("SELECT * FROM _duckduck_tables")
+
         pushdown = self._extract_pushdown(query)
         rewritten = query
         structural_used: set = set()  # WHERE filters consumed that aren't columns
