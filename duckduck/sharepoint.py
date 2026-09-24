@@ -116,10 +116,16 @@ class SharePoint:
         thumbprint : str
             Fingerprint SHA-1 em hex (com ou sem ``:``, maiúsculo ou não).
         private_key_pem : str
-            Chave privada RSA em formato PEM.
+            Conteúdo PEM da chave privada **ou** caminho para o arquivo ``.pem``/``.key``.
+            Se a string não começar com ``-----``, é interpretada como caminho de arquivo.
         passphrase : bytes, optional
             Senha da chave privada, se criptografada.
         """
+        import pathlib
+
+        if not private_key_pem.strip().startswith("-----"):
+            private_key_pem = pathlib.Path(private_key_pem).read_text()
+
         credential: Dict[str, Any] = {
             "thumbprint": thumbprint.replace(":", "").upper(),
             "private_key": private_key_pem,

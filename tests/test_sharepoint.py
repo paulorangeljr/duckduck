@@ -83,6 +83,22 @@ def test_from_thumbprint(msal_cls):
     assert call_credential["thumbprint"] == "AABBCC"
 
 
+@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+def test_from_thumbprint_accepts_file_path(msal_cls, tmp_path):
+    mock_app = MagicMock()
+    mock_app.acquire_token_silent.return_value = None
+    mock_app.acquire_token_for_client.return_value = {"access_token": "tok"}
+    msal_cls.return_value = mock_app
+
+    key_file = tmp_path / "key.pem"
+    key_file.write_text("-----BEGIN PRIVATE KEY-----\nMIIE...\n-----END PRIVATE KEY-----\n")
+
+    SharePoint.from_thumbprint(TENANT, CLIENT, "AABBCC", str(key_file))
+
+    call_credential = msal_cls.call_args[1]["client_credential"]
+    assert call_credential["private_key"].startswith("-----BEGIN PRIVATE KEY-----")
+
+
 # ---------------------------------------------------------------------------
 # _with_top
 # ---------------------------------------------------------------------------
