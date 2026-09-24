@@ -212,6 +212,101 @@ def test_normalize_list_items_elevates_fields():
     assert list(df["Title"]) == ["Foo", "Bar"]
 
 
+def test_normalize_list_items_renames_via_column_map():
+    """Campos com nome interno (field_1) viram o displayName do mapa."""
+    items = [
+        {"id": "1", "fields": {"field_1": "Foo", "Status": "Active"}},
+    ]
+    column_map = {"field_1": "Nome do Cliente", "Status": "Situação"}
+
+    df = SharePoint._normalize_list_items(items, column_map=column_map)
+
+    assert "Nome do Cliente" in df.columns
+    assert "Situação" in df.columns
+    assert "field_1" not in df.columns
+    assert list(df["Nome do Cliente"]) == ["Foo"]
+
+
+def test_normalize_list_items_keeps_unmapped_fields():
+    """Campos sem entrada no mapa mantêm o nome original."""
+    items = [{"id": "1", "fields": {"field_1": "Foo", "Extra": "bar"}}]
+    column_map = {"field_1": "Nome"}
+
+    df = SharePoint._normalize_list_items(items, column_map=column_map)
+
+    assert "Nome" in df.columns
+    assert "Extra" in df.columns  # não estava no mapa, mantém original
+
+
+# ---------------------------------------------------------------------------
+# _get_column_display_map — resolução de nomes internos → displayName
+# ---------------------------------------------------------------------------
+
+
+@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+def test_get_column_display_map_builds_dict(msal_cls):
+    sp = _make_sp(msal_cls)
+
+    columns_data = [
+        {"name": "field_1", "displayName": "Nome do Cliente"},
+        {"name": "Status", "displayName": "Situação"},
+    ]
+    with patch.object(sp, "_fetch", return_value=columns_data):
+        col_map = sp._get_column_display_map(SITE_ID, LIST_ID)
+
+    assert col_map == {"field_1": "Nome do Cliente", "Status": "Situação"}
+
+
+@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+def test_get_column_display_map_is_cached(msal_cls):
+    sp = _make_sp(msal_cls)
+
+    columns_data = [{"name": "field_1", "displayName": "Nome"}]
+    with patch.object(sp, "_fetch", return_value=columns_data) as mock_fetch:
+        sp._get_column_display_map(SITE_ID, LIST_ID)
+        sp._get_column_display_map(SITE_ID, LIST_ID)
+
+    mock_fetch.assert_called_once()  # segunda chamada usa o cache
+
+
+@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+def test_list_items_display_names_by_default(msal_cls):
+    """Por padrão, list_items() resolve nomes internos para displayName."""
+    sp = _make_sp(msal_cls)
+
+    columns_data = [{"name": "field_1", "displayName": "Nome do Cliente"}]
+    items_data = [{"id": "i1", "fields": {"field_1": "ACME"}}]
+
+    with patch.object(sp, "_fetch", side_effect=[columns_data, items_data]):
+        df = sp.list_items(site_id=SITE_ID, list_id=LIST_ID)
+
+    assert "Nome do Cliente" in df.columns
+    assert "field_1" not in df.columns
+    assert list(df["Nome do Cliente"]) == ["ACME"]
+
+
+@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+def test_list_items_internal_names_skip_columns_fetch(msal_cls):
+    """column_names='internal' não faz request extra em /columns."""
+    sp = _make_sp(msal_cls)
+
+    items_data = [{"id": "i1", "fields": {"field_1": "ACME"}}]
+
+    with patch.object(sp, "_fetch", return_value=items_data) as mock_fetch:
+        df = sp.list_items(site_id=SITE_ID, list_id=LIST_ID, column_names="internal")
+
+    mock_fetch.assert_called_once()  # só a chamada de items, sem /columns
+    assert "field_1" in df.columns
+
+
+@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+def test_list_items_invalid_column_names_raises(msal_cls):
+    sp = _make_sp(msal_cls)
+
+    with pytest.raises(ValueError, match="column_names"):
+        sp.list_items(site_id=SITE_ID, list_id=LIST_ID, column_names="bogus")
+
+
 # ---------------------------------------------------------------------------
 # sites()
 # ---------------------------------------------------------------------------
@@ -262,7 +357,7 @@ def test_list_items_expands_fields(msal_cls):
 
     raw = [{"id": "i1", "fields": {"Title": "T"}}]
     with patch.object(sp, "_fetch", return_value=raw) as mock_fetch:
-        df = sp.list_items(site_id=SITE_ID, list_id=LIST_ID)
+        df = sp.list_items(site_id=SITE_ID, list_id=LIST_ID, column_names="internal")
 
     url = mock_fetch.call_args[0][0]
     assert "expand=fields" in url
@@ -302,7 +397,9 @@ def test_iter_list_items_yields_dataframes(msal_cls):
         [{"id": "i2", "fields": {"Title": "B"}}, {"id": "i3", "fields": {"Title": "C"}}],
     ]
     with patch.object(sp, "_iter_pages", return_value=iter(pages)):
-        chunks = list(sp.iter_list_items(site_id=SITE_ID, list_id=LIST_ID))
+        chunks = list(
+            sp.iter_list_items(site_id=SITE_ID, list_id=LIST_ID, column_names="internal")
+        )
 
     assert len(chunks) == 2
     assert all(isinstance(c, pd.DataFrame) for c in chunks)
@@ -326,7 +423,8 @@ def test_duckapi_stream_list_items(msal_cls):
     with patch.object(sp, "_iter_pages", return_value=iter(pages)):
         duck = DuckAPI()
 
-        def _stub(site_id=None, list_id=None, site_name=None, list_name=None, limit=None):
+        def _stub(site_id=None, list_id=None, site_name=None, list_name=None,
+                  column_names="display", limit=None):
             return []
 
         duck.register_api_function("list_items", _stub)
@@ -334,7 +432,8 @@ def test_duckapi_stream_list_items(msal_cls):
 
         chunks = list(
             duck.stream(
-                f"SELECT * FROM list_items(site_id='{SITE_ID}', list_id='{LIST_ID}')"
+                f"SELECT * FROM list_items(site_id='{SITE_ID}', list_id='{LIST_ID}',"
+                f" column_names='internal')"
             )
         )
 
@@ -401,9 +500,10 @@ def test_list_items_by_name_end_to_end(msal_cls):
 
     sites_data = [{"id": SITE_ID, "displayName": "Intranet"}]
     lists_data = [{"id": LIST_ID, "displayName": "Tarefas"}]
+    columns_data = [{"name": "Title", "displayName": "Title"}]
     items_data = [{"id": "i1", "fields": {"Title": "Fix bug"}}]
 
-    fetch_calls = iter([sites_data, lists_data, items_data])
+    fetch_calls = iter([sites_data, lists_data, columns_data, items_data])
     with patch.object(sp, "_fetch", side_effect=fetch_calls):
         df = sp.list_items(site_name="Intranet", list_name="Tarefas")
 
@@ -430,10 +530,11 @@ def test_default_site_used_when_no_site_given(msal_cls):
     )
 
     lists_data = [{"id": LIST_ID, "displayName": "Tarefas"}]
+    columns_data = [{"name": "Title", "displayName": "Title"}]
     items_data = [{"id": "i1", "fields": {"Title": "Item"}}]
 
     with patch.object(sp, "_get", return_value={"id": SITE_ID}) as mock_get, \
-         patch.object(sp, "_fetch", side_effect=iter([lists_data, items_data])):
+         patch.object(sp, "_fetch", side_effect=iter([lists_data, columns_data, items_data])):
         df = sp.list_items(list_name="Tarefas")
 
     # Verifica que o site foi resolvido via site_by_path com URL-encoding

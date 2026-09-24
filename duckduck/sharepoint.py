@@ -265,6 +265,7 @@ class SharePoint:
         self._default_hostname = hostname
         self._default_site_path = site_path
         self._default_site_id: Optional[str] = None  # resolvido lazily
+        self._column_map_cache: Dict[str, Dict[str, str]] = {}  # "{site_id}:{list_id}" -> {internal: displayName}
         # ConfidentialClientApplication mantém cache de token em memória
         self._msal_app = msal.ConfidentialClientApplication(
             client_id,
@@ -352,13 +353,16 @@ class SharePoint:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _normalize_list_items(items: List[Dict]) -> pd.DataFrame:
+    def _normalize_list_items(
+        items: List[Dict],
+        column_map: Optional[Dict[str, str]] = None,
+    ) -> pd.DataFrame:
         """
         Eleva os campos do sub-objeto ``fields`` para colunas de primeiro nível.
 
         O Graph API retorna::
 
-            {"id": "1", "fields": {"Title": "foo", "Status": "Active"}}
+            {"id": "1", "fields": {"field_1": "foo", "Status": "Active"}}
 
         Isso se torna::
 
@@ -366,8 +370,15 @@ class SharePoint:
             1        | 2024-01-01  | foo   | Active
 
         Metadados internos do Graph ficam prefixados com ``_``.
-        Os campos da lista (Title, Status, etc.) ficam no topo — permitindo
-        ``WHERE Title = 'foo'`` sem qualificar com ``fields_``.
+        Os campos da lista ficam no topo — permitindo ``WHERE Status = 'foo'``
+        sem qualificar com ``fields_``.
+
+        Parameters
+        ----------
+        column_map : dict, optional
+            ``{nome_interno: displayName}``. Quando fornecido, os campos são
+            renomeados antes de virarem colunas — ver ``_get_column_display_map``.
+            Campos sem entrada no mapa mantêm o nome original.
         """
         records = []
         for item in items:
@@ -377,7 +388,10 @@ class SharePoint:
                 "_modified_at": item.get("lastModifiedDateTime"),
                 "_web_url": item.get("webUrl"),
             }
-            record.update(item.get("fields", {}))
+            fields = item.get("fields", {})
+            if column_map:
+                fields = {column_map.get(k, k): v for k, v in fields.items()}
+            record.update(fields)
             records.append(record)
         return pd.json_normalize(records, sep="_")
 
@@ -470,6 +484,26 @@ class SharePoint:
             f"Lista '{list_name}' não encontrada no site '{site_id}'. "
             "Use SELECT * FROM lists(site_id=...) para ver as listas disponíveis."
         )
+
+    def _get_column_display_map(self, site_id: str, list_id: str) -> Dict[str, str]:
+        """
+        Devolve ``{nome_interno: displayName}`` para as colunas de uma lista,
+        com cache por (site_id, list_id).
+
+        O Graph API retorna os campos de um item usando o nome **interno**
+        da coluna (``field_1``, ``OData__ColorTag``, etc.), que raramente bate
+        com o nome exibido na UI do SharePoint. Este mapa permite apresentar
+        os dados com os mesmos nomes que o usuário vê no navegador.
+        """
+        cache_key = f"{site_id}:{list_id}"
+        if cache_key not in self._column_map_cache:
+            columns = self._fetch(f"{GRAPH_BASE}/sites/{site_id}/lists/{list_id}/columns")
+            self._column_map_cache[cache_key] = {
+                c["name"]: (c.get("displayName") or c["name"])
+                for c in columns
+                if c.get("name")
+            }
+        return self._column_map_cache[cache_key]
 
     # ------------------------------------------------------------------
     # Sites
@@ -571,14 +605,15 @@ class SharePoint:
         list_id: Optional[str] = None,
         site_name: Optional[str] = None,
         list_name: Optional[str] = None,
+        column_names: str = "display",
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
         Items de uma SharePoint List com campos expandidos.
 
-        Os campos customizados da lista (Title, Status, etc.) aparecem como
-        colunas de primeiro nível. Metadados internos do Graph ficam
-        prefixados com ``_`` (``_item_id``, ``_created_at``, etc.).
+        Os campos customizados da lista aparecem como colunas de primeiro
+        nível. Metadados internos do Graph ficam prefixados com ``_``
+        (``_item_id``, ``_created_at``, etc.).
 
         Aceita IDs diretos ou nomes de exibição (lookup automático).
 
@@ -588,6 +623,13 @@ class SharePoint:
             Identificação do site — forneça um dos dois.
         list_id / list_name : str
             Identificação da lista — forneça um dos dois.
+        column_names : {"display", "internal"}
+            ``"display"`` (padrão): usa o mesmo nome de coluna que aparece
+            na UI do SharePoint (ex: ``Status``), resolvido via
+            ``/lists/{id}/columns``. ``"internal"``: usa o nome bruto do
+            Graph API (ex: ``field_1``), sem custo extra de request.
+            Qualquer que seja o modo, o ``WHERE``/``SELECT`` da query opera
+            sobre os nomes já resolvidos — não é preciso conhecer o outro.
 
         Exemplos
         --------
@@ -600,12 +642,24 @@ class SharePoint:
             duck.sql(
                 "SELECT * FROM list_items"
                 " WHERE site_name = 'Intranet' AND list_name = 'Tarefas'"
+                " AND Status = 'Active'"
+            )
+
+            # nomes internos do Graph, sem lookup de colunas
+            duck.sql(
+                "SELECT * FROM list_items(column_names='internal')"
+                " WHERE site_name = 'Intranet' AND list_name = 'Tarefas'"
             )
         """
+        if column_names not in ("display", "internal"):
+            raise ValueError("column_names deve ser 'display' ou 'internal'.")
         sid = self._resolve_site(site_id, site_name)
         lid = self._resolve_list(sid, list_id, list_name)
+        column_map = (
+            self._get_column_display_map(sid, lid) if column_names == "display" else None
+        )
         url = f"{GRAPH_BASE}/sites/{sid}/lists/{lid}/items?expand=fields"
-        return self._normalize_list_items(self._fetch(url, limit=limit))
+        return self._normalize_list_items(self._fetch(url, limit=limit), column_map=column_map)
 
     # ------------------------------------------------------------------
     # Drives / Files
@@ -748,13 +802,22 @@ class SharePoint:
         list_id: Optional[str] = None,
         site_name: Optional[str] = None,
         list_name: Optional[str] = None,
+        column_names: str = "display",
     ) -> Iterator[pd.DataFrame]:
-        """Faz yield de uma página de items por vez (campos expandidos)."""
+        """Faz yield de uma página de items por vez (campos expandidos).
+
+        Ver ``list_items`` para o significado de ``column_names``.
+        """
+        if column_names not in ("display", "internal"):
+            raise ValueError("column_names deve ser 'display' ou 'internal'.")
         sid = self._resolve_site(site_id, site_name)
         lid = self._resolve_list(sid, list_id, list_name)
+        column_map = (
+            self._get_column_display_map(sid, lid) if column_names == "display" else None
+        )
         url = f"{GRAPH_BASE}/sites/{sid}/lists/{lid}/items?expand=fields"
         for page in self._iter_pages(url):
-            yield self._normalize_list_items(page)
+            yield self._normalize_list_items(page, column_map=column_map)
 
     def iter_drive_items(
         self,

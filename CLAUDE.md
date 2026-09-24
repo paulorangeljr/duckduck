@@ -251,6 +251,34 @@ _item_id | _created_at | Title | Status
 
 Isso permite `WHERE Title = 'foo'` diretamente no SQL, sem qualificar com `fields_`.
 
+### Nomes de coluna: internos vs. displayName (`column_names`)
+
+O Graph API expõe os campos de um item de lista pelo **nome interno** da coluna
+(`field_1`, `OData__ColorTag`, etc.), que raramente bate com o nome que aparece
+no cabeçalho da coluna na UI do SharePoint. `list_items()` / `iter_list_items()`
+aceitam `column_names: Literal["display", "internal"] = "display"`:
+
+- **`"display"`** (padrão): busca `/lists/{id}/columns` (cache por `site_id:list_id`
+  em `SharePoint._column_map_cache`) e renomeia os campos de `fields` para o
+  `displayName` **antes** de registrar o DataFrame no DuckDB. Qualquer `WHERE`/
+  `SELECT` da query já opera sobre o nome exibido na web — não há resolução
+  adicional no `core.py`, porque o nome já é a coluna real do DataFrame.
+- **`"internal"`**: pula a busca de `/columns` (uma requisição HTTP a menos) e
+  mantém o nome bruto do Graph.
+
+```python
+# padrão — nomes como na web
+duck.sql("SELECT * FROM list_items(site_id='abc', list_id='def') WHERE Status = 'Active'")
+
+# nomes internos do Graph, sem request extra
+duck.sql("SELECT * FROM list_items(site_id='abc', list_id='def', column_names='internal')")
+```
+
+Ao adicionar normalização de campos em outro wrapper: sempre resolva e renomeie
+**antes** de `self.conn.register(...)` — nunca depois. Push-down e `WHERE` do
+DuckAPI trabalham em cima das colunas do DataFrame já materializado, então
+qualquer mapeamento de nomes precisa acontecer nesse ponto único.
+
 ### Parâmetros estruturais no SharePoint
 
 `site_id`, `list_id`, `drive_id`, `item_id`, `folder_path` são sempre estruturais (formam a URL). Todos obrigatórios, sem default:
