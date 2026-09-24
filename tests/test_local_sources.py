@@ -208,3 +208,19 @@ def test_examples_semantic_local_config_answers_from_the_cli(capsys):
                  "ask", "Which machines communicated with 203.0.113.9?"])
     out = capsys.readouterr().out
     assert code == 0 and "srv-build" in out and "ws-dave" in out
+
+
+def test_missing_relative_path_error_explains_the_resolution(tmp_path):
+    cfg = tmp_path / "duckduck.json"
+    cfg.write_text(json.dumps({"services": {"files": {"connector": "files", "path": "data"}}}))
+    with pytest.raises(ValueError) as info:
+        DuckAPI().auto_register(config_path=str(cfg))
+    message = str(info.value)
+    assert f"path 'data' resolves to '{tmp_path / 'data'}'" in message
+    assert f"config file {cfg}" in message
+
+
+def test_missing_path_given_in_code_resolves_against_cwd(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ValueError, match="current directory"):
+        DuckAPI().auto_register({"files": {"connector": "files", "path": "nope"}})

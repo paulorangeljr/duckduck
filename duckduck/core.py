@@ -518,8 +518,20 @@ class DuckAPI:
 
                 for option in spec.path_options:
                     value = config.get(option)
-                    if isinstance(value, str) and base_dir and self._looks_like_path(option, value):
-                        config[option] = os.path.join(base_dir, value)
+                    if not (isinstance(value, str) and self._looks_like_path(option, value)):
+                        continue
+                    resolved = os.path.join(base_dir or os.getcwd(), value)
+                    if not os.path.exists(resolved):
+                        origin = (
+                            f"the folder of the config file {self._config_path}"
+                            if base_dir else f"the current directory {os.getcwd()}"
+                        )
+                        raise ValueError(
+                            f"'{name}': {option} '{value}' resolves to '{resolved}', which doesn't exist "
+                            f"(relative paths resolve against {origin}). Point it at the right place, "
+                            f"e.g. relative to that folder or as an absolute path."
+                        )
+                    config[option] = resolved
 
                 instance = spec.factory(credentials, **config)
 
@@ -734,7 +746,8 @@ class DuckAPI:
 
         with open(path, "r", encoding="utf-8") as f:
             config = json.load(f)
-        self._config_base_dir = os.path.dirname(os.path.abspath(path))
+        self._config_path = os.path.abspath(path)
+        self._config_base_dir = os.path.dirname(self._config_path)
 
         file_services = config.get("services")
         if not file_services:
