@@ -224,7 +224,15 @@ instances["sharepoint"].site_by_path("company.sharepoint.com", "/sites/marketing
 ### Loading the config from a JSON file
 
 To avoid declaring the `services` dict in code at all, drop it in a JSON
-file and call `auto_register()` with no arguments:
+file and call `auto_register()` with no arguments. Copy
+[`duckduck.example.json`](duckduck.example.json) to `duckduck.json` and
+fill in your own values — `duckduck.json` is gitignored on purpose, since
+the offline `"credentials"` form can hold literal secrets:
+
+```bash
+cp duckduck.example.json duckduck.json
+# edit duckduck.json with your real secret_id / credentials
+```
 
 ```json
 {

@@ -6,3 +6,8 @@ dist/
 build/
 .pytest_cache/
 .venv/
+
+# Real auto_register() config — copy duckduck.example.json to duckduck.json
+# and fill in your own secret_id / credentials. Never commit the real one:
+# the "credentials" offline mode can hold literal passwords/client secrets.
+duckduck.json

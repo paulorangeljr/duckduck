@@ -1,0 +1,21 @@
+{
+  "region_name": "us-east-1",
+  "services": {
+    "sharepoint": {
+      "secret_id": "prod/sharepoint/duckduck",
+      "hostname": "company.sharepoint.com",
+      "site_path": "/teams/myteam"
+    },
+    "insightvm": {
+      "secret_id": "prod/insightvm"
+    },
+    "insightvm_dev": {
+      "type": "insightvm",
+      "credentials": {
+        "host": "dev.local",
+        "username": "a",
+        "password": "b"
+      }
+    }
+  }
+}
