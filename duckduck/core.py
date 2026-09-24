@@ -29,7 +29,7 @@ import sqlglot
 import sqlglot.expressions as exp
 
 from .logs import get_logger, set_verbose, short, verbose_from_env
-from .pushdown import Condition, assign_conditions, map_conditions, parse_like
+from .pushdown import Condition, assign_conditions, blocker_of, map_conditions, parse_like
 
 logger = get_logger("core")
 
@@ -802,13 +802,16 @@ class DuckAPI:
             c for c in pushdown.conditions
             if c.table is None or names is None or c.table in names
         ]
-        merged, consumed = map_conditions(accepted, applicable)
-        targets = assign_conditions(accepted, applicable)
+        blocker = blocker_of(fetch_function)
+        merged, consumed = map_conditions(accepted, applicable, blocker)
+        targets = assign_conditions(accepted, applicable, blocker)
 
         report: List[str] = []
         for c in applicable:
             if c in targets:
                 report.append(f"✓ {_describe_condition(c)} → {targets[c]}")
+            elif blocker is not None and "where" in accepted:
+                report.append(f"✗ {_describe_condition(c)} — {blocker(c)}, DuckDB filters")
             else:
                 report.append(f"✗ {_describe_condition(c)} — {_why_not_pushed(c, accepted)}")
         if not pushdown.complete:

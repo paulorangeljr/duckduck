@@ -34,7 +34,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 from ..logs import get_logger
-from ..pushdown import Condition, map_conditions
+from ..pushdown import Condition, blocker_of, map_conditions
 from .catalog import Catalog
 from .compiler import compile_plan, default_order, display_relation
 from .plan import LogicalQueryPlan
@@ -149,7 +149,7 @@ class PlanExecutor:
         # Same operator→parameter mapping as DuckAPI.sql() (duckduck.pushdown):
         # eq → col, LIKE → col_like/col_ilike, comparisons → col_gt..., or all
         # of them to a `where` param. Structural args always win.
-        pushed, consumed = map_conditions(params - set(fetch.kwargs), [c for _, c in conditions])
+        pushed, consumed = map_conditions(params - set(fetch.kwargs), [c for _, c in conditions], blocker_of(fn))
         fetch.kwargs.update(pushed)
         # A field is "pushed" only if every one of its conditions was
         # (a time range carries two: >= start and < end).

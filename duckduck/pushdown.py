@@ -32,7 +32,7 @@ connector may return a *superset* (looser match) but never a subset.
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 #: Comparison operators and their parameter suffixes.
 COMPARISON_SUFFIXES = {"gt": "_gt", "gte": "_gte", "lt": "_lt", "lte": "_lte"}
@@ -121,15 +121,31 @@ def conditions_to_sql(conditions: Iterable[Condition], columns: Iterable[str]) -
     return " AND ".join(parts) if parts else None
 
 
-def assign_conditions(params: Iterable[str], conditions: Iterable[Condition]) -> Dict[Condition, str]:
+#: Optional connector hook: ``blocker(condition) -> None`` when the
+#: connector can apply that condition through ``where``, else a short
+#: reason it can't (it then stays with DuckDB). Looked up as a method named
+#: ``pushdown_blocker`` on the registered bound method's instance.
+BLOCKER_HOOK = "pushdown_blocker"
+
+
+def blocker_of(fetch_function: Any) -> Optional[Callable[[Condition], Optional[str]]]:
+    return getattr(getattr(fetch_function, "__self__", None), BLOCKER_HOOK, None)
+
+
+def assign_conditions(
+    params: Iterable[str],
+    conditions: Iterable[Condition],
+    blocker: Optional[Callable[[Condition], Optional[str]]] = None,
+) -> Dict[Condition, str]:
     """
-    Which parameter each condition goes to (``where`` for all of them when
-    the function has one); conditions left out stay with DuckDB.
+    Which parameter each condition goes to (``where`` when the function has
+    one — minus any its ``blocker`` refuses); conditions left out stay with
+    DuckDB.
     """
     params = set(params)
     conditions = list(conditions)
     if WHERE_PARAM in params:
-        return {c: WHERE_PARAM for c in conditions}
+        return {c: WHERE_PARAM for c in conditions if blocker is None or blocker(c) is None}
     assigned: Dict[Condition, str] = {}
     used: Set[str] = set()
     for c in conditions:
@@ -148,7 +164,9 @@ def assign_conditions(params: Iterable[str], conditions: Iterable[Condition]) ->
 
 
 def map_conditions(
-    params: Iterable[str], conditions: Iterable[Condition]
+    params: Iterable[str],
+    conditions: Iterable[Condition],
+    blocker: Optional[Callable[[Condition], Optional[str]]] = None,
 ) -> Tuple[Dict[str, Any], List[Condition]]:
     """
     Maps conditions onto a function's parameters.
@@ -159,11 +177,12 @@ def map_conditions(
     targets here; the caller decides what else to pass.
     """
     conditions = list(conditions)
-    assigned = assign_conditions(params, conditions)
+    assigned = assign_conditions(params, conditions, blocker)
+    consumed = [c for c in conditions if c in assigned]
     kwargs: Dict[str, Any] = {}
     for c, target in assigned.items():
         if target == WHERE_PARAM:
-            kwargs[WHERE_PARAM] = conditions
+            kwargs[WHERE_PARAM] = [x for x in consumed if assigned[x] == WHERE_PARAM]
         else:
             kwargs[target] = c.value
-    return kwargs, [c for c in conditions if c in assigned]
+    return kwargs, consumed

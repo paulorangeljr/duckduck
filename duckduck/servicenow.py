@@ -51,14 +51,17 @@ Notes on the Table API
   ``STARTSWITH``, ``CONTAINS``, date ranges, etc.).
 """
 
+import re
 from datetime import datetime, timedelta
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import pandas as pd
 import requests
 
-from .logs import PageProgress, instrument_session, log_http
-from .pushdown import require_like
+from .logs import PageProgress, get_logger, instrument_session, log_http
+from .pushdown import Condition, parse_like, require_like
+
+logger = get_logger("servicenow")
 
 
 class ServiceNow:
@@ -318,17 +321,89 @@ class ServiceNow:
                 parts.append(f"{key}={cls._check_value(key, value)}")
         return "^".join(parts) if parts else None
 
+    #: SQL comparison → encoded-query operator.
+    _COMPARISON_OPERATORS = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
+
+    @classmethod
+    def _condition_clause(cls, cond: Condition) -> Tuple[Optional[str], str]:
+        """
+        One DuckAPI push-down condition as an encoded-query clause, or
+        ``(None, reason)`` when it has to stay with DuckDB.
+        """
+        field = cond.column
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", field):
+            return None, "not a ServiceNow field name"
+        if field.endswith(("_link", "_value")):
+            # json_normalize flattens reference fields ({link, value}) into
+            # <field>_link / <field>_value — neither is a real field name.
+            return None, "reference sub-column (<field>_link/_value)"
+        value = cond.value
+        text = ("true" if value else "false") if isinstance(value, bool) else str(value)
+        if "^" in text or "\n" in text:
+            return None, "value contains '^' (the encoded-query separator)"
+        if cond.op in ("like", "ilike"):
+            pattern = parse_like(text)
+            if pattern is None:
+                return None, "LIKE pattern not translatable ('_' wildcard / inner '%')"
+            # ServiceNow text operators are case-insensitive: exact for ILIKE,
+            # a superset for LIKE — DuckDB re-applies the real predicate.
+            return f"{field}{cls._LIKE_OPERATORS[pattern.kind]}{pattern.text}", ""
+        if cond.op == "eq":
+            return f"{field}={text}", ""
+        if cond.op in cls._COMPARISON_OPERATORS:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                # e.g. dates as text: ServiceNow reads them in the session
+                # user's timezone, so the comparison could drop valid rows.
+                return None, "non-numeric comparison"
+            return f"{field}{cls._COMPARISON_OPERATORS[cond.op]}{text}", ""
+        return None, f"operator {cond.op!r}"
+
+    def pushdown_blocker(self, cond: Condition) -> Optional[str]:
+        """
+        DuckAPI push-down hook (``duckduck.pushdown.BLOCKER_HOOK``): None if
+        ``cond`` can go into ``sysparm_query``, else why not — so DuckAPI
+        keeps it (and the LIMIT decision) on its side and reports it.
+        """
+        return self._condition_clause(cond)[1] or None
+
+    def _with_where(
+        self, table_name: str, query: Optional[str], where: Optional[List[Condition]]
+    ) -> Tuple[Optional[str], bool]:
+        """
+        ``query`` with the push-down conditions ANDed in, and whether all of
+        them made it (False → some stay with DuckDB, so a limit is unsafe).
+        """
+        if not where:
+            return query, True
+        if query and "^NQ" in query:
+            # ^NQ starts a new OR'd query group: appending ^cond would only
+            # constrain the last group, so leave everything to DuckDB.
+            logger.info("%s: raw query has ^NQ — WHERE conditions left to DuckDB", table_name)
+            return query, False
+        clauses, complete = [], True
+        for cond in where:
+            clause, reason = self._condition_clause(cond)
+            if clause is None:
+                complete = False
+                logger.info("%s: %s %s %r not sent to ServiceNow — %s", table_name, cond.column, cond.op, cond.value, reason)
+            else:
+                clauses.append(clause)
+        combined = "^".join(([query] if query else []) + clauses) or None
+        return combined, complete
+
     def _iter_pages(
         self,
         table_name: str,
         query: Optional[str] = None,
         fields: Optional[List[str]] = None,
         display_value: bool = False,
+        where: Optional[List[Condition]] = None,
     ) -> Iterator[List[Dict]]:
         """
         Generator that pages through a table via sysparm_limit/sysparm_offset,
         yielding one page of records at a time.
         """
+        query, _ = self._with_where(table_name, query, where)
         offset = 0
         progress = PageProgress("servicenow", table_name)
         while True:
@@ -361,11 +436,19 @@ class ServiceNow:
         fields: Optional[List[str]] = None,
         display_value: bool = False,
         limit: Optional[int] = None,
+        where: Optional[List[Condition]] = None,
     ) -> List[Dict]:
         """
         A single request if ``limit`` is set; full sysparm_offset
-        pagination otherwise.
+        pagination otherwise. ``where`` (DuckAPI push-down) is folded into
+        the encoded query; if any condition can't be expressed there,
+        ``limit`` is dropped — DuckDB then filters and limits instead, since
+        N rows fetched *before* that filter could hold fewer than N matches.
         """
+        query, complete = self._with_where(table_name, query, where)
+        if not complete and limit is not None:
+            logger.info("%s: LIMIT %s not sent — DuckDB still has conditions to apply", table_name, limit)
+            limit = None
         if limit is not None:
             params: Dict[str, Any] = {"sysparm_limit": limit, "sysparm_offset": 0}
             if query:
@@ -390,6 +473,7 @@ class ServiceNow:
         self,
         table_name: str,
         query: Optional[str] = None,
+        where: Optional[List[Condition]] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -408,7 +492,7 @@ class ServiceNow:
         limit : int, optional
             Maximum number of records.
         """
-        results = self._fetch(table_name, query=query, limit=limit)
+        results = self._fetch(table_name, query=query, limit=limit, where=where)
         return pd.json_normalize(results, sep="_")
 
     # ------------------------------------------------------------------
@@ -423,6 +507,7 @@ class ServiceNow:
         assigned_to: Optional[str] = None,
         number_ilike: Optional[str] = None,
         short_description_ilike: Optional[str] = None,
+        where: Optional[List[Condition]] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -452,7 +537,7 @@ class ServiceNow:
             number=number, state=state, priority=priority, assigned_to=assigned_to,
             number_ilike=number_ilike, short_description_ilike=short_description_ilike,
         )
-        results = self._fetch("incident", query=query, limit=limit)
+        results = self._fetch("incident", query=query, limit=limit, where=where)
         return pd.json_normalize(results, sep="_")
 
     # ------------------------------------------------------------------
@@ -466,6 +551,7 @@ class ServiceNow:
         priority: Optional[str] = None,
         number_ilike: Optional[str] = None,
         short_description_ilike: Optional[str] = None,
+        where: Optional[List[Condition]] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -476,7 +562,7 @@ class ServiceNow:
             number=number, state=state, priority=priority,
             number_ilike=number_ilike, short_description_ilike=short_description_ilike,
         )
-        results = self._fetch("problem", query=query, limit=limit)
+        results = self._fetch("problem", query=query, limit=limit, where=where)
         return pd.json_normalize(results, sep="_")
 
     # ------------------------------------------------------------------
@@ -490,6 +576,7 @@ class ServiceNow:
         type: Optional[str] = None,
         number_ilike: Optional[str] = None,
         short_description_ilike: Optional[str] = None,
+        where: Optional[List[Condition]] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -505,7 +592,7 @@ class ServiceNow:
             number=number, state=state, type=type,
             number_ilike=number_ilike, short_description_ilike=short_description_ilike,
         )
-        results = self._fetch("change_request", query=query, limit=limit)
+        results = self._fetch("change_request", query=query, limit=limit, where=where)
         return pd.json_normalize(results, sep="_")
 
     # ------------------------------------------------------------------
@@ -519,6 +606,7 @@ class ServiceNow:
         user_name_ilike: Optional[str] = None,
         name_ilike: Optional[str] = None,
         email_ilike: Optional[str] = None,
+        where: Optional[List[Condition]] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -536,7 +624,7 @@ class ServiceNow:
             user_name=user_name, active=active, user_name_ilike=user_name_ilike,
             name_ilike=name_ilike, email_ilike=email_ilike,
         )
-        results = self._fetch("sys_user", query=query, limit=limit)
+        results = self._fetch("sys_user", query=query, limit=limit, where=where)
         return pd.json_normalize(results, sep="_")
 
     # ------------------------------------------------------------------
@@ -549,6 +637,7 @@ class ServiceNow:
         sys_class_name: Optional[str] = None,
         operational_status: Optional[str] = None,
         name_ilike: Optional[str] = None,
+        where: Optional[List[Condition]] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -560,16 +649,21 @@ class ServiceNow:
             name=name, sys_class_name=sys_class_name, operational_status=operational_status,
             name_ilike=name_ilike,
         )
-        results = self._fetch("cmdb_ci", query=query, limit=limit)
+        results = self._fetch("cmdb_ci", query=query, limit=limit, where=where)
         return pd.json_normalize(results, sep="_")
 
     # ------------------------------------------------------------------
     # Streaming (iter_*) — for use with DuckAPI.stream()
     # ------------------------------------------------------------------
 
-    def iter_table(self, table_name: str, query: Optional[str] = None) -> Iterator[pd.DataFrame]:
+    def iter_table(
+        self,
+        table_name: str,
+        query: Optional[str] = None,
+        where: Optional[List[Condition]] = None,
+    ) -> Iterator[pd.DataFrame]:
         """Yields one page of records at a time from any table."""
-        for page in self._iter_pages(table_name, query=query):
+        for page in self._iter_pages(table_name, query=query, where=where):
             yield pd.json_normalize(page, sep="_")
 
     def iter_incidents(
@@ -578,43 +672,56 @@ class ServiceNow:
         priority: Optional[str] = None,
         assigned_to: Optional[str] = None,
         short_description_ilike: Optional[str] = None,
+        where: Optional[List[Condition]] = None,
     ) -> Iterator[pd.DataFrame]:
         """Yields one page of incidents at a time."""
         query = self._build_query(
             state=state, priority=priority, assigned_to=assigned_to,
             short_description_ilike=short_description_ilike,
         )
-        for page in self._iter_pages("incident", query=query):
+        for page in self._iter_pages("incident", query=query, where=where):
             yield pd.json_normalize(page, sep="_")
 
     def iter_problems(
-        self, state: Optional[str] = None, short_description_ilike: Optional[str] = None
+        self,
+        state: Optional[str] = None,
+        short_description_ilike: Optional[str] = None,
+        where: Optional[List[Condition]] = None,
     ) -> Iterator[pd.DataFrame]:
         """Yields one page of problems at a time."""
         query = self._build_query(state=state, short_description_ilike=short_description_ilike)
-        for page in self._iter_pages("problem", query=query):
+        for page in self._iter_pages("problem", query=query, where=where):
             yield pd.json_normalize(page, sep="_")
 
     def iter_change_requests(
-        self, state: Optional[str] = None, type: Optional[str] = None
+        self,
+        state: Optional[str] = None,
+        type: Optional[str] = None,
+        where: Optional[List[Condition]] = None,
     ) -> Iterator[pd.DataFrame]:
         """Yields one page of change requests at a time."""
         query = self._build_query(state=state, type=type)
-        for page in self._iter_pages("change_request", query=query):
+        for page in self._iter_pages("change_request", query=query, where=where):
             yield pd.json_normalize(page, sep="_")
 
     def iter_users(
-        self, active: Optional[str] = None, name_ilike: Optional[str] = None
+        self,
+        active: Optional[str] = None,
+        name_ilike: Optional[str] = None,
+        where: Optional[List[Condition]] = None,
     ) -> Iterator[pd.DataFrame]:
         """Yields one page of users at a time."""
         query = self._build_query(active=active, name_ilike=name_ilike)
-        for page in self._iter_pages("sys_user", query=query):
+        for page in self._iter_pages("sys_user", query=query, where=where):
             yield pd.json_normalize(page, sep="_")
 
     def iter_cmdb_ci(
-        self, sys_class_name: Optional[str] = None, name_ilike: Optional[str] = None
+        self,
+        sys_class_name: Optional[str] = None,
+        name_ilike: Optional[str] = None,
+        where: Optional[List[Condition]] = None,
     ) -> Iterator[pd.DataFrame]:
         """Yields one page of configuration items at a time."""
         query = self._build_query(sys_class_name=sys_class_name, name_ilike=name_ilike)
-        for page in self._iter_pages("cmdb_ci", query=query):
+        for page in self._iter_pages("cmdb_ci", query=query, where=where):
             yield pd.json_normalize(page, sep="_")

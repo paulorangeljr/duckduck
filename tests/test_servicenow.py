@@ -282,7 +282,7 @@ def test_incidents_pushes_down_filters():
     with patch.object(sn, "_fetch", return_value=[{"number": "INC001"}]) as mock_fetch:
         df = sn.incidents(state="2", priority="1")
 
-    mock_fetch.assert_called_once_with("incident", query="state=2^priority=1", limit=None)
+    mock_fetch.assert_called_once_with("incident", query="state=2^priority=1", limit=None, where=None)
     assert list(df["number"]) == ["INC001"]
 
 
@@ -291,7 +291,7 @@ def test_problems_pushes_down_state():
     with patch.object(sn, "_fetch", return_value=[{"number": "PRB001"}]) as mock_fetch:
         sn.problems(state="open")
 
-    mock_fetch.assert_called_once_with("problem", query="state=open", limit=None)
+    mock_fetch.assert_called_once_with("problem", query="state=open", limit=None, where=None)
 
 
 def test_change_requests_pushes_down_type():
@@ -299,7 +299,7 @@ def test_change_requests_pushes_down_type():
     with patch.object(sn, "_fetch", return_value=[{"number": "CHG001"}]) as mock_fetch:
         sn.change_requests(type="normal")
 
-    mock_fetch.assert_called_once_with("change_request", query="type=normal", limit=None)
+    mock_fetch.assert_called_once_with("change_request", query="type=normal", limit=None, where=None)
 
 
 def test_users_pushes_down_active():
@@ -307,7 +307,7 @@ def test_users_pushes_down_active():
     with patch.object(sn, "_fetch", return_value=[{"user_name": "jdoe"}]) as mock_fetch:
         sn.users(active="true")
 
-    mock_fetch.assert_called_once_with("sys_user", query="active=true", limit=None)
+    mock_fetch.assert_called_once_with("sys_user", query="active=true", limit=None, where=None)
 
 
 def test_cmdb_ci_pushes_down_class_name():
@@ -316,7 +316,7 @@ def test_cmdb_ci_pushes_down_class_name():
         sn.cmdb_ci(sys_class_name="cmdb_ci_server")
 
     mock_fetch.assert_called_once_with(
-        "cmdb_ci", query="sys_class_name=cmdb_ci_server", limit=None
+        "cmdb_ci", query="sys_class_name=cmdb_ci_server", limit=None, where=None
     )
 
 
@@ -330,7 +330,7 @@ def test_table_uses_structural_table_name():
     with patch.object(sn, "_fetch", return_value=[{"x": 1}]) as mock_fetch:
         df = sn.table(table_name="sys_user_group", query="active=true", limit=20)
 
-    mock_fetch.assert_called_once_with("sys_user_group", query="active=true", limit=20)
+    mock_fetch.assert_called_once_with("sys_user_group", query="active=true", limit=20, where=None)
     assert list(df["x"]) == [1]
 
 
@@ -363,9 +363,93 @@ def test_duckapi_sql_pushdown_integration():
     duck = DuckAPI()
     duck.register_api_function("incidents", sn.incidents)
 
-    with patch.object(sn, "_fetch", return_value=[{"number": "INC001", "priority": "1"}]) as mock_fetch:
+    with patch.object(sn, "_get", return_value={"result": [{"number": "INC001", "priority": "1"}]}) as mock_get:
         df = duck.sql("SELECT * FROM incidents WHERE priority = '1'").df()
 
-    mock_fetch.assert_called_once_with("incident", query="priority=1", limit=None)
+    # the condition arrives through `where` and becomes the same encoded query
+    assert mock_get.call_args.args[1]["sysparm_query"] == "priority=1"
     assert list(df["number"]) == ["INC001"]
     duck.close()
+
+
+# ---------------------------------------------------------------------------
+# Generic `where` push-down (any field, any table)
+# ---------------------------------------------------------------------------
+
+from duckduck.pushdown import Condition  # noqa: E402
+
+
+@pytest.mark.parametrize("cond, clause", [
+    (Condition("dns_domain", "like", "%auql%"), "dns_domainLIKEauql"),
+    (Condition("name", "ilike", "web%"), "nameSTARTSWITHweb"),
+    (Condition("fqdn", "like", "%.corp"), "fqdnENDSWITH.corp"),
+    (Condition("name", "like", "srv01"), "name=srv01"),
+    (Condition("install_status", "eq", "1"), "install_status=1"),
+    (Condition("active", "eq", True), "active=true"),
+    (Condition("cpu_count", "gte", 4), "cpu_count>=4"),
+])
+def test_condition_clause_translates(cond, clause):
+    assert ServiceNow._condition_clause(cond) == (clause, "")
+
+
+@pytest.mark.parametrize("cond, reason", [
+    (Condition("assigned_to_value", "eq", "abc"), "reference sub-column"),
+    (Condition("assigned_to_link", "eq", "x"), "reference sub-column"),
+    (Condition("sys_created_on", "gte", "2026-01-01"), "non-numeric comparison"),
+    (Condition("name", "like", "srv_1%"), "not translatable"),
+    (Condition("name", "eq", "x^ORactive=false"), "'^'"),
+    (Condition("Weird Name", "eq", "x"), "not a ServiceNow field name"),
+])
+def test_condition_clause_refuses_what_could_lose_rows(cond, reason):
+    clause, why = ServiceNow._condition_clause(cond)
+    assert clause is None and reason in why
+
+
+def test_table_where_goes_into_sysparm_query_with_limit():
+    sn = _make_sn()
+    duck = DuckAPI()
+    duck.register_api_function("sn_table", sn.table)
+    with patch.object(sn, "_get", return_value={"result": [{"name": "a", "dns_domain": "x.auql.net"}]}) as mock_get:
+        df = duck.sql(
+            "SELECT name FROM sn_table(table_name='cmdb_ci_server') WHERE dns_domain LIKE '%auql%' LIMIT 10"
+        ).df()
+    params = mock_get.call_args.args[1]
+    assert mock_get.call_args.args[0] == "cmdb_ci_server"
+    assert params["sysparm_query"] == "dns_domainLIKEauql" and params["sysparm_limit"] == 10
+    assert df["name"].tolist() == ["a"]
+    duck.close()
+
+
+def test_blocked_condition_stays_with_duckdb_and_limit_is_not_pushed():
+    sn = _make_sn()
+    duck = DuckAPI()
+    duck.register_api_function("sn_table", sn.table)
+    rows = [{"name": f"s{i}", "assigned_to": {"link": "l", "value": "abc" if i == 3 else "zzz"}} for i in range(5)]
+    with patch.object(sn, "_get", return_value={"result": rows}) as mock_get:
+        df = duck.sql(
+            "SELECT name FROM sn_table(table_name='cmdb_ci') WHERE name LIKE 's%' AND assigned_to_value = 'abc' LIMIT 1"
+        ).df()
+    params = mock_get.call_args.args[1]
+    assert params["sysparm_query"] == "nameSTARTSWITHs"
+    assert params["sysparm_limit"] == sn.default_page_size  # paginating: no LIMIT 1 at the source
+    assert df["name"].tolist() == ["s3"]  # with LIMIT 1 pushed, s3 would have been lost
+    duck.close()
+
+
+def test_where_is_combined_with_raw_query_and_dedicated_filters():
+    sn = _make_sn()
+    with patch.object(sn, "_get", return_value={"result": []}) as mock_get:
+        sn.incidents(state="2", where=[Condition("category", "eq", "network")], limit=5)
+    assert mock_get.call_args.args[1]["sysparm_query"] == "state=2^category=network"
+    with patch.object(sn, "_get", return_value={"result": []}) as mock_get:
+        sn.table("incident", query="active=true", where=[Condition("priority", "lte", 2)], limit=5)
+    assert mock_get.call_args.args[1]["sysparm_query"] == "active=true^priority<=2"
+
+
+def test_raw_query_with_nq_keeps_where_in_duckdb_and_drops_limit():
+    sn = _make_sn()
+    with patch.object(sn, "_get", return_value={"result": []}) as mock_get:
+        sn.table("incident", query="priority=1^NQpriority=2", where=[Condition("category", "eq", "x")], limit=5)
+    params = mock_get.call_args.args[1]
+    assert params["sysparm_query"] == "priority=1^NQpriority=2"
+    assert params["sysparm_limit"] == sn.default_page_size

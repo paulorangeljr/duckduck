@@ -280,3 +280,13 @@ def test_axonius_like_is_an_escaped_case_insensitive_regex():
     assert Axonius._aql_like("f", "web.prod%", "p") == 'f == regex("^web\\\\.prod", "i")'
     assert Axonius._aql_like("f", "%prod", "p") == 'f == regex("prod$", "i")'
     assert Axonius._aql_eq("f", 'a"b') == 'f == "a\\"b"'
+
+
+def test_blocker_hook_keeps_refused_conditions_out_of_where():
+    from duckduck.pushdown import assign_conditions
+
+    conds = [Condition("a", "eq", 1), Condition("b_value", "eq", 2)]
+    blocker = lambda c: "nope" if c.column.endswith("_value") else None  # noqa: E731
+    kwargs, consumed = map_conditions({"where"}, conds, blocker)
+    assert kwargs == {"where": [conds[0]]} and consumed == [conds[0]]
+    assert assign_conditions({"where"}, conds, blocker) == {conds[0]: "where"}
