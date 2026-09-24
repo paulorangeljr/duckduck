@@ -425,6 +425,13 @@ the same local/AWS/Azure `authentication` blocks the connectors use:
 - **An LLM** (Claude by default, `pip install -e ".[llm]"`) drafts the
   semantic catalog from your registered tables and extracts values from
   questions (`extractor.type: "llm"`). You can replace every system prompt.
+  Its key comes from `ANTHROPIC_API_KEY` or from an `authentication`
+  block in the `llm` section that yields an `api_key`
+  (`{"type": "aws", "secret_id": "prod/anthropic", "api_key": "$secret.key"}`).
+  If it finds neither, it fails at startup and tells you where to put the key.
+  In a notebook, the kernel only sees environment variables that existed
+  when it started, so either restart the kernel or set
+  `os.environ["ANTHROPIC_API_KEY"]` before calling anything.
   Without an explicit table list, it drafts every plain table **and every
   table behind your connectors**, found through their catalogs (each Glue
   table via `glue_table(database=…, table_name=…)`, each ADX table, each

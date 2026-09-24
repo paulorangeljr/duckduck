@@ -21,6 +21,24 @@ class LLMError(RuntimeError):
     pass
 
 
+MISSING_KEY_HELP = (
+    "No Anthropic API key found for the LLM. Either:\n"
+    "  - set ANTHROPIC_API_KEY in the environment of *this* process (a notebook kernel only sees "
+    "variables that existed when it started: restart it, or set os.environ[\"ANTHROPIC_API_KEY\"] "
+    "before building the LLM), or\n"
+    "  - add an \"authentication\" block to the \"llm\" section of the semantic config that yields "
+    "an api_key, e.g. {\"type\": \"aws\", \"secret_id\": \"prod/anthropic\", \"api_key\": \"$secret.key\"}, or\n"
+    "  - pass ClaudeLLM(api_key=...) when building it in code."
+)
+
+
+def _require_credentials(client: Any) -> None:
+    """Fails at construction, not at the first request (after tables were already profiled)."""
+    if not (getattr(client, "api_key", None) or getattr(client, "auth_token", None)
+            or getattr(client, "credentials", None)):
+        raise ValueError(MISSING_KEY_HELP)
+
+
 class LLMClient(Protocol):
     def generate(self, system: str, prompt: str, output_model: Type[T]) -> T:
         """Returns ``output_model`` parsed from the model's answer."""
@@ -73,6 +91,7 @@ class ClaudeLLM:
             if base_url:
                 kwargs["base_url"] = base_url
             client = anthropic.Anthropic(**kwargs)
+            _require_credentials(client)
         self.client = client
 
     @classmethod

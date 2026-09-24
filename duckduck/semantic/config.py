@@ -173,6 +173,11 @@ class SemanticConfig(_Strict):
             )
         cfg = self.llm
         creds = duck.resolve_credentials(cfg.authentication, "semantic.llm") if cfg.authentication else {}
+        if cfg.authentication and not creds.get("api_key"):
+            raise ValueError(
+                f"The 'llm' authentication block resolved to keys {sorted(creds)} but no 'api_key'. "
+                f"If the secret stores it under another name, map it: \"api_key\": \"$secret.<its key>\"."
+            )
         return ClaudeLLM(
             model=cfg.model, api_key=creds.get("api_key"), max_tokens=cfg.max_tokens,
             effort=cfg.effort, fallbacks=cfg.fallbacks, base_url=cfg.base_url,

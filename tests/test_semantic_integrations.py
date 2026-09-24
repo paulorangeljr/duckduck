@@ -203,6 +203,43 @@ def test_claude_llm_without_fallbacks_uses_the_stable_endpoint():
     client.beta.messages.parse.assert_not_called()
 
 
+def _no_anthropic_credentials(monkeypatch, tmp_path):
+    for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE", "ANTHROPIC_CONFIG_DIR",
+                "ANTHROPIC_IDENTITY_TOKEN", "ANTHROPIC_IDENTITY_TOKEN_FILE", "ANTHROPIC_FEDERATION_RULE_ID"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))  # no ~/.config/anthropic profile either
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+
+
+def test_claude_llm_without_a_key_fails_at_construction_saying_where_to_put_it(monkeypatch, tmp_path):
+    pytest.importorskip("anthropic")
+    _no_anthropic_credentials(monkeypatch, tmp_path)
+    with pytest.raises(ValueError) as info:
+        ClaudeLLM()
+    message = str(info.value)
+    assert "ANTHROPIC_API_KEY" in message and '"authentication"' in message and "api_key=" in message
+
+
+def test_claude_llm_takes_the_key_from_the_environment_or_the_argument(monkeypatch, tmp_path):
+    pytest.importorskip("anthropic")
+    _no_anthropic_credentials(monkeypatch, tmp_path)
+    assert ClaudeLLM(api_key="sk-arg").client.api_key == "sk-arg"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-env")
+    assert ClaudeLLM().client.api_key == "sk-env"
+
+
+def test_llm_authentication_block_without_api_key_says_how_to_map_it(tmp_path):
+    from duckduck.semantic import SemanticConfig
+
+    path = _write_config(tmp_path, {
+        "catalog_path": CATALOG_PATH,
+        "llm": {"authentication": {"type": "local", "key": "sk-test"}},
+    })
+    cfg = SemanticConfig.load(DuckAPI(), path)
+    with pytest.raises(ValueError, match=r"\['key'\].*\"\$secret\.<its key>\""):
+        cfg.build_llm(DuckAPI())
+
+
 @pytest.mark.parametrize("stop_reason, parsed, match", [
     ("refusal", None, "declined"), ("max_tokens", None, "truncated"), ("end_turn", None, "no parseable"),
 ])
