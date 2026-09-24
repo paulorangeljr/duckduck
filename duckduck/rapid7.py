@@ -42,6 +42,8 @@ import pandas as pd
 import requests
 import urllib3
 
+from .pushdown import require_like
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
@@ -186,10 +188,14 @@ class InsightVM:
     # Assets
     # ------------------------------------------------------------------
 
+    #: SQL LIKE pattern kind → InsightVM asset-search operator.
+    _SEARCH_OPERATORS = {"contains": "contains", "startswith": "starts-with", "endswith": "ends-with", "equals": "is"}
+
     def assets(
         self,
         hostname: Optional[str] = None,
         ip: Optional[str] = None,
+        hostname_ilike: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -199,6 +205,9 @@ class InsightVM:
         ----------------
         - ``hostname`` → searches for ``host-name contains <value>``
         - ``ip``       → searches for ``ip-address is <value>``
+        - ``hostname LIKE 'p'`` (``hostname_ilike``) → ``host-name``
+          ``contains`` / ``starts-with`` / ``ends-with`` / ``is``, by the
+          pattern's shape (see ``duckduck.pushdown``)
 
         When hostname or ip are passed, uses the ``/assets/search``
         endpoint, which supports server-side filters.
@@ -213,13 +222,20 @@ class InsightVM:
         limit : int, optional
             Maximum number of records (the API's page_size).
         """
-        if hostname or ip:
+        if hostname or ip or hostname_ilike:
             filters = []
             if hostname:
                 filters.append({
                     "field": "host-name",
                     "operator": "contains",
                     "value": hostname,
+                })
+            if hostname_ilike:
+                pattern = require_like(hostname_ilike, "hostname_ilike")
+                filters.append({
+                    "field": "host-name",
+                    "operator": self._SEARCH_OPERATORS[pattern.kind],
+                    "value": pattern.text,
                 })
             if ip:
                 filters.append({
@@ -623,11 +639,12 @@ class InsightVM:
         self,
         hostname: Optional[str] = None,
         ip: Optional[str] = None,
+        hostname_ilike: Optional[str] = None,
     ) -> Iterator[pd.DataFrame]:
         """Yields one page of assets at a time."""
-        if hostname or ip:
+        if hostname or ip or hostname_ilike:
             # The search endpoint returns everything in a single call; single yield.
-            yield self.assets(hostname=hostname, ip=ip)
+            yield self.assets(hostname=hostname, ip=ip, hostname_ilike=hostname_ilike)
             return
         for page in self._iter_pages("/assets"):
             yield pd.json_normalize(page, sep="_")

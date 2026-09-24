@@ -271,3 +271,21 @@ def test_duckapi_fetch_validates_and_allows_empty(duck):
         duck.fetch("firewall_logs", bogus=1)
     with pytest.raises(KeyError):
         duck.fetch("missing")
+
+
+def test_contains_and_time_range_push_down_through_the_same_convention(duck, search):
+    calls = []
+    rows = sample_sources.build_sources(NOW)["proxy_logs"]()
+
+    def proxy_logs(destination_domain_ilike=None, timestamp_gte=None, limit=None):
+        calls.append({"destination_domain_ilike": destination_domain_ilike, "timestamp_gte": timestamp_gte})
+        return rows
+
+    duck.register_api_function("proxy_logs", proxy_logs)
+    result = search.search("Which users accessed github in the last 24hrs?")
+    assert calls[-1] == {"destination_domain_ilike": "%github%", "timestamp_gte": "2026-09-23 12:00:00"}
+    fetch = result.fetches[0]
+    assert fetch.residual_filters == [] and sorted(fetch.pushed_filters) == [
+        "proxy_logs.destination_domain", "proxy_logs.timestamp"
+    ]
+    assert sorted(result.results["username"]) == ["alice", "bob"]  # DuckDB still re-applies both

@@ -57,6 +57,8 @@ from typing import Any, Dict, Iterator, List, Optional
 import pandas as pd
 import requests
 
+from .pushdown import require_like
+
 
 class ServiceNow:
     """
@@ -275,10 +277,38 @@ class ServiceNow:
         r.raise_for_status()
         return r.json()
 
+    #: SQL LIKE pattern kind (``duckduck.pushdown.parse_like``) → encoded-query operator.
+    _LIKE_OPERATORS = {"contains": "LIKE", "startswith": "STARTSWITH", "endswith": "ENDSWITH", "equals": "="}
+
     @staticmethod
-    def _build_query(**filters: Any) -> Optional[str]:
-        """Joins non-None kwargs into a ``field=value^field2=value2`` encoded query."""
-        parts = [f"{key}={value}" for key, value in filters.items() if value is not None]
+    def _check_value(field: str, value: Any) -> str:
+        text = str(value)
+        # "^" separates encoded-query clauses: a value containing it would
+        # silently turn into extra conditions (e.g. "x^ORactive=false").
+        if "^" in text or "\n" in text:
+            raise ValueError(f"{field}: value {text!r} can't contain '^' or newlines in a ServiceNow encoded query.")
+        return text
+
+    @classmethod
+    def _build_query(cls, **filters: Any) -> Optional[str]:
+        """
+        Builds a ``^``-joined encoded query from non-None kwargs: ``field=value``
+        for equality, and for ``<field>_ilike`` kwargs (a SQL LIKE pattern,
+        see ``duckduck.pushdown``) ``fieldLIKEx`` / ``fieldSTARTSWITHx`` /
+        ``fieldENDSWITHx`` — ServiceNow's text operators, case-insensitive
+        on standard instances.
+        """
+        parts = []
+        for key, value in filters.items():
+            if value is None:
+                continue
+            if key.endswith("_ilike"):
+                field = key[: -len("_ilike")]
+                pattern = require_like(value, key)
+                text = cls._check_value(key, pattern.text)
+                parts.append(f"{field}{cls._LIKE_OPERATORS[pattern.kind]}{text}")
+            else:
+                parts.append(f"{key}={cls._check_value(key, value)}")
         return "^".join(parts) if parts else None
 
     def _iter_pages(
@@ -380,6 +410,8 @@ class ServiceNow:
         state: Optional[str] = None,
         priority: Optional[str] = None,
         assigned_to: Optional[str] = None,
+        number_ilike: Optional[str] = None,
+        short_description_ilike: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -396,11 +428,18 @@ class ServiceNow:
             Numeric priority (``"1"`` Critical .. ``"5"`` Planning).
         assigned_to : str, optional
             sys_id of the assigned user.
+        number_ilike : str, optional
+            SQL LIKE pattern pushed down as ServiceNow's LIKE / STARTSWITH /
+            ENDSWITH (``WHERE number LIKE '%x%'`` arrives here automatically).
+        short_description_ilike : str, optional
+            SQL LIKE pattern pushed down as ServiceNow's LIKE / STARTSWITH /
+            ENDSWITH (``WHERE short_description LIKE '%x%'`` arrives here automatically).
         limit : int, optional
             Maximum number of records.
         """
         query = self._build_query(
-            number=number, state=state, priority=priority, assigned_to=assigned_to
+            number=number, state=state, priority=priority, assigned_to=assigned_to,
+            number_ilike=number_ilike, short_description_ilike=short_description_ilike,
         )
         results = self._fetch("incident", query=query, limit=limit)
         return pd.json_normalize(results, sep="_")
@@ -414,12 +453,18 @@ class ServiceNow:
         number: Optional[str] = None,
         state: Optional[str] = None,
         priority: Optional[str] = None,
+        number_ilike: Optional[str] = None,
+        short_description_ilike: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
-        Lists problems (``problem`` table), with push-down of common filters.
+        Lists problems (``problem`` table), with push-down of common filters
+        (``*_ilike``: LIKE patterns, see ``incidents``).
         """
-        query = self._build_query(number=number, state=state, priority=priority)
+        query = self._build_query(
+            number=number, state=state, priority=priority,
+            number_ilike=number_ilike, short_description_ilike=short_description_ilike,
+        )
         results = self._fetch("problem", query=query, limit=limit)
         return pd.json_normalize(results, sep="_")
 
@@ -432,17 +477,23 @@ class ServiceNow:
         number: Optional[str] = None,
         state: Optional[str] = None,
         type: Optional[str] = None,
+        number_ilike: Optional[str] = None,
+        short_description_ilike: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
-        Lists change requests (``change_request`` table).
+        Lists change requests (``change_request`` table) (``*_ilike``: LIKE
+        patterns, see ``incidents``).
 
         Parameters
         ----------
         type : str, optional
             ``"standard"``, ``"normal"``, or ``"emergency"``.
         """
-        query = self._build_query(number=number, state=state, type=type)
+        query = self._build_query(
+            number=number, state=state, type=type,
+            number_ilike=number_ilike, short_description_ilike=short_description_ilike,
+        )
         results = self._fetch("change_request", query=query, limit=limit)
         return pd.json_normalize(results, sep="_")
 
@@ -454,10 +505,14 @@ class ServiceNow:
         self,
         user_name: Optional[str] = None,
         active: Optional[str] = None,
+        user_name_ilike: Optional[str] = None,
+        name_ilike: Optional[str] = None,
+        email_ilike: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
-        Lists users (``sys_user`` table).
+        Lists users (``sys_user`` table) (``*_ilike``: LIKE patterns, see
+        ``incidents``).
 
         Parameters
         ----------
@@ -466,7 +521,10 @@ class ServiceNow:
         active : str, optional
             ``"true"`` or ``"false"``.
         """
-        query = self._build_query(user_name=user_name, active=active)
+        query = self._build_query(
+            user_name=user_name, active=active, user_name_ilike=user_name_ilike,
+            name_ilike=name_ilike, email_ilike=email_ilike,
+        )
         results = self._fetch("sys_user", query=query, limit=limit)
         return pd.json_normalize(results, sep="_")
 
@@ -479,6 +537,7 @@ class ServiceNow:
         name: Optional[str] = None,
         sys_class_name: Optional[str] = None,
         operational_status: Optional[str] = None,
+        name_ilike: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -487,7 +546,8 @@ class ServiceNow:
         etc. if you need one CI class server-side).
         """
         query = self._build_query(
-            name=name, sys_class_name=sys_class_name, operational_status=operational_status
+            name=name, sys_class_name=sys_class_name, operational_status=operational_status,
+            name_ilike=name_ilike,
         )
         results = self._fetch("cmdb_ci", query=query, limit=limit)
         return pd.json_normalize(results, sep="_")
@@ -506,15 +566,21 @@ class ServiceNow:
         state: Optional[str] = None,
         priority: Optional[str] = None,
         assigned_to: Optional[str] = None,
+        short_description_ilike: Optional[str] = None,
     ) -> Iterator[pd.DataFrame]:
         """Yields one page of incidents at a time."""
-        query = self._build_query(state=state, priority=priority, assigned_to=assigned_to)
+        query = self._build_query(
+            state=state, priority=priority, assigned_to=assigned_to,
+            short_description_ilike=short_description_ilike,
+        )
         for page in self._iter_pages("incident", query=query):
             yield pd.json_normalize(page, sep="_")
 
-    def iter_problems(self, state: Optional[str] = None) -> Iterator[pd.DataFrame]:
+    def iter_problems(
+        self, state: Optional[str] = None, short_description_ilike: Optional[str] = None
+    ) -> Iterator[pd.DataFrame]:
         """Yields one page of problems at a time."""
-        query = self._build_query(state=state)
+        query = self._build_query(state=state, short_description_ilike=short_description_ilike)
         for page in self._iter_pages("problem", query=query):
             yield pd.json_normalize(page, sep="_")
 
@@ -526,14 +592,18 @@ class ServiceNow:
         for page in self._iter_pages("change_request", query=query):
             yield pd.json_normalize(page, sep="_")
 
-    def iter_users(self, active: Optional[str] = None) -> Iterator[pd.DataFrame]:
+    def iter_users(
+        self, active: Optional[str] = None, name_ilike: Optional[str] = None
+    ) -> Iterator[pd.DataFrame]:
         """Yields one page of users at a time."""
-        query = self._build_query(active=active)
+        query = self._build_query(active=active, name_ilike=name_ilike)
         for page in self._iter_pages("sys_user", query=query):
             yield pd.json_normalize(page, sep="_")
 
-    def iter_cmdb_ci(self, sys_class_name: Optional[str] = None) -> Iterator[pd.DataFrame]:
+    def iter_cmdb_ci(
+        self, sys_class_name: Optional[str] = None, name_ilike: Optional[str] = None
+    ) -> Iterator[pd.DataFrame]:
         """Yields one page of configuration items at a time."""
-        query = self._build_query(sys_class_name=sys_class_name)
+        query = self._build_query(sys_class_name=sys_class_name, name_ilike=name_ilike)
         for page in self._iter_pages("cmdb_ci", query=query):
             yield pd.json_normalize(page, sep="_")

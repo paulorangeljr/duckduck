@@ -18,10 +18,12 @@ outbound internet access to DuckDB's extension repository (they're
 downloaded once and cached under ``~/.duckdb/extensions``).
 """
 
-from typing import Optional
+from typing import List, Optional
 
 import duckdb
 import pandas as pd
+
+from .pushdown import Condition, conditions_to_sql
 
 
 class LakehouseConnection:
@@ -46,9 +48,25 @@ class LakehouseConnection:
         self.ensure_extension("httpfs")
         self._conn.execute(sql)
 
-    def scan(self, scan_expression: str, limit: Optional[int] = None) -> pd.DataFrame:
-        """Runs ``SELECT * FROM {scan_expression} [LIMIT n]`` and returns a DataFrame."""
+    def scan(
+        self,
+        scan_expression: str,
+        limit: Optional[int] = None,
+        where: Optional[List[Condition]] = None,
+    ) -> pd.DataFrame:
+        """
+        Runs ``SELECT * FROM {scan_expression} [WHERE ...] [LIMIT n]`` and
+        returns a DataFrame. ``where`` conditions (from DuckAPI's push-down)
+        go into the scan itself, so DuckDB prunes Parquet row groups/files
+        and only matching rows ever reach Python; ones on columns the scan
+        doesn't have are skipped (a ``DESCRIBE`` — metadata only — finds out).
+        """
         sql = f"SELECT * FROM {scan_expression}"
+        if where:
+            columns = [row[0] for row in self._conn.sql(f"DESCRIBE {sql}").fetchall()]
+            body = conditions_to_sql(where, columns)
+            if body:
+                sql += f" WHERE {body}"
         if limit is not None:
-            sql += f" LIMIT {limit}"
+            sql += f" LIMIT {int(limit)}"
         return self._conn.sql(sql).df()

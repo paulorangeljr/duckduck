@@ -41,11 +41,12 @@ projection push-down during the scan where the format supports it,
 independent of DuckAPI's own push-down layer.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
 from .lakehouse import LakehouseConnection
+from .pushdown import Condition
 
 try:
     import boto3
@@ -174,6 +175,7 @@ class GlueTable:
         self,
         database: str,
         table_name: str,
+        where: Optional[List[Condition]] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -185,16 +187,21 @@ class GlueTable:
             Structural — the Glue database name.
         table_name : str
             Structural — the Glue table name.
+        where : list[Condition], optional
+            Filled by DuckAPI's push-down with the query's ``WHERE``
+            conditions; they run inside the DuckDB scan itself (Parquet
+            row-group/file pruning), so non-matching rows never reach Python.
         limit : int, optional
             Applied via DuckDB's own ``LIMIT`` on the scan.
         """
         scan_expr = self._scan_expression(database, table_name)
-        return self._lake.scan(scan_expr, limit=limit)
+        return self._lake.scan(scan_expr, limit=limit, where=where)
 
     def path(
         self,
         s3_path: str,
         format: str = "parquet",
+        where: Optional[List[Condition]] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -207,6 +214,10 @@ class GlueTable:
             Structural — e.g. ``"s3://bucket/path/"`` (a Parquet dataset)
             or an exact Delta/Iceberg table location.
         format : {"parquet", "delta", "iceberg"}
+        where : list[Condition], optional
+            Filled by DuckAPI's push-down with the query's ``WHERE``
+            conditions; they run inside the DuckDB scan itself (Parquet
+            row-group/file pruning), so non-matching rows never reach Python.
         limit : int, optional
         """
         if format == "parquet":
@@ -220,13 +231,19 @@ class GlueTable:
             scan_expr = f"iceberg_scan('{s3_path}')"
         else:
             raise ValueError(f"Unsupported format '{format}'. Use parquet, delta, or iceberg.")
-        return self._lake.scan(scan_expr, limit=limit)
+        return self._lake.scan(scan_expr, limit=limit, where=where)
 
     # ------------------------------------------------------------------
     # Streaming (iter_*) — for use with DuckAPI.stream()
     # ------------------------------------------------------------------
 
-    def iter_table(self, database: str, table_name: str, chunksize: int = 10_000):
+    def iter_table(
+        self,
+        database: str,
+        table_name: str,
+        where: Optional[List[Condition]] = None,
+        chunksize: int = 10_000,
+    ):
         """
         Yields up to ``chunksize`` rows at a time.
 
@@ -234,7 +251,7 @@ class GlueTable:
         splits the resulting DataFrame into ``chunksize``-row pieces —
         same trade-off as ``BlobStorage.iter_table``/``SQLDatabase.query()``.
         """
-        df = self.table(database, table_name)
+        df = self.table(database, table_name, where=where)
         for start in range(0, len(df), chunksize):
             chunk = df.iloc[start : start + chunksize]
             if not chunk.empty:

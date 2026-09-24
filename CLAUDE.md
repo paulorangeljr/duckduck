@@ -48,7 +48,26 @@ conn.register(tmp_table, df)
 conn.sql(rewritten_query)   ←  DuckDB applies remaining predicates
 ```
 
-`PushDownContext` carries `limit: int | None` and `filters: dict[str, Any]`. Only equality/LIKE/comparison conditions on bare column names are extracted; OR, NOT, and nested expressions are left entirely to DuckDB.
+`PushDownContext` carries `limit`, `conditions` (every simple `col <op> literal` ANDed in the WHERE, as `duckduck.pushdown.Condition(column, op, value, table)`), `filters` (the `eq` ones only, `{col: value}`, kept for compatibility), `complete` (False when the WHERE has anything not extractable — OR, NOT, IN, functions, column-to-column) and `limit_safe` (False for JOIN / GROUP BY / DISTINCT / ORDER BY / aggregates / windows / subqueries / set operations).
+
+### Operator → parameter convention (`duckduck/pushdown.py`)
+
+What a connector can filter server-side is declared in its signature:
+
+| SQL | Parameter | Receives |
+|---|---|---|
+| `col = v` | `col` | `v` |
+| `col LIKE 'p'` | `col_like` (server matches case-sensitively) or `col_ilike` (case-insensitively — a superset for LIKE, which is fine) | the SQL pattern |
+| `col ILIKE 'p'` | `col_ilike` only | the SQL pattern |
+| `col > v` / `>=` / `<` / `<=` | `col_gt` / `col_gte` / `col_lt` / `col_lte` | `v` |
+| any of the above | `where` | `List[Condition]` — all of them (sources that apply arbitrary conditions natively: `SQLDatabase`, `glue`, `blob_storage`) |
+
+- A LIKE reaches a `_like`/`_ilike` param **only** if `parse_like` can translate it exactly (`'x'`, `'x%'`, `'%x'`, `'%x%'`). `_` (single-char wildcard), inner `%` and backslashes stay with DuckDB — pushing `'web_prod%'` as a literal prefix would return a *subset*. Connectors translate with `require_like()` into their own operator (ServiceNow `LIKE`/`STARTSWITH`/`ENDSWITH`, InsightVM `contains`/`starts-with`/`ends-with`/`is`, Axonius `regex(..., "i")`).
+- **Superset, never subset.** DuckDB always re-applies the full WHERE, so a looser server-side match is safe; a stricter one silently loses rows.
+- **LIMIT reaches the source only when it can't change the answer**: `limit_safe`, `complete`, and the function consumed *every* condition. Otherwise `WHERE ip = 'x' LIMIT 1` against a function with no `ip` param would fetch 1 arbitrary row and then filter it away. (Before this, LIMIT was pushed unconditionally and LIKE/comparisons were pushed *as equality* — `hostname LIKE '%web%'` arrived as `hostname='%web%'`.)
+- **Qualified conditions** (`x.col = 1`) only reach the function whose name or alias (`FROM f AS x`, `JOIN f x`) matches, found by `DuckAPI._alias_at`; bare ones reach every function that accepts them, as before.
+- `stream()` maps against the *iter function's* own signature, never pushing LIMIT.
+- `SQLDatabase` translates DuckDB LIKE semantics exactly per dialect: `\` escaped and declared as ESCAPE (MySQL treats it as one by default), and on SQL Server `[` escaped (a character class there). Values are always bound parameters.
 
 ### SQL rewriting
 
@@ -133,6 +152,7 @@ class MyAPI:
 |---|---|
 | Structural param (URL path) | Required positional, no default, document as "required" |
 | Column-filter param | `Optional[X] = None`; filter the DataFrame after fetching |
+| LIKE / comparison push-down | Add `col_ilike` / `col_like` / `col_gt`... params (see "Operator → parameter convention") and translate with `duckduck.pushdown.require_like`; only declare `col_like` if the server matches case-sensitively |
 | `limit` | Always `Optional[int] = None`, always last; pass straight to `_fetch` |
 | Return type | `pd.DataFrame`; dot-separated nested keys become `_` via `sep="_"` |
 | Server-side filter | Use it when the API supports it (fewer bytes over the wire) |
@@ -421,7 +441,7 @@ SELECT * FROM sqlserver_table(table_name='dbo.Customers') WHERE status = 'active
 SELECT * FROM mysql_query(sql='SELECT * FROM orders WHERE total > 100')
 ```
 
-`table_name`/`sql` are structural (required, no default); `limit` on `table()` is pushed down server-side via SQLAlchemy's `.limit()` (translates to `TOP`/`LIMIT`/`FETCH` per dialect); `limit` on `query()` is applied client-side after the raw query runs. Column filters in `WHERE` aren't pushed down server-side for either — DuckDB applies them on the fetched result, same as any push-down parameter a wrapper doesn't recognize. `from_secret` accepts either a full `connection_string` or discrete `drivername`/`username`/`password`/`host`/`port`/`database` fields (the latter matches what managed secrets, e.g. AWS RDS, already store).
+`table_name`/`sql` are structural (required, no default); `limit` on `table()` is pushed down server-side via SQLAlchemy's `.limit()` (translates to `TOP`/`LIMIT`/`FETCH` per dialect); `limit` on `query()` is applied client-side after the raw query runs. `table()` takes the `where` push-down param: every simple WHERE condition (`=`, `LIKE`, `ILIKE`, comparisons) becomes a real SQL `WHERE` in the database's dialect, matched to columns case-insensitively. `query()` pushes nothing (it's a raw passthrough). `from_secret` accepts either a full `connection_string` or discrete `drivername`/`username`/`password`/`host`/`port`/`database` fields (the latter matches what managed secrets, e.g. AWS RDS, already store).
 
 **Sourcing the connection string from a secret manager**: if the secret already has a `connection_string` key, `authentication` needs nothing else — `"authentication": {"type": "aws", "secret_id": "prod/sqlserver"}` is enough, since the fetched secret becomes the credentials dict as-is. A managed secret with discrete fields (RDS-style: `username`/`password`/`host`/`port`/`dbname`) needs `drivername` added (RDS never stores it) and any mismatched key renamed via `"$secret.<key>"` — e.g. `"database": "$secret.dbname"` bridges RDS's `dbname` to the `database` field `from_secret` reads. See `duckduck.example.json`'s `sqlserver_from_rds_secret` entry for the full example.
 
@@ -448,7 +468,7 @@ SELECT * FROM mysql_query(sql='SELECT * FROM orders WHERE total > 100')
 - **`glue`** (`duckduck/glue.py` — `GlueTable`): `table(database=, table_name=)` (both structural) looks up the table's location + format in the **AWS Glue Data Catalog** via `boto3`'s `get_table`, then auto-detects Parquet vs Delta (`Parameters.table_type == "DELTA"` or `spark.sql.sources.provider == "delta"`) vs Iceberg (`Parameters.table_type == "ICEBERG"` or a `metadata_location` parameter — the Spark/Athena/PyIceberg Glue-catalog convention) and scans accordingly. `path(s3_path=, format=)` bypasses Glue for ad hoc reads. S3 auth is a `CREATE SECRET` built either from explicit `aws_access_key_id`/`aws_secret_access_key` or `PROVIDER credential_chain` (+ `PROFILE`/`REGION`) — the same credentials boto3's own Glue lookup uses, kept in sync deliberately.
 - **`blob_storage`** (`duckduck/blob_storage.py` — `BlobStorage`): `table(container=, path=, format="parquet")` (both structural) reads `az://{container}/{path}` directly; `format` also accepts `csv`/`json`/`delta`/`iceberg`. Auth is `CREATE SECRET (TYPE AZURE, ...)`, either `CONNECTION_STRING` or `PROVIDER CREDENTIAL_CHAIN` + `ACCOUNT_NAME` (Azure CLI login / managed identity — no Glue-Data-Catalog equivalent here, so there's no format auto-detection, just the `format` parameter).
 
-Neither pushes `WHERE` column filters down through the scan — DuckDB applies them on the already-scanned result, same as any push-down parameter a wrapper doesn't recognize (the Parquet/Delta/Iceberg readers do their own internal filter/projection push-down during the scan, independent of DuckAPI's push-down layer). `iter_table()` on both is a post-hoc chunk split of the full scanned result (same trade-off as `SQLDatabase.query()`'s client-side `limit`), not true incremental streaming.
+Both take the `where` push-down param: the query's simple WHERE conditions go *into* the DuckDB scan (`LakehouseConnection.scan` renders them with `conditions_to_sql` after a metadata-only `DESCRIBE` to skip columns the scan doesn't have), so Parquet row-group/file pruning happens before anything reaches Python. `iter_table()` on both is a post-hoc chunk split of the full scanned result (same trade-off as `SQLDatabase.query()`'s client-side `limit`), not true incremental streaming.
 
 ### Adding a wrapper to auto-registration
 

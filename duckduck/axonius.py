@@ -49,10 +49,13 @@ Supported query examples
     SELECT * FROM devices(filter='specific_data.data.os.type == "Windows"')
 """
 
+import re
 from typing import Any, Dict, Iterator, List, Optional
 
 import pandas as pd
 import requests
+
+from .pushdown import require_like
 
 
 class Axonius:
@@ -151,6 +154,28 @@ class Axonius:
         return all_items
 
     @staticmethod
+    def _aql_string(value: str) -> str:
+        """A double-quoted AQL string literal (backslashes and quotes escaped)."""
+        return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+    @classmethod
+    def _aql_eq(cls, field: str, value: Optional[str]) -> Optional[str]:
+        return f"{field} == {cls._aql_string(value)}" if value else None
+
+    @classmethod
+    def _aql_like(cls, field: str, pattern: Optional[str], param: str) -> Optional[str]:
+        """A SQL LIKE pattern as a case-insensitive AQL ``regex(...)`` match."""
+        if not pattern:
+            return None
+        like = require_like(pattern, param)
+        rx = re.escape(like.text)
+        if like.kind in ("startswith", "equals"):
+            rx = "^" + rx
+        if like.kind in ("endswith", "equals"):
+            rx = rx + "$"
+        return f'{field} == regex({cls._aql_string(rx)}, "i")'
+
+    @staticmethod
     def _build_aql(**filters: Any) -> Optional[str]:
         """Joins AQL fragments for non-None kwargs with ' and '."""
         parts = [v for v in filters.values() if v]
@@ -183,6 +208,7 @@ class Axonius:
         filter: Optional[str] = None,
         hostname: Optional[str] = None,
         os_type: Optional[str] = None,
+        hostname_ilike: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -197,13 +223,17 @@ class Axonius:
             Exact hostname match (``specific_data.data.hostname``).
         os_type : str, optional
             OS type, e.g. ``"Windows"``, ``"Linux"`` (``specific_data.data.os.type``).
+        hostname_ilike : str, optional
+            SQL LIKE pattern (``WHERE hostname LIKE 'web%'`` arrives here
+            automatically), pushed as a case-insensitive AQL ``regex``.
         limit : int, optional
             Maximum number of records.
         """
         aql_parts = {
             "filter": filter,
-            "hostname": f'specific_data.data.hostname == "{hostname}"' if hostname else None,
-            "os_type": f'specific_data.data.os.type == "{os_type}"' if os_type else None,
+            "hostname": self._aql_eq("specific_data.data.hostname", hostname),
+            "os_type": self._aql_eq("specific_data.data.os.type", os_type),
+            "hostname_ilike": self._aql_like("specific_data.data.hostname", hostname_ilike, "hostname_ilike"),
         }
         aql = self._build_aql(**aql_parts)
         items = self._fetch("/devices", filter_aql=aql, limit=limit)
@@ -217,6 +247,7 @@ class Axonius:
         self,
         filter: Optional[str] = None,
         username: Optional[str] = None,
+        username_ilike: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -228,12 +259,15 @@ class Axonius:
             Raw AQL query, ANDed with ``username`` if both are given.
         username : str, optional
             Exact username match (``specific_data.data.username``).
+        username_ilike : str, optional
+            SQL LIKE pattern, pushed as a case-insensitive AQL ``regex``.
         limit : int, optional
             Maximum number of records.
         """
         aql_parts = {
             "filter": filter,
-            "username": f'specific_data.data.username == "{username}"' if username else None,
+            "username": self._aql_eq("specific_data.data.username", username),
+            "username_ilike": self._aql_like("specific_data.data.username", username_ilike, "username_ilike"),
         }
         aql = self._build_aql(**aql_parts)
         items = self._fetch("/users", filter_aql=aql, limit=limit)
@@ -244,20 +278,27 @@ class Axonius:
     # ------------------------------------------------------------------
 
     def iter_devices(
-        self, hostname: Optional[str] = None, os_type: Optional[str] = None
+        self,
+        hostname: Optional[str] = None,
+        os_type: Optional[str] = None,
+        hostname_ilike: Optional[str] = None,
     ) -> Iterator[pd.DataFrame]:
         """Yields one page of device assets at a time."""
         aql = self._build_aql(
-            hostname=f'specific_data.data.hostname == "{hostname}"' if hostname else None,
-            os_type=f'specific_data.data.os.type == "{os_type}"' if os_type else None,
+            hostname=self._aql_eq("specific_data.data.hostname", hostname),
+            os_type=self._aql_eq("specific_data.data.os.type", os_type),
+            hostname_ilike=self._aql_like("specific_data.data.hostname", hostname_ilike, "hostname_ilike"),
         )
         for page in self._iter_pages("/devices", filter_aql=aql):
             yield self._normalize_assets(page)
 
-    def iter_users(self, username: Optional[str] = None) -> Iterator[pd.DataFrame]:
+    def iter_users(
+        self, username: Optional[str] = None, username_ilike: Optional[str] = None
+    ) -> Iterator[pd.DataFrame]:
         """Yields one page of user assets at a time."""
         aql = self._build_aql(
-            username=f'specific_data.data.username == "{username}"' if username else None,
+            username=self._aql_eq("specific_data.data.username", username),
+            username_ilike=self._aql_like("specific_data.data.username", username_ilike, "username_ilike"),
         )
         for page in self._iter_pages("/users", filter_aql=aql):
             yield self._normalize_assets(page)

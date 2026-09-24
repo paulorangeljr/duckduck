@@ -50,9 +50,11 @@ Via ``auto_register()`` (connector ``"database"``, registered as
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 import pandas as pd
+
+from .pushdown import Condition
 
 try:
     import sqlalchemy as sa
@@ -146,9 +148,52 @@ class SQLDatabase:
     # Reads
     # ------------------------------------------------------------------
 
+    def _where_clauses(self, tbl: "sa.Table", where: Optional[List[Condition]]) -> list:
+        """
+        SQLAlchemy clauses for DuckAPI push-down conditions. Columns are
+        matched case-insensitively (DuckAPI lowercases names); conditions
+        on columns the table doesn't have are skipped. Values are bound
+        parameters, never spliced into the SQL.
+        """
+        columns = {c.name.lower(): c for c in tbl.columns}
+        clauses = []
+        for cond in where or []:
+            col = columns.get(cond.column.lower())
+            if col is None:
+                continue
+            if cond.op in ("like", "ilike"):
+                pattern, escape = self._portable_like(str(cond.value))
+                method = col.like if cond.op == "like" else col.ilike
+                clauses.append(method(pattern, escape=escape))
+            elif cond.op == "eq":
+                clauses.append(col == cond.value)
+            elif cond.op == "gt":
+                clauses.append(col > cond.value)
+            elif cond.op == "gte":
+                clauses.append(col >= cond.value)
+            elif cond.op == "lt":
+                clauses.append(col < cond.value)
+            elif cond.op == "lte":
+                clauses.append(col <= cond.value)
+        return clauses
+
+    def _portable_like(self, pattern: str):
+        """
+        Makes a DuckDB LIKE pattern (only ``%``/``_`` are special, no escape
+        character) mean the same thing on this engine: backslash is escaped
+        and declared as the ESCAPE character (MySQL treats it as one by
+        default), and on SQL Server ``[`` — a character-class opener there —
+        is escaped too.
+        """
+        translated = pattern.replace("\\", "\\\\")
+        if self.engine.dialect.name == "mssql":
+            translated = translated.replace("[", "\\[")
+        return translated, "\\"
+
     def table(
         self,
         table_name: str,
+        where: Optional[List[Condition]] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -165,13 +210,17 @@ class SQLDatabase:
             translates to the right per-dialect syntax (``TOP`` for SQL
             Server, ``LIMIT`` for MySQL/PostgreSQL/SQLite).
 
-        Column filters in ``WHERE`` aren't pushed down server-side here —
-        the whole table (or its first ``limit`` rows) is fetched and
-        DuckDB applies the rest, same as any push-down parameter a
-        wrapper doesn't recognize.
+        where : list[Condition], optional
+            Filled by DuckAPI's push-down: every simple ``WHERE`` condition
+            (``=``, ``LIKE``, ``ILIKE``, ``>``, ``>=``, ``<``, ``<=``) runs
+            server-side as a real ``WHERE`` in the database's own dialect,
+            so only matching rows are transferred.
         """
         tbl = self._reflect(table_name)
         stmt = sa.select(tbl)
+        clauses = self._where_clauses(tbl, where)
+        if clauses:
+            stmt = stmt.where(*clauses)
         if limit is not None:
             stmt = stmt.limit(limit)
         return pd.read_sql(stmt, self.engine)
@@ -205,10 +254,18 @@ class SQLDatabase:
     # Streaming (iter_*) — for use with DuckAPI.stream()
     # ------------------------------------------------------------------
 
-    def iter_table(self, table_name: str, chunksize: int = 10_000) -> Iterator[pd.DataFrame]:
+    def iter_table(
+        self,
+        table_name: str,
+        where: Optional[List[Condition]] = None,
+        chunksize: int = 10_000,
+    ) -> Iterator[pd.DataFrame]:
         """Yields one chunk of up to `chunksize` rows at a time from a table."""
         tbl = self._reflect(table_name)
         stmt = sa.select(tbl)
+        clauses = self._where_clauses(tbl, where)
+        if clauses:
+            stmt = stmt.where(*clauses)
         for chunk in pd.read_sql(stmt, self.engine, chunksize=chunksize):
             if not chunk.empty:
                 yield chunk

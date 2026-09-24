@@ -28,11 +28,12 @@ them in place and DuckDB does its own filter/projection push-down.
 import inspect
 import itertools
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any, Dict, List, Tuple
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from ..pushdown import Condition, map_conditions
 from .catalog import Catalog
 from .compiler import compile_plan, default_order, display_relation
 from .plan import LogicalQueryPlan
@@ -82,7 +83,7 @@ class PlanExecutor:
                     relations[source] = src.relation
                     fetches.append(SourceFetch(source=source, scan=src.relation))
                     continue
-                df, fetch = self._fetch(plan, source)
+                df, fetch = self._fetch(plan, source, now)
                 tmp = f"_sem_{source}_{next(self._ids)}"
                 self.duck.conn.register(tmp, df)
                 registered.append(tmp)
@@ -99,7 +100,23 @@ class PlanExecutor:
                     pass
         return result, sql, fetches
 
-    def _fetch(self, plan: LogicalQueryPlan, source: str) -> Tuple[pd.DataFrame, SourceFetch]:
+    @staticmethod
+    def _as_condition(column: str, flt) -> Optional[Condition]:
+        """A plan filter as a push-down condition, or None if no connector parameter can express it."""
+        if flt.operator == "eq":
+            return Condition(column, "eq", flt.value)
+        if flt.operator in ("gt", "gte", "lt", "lte"):
+            return Condition(column, flt.operator, flt.value)
+        if flt.operator in ("contains", "starts_with", "ends_with"):
+            text = str(flt.value)
+            if "%" in text or "_" in text or "\\" in text:
+                return None  # would need LIKE escaping no connector param accepts
+            pattern = {"contains": f"%{text}%", "starts_with": f"{text}%", "ends_with": f"%{text}"}[flt.operator]
+            # the compiled SQL matches these case-insensitively → ILIKE
+            return Condition(column, "ilike", pattern)
+        return None  # neq / in: no parameter convention for them
+
+    def _fetch(self, plan: LogicalQueryPlan, source: str, now: datetime) -> Tuple[pd.DataFrame, SourceFetch]:
         src = self.catalog.sources[source]
         fn = self.duck.functions.get(src.table.lower())
         if fn is None:
@@ -107,19 +124,35 @@ class PlanExecutor:
         params = set(inspect.signature(fn).parameters)
 
         fetch = SourceFetch(source=source, scan=display_relation(self.catalog, source), kwargs=dict(src.args))
+        conditions: List[Tuple[str, Condition]] = []
         for flt in plan.filters:
             s, fname = flt.field.split(".")
             if s != source:
                 continue
-            fdef = src.fields[fname]
-            param = fdef.param or src.physical_column(fname)
-            if flt.operator == "eq" and param in params and param not in fetch.kwargs:
-                fetch.kwargs[param] = flt.value
-                fetch.pushed_filters.append(flt.field)
-            else:
+            cond = self._as_condition(src.fields[fname].param or src.physical_column(fname), flt)
+            if cond is None:
                 fetch.residual_filters.append(flt.field)
-        if plan.time_range and plan.time_range.field.split(".")[0] == source:
-            fetch.residual_filters.append(plan.time_range.field)
+            else:
+                conditions.append((flt.field, cond))
+        tr = plan.time_range
+        if tr and tr.field.split(".")[0] == source:
+            column = src.physical_column(tr.field.split(".")[1])
+            start = now - timedelta(hours=tr.last_hours) if tr.last_hours is not None else tr.start
+            if start is not None:
+                conditions.append((tr.field, Condition(column, "gte", start.isoformat(sep=" "))))
+            if tr.end is not None:
+                conditions.append((tr.field, Condition(column, "lt", tr.end.isoformat(sep=" "))))
+
+        # Same operator→parameter mapping as DuckAPI.sql() (duckduck.pushdown):
+        # eq → col, LIKE → col_like/col_ilike, comparisons → col_gt..., or all
+        # of them to a `where` param. Structural args always win.
+        pushed, consumed = map_conditions(params - set(fetch.kwargs), [c for _, c in conditions])
+        fetch.kwargs.update(pushed)
+        # A field is "pushed" only if every one of its conditions was
+        # (a time range carries two: >= start and < end).
+        for ref in dict.fromkeys(ref for ref, _ in conditions):
+            all_pushed = all(c in consumed for r, c in conditions if r == ref)
+            (fetch.pushed_filters if all_pushed else fetch.residual_filters).append(ref)
 
         # Capping rows at the source is only equivalent to the final LIMIT when
         # nothing downstream can drop, merge or reorder rows: one source, no

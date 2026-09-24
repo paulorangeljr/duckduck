@@ -19,12 +19,14 @@ import os
 import re
 import warnings
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import duckdb
 import pandas as pd
 import sqlglot
 import sqlglot.expressions as exp
+
+from .pushdown import Condition, map_conditions
 
 
 # ---------------------------------------------------------------------------
@@ -61,12 +63,29 @@ class PushDownContext:
     """
 
     limit: Optional[int] = None
+    #: Equality conditions only, ``{column: value}`` (kept for callers that
+    #: read it directly; ``conditions`` is the full, operator-aware list).
     filters: Dict[str, Any] = field(default_factory=dict)
+    #: Every simple condition extracted from the WHERE clause.
+    conditions: List[Condition] = field(default_factory=list)
+    #: False when the WHERE clause has anything that couldn't be extracted
+    #: (OR, NOT, IN, functions...) — some filtering is left to DuckDB alone.
+    complete: bool = True
+    #: Whether the query's shape allows LIMIT to reach the source at all:
+    #: one relation, no JOIN / GROUP BY / DISTINCT / ORDER BY / aggregate /
+    #: window / subquery / set operation. Otherwise capping rows at the
+    #: source would change the answer.
+    limit_safe: bool = True
 
 
 # ---------------------------------------------------------------------------
 # SQL extraction helpers
 # ---------------------------------------------------------------------------
+
+_CONDITION_OPS = {
+    exp.EQ: "eq", exp.Like: "like", exp.ILike: "ilike",
+    exp.GT: "gt", exp.GTE: "gte", exp.LT: "lt", exp.LTE: "lte",
+}
 
 
 def _literal_value(node: exp.Expression) -> Any:
@@ -83,29 +102,49 @@ def _literal_value(node: exp.Expression) -> Any:
     return None
 
 
-def _extract_filters(node: exp.Expression, filters: Dict[str, Any]) -> None:
+def _extract_filters(node: exp.Expression, ctx: "PushDownContext") -> None:
     """
-    Walks the WHERE tree and extracts simple conditions into ``filters``.
+    Walks the WHERE tree and extracts simple conditions into ``ctx``.
 
-    Supports: col = val | col LIKE val | col > val | col < val | col >= val | col <= val
-    Ignores: OR, NOT, subqueries, functions, compound conditions.
+    Supports: ``col (= | LIKE | ILIKE | > | < | >= | <=) literal``, ANDed.
+    Anything else (OR, NOT, IN, functions, column-to-column...) is left
+    to DuckDB and marks the context incomplete.
     """
     if node is None:
         return
 
-    if isinstance(node, (exp.EQ, exp.Like, exp.GT, exp.LT, exp.GTE, exp.LTE)):
+    op = _CONDITION_OPS.get(type(node))
+    if op is not None:
         left, right = node.left, node.right
-        if isinstance(left, exp.Column):
-            val = _literal_value(right)
-            if val is not None:
-                filters[left.name.lower()] = val
+        val = _literal_value(right) if isinstance(left, exp.Column) else None
+        if val is None:
+            ctx.complete = False
+            return
+        column = left.name.lower()
+        table = left.table.lower() if left.table else None
+        ctx.conditions.append(Condition(column=column, op=op, value=val, table=table))
+        if op == "eq":
+            ctx.filters[column] = val
         return
 
     if isinstance(node, (exp.And, exp.Where)):
         for child in node.args.values():
             if isinstance(child, exp.Expression):
-                _extract_filters(child, filters)
+                _extract_filters(child, ctx)
         return
+
+    ctx.complete = False
+
+
+def _limit_safe(parsed: exp.Expression) -> bool:
+    """Whether a source-side LIMIT can't change the query's answer (see PushDownContext)."""
+    if not isinstance(parsed, exp.Select):
+        return False  # UNION etc.
+    if parsed.args.get("joins") or parsed.args.get("group") or parsed.args.get("distinct"):
+        return False
+    if parsed.args.get("order") or parsed.args.get("having") or parsed.args.get("with"):
+        return False
+    return not any(parsed.find(t) for t in (exp.AggFunc, exp.Window, exp.Subquery))
 
 
 # ---------------------------------------------------------------------------
@@ -662,8 +701,9 @@ class DuckAPI:
 
         where_node = parsed.find(exp.Where)
         if where_node is not None:
-            _extract_filters(where_node, ctx.filters)
+            _extract_filters(where_node, ctx)
 
+        ctx.limit_safe = _limit_safe(parsed)
         return ctx
 
     # ------------------------------------------------------------------
@@ -675,29 +715,53 @@ class DuckAPI:
         fetch_function,
         pushdown: PushDownContext,
         explicit: Dict[str, Any],
+        names: Optional[set] = None,
+        allow_limit: bool = True,
     ) -> Dict[str, Any]:
         """
         Builds the final kwargs dict for the function call.
 
         Priority (highest → lowest):
         1. Explicit kwargs from the SQL call  ``func(x=1)``
-        2. WHERE/LIMIT push-down from the SQL
+        2. WHERE/LIMIT push-down from the SQL (see ``duckduck.pushdown``
+           for how each operator maps onto parameters)
+
+        ``names`` — the function's name and its alias in the query: a
+        qualified condition (``a.col = 1``) only reaches the function it
+        qualifies. LIMIT is pushed only when it can't change the answer:
+        the query shape allows it (``limit_safe``), every WHERE condition
+        was extractable, and the function consumes all of them.
         """
-        sig = inspect.signature(fetch_function)
-        accepted = set(sig.parameters.keys())
+        accepted = set(inspect.signature(fetch_function).parameters.keys())
+        applicable = [
+            c for c in pushdown.conditions
+            if c.table is None or names is None or c.table in names
+        ]
+        merged, consumed = map_conditions(accepted, applicable)
 
-        merged: Dict[str, Any] = {}
-
-        if pushdown.limit is not None and "limit" in accepted:
+        if (
+            allow_limit and pushdown.limit is not None and "limit" in accepted
+            and pushdown.limit_safe and pushdown.complete
+            and len(consumed) == len(pushdown.conditions)
+        ):
             merged["limit"] = pushdown.limit
 
-        for col, val in pushdown.filters.items():
-            if col in accepted:
-                merged[col] = val
-
         merged.update(explicit)
-
         return merged
+
+    #: Words that can follow a table reference but are never its alias.
+    _NOT_ALIASES = {
+        "where", "join", "inner", "left", "right", "full", "cross", "outer", "on", "using",
+        "group", "order", "limit", "offset", "union", "except", "intersect", "having",
+        "natural", "window", "qualify", "lateral", "positional", "asof", "anti", "semi",
+    }
+
+    def _alias_at(self, text: str, pos: int) -> Optional[str]:
+        """The alias written right after a table reference ending at ``pos``, if any."""
+        m = re.match(r"\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*)", text[pos:], re.IGNORECASE)
+        if m and m.group(1).lower() not in self._NOT_ALIASES:
+            return m.group(1).lower()
+        return None
 
     # ------------------------------------------------------------------
     # Signature validation
@@ -1019,7 +1083,8 @@ class DuckAPI:
 
             while m := with_args_pat.search(rewritten):
                 explicit = self._parse_kwargs(m.group(1))
-                kwargs = self._merge_kwargs(fn, pushdown, explicit)
+                names = {fn_name, self._alias_at(rewritten, m.end())} - {None}
+                kwargs = self._merge_kwargs(fn, pushdown, explicit, names)
                 tname, df_cols = self._materialize(fn_name, fn, kwargs)
                 # WHERE filters that reached the function but aren't result columns
                 structural_used.update(
@@ -1035,7 +1100,8 @@ class DuckAPI:
             )
 
             while m := bare_pat.search(rewritten):
-                kwargs = self._merge_kwargs(fn, pushdown, {})
+                names = {fn_name, self._alias_at(rewritten, m.end())} - {None}
+                kwargs = self._merge_kwargs(fn, pushdown, {}, names)
                 tname, df_cols = self._materialize(fn_name, fn, kwargs)
                 structural_used.update(
                     k for k in pushdown.filters
@@ -1102,17 +1168,9 @@ class DuckAPI:
             if m := inline_pat.search(query):
                 explicit = self._parse_kwargs(m.group(1))
 
-            # WHERE filters accepted by the generator function (excluding limit)
-            fn = self.functions.get(fn_name)
-            if fn is not None:
-                sig = inspect.signature(fn)
-                accepted = set(sig.parameters.keys()) - {"limit"}
-                kwargs: Dict[str, Any] = {
-                    col: val for col, val in pushdown.filters.items() if col in accepted
-                }
-            else:
-                kwargs = dict(pushdown.filters)
-            kwargs.update(explicit)
+            # WHERE push-down onto the generator's own parameters (no limit:
+            # stream iterates every page)
+            kwargs = self._merge_kwargs(iter_fn, pushdown, explicit, {fn_name}, allow_limit=False)
 
             # Rewrites the query, replacing func(...) / func with the chunk table name
             chunk_table = f"_stream_{fn_name}"
