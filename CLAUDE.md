@@ -333,74 +333,73 @@ Registering each method by hand (`register_api_function`/`register_streaming_fun
 method by method) gets repetitive when you want to bring up every wrapper at
 once. `DuckAPI.auto_register()` instantiates the known wrappers (see
 `duckduck/registry.py` → `SERVICE_REGISTRY`) and registers all their tables
-automatically, resolving credentials in three ways — the secret reference
-can be hardcoded in the code, come from an environment variable/config at
-runtime, or the credentials can be passed directly (offline, without
-touching AWS Secrets Manager):
+automatically. Each service in the config has a `connector` (which wrapper
+it is) and an `authentication` block (where its credentials come from):
 
 ```python
-from duckduck import DuckAPI, SecretsManager
+from duckduck import DuckAPI
 
 duck = DuckAPI()
-instances = duck.auto_register(
-    {
-        "sharepoint": {
-            "secret_id": "prod/sharepoint/duckduck",   # hardcoded reference
-            "hostname": "company.sharepoint.com",
-            "site_path": "/teams/myteam",
-        },
-        "insightvm": {
-            "secret_id": os.environ["INSIGHTVM_SECRET_ID"],  # runtime reference
-        },
-        "insightvm_dev": {
-            "type": "insightvm",       # multiple instances of the same wrapper
-            "credentials": {            # offline — no AWS Secrets Manager
-                "host": "dev.local", "username": "a", "password": "b",
-            },
+instances = duck.auto_register({
+    "sharepoint": {
+        "connector": "sharepoint",
+        "hostname": "company.sharepoint.com",
+        "site_path": "/teams/myteam",
+        "authentication": {
+            "type": "aws",
+            "region_name": "us-east-1",
+            "secret_id": "prod/sharepoint/duckduck",
         },
     },
-    secrets=SecretsManager(region_name="us-east-1"),
-)
+    "insightvm_dev": {
+        "connector": "insightvm",       # multiple instances of the same wrapper
+        "host": "dev.local",
+        "authentication": {"type": "local", "username": "a", "password": "b"},
+    },
+})
 
 duck.sql("SELECT * FROM sharepoint_list_items WHERE list_name = 'Tasks'")
-duck.sql("SELECT * FROM insightvm_assets WHERE hostname = 'web-prod'")
+duck.sql("SELECT * FROM insightvm_dev_assets WHERE hostname = 'web-prod'")
 ```
+
+### `authentication.type`
+
+| `type` | Extra required keys | Where credential values come from |
+|---|---|---|
+| `"local"` | none | Every other field in the block, used exactly as written — hardcoded, no secret store involved |
+| `"aws"` | `secret_id` (plus optional `region_name`) | AWS Secrets Manager, via `SecretsManager` (`duckduck/secrets.py`) |
+| `"azure"` | `secret_id`, `vault_url` | Azure Key Vault, via `AzureKeyVaultSecrets` (`duckduck/azure_secrets.py`) |
+
+For `"aws"`/`"azure"`, the fetched secret (a JSON object) is used as the base credentials dict. Any other field in the `authentication` block layers on top of that:
+
+- a literal value overrides/adds that key outright (e.g. `"host": "override.local"`);
+- a value written as `"$secret.<key>"` is pulled from `<key>` in the fetched secret instead — lets you rename a field without duplicating the rest of the secret by hand (e.g. `"password": "$secret.svc_password"`).
+
+This resolution lives in `DuckAPI._resolve_authentication`, and only touches the `authentication` block — everything else in a service's config (`connector`, `hostname`, `site_path`, `host`, `default_page_size`, ...) is passed straight through to the connector's constructor as `**overrides`.
+
+### Secret backends and caching
+
+`auto_register(secrets=...)` takes an optional `{"aws": <SecretsManager>, "azure": <AzureKeyVaultSecrets>}` override dict — when a service's `authentication.type` has a matching entry, that instance is used as-is (handy for tests, or to reuse a client across calls). Otherwise `DuckAPI._get_secrets_backend` builds one automatically and caches it per distinct `(auth_type, region_name_or_vault_url)`, so N services in the same region/vault share one client, while different regions/vaults each get their own.
 
 ### Loading from a JSON file (`duck.auto_register()` with no arguments)
 
-When `services` is omitted, `auto_register()` loads it from a JSON file instead — so a fully configured instance is just `DuckAPI().auto_register()`. File lookup order: `config_path` argument → `DUCKDUCK_CONFIG` env var → `DuckAPI.DEFAULT_CONFIG_PATH` (`"duckduck.json"`) in the current directory. Resolution happens in `DuckAPI._load_auto_register_config`.
-
-```json
-{
-  "region_name": "us-east-1",
-  "services": {
-    "sharepoint": {
-      "secret_id": "prod/sharepoint/duckduck",
-      "hostname": "company.sharepoint.com",
-      "site_path": "/teams/myteam"
-    },
-    "insightvm": {
-      "secret_id": "prod/insightvm"
-    }
-  }
-}
-```
+When `services` is omitted, `auto_register()` loads it from a JSON file instead — so a fully configured instance is just `DuckAPI().auto_register()`. File lookup order: `config_path` argument → `DUCKDUCK_CONFIG` env var → `DuckAPI.DEFAULT_CONFIG_PATH` (`"duckduck.json"`) in the current directory. Resolution happens in `DuckAPI._load_auto_register_config`. See `duckduck.example.json` in the repo root for a full example covering all three `authentication` types; `duckduck.json` itself is gitignored since a `"local"` block can hold literal secrets.
 
 ```python
 duck = DuckAPI()
 duck.auto_register()
 ```
 
-`"region_name"` is optional and only used to build a `SecretsManager` automatically when `secrets=` isn't passed in code and at least one service uses `secret_id` — sparing the caller a second explicit step. A service can still use `"credentials"` inline in the JSON for fully offline entries, mixed freely with `"secret_id"` ones. Passing `services=` explicitly (the dict form above) always skips the file lookup entirely, even if no config file exists.
+Passing `services=` explicitly always skips the file lookup entirely, even if no config file exists.
 
 ### Rules
 
 | Concern | Rule |
 |---|---|
 | Table prefix | Always `{name_in_dict}_{table}` — avoids collisions when two services expose the same table (e.g. `sites` in SharePoint and InsightVM) and allows multiple instances of the same wrapper |
-| `type` | Optional; defaults to `name` itself. Use it when `name` doesn't match a `SERVICE_REGISTRY` key (e.g. `insightvm_dev`) |
-| `secret_id` vs `credentials` | Mutually exclusive; `secret_id` requires `secrets=SecretsManager(...)` |
-| AWS Secrets Manager secret | Plain JSON with the keys expected by the wrapper's `from_secret` (`tenant_id`/`client_id`/`client_secret` for SharePoint; `host`/`username`/`password` for InsightVM) |
+| `connector` | Optional; defaults to `name` itself. Use it when `name` doesn't match a `SERVICE_REGISTRY` key (e.g. `insightvm_dev`) |
+| `authentication` | Required on every service; always has a `type` (default `"local"` if omitted) |
+| Fetched secret shape | Plain JSON with the keys expected by the connector's `from_secret` (`tenant_id`/`client_id`/`client_secret` for SharePoint; `host`/`username`/`password` for InsightVM) |
 | Return value | `{name: instance}` — to call methods that didn't become a table (e.g. `instances["sharepoint"].site_by_path(...)`) |
 
 ### Adding a wrapper to auto-registration
@@ -408,8 +407,14 @@ duck.auto_register()
 1. Implement `Wrapper.from_secret(cls, secret: dict, **overrides) -> "Wrapper"` on the wrapper class — it decides the authentication mode from the keys in `secret` and passes `overrides` (hostname, site_path, default_page_size, etc.) through to the constructor.
 2. Add an entry to `SERVICE_REGISTRY` (`duckduck/registry.py`) with `factory=Wrapper.from_secret` and the `tables`/`streaming_tables` maps.
 
+### Adding a secrets backend
+
+A backend just needs `get_secret(secret_id: str) -> dict` — see `SecretsManager`/`AzureKeyVaultSecrets` for the pattern (an optional `client=` for tests/DI, an in-memory cache, and a JSON-parse of whatever the underlying store returns). Wire it into `DuckAPI._get_secrets_backend`'s `if auth_type == "aws" / else` branch and extend the `authentication.type` validation in `_resolve_authentication`.
+
 ### Dependencies
 
 | Feature | Package |
 |---|---|
-| AWS Secrets Manager | `boto3>=1.28` (`pip install "duckduck[aws]"`) — not needed in offline mode (`credentials=`) |
+| AWS Secrets Manager | `boto3>=1.28` (`pip install "duckduck[aws]"`) |
+| Azure Key Vault | `azure-identity>=1.15`, `azure-keyvault-secrets>=4.7` (`pip install "duckduck[azure]"`) |
+| `authentication.type: "local"` | none — fully offline |

@@ -18,7 +18,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 import duckdb
 import pandas as pd
@@ -205,10 +205,14 @@ class DuckAPI:
     #: ``DUCKDUCK_CONFIG`` environment variable is set.
     DEFAULT_CONFIG_PATH = "duckduck.json"
 
+    #: Prefix marking a field in an ``authentication`` block as a
+    #: reference into the fetched secret, e.g. ``"$secret.client_secret"``.
+    _SECRET_REF_PREFIX = "$secret."
+
     def auto_register(
         self,
         services: Optional[Dict[str, Dict[str, Any]]] = None,
-        secrets: Optional[Any] = None,
+        secrets: Optional[Dict[str, Any]] = None,
         config_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
@@ -230,30 +234,45 @@ class DuckAPI:
 
             ``config`` accepts:
 
-            - ``type`` : str, optional
+            - ``connector`` : str, optional
                 Key in ``SERVICE_REGISTRY`` (``"sharepoint"``,
-                ``"insightvm"``). Default: ``name`` itself.
-            - ``secret_id`` : str, optional
-                Name/ARN of the secret in AWS Secrets Manager — requires
-                ``secrets=`` to be provided (or resolvable — see below).
-                The reference can be hardcoded here in the code or come
-                from an env var/config at runtime — ``auto_register``
-                doesn't care which.
-            - ``credentials`` : dict, optional
-                Credentials provided directly, without touching AWS
-                Secrets Manager (offline mode). Provide **either**
-                ``secret_id`` **or** ``credentials``, never both.
+                ``"insightvm"``) — which wrapper this is. Default:
+                ``name`` itself.
+            - ``authentication`` : dict, required
+                How to build the credentials dict passed to the
+                connector's ``from_secret``. Always has a ``type``:
+
+                - ``"local"``: every other field in the block is used
+                  exactly as written — hardcoded, no secret store
+                  involved. E.g. ``{"type": "local", "username": "a",
+                  "password": "b"}``.
+                - ``"aws"``: fetches a JSON secret from AWS Secrets
+                  Manager. Requires ``secret_id`` (plus optional
+                  ``region_name``). The secret's keys become the base
+                  credentials; any other field in the block overrides or
+                  adds to that, either as a literal value or, written as
+                  ``"$secret.<key>"``, pulled from that key in the fetched
+                  secret instead of being duplicated by hand.
+                - ``"azure"``: same idea via Azure Key Vault. Requires
+                  ``secret_id`` (the secret's name) and ``vault_url``.
+                  The secret's value must be a JSON object, same shape as
+                  the AWS case.
             - any other keys
-                Extra kwargs passed through to the wrapper's constructor
-                (e.g. ``hostname``, ``site_path``, ``default_page_size``).
+                Extra kwargs passed through to the connector's
+                constructor (e.g. ``hostname``, ``site_path``,
+                ``default_page_size``) — anything that isn't a
+                credential.
 
             When omitted, loaded from a JSON file — see below.
-        secrets : SecretsManager, optional
-            Only needed when some service uses ``secret_id``. When
-            ``services`` is loaded from a JSON file that sets
-            ``"region_name"`` and some service needs a secret,
-            ``SecretsManager(region_name=...)`` is created automatically
-            if ``secrets`` isn't passed explicitly.
+        secrets : dict, optional
+            Advanced override: ``{"aws": <SecretsManager instance>,
+            "azure": <AzureKeyVaultSecrets instance>}``. When a service's
+            ``authentication.type`` has a matching entry here, that
+            instance is used as-is instead of building one from
+            ``region_name``/``vault_url`` — handy for tests, or to reuse
+            one client across many ``auto_register()`` calls. Backends
+            not overridden this way are still built and cached
+            automatically per distinct ``region_name``/``vault_url``.
         config_path : str, optional
             Path to the JSON config file, used only when ``services`` is
             omitted. Defaults to the ``DUCKDUCK_CONFIG`` environment
@@ -271,54 +290,62 @@ class DuckAPI:
         shaped like::
 
             {
-                "region_name": "us-east-1",
                 "services": {
                     "sharepoint": {
-                        "secret_id": "prod/sharepoint/duckduck",
+                        "connector": "sharepoint",
                         "hostname": "company.sharepoint.com",
-                        "site_path": "/teams/myteam"
+                        "site_path": "/teams/myteam",
+                        "authentication": {
+                            "type": "aws",
+                            "region_name": "us-east-1",
+                            "secret_id": "prod/sharepoint"
+                        }
                     },
-                    "insightvm": {
-                        "secret_id": "prod/insightvm"
+                    "insightvm_dev": {
+                        "connector": "insightvm",
+                        "authentication": {
+                            "type": "local",
+                            "host": "dev.local",
+                            "username": "a",
+                            "password": "b"
+                        }
                     }
                 }
             }
 
-        ``"region_name"`` is optional and only used to build the
-        automatic ``SecretsManager`` when ``secrets`` isn't passed in and
-        at least one service uses ``secret_id``. A service can still use
-        ``"credentials"`` inline in the JSON for offline entries (no AWS
-        call at all) — mix and match freely, same as with the ``services``
-        dict.
-
         The file is looked up, in order: ``config_path`` argument →
         ``DUCKDUCK_CONFIG`` environment variable → ``duckduck.json`` in
-        the current directory.
+        the current directory. See ``duckduck.example.json`` in the repo
+        root for a fuller example covering all three ``authentication``
+        types.
 
         Examples
         --------
-        Inline, from Python code::
+        Inline, from Python code, pulling from AWS Secrets Manager::
 
-            from duckduck import DuckAPI, SecretsManager
+            from duckduck import DuckAPI
 
             duck = DuckAPI()
-            instances = duck.auto_register(
-                {
-                    "sharepoint": {
-                        "secret_id": "prod/sharepoint/duckduck",  # hardcoded
-                        "hostname": "company.sharepoint.com",
-                        "site_path": "/teams/myteam",
-                    },
-                    "insightvm": {
-                        "credentials": {  # offline — no AWS Secrets Manager
-                            "host": "console.local",
-                            "username": "a",
-                            "password": "b",
-                        },
+            instances = duck.auto_register({
+                "sharepoint": {
+                    "connector": "sharepoint",
+                    "hostname": "company.sharepoint.com",
+                    "site_path": "/teams/myteam",
+                    "authentication": {
+                        "type": "aws",
+                        "region_name": "us-east-1",
+                        "secret_id": "prod/sharepoint/duckduck",
                     },
                 },
-                secrets=SecretsManager(region_name="us-east-1"),
-            )
+                "insightvm": {
+                    "authentication": {  # local — fully hardcoded, offline
+                        "type": "local",
+                        "host": "console.local",
+                        "username": "a",
+                        "password": "b",
+                    },
+                },
+            })
 
             duck.sql("SELECT * FROM sharepoint_list_items WHERE list_name = 'Tasks'")
             duck.sql("SELECT * FROM insightvm_assets WHERE hostname = 'web-prod'")
@@ -332,39 +359,26 @@ class DuckAPI:
         from .registry import SERVICE_REGISTRY
 
         if services is None:
-            services, secrets = self._load_auto_register_config(config_path, secrets)
+            services = self._load_auto_register_config(config_path)
 
+        overrides = dict(secrets) if secrets else {}
+        backend_cache: Dict[Any, Any] = {}
         instances: Dict[str, Any] = {}
 
         for name, raw_config in services.items():
             config = dict(raw_config)
-            service_type = config.pop("type", name)
-            spec = SERVICE_REGISTRY.get(service_type)
+            connector = config.pop("connector", name)
+            spec = SERVICE_REGISTRY.get(connector)
             if spec is None:
                 raise ValueError(
-                    f"Service '{name}' (type='{service_type}') is not recognized. "
+                    f"Service '{name}' (connector='{connector}') is not recognized. "
                     f"Available: {', '.join(SERVICE_REGISTRY)}"
                 )
 
-            secret_id = config.pop("secret_id", None)
-            credentials = config.pop("credentials", None)
-
-            if secret_id and credentials:
-                raise ValueError(
-                    f"'{name}': provide 'secret_id' OR 'credentials', not both."
-                )
-            if secret_id:
-                if secrets is None:
-                    raise ValueError(
-                        f"'{name}' uses secret_id='{secret_id}' but no "
-                        "SecretsManager was passed to auto_register(secrets=...)."
-                    )
-                credentials = secrets.get_secret(secret_id)
-            if credentials is None:
-                raise ValueError(
-                    f"'{name}': provide 'secret_id' (AWS Secrets Manager) "
-                    "or 'credentials' (offline)."
-                )
+            auth = config.pop("authentication", None)
+            if not auth:
+                raise ValueError(f"'{name}': missing 'authentication' block.")
+            credentials = self._resolve_authentication(name, auth, overrides, backend_cache)
 
             instance = spec.factory(credentials, **config)
             instances[name] = instance
@@ -380,11 +394,95 @@ class DuckAPI:
 
         return instances
 
+    def _resolve_authentication(
+        self,
+        name: str,
+        auth: Dict[str, Any],
+        overrides: Dict[str, Any],
+        backend_cache: Dict[Any, Any],
+    ) -> Dict[str, Any]:
+        """
+        Turns a service's ``authentication`` block into the credentials
+        dict passed to the connector's ``from_secret``. See
+        ``auto_register``'s docstring for the shape of each ``type``.
+        """
+        auth = dict(auth)
+        auth_type = auth.pop("type", "local")
+
+        if auth_type == "local":
+            return auth
+
+        if auth_type not in ("aws", "azure"):
+            raise ValueError(
+                f"'{name}': authentication.type must be 'local', 'aws' or "
+                f"'azure' (got '{auth_type}')."
+            )
+
+        secret_id = auth.pop("secret_id", None)
+        if not secret_id:
+            raise ValueError(
+                f"'{name}': authentication.type='{auth_type}' requires 'secret_id'."
+            )
+
+        backend_kwarg = "region_name" if auth_type == "aws" else "vault_url"
+        backend_value = auth.pop(backend_kwarg, None)
+        if auth_type == "azure" and not backend_value:
+            raise ValueError(
+                f"'{name}': authentication.type='azure' requires 'vault_url'."
+            )
+
+        backend = self._get_secrets_backend(auth_type, backend_value, overrides, backend_cache)
+        secret = backend.get_secret(secret_id)
+
+        credentials = dict(secret)
+        for key, val in auth.items():
+            if isinstance(val, str) and val.startswith(self._SECRET_REF_PREFIX):
+                secret_key = val[len(self._SECRET_REF_PREFIX):]
+                if secret_key not in secret:
+                    raise ValueError(
+                        f"'{name}': '{val}' references missing key "
+                        f"'{secret_key}' in secret '{secret_id}'."
+                    )
+                credentials[key] = secret[secret_key]
+            else:
+                credentials[key] = val
+        return credentials
+
+    def _get_secrets_backend(
+        self,
+        auth_type: str,
+        backend_value: Optional[str],
+        overrides: Dict[str, Any],
+        backend_cache: Dict[Any, Any],
+    ) -> Any:
+        """
+        Returns the secrets backend for ``auth_type``: an explicit
+        override from ``auto_register(secrets=...)`` if one was given for
+        this ``auth_type``, otherwise a cached instance built from
+        ``backend_value`` (``region_name`` for aws, ``vault_url`` for
+        azure) — one instance per distinct value, so services in
+        different regions/vaults don't share a client.
+        """
+        if auth_type in overrides:
+            return overrides[auth_type]
+
+        cache_key = (auth_type, backend_value)
+        if cache_key not in backend_cache:
+            if auth_type == "aws":
+                from .secrets import SecretsManager
+
+                backend_cache[cache_key] = SecretsManager(region_name=backend_value)
+            else:
+                from .azure_secrets import AzureKeyVaultSecrets
+
+                backend_cache[cache_key] = AzureKeyVaultSecrets(vault_url=backend_value)
+
+        return backend_cache[cache_key]
+
     def _load_auto_register_config(
         self,
         config_path: Optional[str],
-        secrets: Optional[Any],
-    ) -> Tuple[Dict[str, Dict[str, Any]], Optional[Any]]:
+    ) -> Dict[str, Dict[str, Any]]:
         """
         Resolves the ``services`` dict for ``auto_register()`` from a
         JSON file when no ``services`` dict was passed in code.
@@ -392,12 +490,6 @@ class DuckAPI:
         Path lookup order: ``config_path`` → ``DUCKDUCK_CONFIG`` env var
         → ``DEFAULT_CONFIG_PATH`` ("duckduck.json") in the current
         directory.
-
-        If ``secrets`` is ``None``, the file's top-level ``region_name``
-        is not required, but when present (and at least one service uses
-        ``secret_id``) it's used to build a ``SecretsManager``
-        automatically — sparing the caller a second explicit step just to
-        call ``duck.auto_register()`` with nothing else.
         """
         path = config_path or os.environ.get("DUCKDUCK_CONFIG", self.DEFAULT_CONFIG_PATH)
 
@@ -416,14 +508,7 @@ class DuckAPI:
         if not file_services:
             raise ValueError(f"Config file '{path}' has no 'services' key.")
 
-        if secrets is None:
-            needs_secrets = any("secret_id" in cfg for cfg in file_services.values())
-            if needs_secrets:
-                from .secrets import SecretsManager
-
-                secrets = SecretsManager(region_name=config.get("region_name"))
-
-        return file_services, secrets
+        return file_services
 
     # ------------------------------------------------------------------
     # Inline kwargs parsing:  func(x=1, y="a")

@@ -1,18 +1,30 @@
 {
-  "region_name": "us-east-1",
   "services": {
     "sharepoint": {
-      "secret_id": "prod/sharepoint/duckduck",
+      "connector": "sharepoint",
       "hostname": "company.sharepoint.com",
-      "site_path": "/teams/myteam"
+      "site_path": "/teams/myteam",
+      "authentication": {
+        "type": "aws",
+        "region_name": "us-east-1",
+        "secret_id": "prod/sharepoint/duckduck"
+      }
     },
     "insightvm": {
-      "secret_id": "prod/insightvm"
+      "connector": "insightvm",
+      "host": "console.local",
+      "authentication": {
+        "type": "azure",
+        "vault_url": "https://my-vault.vault.azure.net/",
+        "secret_id": "prod-insightvm",
+        "password": "$secret.svc_password"
+      }
     },
     "insightvm_dev": {
-      "type": "insightvm",
-      "credentials": {
-        "host": "dev.local",
+      "connector": "insightvm",
+      "host": "dev.local",
+      "authentication": {
+        "type": "local",
         "username": "a",
         "password": "b"
       }

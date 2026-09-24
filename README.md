@@ -16,9 +16,10 @@ other HTTP API the same way.
 pip install -e .
 
 # Optional extras
-pip install -e ".[cert]"   # SharePoint auth via PFX/P12 or PEM certificate
-pip install -e ".[aws]"    # AWS Secrets Manager support (auto_register)
-pip install -e ".[dev]"    # pytest, for running the test suite
+pip install -e ".[cert]"    # SharePoint auth via PFX/P12 or PEM certificate
+pip install -e ".[aws]"     # AWS Secrets Manager support (auto_register)
+pip install -e ".[azure]"   # Azure Key Vault support (auto_register)
+pip install -e ".[dev]"     # pytest, for running the test suite
 ```
 
 Requires Python 3.10+.
@@ -143,75 +144,112 @@ Note `WHERE`/`LIMIT` in `stream()` apply per page, not globally — see
 
 Instead of instantiating each wrapper and calling `register_api_function`
 per method, `auto_register()` builds every configured wrapper and
-registers all of its tables in one call. It resolves credentials three
-ways, so pick whichever fits how you manage secrets:
+registers all of its tables in one call. Each service has a `connector`
+(which wrapper it is) and an `authentication` block (where its credentials
+come from) — `authentication.type` picks one of three sources:
 
-**1. AWS Secrets Manager, with the secret reference hardcoded in your code:**
+**1. `"local"` — hardcoded, fully offline, no secret store touched:**
 
 ```python
-from duckduck import DuckAPI, SecretsManager
+from duckduck import DuckAPI
 
 duck = DuckAPI()
-duck.auto_register(
-    {"sharepoint": {"secret_id": "prod/sharepoint/duckduck"}},
-    secrets=SecretsManager(region_name="us-east-1"),
-)
-```
-
-**2. AWS Secrets Manager, with the reference supplied at init time** (env
-var, config file, whatever your deployment uses):
-
-```python
-import os
-
-duck.auto_register(
-    {"sharepoint": {"secret_id": os.environ["SP_SECRET_ID"]}},
-    secrets=SecretsManager(),
-)
-```
-
-**3. Offline — credentials passed directly, no AWS call at all:**
-
-```python
 duck.auto_register({
     "sharepoint": {
-        "credentials": {
+        "authentication": {
+            "type": "local",
             "tenant_id": "...", "client_id": "...", "client_secret": "...",
         },
     },
 })
 ```
 
-The secret (from AWS or passed offline) is a plain dict/JSON matching the
+**2. `"aws"` — AWS Secrets Manager:**
+
+```python
+duck.auto_register({
+    "sharepoint": {
+        "hostname": "company.sharepoint.com",
+        "site_path": "/teams/myteam",
+        "authentication": {
+            "type": "aws",
+            "region_name": "us-east-1",
+            "secret_id": "prod/sharepoint/duckduck",
+        },
+    },
+})
+```
+
+**3. `"azure"` — Azure Key Vault:**
+
+```python
+duck.auto_register({
+    "sharepoint": {
+        "authentication": {
+            "type": "azure",
+            "vault_url": "https://my-vault.vault.azure.net/",
+            "secret_id": "prod-sharepoint",
+        },
+    },
+})
+```
+
+For `"aws"`/`"azure"`, the fetched secret is a JSON object matching the
 wrapper's constructor — for SharePoint that's `tenant_id` + `client_id` +
 one of `client_secret` / `thumbprint`+`private_key_pem` / `pfx_path` /
 `private_key_pem`+`cert_pem`; for InsightVM it's `host` + `username` +
 `password`. A PEM value with an escaped `\n` (common when a key passes
-through a secrets manager) is fixed automatically.
+through a secrets manager) is fixed automatically. Neither backend needs
+its SDK installed unless you actually use it (`pip install
+"duckduck[aws]"` / `"duckduck[azure]"`), and Azure auth to the vault
+itself uses `DefaultAzureCredential` (env vars, managed identity, `az
+login`) rather than another hardcoded secret in the config.
+
+Any field in the `authentication` block on top of `type`/`secret_id` is
+layered onto the fetched secret: a plain value overrides that key, and a
+value written as `"$secret.<key>"` pulls from a *different* key in the
+same secret — handy when the vault's field names don't match what the
+connector expects:
+
+```python
+"authentication": {
+    "type": "aws",
+    "secret_id": "prod/insightvm",
+    "password": "$secret.svc_password",  # secret has "svc_password", not "password"
+},
+```
 
 Registered tables are always prefixed by the key you gave the service in
 the config dict, so `sharepoint`/`insightvm` above become
 `sharepoint_list_items`, `insightvm_assets`, etc. This is what avoids
 collisions when two wrappers expose a same-named table (both SharePoint
 and InsightVM have a `sites` table) and lets you register more than one
-instance of the same wrapper:
+instance of the same wrapper — use `connector` when the name you pick
+doesn't match a wrapper name directly:
 
 ```python
-instances = duck.auto_register(
-    {
-        "sharepoint": {
+instances = duck.auto_register({
+    "sharepoint": {
+        "connector": "sharepoint",
+        "hostname": "company.sharepoint.com",
+        "site_path": "/teams/myteam",
+        "authentication": {
+            "type": "aws", "region_name": "us-east-1",
             "secret_id": "prod/sharepoint/duckduck",
-            "hostname": "company.sharepoint.com",
-            "site_path": "/teams/myteam",
-        },
-        "insightvm_prod": {"type": "insightvm", "secret_id": "prod/insightvm"},
-        "insightvm_dev": {
-            "type": "insightvm",
-            "credentials": {"host": "dev.local", "username": "a", "password": "b"},
         },
     },
-    secrets=SecretsManager(region_name="us-east-1"),
-)
+    "insightvm_prod": {
+        "connector": "insightvm",
+        "authentication": {
+            "type": "aws", "region_name": "us-east-1", "secret_id": "prod/insightvm",
+        },
+    },
+    "insightvm_dev": {
+        "connector": "insightvm",
+        "host": "dev.local",
+        "authentication": {"type": "local", "username": "a", "password": "b"},
+    },
+})
 
 duck.sql("SELECT * FROM sharepoint_list_items WHERE list_name = 'Tasks'")
 duck.sql("SELECT * FROM insightvm_prod_assets WHERE hostname = 'web-prod'")
@@ -221,33 +259,24 @@ duck.sql("SELECT * FROM insightvm_prod_assets WHERE hostname = 'web-prod'")
 instances["sharepoint"].site_by_path("company.sharepoint.com", "/sites/marketing")
 ```
 
+Both `insightvm_prod` and `sharepoint` share the same AWS region here — a
+single `SecretsManager`/boto3 client is built and reused across them
+automatically. If you'd rather build the backend yourself (tests, or
+reusing one client across several `auto_register()` calls), pass it via
+`secrets={"aws": my_secrets_manager}` / `secrets={"azure":
+my_keyvault_client}`, and it's used as-is instead.
+
 ### Loading the config from a JSON file
 
 To avoid declaring the `services` dict in code at all, drop it in a JSON
 file and call `auto_register()` with no arguments. Copy
 [`duckduck.example.json`](duckduck.example.json) to `duckduck.json` and
 fill in your own values — `duckduck.json` is gitignored on purpose, since
-the offline `"credentials"` form can hold literal secrets:
+a `"local"` block can hold literal secrets:
 
 ```bash
 cp duckduck.example.json duckduck.json
 # edit duckduck.json with your real secret_id / credentials
-```
-
-```json
-{
-  "region_name": "us-east-1",
-  "services": {
-    "sharepoint": {
-      "secret_id": "prod/sharepoint/duckduck",
-      "hostname": "company.sharepoint.com",
-      "site_path": "/teams/myteam"
-    },
-    "insightvm": {
-      "secret_id": "prod/insightvm"
-    }
-  }
-}
 ```
 
 ```python
@@ -257,12 +286,8 @@ duck.auto_register()
 
 `duckduck.json` in the current directory is used by default; pass
 `config_path="/path/to/file.json"` or set the `DUCKDUCK_CONFIG` environment
-variable to point elsewhere. Since a `secret_id` is present and no
-`secrets=` was passed, a `SecretsManager` is built automatically using the
-file's `"region_name"` — no extra Python needed. A service entry can still
-use `"credentials"` directly in the JSON for a fully offline setup, mixed
-freely with `"secret_id"` entries. Passing a `services=` dict explicitly (as
-in every example above) always skips the file lookup.
+variable to point elsewhere. Passing a `services=` dict explicitly (as in
+every example above) always skips the file lookup.
 
 ## Discovering what's registered
 

@@ -23,6 +23,10 @@ cert = [
 aws = [
     "boto3>=1.28",
 ]
+azure = [
+    "azure-identity>=1.15",
+    "azure-keyvault-secrets>=4.7",
+]
 dev = [
     "pytest>=8.0",
     "pytest-mock>=3.14",

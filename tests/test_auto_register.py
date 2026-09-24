@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from duckduck import DuckAPI, SecretsManager, SharePoint
+from duckduck import AzureKeyVaultSecrets, DuckAPI, SecretsManager, SharePoint
 
 
 def _mock_msal():
@@ -15,93 +15,95 @@ def _mock_msal():
     return mock_app
 
 
+def _fake_aws_client(secret_dict):
+    client = MagicMock()
+    client.get_secret_value.return_value = {"SecretString": json.dumps(secret_dict)}
+    return client
+
+
+def _fake_azure_client(secret_dict):
+    client = MagicMock()
+    client.get_secret.return_value = MagicMock(value=json.dumps(secret_dict))
+    return client
+
+
 # ---------------------------------------------------------------------------
-# InsightVM — no network mock needed at construction time
+# authentication.type = "local" — fully hardcoded, no secret store
 # ---------------------------------------------------------------------------
 
 
-def test_auto_register_offline_credentials():
-    """Offline mode: credentials provided directly, no AWS Secrets Manager."""
+def test_auto_register_local_credentials():
     duck = DuckAPI()
 
     instances = duck.auto_register({
         "insightvm": {
-            "credentials": {"host": "console.local", "username": "a", "password": "b"},
+            "host": "console.local",
+            "authentication": {"type": "local", "username": "a", "password": "b"},
         },
     })
 
-    assert "insightvm" in instances
     assert instances["insightvm"].base_url == "https://console.local/api/3"
-    # tables prefixed by the service name
     assert "insightvm_assets" in duck.functions
     assert "insightvm_vulnerabilities" in duck.functions
     assert "insightvm_assets" in duck._streaming_functions
     duck.close()
 
 
-def test_auto_register_via_secret_id():
-    """secret_id fetches credentials via SecretsManager (hardcoded or runtime reference)."""
-    client = MagicMock()
-    client.get_secret_value.return_value = {
-        "SecretString": json.dumps({"host": "x.local", "username": "u", "password": "p"})
-    }
-    secrets = SecretsManager(client=client)
-
+def test_auto_register_host_inside_authentication_also_works():
+    """host can live in the authentication block itself, not just top-level."""
     duck = DuckAPI()
-    instances = duck.auto_register(
-        {"insightvm": {"secret_id": "prod/insightvm"}},
-        secrets=secrets,
-    )
-
-    client.get_secret_value.assert_called_once_with(SecretId="prod/insightvm")
-    assert instances["insightvm"].base_url == "https://x.local/api/3"
+    instances = duck.auto_register({
+        "insightvm": {
+            "authentication": {
+                "type": "local", "host": "console.local", "username": "a", "password": "b",
+            },
+        },
+    })
+    assert instances["insightvm"].base_url == "https://console.local/api/3"
     duck.close()
 
 
-def test_auto_register_secret_id_without_secrets_manager_raises():
+def test_auto_register_missing_authentication_block_raises():
     duck = DuckAPI()
-    with pytest.raises(ValueError, match="SecretsManager"):
-        duck.auto_register({"insightvm": {"secret_id": "prod/insightvm"}})
+    with pytest.raises(ValueError, match="authentication"):
+        duck.auto_register({"insightvm": {"host": "console.local"}})
     duck.close()
 
 
-def test_auto_register_both_secret_id_and_credentials_raises():
+def test_auto_register_unknown_connector_raises():
     duck = DuckAPI()
-    with pytest.raises(ValueError, match="secret_id.*OR.*credentials|credentials.*OR.*secret_id"):
+    with pytest.raises(ValueError, match="is not recognized"):
+        duck.auto_register({
+            "does_not_exist": {"authentication": {"type": "local"}},
+        })
+    duck.close()
+
+
+def test_auto_register_unknown_authentication_type_raises():
+    duck = DuckAPI()
+    with pytest.raises(ValueError, match="'local', 'aws' or 'azure'"):
         duck.auto_register({
             "insightvm": {
-                "secret_id": "x",
-                "credentials": {"host": "h", "username": "u", "password": "p"},
+                "host": "h",
+                "authentication": {"type": "gcp", "username": "a", "password": "b"},
             },
         })
     duck.close()
 
 
-def test_auto_register_neither_secret_id_nor_credentials_raises():
-    duck = DuckAPI()
-    with pytest.raises(ValueError, match="secret_id.*credentials|credentials.*secret_id"):
-        duck.auto_register({"insightvm": {}})
-    duck.close()
-
-
-def test_auto_register_unknown_service_raises():
-    duck = DuckAPI()
-    with pytest.raises(ValueError, match="is not recognized"):
-        duck.auto_register({"does_not_exist": {"credentials": {}}})
-    duck.close()
-
-
-def test_auto_register_multiple_instances_same_type():
-    """Explicit type= allows two instances of the same wrapper with distinct prefixes."""
+def test_auto_register_multiple_instances_same_connector():
+    """Explicit connector= allows two instances of the same wrapper with distinct prefixes."""
     duck = DuckAPI()
     instances = duck.auto_register({
         "insightvm_prod": {
-            "type": "insightvm",
-            "credentials": {"host": "prod.local", "username": "a", "password": "b"},
+            "connector": "insightvm",
+            "host": "prod.local",
+            "authentication": {"type": "local", "username": "a", "password": "b"},
         },
         "insightvm_dev": {
-            "type": "insightvm",
-            "credentials": {"host": "dev.local", "username": "a", "password": "b"},
+            "connector": "insightvm",
+            "host": "dev.local",
+            "authentication": {"type": "local", "username": "a", "password": "b"},
         },
     })
 
@@ -116,11 +118,296 @@ def test_auto_register_extra_kwargs_passed_to_constructor():
     duck = DuckAPI()
     instances = duck.auto_register({
         "insightvm": {
-            "credentials": {"host": "h", "username": "u", "password": "p"},
+            "host": "h",
             "default_page_size": 50,
+            "authentication": {"type": "local", "username": "u", "password": "p"},
         },
     })
     assert instances["insightvm"].default_page_size == 50
+    duck.close()
+
+
+# ---------------------------------------------------------------------------
+# authentication.type = "aws" — AWS Secrets Manager
+# ---------------------------------------------------------------------------
+
+
+def test_auto_register_aws_authentication():
+    fake_client = _fake_aws_client({"host": "x.local", "username": "u", "password": "p"})
+    secrets_manager = SecretsManager(client=fake_client)
+
+    duck = DuckAPI()
+    instances = duck.auto_register(
+        {
+            "insightvm": {
+                "authentication": {
+                    "type": "aws", "region_name": "us-east-1", "secret_id": "prod/insightvm",
+                },
+            },
+        },
+        secrets={"aws": secrets_manager},
+    )
+
+    fake_client.get_secret_value.assert_called_once_with(SecretId="prod/insightvm")
+    assert instances["insightvm"].base_url == "https://x.local/api/3"
+    duck.close()
+
+
+def test_auto_register_aws_missing_secret_id_raises():
+    duck = DuckAPI()
+    with pytest.raises(ValueError, match="requires 'secret_id'"):
+        duck.auto_register({
+            "insightvm": {
+                "authentication": {"type": "aws", "region_name": "us-east-1"},
+            },
+        })
+    duck.close()
+
+
+def test_auto_register_aws_field_override_via_secret_ref():
+    """A field written as "$secret.<key>" is pulled from that key in the fetched secret."""
+    fake_client = _fake_aws_client({"host": "x.local", "username": "u", "svc_password": "p"})
+    secrets_manager = SecretsManager(client=fake_client)
+
+    duck = DuckAPI()
+    instances = duck.auto_register(
+        {
+            "insightvm": {
+                "authentication": {
+                    "type": "aws",
+                    "secret_id": "prod/insightvm",
+                    "password": "$secret.svc_password",
+                },
+            },
+        },
+        secrets={"aws": secrets_manager},
+    )
+
+    # InsightVM doesn't expose the password, but base_url proves construction succeeded
+    # using the remapped field (from_secret would KeyError on secret["password"] otherwise).
+    assert instances["insightvm"].base_url == "https://x.local/api/3"
+    duck.close()
+
+
+def test_auto_register_aws_field_override_missing_key_raises():
+    fake_client = _fake_aws_client({"host": "x.local", "username": "u", "password": "p"})
+    secrets_manager = SecretsManager(client=fake_client)
+
+    duck = DuckAPI()
+    with pytest.raises(ValueError, match="missing key 'does_not_exist'"):
+        duck.auto_register(
+            {
+                "insightvm": {
+                    "authentication": {
+                        "type": "aws",
+                        "secret_id": "prod/insightvm",
+                        "password": "$secret.does_not_exist",
+                    },
+                },
+            },
+            secrets={"aws": secrets_manager},
+        )
+    duck.close()
+
+
+def test_auto_register_aws_literal_field_override():
+    """A field with a plain (non-$secret.) value overrides the secret's own key."""
+    fake_client = _fake_aws_client({"host": "wrong.local", "username": "u", "password": "p"})
+    secrets_manager = SecretsManager(client=fake_client)
+
+    duck = DuckAPI()
+    instances = duck.auto_register(
+        {
+            "insightvm": {
+                "authentication": {
+                    "type": "aws",
+                    "secret_id": "prod/insightvm",
+                    "host": "override.local",
+                },
+            },
+        },
+        secrets={"aws": secrets_manager},
+    )
+
+    assert instances["insightvm"].base_url == "https://override.local/api/3"
+    duck.close()
+
+
+def test_auto_register_aws_without_override_builds_secrets_manager(monkeypatch):
+    """With no secrets= override, a SecretsManager is auto-built from region_name."""
+    import duckduck.secrets as secrets_module
+
+    fake_client = _fake_aws_client({"host": "x.local", "username": "u", "password": "p"})
+    fake_boto3 = MagicMock()
+    fake_boto3.client.return_value = fake_client
+    monkeypatch.setattr(secrets_module, "boto3", fake_boto3)
+
+    duck = DuckAPI()
+    instances = duck.auto_register({
+        "insightvm": {
+            "authentication": {
+                "type": "aws", "region_name": "us-east-1", "secret_id": "prod/insightvm",
+            },
+        },
+    })
+
+    fake_boto3.client.assert_called_once_with("secretsmanager", region_name="us-east-1")
+    assert instances["insightvm"].base_url == "https://x.local/api/3"
+    duck.close()
+
+
+def test_auto_register_aws_without_boto3_or_override_raises_import_error():
+    """No override and boto3 not installed: a clear ImportError, not a confusing one."""
+    duck = DuckAPI()
+    with pytest.raises(ImportError, match="boto3"):
+        duck.auto_register({
+            "insightvm": {
+                "authentication": {
+                    "type": "aws", "region_name": "us-east-1", "secret_id": "prod/insightvm",
+                },
+            },
+        })
+    duck.close()
+
+
+def test_auto_register_aws_backend_shared_across_same_region(monkeypatch):
+    """Two services in the same region reuse a single auto-built SecretsManager."""
+    import duckduck.secrets as secrets_module
+
+    fake_client = MagicMock()
+    fake_client.get_secret_value.side_effect = [
+        {"SecretString": json.dumps({"host": "a.local", "username": "u", "password": "p"})},
+        {"SecretString": json.dumps({"host": "b.local", "username": "u", "password": "p"})},
+    ]
+    fake_boto3 = MagicMock()
+    fake_boto3.client.return_value = fake_client
+    monkeypatch.setattr(secrets_module, "boto3", fake_boto3)
+
+    duck = DuckAPI()
+    duck.auto_register({
+        "insightvm_a": {
+            "connector": "insightvm",
+            "authentication": {
+                "type": "aws", "region_name": "us-east-1", "secret_id": "svc-a",
+            },
+        },
+        "insightvm_b": {
+            "connector": "insightvm",
+            "authentication": {
+                "type": "aws", "region_name": "us-east-1", "secret_id": "svc-b",
+            },
+        },
+    })
+
+    fake_boto3.client.assert_called_once_with("secretsmanager", region_name="us-east-1")
+    duck.close()
+
+
+def test_auto_register_aws_backend_separate_per_region(monkeypatch):
+    """Two services in different regions get their own SecretsManager/client."""
+    import duckduck.secrets as secrets_module
+
+    fake_boto3 = MagicMock()
+    fake_boto3.client.side_effect = [
+        _fake_aws_client({"host": "a.local", "username": "u", "password": "p"}),
+        _fake_aws_client({"host": "b.local", "username": "u", "password": "p"}),
+    ]
+    monkeypatch.setattr(secrets_module, "boto3", fake_boto3)
+
+    duck = DuckAPI()
+    duck.auto_register({
+        "insightvm_a": {
+            "connector": "insightvm",
+            "authentication": {
+                "type": "aws", "region_name": "us-east-1", "secret_id": "svc-a",
+            },
+        },
+        "insightvm_b": {
+            "connector": "insightvm",
+            "authentication": {
+                "type": "aws", "region_name": "eu-west-1", "secret_id": "svc-b",
+            },
+        },
+    })
+
+    assert fake_boto3.client.call_count == 2
+    duck.close()
+
+
+# ---------------------------------------------------------------------------
+# authentication.type = "azure" — Azure Key Vault
+# ---------------------------------------------------------------------------
+
+
+def test_auto_register_azure_authentication():
+    fake_client = _fake_azure_client({"host": "x.local", "username": "u", "password": "p"})
+    backend = AzureKeyVaultSecrets(client=fake_client)
+
+    duck = DuckAPI()
+    instances = duck.auto_register(
+        {
+            "insightvm": {
+                "authentication": {
+                    "type": "azure",
+                    "vault_url": "https://my-vault.vault.azure.net/",
+                    "secret_id": "prod-insightvm",
+                },
+            },
+        },
+        secrets={"azure": backend},
+    )
+
+    fake_client.get_secret.assert_called_once_with("prod-insightvm")
+    assert instances["insightvm"].base_url == "https://x.local/api/3"
+    duck.close()
+
+
+def test_auto_register_azure_missing_vault_url_raises():
+    duck = DuckAPI()
+    with pytest.raises(ValueError, match="requires 'vault_url'"):
+        duck.auto_register({
+            "insightvm": {
+                "authentication": {"type": "azure", "secret_id": "prod-insightvm"},
+            },
+        })
+    duck.close()
+
+
+def test_auto_register_azure_field_override_via_secret_ref():
+    fake_client = _fake_azure_client({"host": "x.local", "username": "u", "svc_password": "p"})
+    backend = AzureKeyVaultSecrets(client=fake_client)
+
+    duck = DuckAPI()
+    instances = duck.auto_register(
+        {
+            "insightvm": {
+                "authentication": {
+                    "type": "azure",
+                    "vault_url": "https://my-vault.vault.azure.net/",
+                    "secret_id": "prod-insightvm",
+                    "password": "$secret.svc_password",
+                },
+            },
+        },
+        secrets={"azure": backend},
+    )
+
+    assert instances["insightvm"].base_url == "https://x.local/api/3"
+    duck.close()
+
+
+def test_auto_register_azure_without_sdk_or_override_raises_import_error():
+    duck = DuckAPI()
+    with pytest.raises(ImportError, match="azure-keyvault-secrets"):
+        duck.auto_register({
+            "insightvm": {
+                "authentication": {
+                    "type": "azure",
+                    "vault_url": "https://my-vault.vault.azure.net/",
+                    "secret_id": "prod-insightvm",
+                },
+            },
+        })
     duck.close()
 
 
@@ -130,17 +417,18 @@ def test_auto_register_extra_kwargs_passed_to_constructor():
 
 
 @patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
-def test_auto_register_sharepoint_client_secret(msal_cls):
+def test_auto_register_sharepoint_local(msal_cls):
     msal_cls.return_value = _mock_msal()
 
     duck = DuckAPI()
     instances = duck.auto_register({
         "sharepoint": {
-            "credentials": {
-                "tenant_id": "t", "client_id": "c", "client_secret": "s",
-            },
             "hostname": "company.sharepoint.com",
             "site_path": "/teams/myteam",
+            "authentication": {
+                "type": "local",
+                "tenant_id": "t", "client_id": "c", "client_secret": "s",
+            },
         },
     })
 
@@ -155,33 +443,48 @@ def test_auto_register_sharepoint_client_secret(msal_cls):
 
 
 @patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
-def test_auto_register_sharepoint_thumbprint(msal_cls):
+def test_auto_register_sharepoint_aws_thumbprint(msal_cls):
     msal_cls.return_value = _mock_msal()
 
+    fake_client = _fake_aws_client({
+        "tenant_id": "t", "client_id": "c",
+        "thumbprint": "AABBCC",
+        "private_key_pem": "-----BEGIN PRIVATE KEY-----\n...",
+    })
+    secrets_manager = SecretsManager(client=fake_client)
+
     duck = DuckAPI()
-    instances = duck.auto_register({
-        "sharepoint": {
-            "credentials": {
-                "tenant_id": "t", "client_id": "c",
-                "thumbprint": "AABBCC",
-                "private_key_pem": "-----BEGIN PRIVATE KEY-----\n...",
+    instances = duck.auto_register(
+        {
+            "sharepoint": {
+                "authentication": {
+                    "type": "aws", "region_name": "us-east-1", "secret_id": "prod/sharepoint",
+                },
             },
         },
-    })
+        secrets={"aws": secrets_manager},
+    )
 
     assert isinstance(instances["sharepoint"], SharePoint)
     duck.close()
 
 
 @patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
-def test_auto_register_two_different_services(msal_cls):
+def test_auto_register_two_different_connectors(msal_cls):
     """SharePoint and InsightVM registered together don't collide (prefix by name)."""
     msal_cls.return_value = _mock_msal()
 
     duck = DuckAPI()
     duck.auto_register({
-        "sharepoint": {"credentials": {"tenant_id": "t", "client_id": "c", "client_secret": "s"}},
-        "insightvm": {"credentials": {"host": "h", "username": "u", "password": "p"}},
+        "sharepoint": {
+            "authentication": {
+                "type": "local", "tenant_id": "t", "client_id": "c", "client_secret": "s",
+            },
+        },
+        "insightvm": {
+            "host": "h",
+            "authentication": {"type": "local", "username": "u", "password": "p"},
+        },
     })
 
     # both define a "sites" table — without the prefix, one would overwrite the other
@@ -195,6 +498,15 @@ def test_auto_register_two_different_services(msal_cls):
 # ---------------------------------------------------------------------------
 
 
+def _local_insightvm_config():
+    return {
+        "insightvm": {
+            "host": "console.local",
+            "authentication": {"type": "local", "username": "a", "password": "b"},
+        },
+    }
+
+
 def test_auto_register_no_config_found_raises_helpful_error(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)  # empty dir, no duckduck.json
     duck = DuckAPI()
@@ -206,14 +518,7 @@ def test_auto_register_no_config_found_raises_helpful_error(tmp_path, monkeypatc
 def test_auto_register_loads_from_default_json_file(tmp_path, monkeypatch):
     """With no services= and no config_path=, reads ./duckduck.json."""
     monkeypatch.chdir(tmp_path)
-    config = {
-        "services": {
-            "insightvm": {
-                "credentials": {"host": "console.local", "username": "a", "password": "b"},
-            },
-        },
-    }
-    (tmp_path / "duckduck.json").write_text(json.dumps(config))
+    (tmp_path / "duckduck.json").write_text(json.dumps({"services": _local_insightvm_config()}))
 
     duck = DuckAPI()
     instances = duck.auto_register()
@@ -224,15 +529,8 @@ def test_auto_register_loads_from_default_json_file(tmp_path, monkeypatch):
 
 
 def test_auto_register_config_path_argument(tmp_path):
-    config = {
-        "services": {
-            "insightvm": {
-                "credentials": {"host": "console.local", "username": "a", "password": "b"},
-            },
-        },
-    }
     config_file = tmp_path / "custom.json"
-    config_file.write_text(json.dumps(config))
+    config_file.write_text(json.dumps({"services": _local_insightvm_config()}))
 
     duck = DuckAPI()
     instances = duck.auto_register(config_path=str(config_file))
@@ -242,15 +540,8 @@ def test_auto_register_config_path_argument(tmp_path):
 
 
 def test_auto_register_duckduck_config_env_var(tmp_path, monkeypatch):
-    config = {
-        "services": {
-            "insightvm": {
-                "credentials": {"host": "console.local", "username": "a", "password": "b"},
-            },
-        },
-    }
     config_file = tmp_path / "env-config.json"
-    config_file.write_text(json.dumps(config))
+    config_file.write_text(json.dumps({"services": _local_insightvm_config()}))
     monkeypatch.setenv("DUCKDUCK_CONFIG", str(config_file))
 
     duck = DuckAPI()
@@ -262,7 +553,7 @@ def test_auto_register_duckduck_config_env_var(tmp_path, monkeypatch):
 
 def test_auto_register_json_config_missing_services_key_raises(tmp_path):
     config_file = tmp_path / "bad.json"
-    config_file.write_text(json.dumps({"region_name": "us-east-1"}))
+    config_file.write_text(json.dumps({"foo": "bar"}))
 
     duck = DuckAPI()
     with pytest.raises(ValueError, match="'services' key"):
@@ -270,25 +561,32 @@ def test_auto_register_json_config_missing_services_key_raises(tmp_path):
     duck.close()
 
 
-def test_auto_register_json_secret_id_builds_secrets_manager_automatically(tmp_path, monkeypatch):
-    """
-    A JSON config with secret_id + region_name but no secrets= passed in
-    should build a SecretsManager on its own, so `duck.auto_register()`
-    alone is enough even when AWS Secrets Manager is involved.
-    """
+def test_auto_register_explicit_services_skips_json_lookup(tmp_path, monkeypatch):
+    """Passing services= directly never touches the filesystem, even with an empty cwd."""
+    monkeypatch.chdir(tmp_path)  # no duckduck.json here
+    duck = DuckAPI()
+    instances = duck.auto_register(_local_insightvm_config())
+    assert instances["insightvm"].base_url == "https://console.local/api/3"
+    duck.close()
+
+
+def test_auto_register_json_file_with_aws_secret(tmp_path, monkeypatch):
+    """The example.json shape: a JSON file whose service uses AWS Secrets Manager."""
     import duckduck.secrets as secrets_module
 
-    fake_client = MagicMock()
-    fake_client.get_secret_value.return_value = {
-        "SecretString": json.dumps({"host": "x.local", "username": "u", "password": "p"})
-    }
+    fake_client = _fake_aws_client({"host": "x.local", "username": "u", "password": "p"})
     fake_boto3 = MagicMock()
     fake_boto3.client.return_value = fake_client
     monkeypatch.setattr(secrets_module, "boto3", fake_boto3)
 
     config = {
-        "region_name": "us-east-1",
-        "services": {"insightvm": {"secret_id": "prod/insightvm"}},
+        "services": {
+            "insightvm": {
+                "authentication": {
+                    "type": "aws", "region_name": "us-east-1", "secret_id": "prod/insightvm",
+                },
+            },
+        },
     }
     config_file = tmp_path / "duckduck.json"
     config_file.write_text(json.dumps(config))
@@ -298,15 +596,4 @@ def test_auto_register_json_secret_id_builds_secrets_manager_automatically(tmp_p
 
     fake_boto3.client.assert_called_once_with("secretsmanager", region_name="us-east-1")
     assert instances["insightvm"].base_url == "https://x.local/api/3"
-    duck.close()
-
-
-def test_auto_register_explicit_services_skips_json_lookup(tmp_path, monkeypatch):
-    """Passing services= directly never touches the filesystem, even with an empty cwd."""
-    monkeypatch.chdir(tmp_path)  # no duckduck.json here
-    duck = DuckAPI()
-    instances = duck.auto_register({
-        "insightvm": {"credentials": {"host": "h", "username": "u", "password": "p"}},
-    })
-    assert instances["insightvm"].base_url == "https://h/api/3"
     duck.close()
