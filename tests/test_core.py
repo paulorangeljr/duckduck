@@ -1,4 +1,4 @@
-"""Testes unitários para DuckAPI com push-down de predicados."""
+"""Unit tests for DuckAPI predicate push-down."""
 
 import pandas as pd
 import pytest
@@ -53,7 +53,7 @@ def duck():
 
 
 # ---------------------------------------------------------------------------
-# push-down de LIMIT
+# LIMIT push-down
 # ---------------------------------------------------------------------------
 
 
@@ -72,7 +72,7 @@ def test_limit_pushdown(duck):
 
 
 # ---------------------------------------------------------------------------
-# push-down de WHERE simples
+# Simple WHERE push-down
 # ---------------------------------------------------------------------------
 
 
@@ -91,7 +91,7 @@ def test_where_equality_pushdown(duck):
 
 
 # ---------------------------------------------------------------------------
-# parâmetro explícito na chamada
+# Explicit parameter in the call
 # ---------------------------------------------------------------------------
 
 
@@ -109,7 +109,7 @@ def test_explicit_param_in_call(duck):
 
 
 # ---------------------------------------------------------------------------
-# explícito sobrescreve push-down
+# Explicit overrides push-down
 # ---------------------------------------------------------------------------
 
 
@@ -121,14 +121,14 @@ def test_explicit_overrides_pushdown(duck):
         return make_assets(hostname=hostname, ip=ip, limit=limit)
 
     duck.register_api_function("assets", tracked_assets)
-    # LIMIT 10 no SQL, mas explícito limit=3 na chamada → explícito vence
+    # LIMIT 10 in the SQL, but explicit limit=3 in the call → explicit wins
     duck.sql("SELECT * FROM assets(limit=3) LIMIT 10").df()
 
     assert calls[0]["limit"] == 3
 
 
 # ---------------------------------------------------------------------------
-# parâmetro desconhecido pela função é ignorado no push-down
+# Parameter unknown to the function is ignored during push-down
 # ---------------------------------------------------------------------------
 
 
@@ -140,15 +140,15 @@ def test_unknown_where_column_ignored(duck):
         return make_assets(hostname=hostname, ip=ip, limit=limit)
 
     duck.register_api_function("assets", tracked_assets)
-    # "severity" não é parâmetro de make_assets, mas o DuckDB filtra depois
+    # "severity" is not a parameter of make_assets, but DuckDB filters it afterwards
     df = duck.sql("SELECT * FROM assets WHERE severity = 'critical'").df()
 
-    assert calls[0].get("severity") is None  # não foi para a API
-    assert all(df["severity"] == "critical")  # DuckDB filtrou no resultado
+    assert calls[0].get("severity") is None  # didn't reach the API
+    assert all(df["severity"] == "critical")  # DuckDB filtered the result
 
 
 # ---------------------------------------------------------------------------
-# parse de kwargs inline
+# Inline kwargs parsing
 # ---------------------------------------------------------------------------
 
 
@@ -170,7 +170,7 @@ def test_parse_kwargs_empty(duck):
 
 def test_parse_kwargs_positional_raises(duck):
     d = DuckAPI()
-    with pytest.raises(ValueError, match="nomeados"):
+    with pytest.raises(ValueError, match="named parameters"):
         d._parse_kwargs("123")
     d.close()
 
@@ -206,7 +206,7 @@ def test_extract_pushdown_combined():
 
 
 # ---------------------------------------------------------------------------
-# _to_dataframe normaliza dict com chave resources
+# _to_dataframe normalizes a dict with a resources key
 # ---------------------------------------------------------------------------
 
 
@@ -220,13 +220,13 @@ def test_to_dataframe_resources_key():
 
 def test_to_dataframe_empty_raises():
     d = DuckAPI()
-    with pytest.raises(ValueError, match="não retornou"):
+    with pytest.raises(ValueError, match="returned no data"):
         d._to_dataframe([], "test")
     d.close()
 
 
 # ---------------------------------------------------------------------------
-# validação de assinatura
+# Signature validation
 # ---------------------------------------------------------------------------
 
 
@@ -242,15 +242,15 @@ def test_validate_missing_required_arg():
 
 
 # ---------------------------------------------------------------------------
-# WHERE com parâmetros estruturais (não são colunas no resultado)
+# WHERE with structural parameters (not columns in the result)
 # ---------------------------------------------------------------------------
 
 
 def test_structural_where_param_stripped_from_query(duck):
     """
-    Parâmetros que estão no WHERE mas não são colunas do resultado
-    (ex: site_name, list_name) devem ser consumidos pelo push-down
-    e removidos antes de o DuckDB executar a query.
+    Parameters that are in the WHERE clause but aren't columns of the
+    result (e.g. site_name, list_name) must be consumed by push-down and
+    removed before DuckDB executes the query.
     """
     calls = []
 
@@ -260,15 +260,15 @@ def test_structural_where_param_stripped_from_query(duck):
 
     duck.register_api_function("vulns", tracked_vulns)
 
-    # site_name não é coluna no resultado — deve ser removido do WHERE
+    # site_name is not a column in the result — must be removed from the WHERE
     df = duck.sql(
         "SELECT * FROM vulns WHERE site_name = 'Intranet' AND severity = 'critical'"
     ).df()
 
-    assert calls[0]["site_name"] == "Intranet"    # chegou na função
-    assert calls[0]["severity"] == "critical"      # também chegou
-    assert all(df["severity"] == "critical")       # DuckDB filtrou severity
-    assert "site_name" not in df.columns           # não é coluna do resultado
+    assert calls[0]["site_name"] == "Intranet"    # reached the function
+    assert calls[0]["severity"] == "critical"      # also reached it
+    assert all(df["severity"] == "critical")       # DuckDB filtered severity
+    assert "site_name" not in df.columns           # not a column in the result
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-"""Testes unitários para SecretsManager (AWS Secrets Manager)."""
+"""Unit tests for SecretsManager (AWS Secrets Manager)."""
 
 import json
 from unittest.mock import MagicMock
@@ -31,7 +31,7 @@ def test_get_secret_is_cached():
     sm.get_secret("prod/insightvm")
     sm.get_secret("prod/insightvm")
 
-    client.get_secret_value.assert_called_once()  # segunda chamada usa cache
+    client.get_secret_value.assert_called_once()  # second call uses the cache
 
 
 def test_get_secret_different_ids_not_cached_together():

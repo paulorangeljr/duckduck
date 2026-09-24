@@ -1,17 +1,17 @@
 """
-Registro central dos wrappers de API suportados por
-``DuckAPI.auto_register`` (ver ``core.py``).
+Central registry of the API wrappers supported by
+``DuckAPI.auto_register`` (see ``core.py``).
 
-Cada entrada mapeia um "type" (``"sharepoint"``, ``"insightvm"``) para:
+Each entry maps a "type" (``"sharepoint"``, ``"insightvm"``) to:
 
-- ``factory``          : classmethod que constrói a instância a partir de
-                          um dict de credenciais (``Wrapper.from_secret``)
-- ``tables``            : ``{nome_da_tabela: nome_do_método}`` para ``sql()``
-- ``streaming_tables``  : ``{nome_da_tabela: nome_do_método}`` para ``stream()``
+- ``factory``          : classmethod that builds the instance from a
+                          credentials dict (``Wrapper.from_secret``)
+- ``tables``            : ``{table_name: method_name}`` for ``sql()``
+- ``streaming_tables``  : ``{table_name: method_name}`` for ``stream()``
 
-Ao adicionar um novo wrapper (ver seção "Adding a new API wrapper" do
-CLAUDE.md), acrescente também um ``from_secret`` nele e uma entrada aqui
-para que fique disponível em ``DuckAPI.auto_register()``.
+When adding a new wrapper (see the "Adding a new API wrapper" section of
+CLAUDE.md), also add a ``from_secret`` to it and an entry here so it
+becomes available in ``DuckAPI.auto_register()``.
 """
 
 from typing import Any, Callable, Dict, NamedTuple

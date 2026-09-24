@@ -1,4 +1,4 @@
-"""Testes unitários para DuckAPI.auto_register (instanciação automática de wrappers)."""
+"""Unit tests for DuckAPI.auto_register (automatic wrapper instantiation)."""
 
 import json
 from unittest.mock import MagicMock, patch
@@ -16,12 +16,12 @@ def _mock_msal():
 
 
 # ---------------------------------------------------------------------------
-# InsightVM — não precisa de mock de rede na construção
+# InsightVM — no network mock needed at construction time
 # ---------------------------------------------------------------------------
 
 
 def test_auto_register_offline_credentials():
-    """Modo offline: credenciais fornecidas diretamente, sem AWS Secrets Manager."""
+    """Offline mode: credentials provided directly, no AWS Secrets Manager."""
     duck = DuckAPI()
 
     instances = duck.auto_register({
@@ -32,7 +32,7 @@ def test_auto_register_offline_credentials():
 
     assert "insightvm" in instances
     assert instances["insightvm"].base_url == "https://console.local/api/3"
-    # tabelas prefixadas pelo nome do serviço
+    # tables prefixed by the service name
     assert "insightvm_assets" in duck.functions
     assert "insightvm_vulnerabilities" in duck.functions
     assert "insightvm_assets" in duck._streaming_functions
@@ -40,7 +40,7 @@ def test_auto_register_offline_credentials():
 
 
 def test_auto_register_via_secret_id():
-    """secret_id busca credenciais via SecretsManager (referência hardcoded ou em runtime)."""
+    """secret_id fetches credentials via SecretsManager (hardcoded or runtime reference)."""
     client = MagicMock()
     client.get_secret_value.return_value = {
         "SecretString": json.dumps({"host": "x.local", "username": "u", "password": "p"})
@@ -67,7 +67,7 @@ def test_auto_register_secret_id_without_secrets_manager_raises():
 
 def test_auto_register_both_secret_id_and_credentials_raises():
     duck = DuckAPI()
-    with pytest.raises(ValueError, match="secret_id.*OU.*credentials|credentials.*OU.*secret_id"):
+    with pytest.raises(ValueError, match="secret_id.*OR.*credentials|credentials.*OR.*secret_id"):
         duck.auto_register({
             "insightvm": {
                 "secret_id": "x",
@@ -86,13 +86,13 @@ def test_auto_register_neither_secret_id_nor_credentials_raises():
 
 def test_auto_register_unknown_service_raises():
     duck = DuckAPI()
-    with pytest.raises(ValueError, match="não é reconhecido"):
-        duck.auto_register({"nao_existe": {"credentials": {}}})
+    with pytest.raises(ValueError, match="is not recognized"):
+        duck.auto_register({"does_not_exist": {"credentials": {}}})
     duck.close()
 
 
 def test_auto_register_multiple_instances_same_type():
-    """type= explícito permite duas instâncias do mesmo wrapper com prefixos distintos."""
+    """Explicit type= allows two instances of the same wrapper with distinct prefixes."""
     duck = DuckAPI()
     instances = duck.auto_register({
         "insightvm_prod": {
@@ -125,7 +125,7 @@ def test_auto_register_extra_kwargs_passed_to_constructor():
 
 
 # ---------------------------------------------------------------------------
-# SharePoint — construção via MSAL mockado
+# SharePoint — construction via mocked MSAL
 # ---------------------------------------------------------------------------
 
 
@@ -139,15 +139,15 @@ def test_auto_register_sharepoint_client_secret(msal_cls):
             "credentials": {
                 "tenant_id": "t", "client_id": "c", "client_secret": "s",
             },
-            "hostname": "empresa.sharepoint.com",
-            "site_path": "/teams/meutime",
+            "hostname": "company.sharepoint.com",
+            "site_path": "/teams/myteam",
         },
     })
 
     sp = instances["sharepoint"]
     assert isinstance(sp, SharePoint)
-    assert sp._default_hostname == "empresa.sharepoint.com"
-    assert sp._default_site_path == "/teams/meutime"
+    assert sp._default_hostname == "company.sharepoint.com"
+    assert sp._default_site_path == "/teams/myteam"
     assert "sharepoint_list_items" in duck.functions
     assert "sharepoint_sites" in duck.functions
     assert "sharepoint_list_items" in duck._streaming_functions
@@ -175,7 +175,7 @@ def test_auto_register_sharepoint_thumbprint(msal_cls):
 
 @patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
 def test_auto_register_two_different_services(msal_cls):
-    """SharePoint e InsightVM registrados juntos não colidem (prefixo por nome)."""
+    """SharePoint and InsightVM registered together don't collide (prefix by name)."""
     msal_cls.return_value = _mock_msal()
 
     duck = DuckAPI()
@@ -184,7 +184,7 @@ def test_auto_register_two_different_services(msal_cls):
         "insightvm": {"credentials": {"host": "h", "username": "u", "password": "p"}},
     })
 
-    # ambos definem uma tabela "sites" — sem o prefixo, um sobrescreveria o outro
+    # both define a "sites" table — without the prefix, one would overwrite the other
     assert "sharepoint_sites" in duck.functions
     assert "insightvm_sites" in duck.functions
     duck.close()

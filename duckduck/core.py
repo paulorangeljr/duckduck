@@ -1,15 +1,15 @@
 """
-DuckAPI — consulte APIs externas com SQL.
+DuckAPI — query external APIs with SQL.
 
-Suporta push-down de predicados SQL para as funções registradas:
+Supports push-down of SQL predicates to registered functions:
 
-- LIMIT  → passado como ``limit=N`` se a função aceitar o parâmetro
-- WHERE  → condições simples (=, LIKE, >, <, >=, <=) são passadas
-           como kwargs se a função aceitar aquele nome de parâmetro
+- LIMIT  → passed as ``limit=N`` if the function accepts that parameter
+- WHERE  → simple conditions (=, LIKE, >, <, >=, <=) are passed as
+           kwargs if the function accepts that parameter name
 
-As funções registradas recebem os predicados que conhecem e ignoram
-os demais; o DuckDB aplica o resto normalmente sobre o DataFrame
-retornado.
+Registered functions receive the predicates they know about and ignore
+the rest; DuckDB applies the remainder normally on top of the returned
+DataFrame.
 """
 
 import ast
@@ -32,29 +32,29 @@ import sqlglot.expressions as exp
 @dataclass
 class PushDownContext:
     """
-    Predicados extraídos do SQL que podem ser enviados à API.
+    Predicates extracted from the SQL that can be sent to the API.
 
-    Atributos
-    ---------
+    Attributes
+    ----------
     limit : int | None
-        Valor do LIMIT da query, se presente.
+        The query's LIMIT value, if present.
     filters : dict[str, Any]
-        Condições simples do WHERE: ``{nome_coluna: valor}``.
-        Operadores suportados para push-down: ``=``, ``LIKE``,
+        Simple WHERE conditions: ``{column_name: value}``.
+        Operators supported for push-down: ``=``, ``LIKE``,
         ``>``, ``<``, ``>=``, ``<=``.
 
-    Exemplos
+    Examples
     --------
-    Para a query::
+    For the query::
 
         SELECT * FROM assets(hostname='web') WHERE severity = 'critical' LIMIT 50
 
-    o contexto será::
+    the context will be::
 
         PushDownContext(limit=50, filters={"severity": "critical"})
 
-    Note que ``hostname='web'`` já foi passado explicitamente na chamada
-    da função e **não** aparece em ``filters``.
+    Note that ``hostname='web'`` was already passed explicitly in the
+    function call and does **not** show up in ``filters``.
     """
 
     limit: Optional[int] = None
@@ -62,19 +62,19 @@ class PushDownContext:
 
 
 # ---------------------------------------------------------------------------
-# Helpers de extração de SQL
+# SQL extraction helpers
 # ---------------------------------------------------------------------------
 
 
 def _literal_value(node: exp.Expression) -> Any:
-    """Converte um nó Literal do sqlglot em valor Python."""
+    """Converts a sqlglot Literal node into a Python value."""
     if isinstance(node, exp.Literal):
         if node.is_number:
             try:
                 return int(node.this)
             except ValueError:
                 return float(node.this)
-        return node.this  # string sem aspas
+        return node.this  # unquoted string
     if isinstance(node, exp.Boolean):
         return node.this
     return None
@@ -82,10 +82,10 @@ def _literal_value(node: exp.Expression) -> Any:
 
 def _extract_filters(node: exp.Expression, filters: Dict[str, Any]) -> None:
     """
-    Percorre a árvore WHERE e extrai condições simples em ``filters``.
+    Walks the WHERE tree and extracts simple conditions into ``filters``.
 
-    Suporta: col = val | col LIKE val | col > val | col < val | col >= val | col <= val
-    Ignora: OR, NOT, subqueries, funções, condições compostas.
+    Supports: col = val | col LIKE val | col > val | col < val | col >= val | col <= val
+    Ignores: OR, NOT, subqueries, functions, compound conditions.
     """
     if node is None:
         return
@@ -112,10 +112,10 @@ def _extract_filters(node: exp.Expression, filters: Dict[str, Any]) -> None:
 
 class DuckAPI:
     """
-    Motor SQL que permite consultar funções Python como se fossem tabelas.
+    SQL engine that lets you query Python functions as if they were tables.
 
-    Uso básico
-    ----------
+    Basic usage
+    -----------
     ::
 
         duck = DuckAPI()
@@ -123,16 +123,16 @@ class DuckAPI:
         duck.register_api_function("assets", insightvm.assets)
         duck.register_api_function("vulns",  insightvm.vulnerabilities)
 
-        # Push-down de LIMIT
+        # LIMIT push-down
         duck.sql("SELECT * FROM assets LIMIT 10").df()
 
-        # Filtro de coluna via WHERE → push-down automático
+        # Column filter via WHERE → automatic push-down
         duck.sql("SELECT * FROM assets WHERE hostname = 'web' LIMIT 50").df()
 
-        # Push-down de WHERE simples
+        # Simple WHERE push-down
         duck.sql("SELECT * FROM vulns WHERE severity = 'critical'").df()
 
-        # Parâmetro estrutural (monta URL) inline + filtro de coluna no WHERE
+        # Structural parameter (builds the URL) inline + column filter in WHERE
         duck.sql('''
             SELECT a.ip, v.title
             FROM assets AS a
@@ -140,17 +140,18 @@ class DuckAPI:
             WHERE a.hostname = 'web' AND v.severity = 'critical'
         ''').df()
 
-    Convenção: inline vs WHERE
-    --------------------------
-    A sintaxe ``func(param=val)`` deve ser usada **apenas** para
-    parâmetros estruturais que não correspondem a colunas do resultado
-    (ex: ``asset_id`` que determina o endpoint ``/assets/{id}/vulns``).
+    Convention: inline vs WHERE
+    ---------------------------
+    The ``func(param=val)`` syntax should be used **only** for structural
+    parameters that don't correspond to columns in the result (e.g.
+    ``asset_id``, which determines the ``/assets/{id}/vulns`` endpoint).
 
-    Filtros de colunas normais pertencem ao ``WHERE`` e são injetados
-    automaticamente como kwargs quando a função aceita aquele parâmetro.
+    Regular column filters belong in the ``WHERE`` clause and are
+    injected automatically as kwargs when the function accepts that
+    parameter.
 
-    O DuckDB aplica o filtro sobre o resultado de qualquer forma,
-    garantindo correção mesmo quando a API retornar dados extras.
+    DuckDB applies the filter on the result either way, guaranteeing
+    correctness even when the API returns extra data.
     """
 
     def __init__(self, database: str = ":memory:"):
@@ -160,41 +161,41 @@ class DuckAPI:
         self._table_counter = 0
 
     # ------------------------------------------------------------------
-    # Registro de funções
+    # Function registration
     # ------------------------------------------------------------------
 
     def register_api_function(self, name: str, fetch_function) -> None:
         """
-        Registra uma função Python como "tabela" SQL.
+        Registers a Python function as a SQL "table".
 
         Parameters
         ----------
         name : str
-            Nome da tabela na SQL (case-insensitive).
+            Table name in SQL (case-insensitive).
         fetch_function : callable
-            Função que retorna list[dict], dict, ou pd.DataFrame.
-            Parâmetros com os mesmos nomes de colunas / ``limit``
-            recebem push-down automático.
+            Function that returns list[dict], dict, or pd.DataFrame.
+            Parameters with the same names as result columns / ``limit``
+            get automatic push-down.
         """
         self.functions[name.lower()] = fetch_function
 
     def register_streaming_function(self, name: str, iter_function) -> None:
         """
-        Registra uma função geradora para uso com ``stream()``.
+        Registers a generator function for use with ``stream()``.
 
         Parameters
         ----------
         name : str
-            Mesmo nome usado em ``register_api_function``.
+            Same name used in ``register_api_function``.
         iter_function : callable
-            Generator que aceita os mesmos kwargs de filtro que a função
-            regular e faz ``yield`` de um ``pd.DataFrame`` por página.
-            Não precisa aceitar ``limit`` — stream itera todas as páginas.
+            Generator that accepts the same filter kwargs as the regular
+            function and ``yield``s one ``pd.DataFrame`` per page.
+            Doesn't need to accept ``limit`` — stream iterates every page.
         """
         self._streaming_functions[name.lower()] = iter_function
 
     # ------------------------------------------------------------------
-    # Auto-registro de wrappers conhecidos (SharePoint, InsightVM, ...)
+    # Auto-registration of known wrappers (SharePoint, InsightVM, ...)
     # ------------------------------------------------------------------
 
     def auto_register(
@@ -203,45 +204,46 @@ class DuckAPI:
         secrets: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
-        Instancia e registra automaticamente wrappers de API conhecidos
-        (ver ``duckduck.registry.SERVICE_REGISTRY``), sem precisar chamar
-        ``register_api_function`` manualmente método a método.
+        Instantiates and registers known API wrappers automatically
+        (see ``duckduck.registry.SERVICE_REGISTRY``), without having to
+        call ``register_api_function`` by hand for every method.
 
         Parameters
         ----------
         services : dict
-            ``{nome: config}``. ``nome`` vira o prefixo das tabelas
-            registradas (``{nome}_{tabela}``) — permite múltiplas
-            instâncias do mesmo wrapper (ex: ``insightvm_prod`` e
+            ``{name: config}``. ``name`` becomes the prefix of the
+            registered tables (``{name}_{table}``) — allowing multiple
+            instances of the same wrapper (e.g. ``insightvm_prod`` and
             ``insightvm_dev``).
 
-            ``config`` aceita:
+            ``config`` accepts:
 
-            - ``type`` : str, opcional
-                Chave em ``SERVICE_REGISTRY`` (``"sharepoint"``,
-                ``"insightvm"``). Default: o próprio ``nome``.
-            - ``secret_id`` : str, opcional
-                Nome/ARN do segredo no AWS Secrets Manager — requer
-                ``secrets=`` fornecido. A referência pode ficar
-                hardcoded aqui no código ou vir de env var/config em
-                runtime — ``auto_register`` não faz distinção.
-            - ``credentials`` : dict, opcional
-                Credenciais fornecidas diretamente, sem tocar o AWS
-                Secrets Manager (modo offline). Forneça **ou**
-                ``secret_id`` **ou** ``credentials``, nunca os dois.
-            - demais chaves
-                kwargs extras repassados ao construtor do wrapper (ex:
-                ``hostname``, ``site_path``, ``default_page_size``).
+            - ``type`` : str, optional
+                Key in ``SERVICE_REGISTRY`` (``"sharepoint"``,
+                ``"insightvm"``). Default: ``name`` itself.
+            - ``secret_id`` : str, optional
+                Name/ARN of the secret in AWS Secrets Manager — requires
+                ``secrets=`` to be provided. The reference can be
+                hardcoded here in the code or come from an env
+                var/config at runtime — ``auto_register`` doesn't care
+                which.
+            - ``credentials`` : dict, optional
+                Credentials provided directly, without touching AWS
+                Secrets Manager (offline mode). Provide **either**
+                ``secret_id`` **or** ``credentials``, never both.
+            - any other keys
+                Extra kwargs passed through to the wrapper's constructor
+                (e.g. ``hostname``, ``site_path``, ``default_page_size``).
         secrets : SecretsManager, optional
-            Necessário apenas quando algum serviço usa ``secret_id``.
+            Only needed when some service uses ``secret_id``.
 
         Returns
         -------
         dict
-            ``{nome: instância}`` — para acessar métodos do wrapper que
-            não viraram tabela (ex: ``instances["sharepoint"].site_by_path``).
+            ``{name: instance}`` — to access wrapper methods that didn't
+            become a table (e.g. ``instances["sharepoint"].site_by_path``).
 
-        Exemplos
+        Examples
         --------
         ::
 
@@ -252,11 +254,11 @@ class DuckAPI:
                 {
                     "sharepoint": {
                         "secret_id": "prod/sharepoint/duckduck",  # hardcoded
-                        "hostname": "empresa.sharepoint.com",
-                        "site_path": "/teams/meutime",
+                        "hostname": "company.sharepoint.com",
+                        "site_path": "/teams/myteam",
                     },
                     "insightvm": {
-                        "credentials": {  # offline — sem AWS Secrets Manager
+                        "credentials": {  # offline — no AWS Secrets Manager
                             "host": "console.local",
                             "username": "a",
                             "password": "b",
@@ -266,7 +268,7 @@ class DuckAPI:
                 secrets=SecretsManager(region_name="us-east-1"),
             )
 
-            duck.sql("SELECT * FROM sharepoint_list_items WHERE list_name = 'Tarefas'")
+            duck.sql("SELECT * FROM sharepoint_list_items WHERE list_name = 'Tasks'")
             duck.sql("SELECT * FROM insightvm_assets WHERE hostname = 'web-prod'")
         """
         from .registry import SERVICE_REGISTRY
@@ -279,8 +281,8 @@ class DuckAPI:
             spec = SERVICE_REGISTRY.get(service_type)
             if spec is None:
                 raise ValueError(
-                    f"Serviço '{name}' (type='{service_type}') não é reconhecido. "
-                    f"Disponíveis: {', '.join(SERVICE_REGISTRY)}"
+                    f"Service '{name}' (type='{service_type}') is not recognized. "
+                    f"Available: {', '.join(SERVICE_REGISTRY)}"
                 )
 
             secret_id = config.pop("secret_id", None)
@@ -288,19 +290,19 @@ class DuckAPI:
 
             if secret_id and credentials:
                 raise ValueError(
-                    f"'{name}': forneça 'secret_id' OU 'credentials', não ambos."
+                    f"'{name}': provide 'secret_id' OR 'credentials', not both."
                 )
             if secret_id:
                 if secrets is None:
                     raise ValueError(
-                        f"'{name}' usa secret_id='{secret_id}' mas nenhum "
-                        "SecretsManager foi passado em auto_register(secrets=...)."
+                        f"'{name}' uses secret_id='{secret_id}' but no "
+                        "SecretsManager was passed to auto_register(secrets=...)."
                     )
                 credentials = secrets.get_secret(secret_id)
             if credentials is None:
                 raise ValueError(
-                    f"'{name}': forneça 'secret_id' (AWS Secrets Manager) "
-                    "ou 'credentials' (offline)."
+                    f"'{name}': provide 'secret_id' (AWS Secrets Manager) "
+                    "or 'credentials' (offline)."
                 )
 
             instance = spec.factory(credentials, **config)
@@ -318,12 +320,12 @@ class DuckAPI:
         return instances
 
     # ------------------------------------------------------------------
-    # Parse de kwargs inline:  func(x=1, y="a")
+    # Inline kwargs parsing:  func(x=1, y="a")
     # ------------------------------------------------------------------
 
     def _parse_kwargs(self, text: str) -> Dict[str, Any]:
         """
-        Converte a string de argumentos inline em dict.
+        Converts the inline argument string into a dict.
 
         ``pr_id=123, limit=100``  →  ``{"pr_id": 123, "limit": 100}``
         """
@@ -335,24 +337,24 @@ class DuckAPI:
 
         if call.args:
             raise ValueError(
-                "Use apenas parâmetros nomeados. "
-                "Exemplo: assets(hostname='web', limit=50)"
+                "Use only named parameters. "
+                "Example: assets(hostname='web', limit=50)"
             )
 
         kwargs: Dict[str, Any] = {}
         for kw in call.keywords:
             if kw.arg is None:
-                raise ValueError("Expansão com **kwargs não é permitida na SQL")
+                raise ValueError("**kwargs expansion is not allowed in SQL")
             kwargs[kw.arg] = ast.literal_eval(kw.value)
 
         return kwargs
 
     # ------------------------------------------------------------------
-    # Extração de push-down do SQL
+    # Push-down extraction from SQL
     # ------------------------------------------------------------------
 
     def _extract_pushdown(self, query: str) -> PushDownContext:
-        """Parseia o SQL com sqlglot e extrai LIMIT e condições WHERE simples."""
+        """Parses the SQL with sqlglot and extracts LIMIT and simple WHERE conditions."""
         ctx = PushDownContext()
 
         try:
@@ -374,7 +376,7 @@ class DuckAPI:
         return ctx
 
     # ------------------------------------------------------------------
-    # Merge de kwargs explícitos + push-down
+    # Merging explicit kwargs + push-down
     # ------------------------------------------------------------------
 
     def _merge_kwargs(
@@ -384,11 +386,11 @@ class DuckAPI:
         explicit: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
-        Constrói o dict final de kwargs para a chamada da função.
+        Builds the final kwargs dict for the function call.
 
-        Prioridade (maior → menor):
-        1. kwargs explícitos da chamada SQL  ``func(x=1)``
-        2. push-down de WHERE/LIMIT do SQL
+        Priority (highest → lowest):
+        1. Explicit kwargs from the SQL call  ``func(x=1)``
+        2. WHERE/LIMIT push-down from the SQL
         """
         sig = inspect.signature(fetch_function)
         accepted = set(sig.parameters.keys())
@@ -407,7 +409,7 @@ class DuckAPI:
         return merged
 
     # ------------------------------------------------------------------
-    # Validação de assinatura
+    # Signature validation
     # ------------------------------------------------------------------
 
     def _validate_arguments(
@@ -416,31 +418,31 @@ class DuckAPI:
         fetch_function,
         kwargs: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """Valida kwargs contra a assinatura real da função."""
+        """Validates kwargs against the function's actual signature."""
         sig = inspect.signature(fetch_function)
         try:
             bound = sig.bind(**kwargs)
         except TypeError as err:
             raise ValueError(
-                f"Chamada inválida para '{function_name}': {err}. "
-                f"Assinatura esperada: {function_name}{sig}"
+                f"Invalid call to '{function_name}': {err}. "
+                f"Expected signature: {function_name}{sig}"
             ) from err
         bound.apply_defaults()
         return bound.arguments
 
     # ------------------------------------------------------------------
-    # Conversão para DataFrame
+    # Conversion to DataFrame
     # ------------------------------------------------------------------
 
     def _to_dataframe(self, data: Any, function_name: str) -> pd.DataFrame:
         """
-        Normaliza o retorno da função em DataFrame.
+        Normalizes the function's return value into a DataFrame.
 
-        Aceita:
+        Accepts:
         - list[dict]
-        - dict com chave ``resources``, ``items``, ``data`` ou ``results``
+        - dict with a ``resources``, ``items``, ``data`` or ``results`` key
         - pd.DataFrame
-        - None  (retorna DataFrame vazio, levanta erro)
+        - None  (treated as empty, raises an error)
         """
         if data is None:
             data = []
@@ -460,15 +462,15 @@ class DuckAPI:
 
         if df.empty or len(df.columns) == 0:
             raise ValueError(
-                f"A tabela '{function_name}' não retornou dados. "
-                "Não é possível determinar as colunas."
+                f"Table '{function_name}' returned no data. "
+                "Cannot determine the columns."
             )
 
         df.columns = [c.replace(".", "_") for c in df.columns]
         return df
 
     # ------------------------------------------------------------------
-    # Materialização
+    # Materialization
     # ------------------------------------------------------------------
 
     def _materialize(
@@ -478,7 +480,8 @@ class DuckAPI:
         kwargs: Dict[str, Any],
     ) -> tuple:
         """
-        Chama a função, converte para DataFrame e registra no DuckDB.
+        Calls the function, converts the result to a DataFrame and
+        registers it in DuckDB.
 
         Returns
         -------
@@ -495,11 +498,12 @@ class DuckAPI:
 
     def _strip_where_conditions(self, query: str, keys: set) -> str:
         """
-        Remove condições do WHERE que referenciam colunas em ``keys``.
+        Removes WHERE conditions that reference columns in ``keys``.
 
-        Usado para descartar filtros push-down que foram consumidos pela
-        função mas não existem como colunas no DataFrame resultado —
-        tipicamente parâmetros estruturais como ``site_name``, ``list_name``.
+        Used to discard push-down filters that were consumed by the
+        function but don't exist as columns in the resulting
+        DataFrame — typically structural parameters like ``site_name``,
+        ``list_name``.
         """
         if not keys:
             return query
@@ -539,34 +543,34 @@ class DuckAPI:
         return tree.sql(dialect="duckdb")
 
     # ------------------------------------------------------------------
-    # SQL principal
+    # Main SQL entry point
     # ------------------------------------------------------------------
 
     def sql(self, query: str):
         """
-        Executa uma query SQL, substituindo referências a funções
-        registradas pelos DataFrames correspondentes.
+        Executes a SQL query, replacing references to registered
+        functions with the corresponding DataFrames.
 
-        Suporta:
-        - ``FROM func``                → push-down de WHERE/LIMIT automático
-        - ``FROM func(struct_id=1)``   → parâmetro estrutural (monta URL/path)
-                                         + push-down de WHERE/LIMIT
-        - ``JOIN func(struct_id=1)``   → idem
-        - Múltiplas referências à mesma função ou funções diferentes
+        Supports:
+        - ``FROM func``                → automatic WHERE/LIMIT push-down
+        - ``FROM func(struct_id=1)``   → structural parameter (builds URL/path)
+                                         + WHERE/LIMIT push-down
+        - ``JOIN func(struct_id=1)``   → same as above
+        - Multiple references to the same function or different functions
 
-        Parâmetros estruturais (``site_name``, ``list_name``, etc.) podem
-        aparecer tanto inline quanto no ``WHERE``. Quando estão no WHERE e
-        não são colunas do resultado, são automaticamente removidos da
-        query antes de o DuckDB executá-la.
+        Structural parameters (``site_name``, ``list_name``, etc.) can
+        appear either inline or in the ``WHERE`` clause. When they're in
+        the WHERE clause and aren't columns of the result, they're
+        automatically removed from the query before DuckDB executes it.
 
         Returns
         -------
         duckdb.DuckDBPyRelation
-            Relação do DuckDB. Use ``.df()`` para obter um DataFrame.
+            DuckDB relation. Use ``.df()`` to get a DataFrame.
         """
         pushdown = self._extract_pushdown(query)
         rewritten = query
-        structural_used: set = set()  # filtros WHERE consumidos que não são colunas
+        structural_used: set = set()  # WHERE filters consumed that aren't columns
 
         for fn_name, fn in self.functions.items():
 
@@ -580,14 +584,14 @@ class DuckAPI:
                 explicit = self._parse_kwargs(m.group(1))
                 kwargs = self._merge_kwargs(fn, pushdown, explicit)
                 tname, df_cols = self._materialize(fn_name, fn, kwargs)
-                # Filtros de WHERE que foram para a função mas não são colunas resultado
+                # WHERE filters that reached the function but aren't result columns
                 structural_used.update(
                     k for k in pushdown.filters
                     if k in kwargs and k not in df_cols
                 )
                 rewritten = rewritten[: m.start()] + tname + rewritten[m.end() :]
 
-            # ---- 2. FROM/JOIN func  (sem parênteses) ------------------
+            # ---- 2. FROM/JOIN func  (no parentheses) ------------------
             bare_pat = re.compile(
                 rf"\b(FROM|JOIN)\s+{re.escape(fn_name)}\b(?!\s*\()",
                 flags=re.IGNORECASE,
@@ -609,29 +613,29 @@ class DuckAPI:
         return self.conn.sql(rewritten)
 
     # ------------------------------------------------------------------
-    # Streaming (paginação incremental)
+    # Streaming (incremental pagination)
     # ------------------------------------------------------------------
 
     def stream(self, query: str):
         """
-        Executa a query página a página, fazendo ``yield`` de um
-        ``pd.DataFrame`` por página à medida que cada requisição retorna.
+        Executes the query page by page, ``yield``ing a ``pd.DataFrame``
+        per page as each request completes.
 
-        Diferente de ``sql()``, não espera todos os dados antes de
-        devolver o primeiro resultado — útil para datasets grandes ou
-        para exibir progresso no Jupyter.
+        Unlike ``sql()``, it doesn't wait for all the data before
+        returning the first result — useful for large datasets or for
+        showing progress in Jupyter.
 
-        Requer que a função tenha sido registrada também via
+        Requires that the function has also been registered via
         ``register_streaming_function()``.
 
-        Limitações
-        ----------
-        - Suporta apenas uma tabela por query (sem JOINs entre funções).
-        - ``LIMIT N`` e ``WHERE`` são aplicados **por página** (não globalmente).
-          Para um LIMIT global use ``sql()`` com o LIMIT desejado.
-        - ``ORDER BY`` e agregações operam por chunk, não sobre o total.
+        Limitations
+        -----------
+        - Supports only one table per query (no JOINs between functions).
+        - ``LIMIT N`` and ``WHERE`` are applied **per page** (not globally).
+          For a global LIMIT, use ``sql()`` with the desired LIMIT.
+        - ``ORDER BY`` and aggregations operate per chunk, not over the total.
 
-        Exemplo
+        Example
         -------
         ::
 
@@ -639,12 +643,12 @@ class DuckAPI:
             duck.register_streaming_function("assets", r7.iter_assets)
 
             for chunk in duck.stream("SELECT * FROM assets WHERE severity = 'critical'"):
-                display(chunk)   # exibe conforme chega cada página
+                display(chunk)   # shows up as each page arrives
 
         Yields
         ------
         pd.DataFrame
-            Resultado da query aplicado sobre cada página da API.
+            Query result applied on top of each page from the API.
         """
         pushdown = self._extract_pushdown(query)
 
@@ -652,7 +656,7 @@ class DuckAPI:
             if not re.search(rf"\b{re.escape(fn_name)}\b", query, re.IGNORECASE):
                 continue
 
-            # Kwargs explícitos da chamada inline
+            # Explicit kwargs from the inline call
             explicit: Dict[str, Any] = {}
             inline_pat = re.compile(
                 rf"\b{re.escape(fn_name)}\s*\((.*?)\)",
@@ -661,7 +665,7 @@ class DuckAPI:
             if m := inline_pat.search(query):
                 explicit = self._parse_kwargs(m.group(1))
 
-            # Filtros do WHERE que a função geradora aceita (sem limit)
+            # WHERE filters accepted by the generator function (excluding limit)
             fn = self.functions.get(fn_name)
             if fn is not None:
                 sig = inspect.signature(fn)
@@ -673,7 +677,7 @@ class DuckAPI:
                 kwargs = dict(pushdown.filters)
             kwargs.update(explicit)
 
-            # Reescreve a query substituindo func(...) / func pelo nome do chunk
+            # Rewrites the query, replacing func(...) / func with the chunk table name
             chunk_table = f"_stream_{fn_name}"
             chunk_query = inline_pat.sub(chunk_table, query)
             bare_pat = re.compile(
@@ -691,14 +695,14 @@ class DuckAPI:
             return
 
         raise ValueError(
-            f"Nenhuma streaming function registrada para a query.\n"
-            f"Use register_streaming_function() para registrar um gerador."
+            f"No streaming function registered for this query.\n"
+            f"Use register_streaming_function() to register a generator."
         )
 
     # ------------------------------------------------------------------
 
     def close(self) -> None:
-        """Fecha a conexão com o DuckDB."""
+        """Closes the DuckDB connection."""
         self.conn.close()
 
     def __enter__(self):

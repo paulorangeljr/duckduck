@@ -1,18 +1,18 @@
 """
-SharePoint wrapper para uso com DuckAPI.
+SharePoint wrapper for use with DuckAPI.
 
-Autentica via Microsoft Identity Platform (Azure AD) e consulta
-SharePoint Lists e arquivos via Microsoft Graph API v1.0.
+Authenticates via the Microsoft Identity Platform (Azure AD) and queries
+SharePoint Lists and files through the Microsoft Graph API v1.0.
 
-Modos de autenticação
+Authentication modes
 ---------------------
 - Client secret:        ``SharePoint(tenant_id, client_id, client_secret)``
 - Thumbprint + PEM key: ``SharePoint.from_thumbprint(...)``
-- Arquivo PFX/P12:      ``SharePoint.from_pfx(...)``  [pip install cryptography]
+- PFX/P12 file:         ``SharePoint.from_pfx(...)``  [pip install cryptography]
 - PEM cert + PEM key:   ``SharePoint.from_pem_cert(...)``  [pip install cryptography]
 
-Exemplos de queries
--------------------
+Query examples
+---------------
 ::
 
     sp   = SharePoint(tenant_id, client_id, client_secret)
@@ -24,27 +24,27 @@ Exemplos de queries
     duck.register_api_function("drives",      sp.drives)
     duck.register_api_function("drive_items", sp.drive_items)
 
-    # Todos os sites — id retornado é o site_id dos outros métodos
+    # All sites — the returned id is the site_id used by the other methods
     duck.sql("SELECT id, displayName, webUrl FROM sites").df()
 
-    # Listas de um site (site_id é estrutural → inline)
+    # Lists from a site (site_id is structural → inline)
     duck.sql("SELECT * FROM lists(site_id='abc123')").df()
 
-    # Items com filtro de coluna via WHERE push-down seria client-side
-    # porque o Graph não filtra campos customizados server-side
+    # Items with a column filter via WHERE push-down would be client-side
+    # because Graph doesn't filter custom fields server-side
     duck.sql(
         "SELECT * FROM list_items(site_id='abc123', list_id='def456')"
         " WHERE Status = 'Active' LIMIT 50"
     ).df()
 
-    # Arquivos de um drive
+    # Files from a drive
     duck.sql(
         "SELECT name, size, webUrl"
         " FROM drive_items(site_id='abc123', drive_id='ghi789')"
         " WHERE is_file = true"
     ).df()
 
-    # Streaming de lista grande
+    # Streaming a large list
     duck.register_streaming_function("list_items", sp.iter_list_items)
     for chunk in duck.stream(
         "SELECT * FROM list_items(site_id='abc123', list_id='def456')"
@@ -64,8 +64,8 @@ try:
     import msal
 except ImportError as exc:
     raise ImportError(
-        "msal é necessário para autenticação SharePoint.\n"
-        "Instale com:  pip install msal"
+        "msal is required for SharePoint authentication.\n"
+        "Install with:  pip install msal"
     ) from exc
 
 
@@ -76,17 +76,18 @@ DEFAULT_PAGE_SIZE = 200
 
 def _normalize_pem(pem_text: str) -> str:
     """
-    Corrige PEM cuja quebra de linha veio como a sequência literal de dois
-    caracteres ``\\n`` em vez de um newline real (``\\x0a``).
+    Fixes a PEM whose line breaks came through as the literal two-character
+    sequence ``\\n`` instead of a real newline (``\\x0a``).
 
-    Acontece com frequência quando a chave/certificado passa por um segredo
-    do AWS Secrets Manager (ou outra var de ambiente) com escaping duplo:
-    o JSON já foi decodificado, mas sobrou um ``\\n`` literal dentro da
-    string em vez da quebra de linha que ele deveria representar.
+    This happens often when the key/certificate passes through an AWS
+    Secrets Manager secret (or another environment variable) with double
+    escaping: the JSON has already been decoded, but a literal ``\\n``
+    was left inside the string instead of the line break it was meant to
+    represent.
 
-    O corpo base64 de um PEM nunca contém ``\\`` (alfabeto é A-Z a-z 0-9 + /
-    =), então a heurística — só reescreve se não houver newline real — é
-    segura.
+    A PEM's base64 body never contains ``\\`` (the alphabet is A-Z a-z
+    0-9 + / =), so the heuristic — only rewrite when there's no real
+    newline — is safe.
     """
     if "\\n" in pem_text and "\n" not in pem_text:
         return pem_text.replace("\\n", "\n")
@@ -95,13 +96,13 @@ def _normalize_pem(pem_text: str) -> str:
 
 class SharePoint:
     """
-    Cliente para SharePoint via Microsoft Graph API.
+    Client for SharePoint via the Microsoft Graph API.
 
-    Ver docstring do módulo para exemplos completos.
+    See the module docstring for full examples.
     """
 
     # ------------------------------------------------------------------
-    # Construtores
+    # Constructors
     # ------------------------------------------------------------------
 
     def __init__(
@@ -114,16 +115,16 @@ class SharePoint:
         site_path: Optional[str] = None,
     ):
         """
-        Autenticação via client secret.
+        Authentication via client secret.
 
         Parameters
         ----------
         hostname : str, optional
-            Hostname do tenant SharePoint. Ex: ``minhaempresa.sharepoint.com``.
+            Hostname of the SharePoint tenant. E.g. ``mycompany.sharepoint.com``.
         site_path : str, optional
-            Caminho do site padrão. Ex: ``/teams/meutime``.
-            Quando ambos fornecidos, todas as queries usam esse site por padrão
-            sem precisar de ``site_id`` ou ``site_name``.
+            Path of the default site. E.g. ``/teams/myteam``.
+            When both are provided, every query uses this site by default
+            without needing ``site_id`` or ``site_name``.
         """
         self._setup(tenant_id, client_id, client_secret, default_page_size,
                     hostname, site_path)
@@ -141,25 +142,27 @@ class SharePoint:
         site_path: Optional[str] = None,
     ) -> "SharePoint":
         """
-        Autenticação via thumbprint SHA-1 + chave privada PEM.
+        Authentication via SHA-1 thumbprint + PEM private key.
 
-        Equivalente direto ao Python MSAL::
+        Direct equivalent of the Python MSAL credential::
 
             {"thumbprint": "ABC123...", "private_key": "-----BEGIN PRIVATE KEY-----\\n..."}
 
         Parameters
         ----------
         thumbprint : str
-            Fingerprint SHA-1 em hex (com ou sem ``:``, maiúsculo ou não).
+            SHA-1 fingerprint in hex (with or without ``:``, upper or
+            lower case).
         private_key_pem : str
-            Conteúdo PEM da chave privada **ou** caminho para o arquivo ``.pem``/``.key``.
-            Se a string não começar com ``-----``, é interpretada como caminho de arquivo.
-            Quebras de linha vindas como ``\\n`` literal (comum em segredos do
-            AWS Secrets Manager) são corrigidas automaticamente.
+            PEM content of the private key **or** a path to a ``.pem``/``.key``
+            file. If the string doesn't start with ``-----``, it's
+            treated as a file path.
+            Line breaks that arrive as a literal ``\\n`` (common with AWS
+            Secrets Manager secrets) are fixed automatically.
         passphrase : bytes, optional
-            Senha da chave privada, se criptografada.
+            Password for the private key, if encrypted.
         hostname / site_path : str, optional
-            Site padrão — ver ``__init__``.
+            Default site — see ``__init__``.
         """
         import pathlib
 
@@ -189,14 +192,14 @@ class SharePoint:
         site_path: Optional[str] = None,
     ) -> "SharePoint":
         """
-        Autenticação via arquivo PFX/P12.
+        Authentication via a PFX/P12 file.
 
-        Requer: ``pip install cryptography``
+        Requires: ``pip install cryptography``
 
         Parameters
         ----------
         hostname / site_path : str, optional
-            Site padrão — ver ``__init__``.
+            Default site — see ``__init__``.
         """
         try:
             from cryptography.hazmat.primitives import hashes
@@ -208,8 +211,8 @@ class SharePoint:
             from cryptography.hazmat.primitives.serialization.pkcs12 import load_pkcs12
         except ImportError as exc:
             raise ImportError(
-                "cryptography é necessário para auth via PFX.\n"
-                "Instale com:  pip install cryptography"
+                "cryptography is required for PFX auth.\n"
+                "Install with:  pip install cryptography"
             ) from exc
 
         import pathlib
@@ -242,28 +245,28 @@ class SharePoint:
         site_path: Optional[str] = None,
     ) -> "SharePoint":
         """
-        Autenticação via PEM (chave privada RSA + certificado X.509).
+        Authentication via PEM (RSA private key + X.509 certificate).
 
-        Requer: ``pip install cryptography``
+        Requires: ``pip install cryptography``
 
         Parameters
         ----------
         hostname / site_path : str, optional
-            Site padrão — ver ``__init__``.
+            Default site — see ``__init__``.
 
         Notes
         -----
-        Quebras de linha vindas como ``\\n`` literal em ``private_key_pem``
-        ou ``cert_pem`` (comum em segredos do AWS Secrets Manager) são
-        corrigidas automaticamente.
+        Line breaks that arrive as a literal ``\\n`` in ``private_key_pem``
+        or ``cert_pem`` (common with AWS Secrets Manager secrets) are
+        fixed automatically.
         """
         try:
             from cryptography import x509
             from cryptography.hazmat.primitives import hashes
         except ImportError as exc:
             raise ImportError(
-                "cryptography é necessário para auth via PEM cert.\n"
-                "Instale com:  pip install cryptography"
+                "cryptography is required for PEM cert auth.\n"
+                "Install with:  pip install cryptography"
             ) from exc
 
         cert_pem = _normalize_pem(cert_pem)
@@ -279,18 +282,19 @@ class SharePoint:
     @classmethod
     def from_secret(cls, secret: Dict[str, Any], **overrides) -> "SharePoint":
         """
-        Constrói SharePoint a partir de um dict de credenciais (ex: um
-        segredo do AWS Secrets Manager via ``SecretsManager.get_secret``).
+        Builds a SharePoint client from a credentials dict (e.g. an AWS
+        Secrets Manager secret via ``SecretsManager.get_secret``).
 
-        Detecta o modo de autenticação pelas chaves presentes em ``secret``:
+        Detects the authentication mode from the keys present in
+        ``secret``:
 
-        - ``client_secret``                               → client secret
-        - ``thumbprint`` + ``private_key_pem``             → ``from_thumbprint``
-        - ``pfx_path``                                     → ``from_pfx``
-        - ``private_key_pem`` + ``cert_pem`` (sem thumbprint) → ``from_pem_cert``
+        - ``client_secret``                                   → client secret
+        - ``thumbprint`` + ``private_key_pem``                 → ``from_thumbprint``
+        - ``pfx_path``                                         → ``from_pfx``
+        - ``private_key_pem`` + ``cert_pem`` (no thumbprint)   → ``from_pem_cert``
 
-        ``tenant_id`` e ``client_id`` vêm do segredo por padrão, mas podem
-        ser sobrescritos via ``overrides`` (assim como ``hostname``,
+        ``tenant_id`` and ``client_id`` come from the secret by default,
+        but can be overridden via ``overrides`` (as can ``hostname``,
         ``site_path``, etc.).
         """
         tenant_id = overrides.pop("tenant_id", None) or secret["tenant_id"]
@@ -322,13 +326,13 @@ class SharePoint:
             )
 
         raise ValueError(
-            "Segredo do SharePoint não contém credenciais reconhecidas. "
-            "Use client_secret, thumbprint+private_key_pem, pfx_path ou "
+            "SharePoint secret does not contain recognized credentials. "
+            "Use client_secret, thumbprint+private_key_pem, pfx_path or "
             "private_key_pem+cert_pem."
         )
 
     # ------------------------------------------------------------------
-    # Inicialização interna
+    # Internal setup
     # ------------------------------------------------------------------
 
     def _setup(
@@ -344,9 +348,9 @@ class SharePoint:
         self._lock = threading.Lock()
         self._default_hostname = hostname
         self._default_site_path = site_path
-        self._default_site_id: Optional[str] = None  # resolvido lazily
+        self._default_site_id: Optional[str] = None  # resolved lazily
         self._column_map_cache: Dict[str, Dict[str, str]] = {}  # "{site_id}:{list_id}" -> {internal: displayName}
-        # ConfidentialClientApplication mantém cache de token em memória
+        # ConfidentialClientApplication keeps a token cache in memory
         self._msal_app = msal.ConfidentialClientApplication(
             client_id,
             authority=f"https://login.microsoftonline.com/{tenant_id}",
@@ -359,7 +363,7 @@ class SharePoint:
 
     def _get_token(self) -> str:
         with self._lock:
-            # MSAL devolve token em cache se ainda válido
+            # MSAL returns the cached token if it's still valid
             result = self._msal_app.acquire_token_silent(GRAPH_SCOPE, account=None)
             if result and "access_token" in result:
                 return result["access_token"]
@@ -367,7 +371,7 @@ class SharePoint:
             result = self._msal_app.acquire_token_for_client(scopes=GRAPH_SCOPE)
             if "error" in result:
                 raise ValueError(
-                    f"Falha na autenticação Azure AD: "
+                    f"Azure AD authentication failed: "
                     f"{result.get('error')} — {result.get('error_description')}"
                 )
             return result["access_token"]
@@ -390,7 +394,7 @@ class SharePoint:
         return r.json()
 
     def _with_top(self, url: str, top: int) -> str:
-        """Adiciona ou substitui $top na URL."""
+        """Adds or replaces $top in the URL."""
         if "$top=" in url:
             return re.sub(r"\$top=\d+", f"$top={top}", url)
         sep = "&" if "?" in url else "?"
@@ -398,11 +402,11 @@ class SharePoint:
 
     def _iter_pages(self, url: str) -> Iterator[List[Dict]]:
         """
-        Gerador que segue @odata.nextLink até o fim.
+        Generator that follows @odata.nextLink until there's nothing left.
 
-        Diferente do InsightVM (que usa page/totalPages), o Graph API
-        usa @odata.nextLink para paginação. Faz yield de uma lista de
-        recursos por página.
+        Unlike InsightVM (which uses page/totalPages), the Graph API
+        uses @odata.nextLink for pagination. Yields a list of resources
+        per page.
         """
         if "$top=" not in url:
             url = self._with_top(url, self.default_page_size)
@@ -417,7 +421,7 @@ class SharePoint:
 
     def _fetch(self, url: str, limit: Optional[int] = None) -> List[Dict]:
         """
-        Uma única requisição se limit definido; paginação completa caso contrário.
+        A single request if limit is set; full pagination otherwise.
         """
         if limit is not None:
             payload = self._get(self._with_top(url, limit))
@@ -438,27 +442,28 @@ class SharePoint:
         column_map: Optional[Dict[str, str]] = None,
     ) -> pd.DataFrame:
         """
-        Eleva os campos do sub-objeto ``fields`` para colunas de primeiro nível.
+        Elevates the fields of the ``fields`` sub-object into top-level
+        columns.
 
-        O Graph API retorna::
+        The Graph API returns::
 
             {"id": "1", "fields": {"field_1": "foo", "Status": "Active"}}
 
-        Isso se torna::
+        This becomes::
 
             _item_id | _created_at | Title | Status
             1        | 2024-01-01  | foo   | Active
 
-        Metadados internos do Graph ficam prefixados com ``_``.
-        Os campos da lista ficam no topo — permitindo ``WHERE Status = 'foo'``
-        sem qualificar com ``fields_``.
+        Internal Graph metadata is prefixed with ``_``.
+        The list's fields end up at the top level — allowing
+        ``WHERE Status = 'foo'`` without qualifying with ``fields_``.
 
         Parameters
         ----------
         column_map : dict, optional
-            ``{nome_interno: displayName}``. Quando fornecido, os campos são
-            renomeados antes de virarem colunas — ver ``_get_column_display_map``.
-            Campos sem entrada no mapa mantêm o nome original.
+            ``{internal_name: displayName}``. When provided, fields are
+            renamed before becoming columns — see ``_get_column_display_map``.
+            Fields with no entry in the map keep their original name.
         """
         records = []
         for item in items:
@@ -476,7 +481,7 @@ class SharePoint:
         return pd.json_normalize(records, sep="_")
 
     # ------------------------------------------------------------------
-    # Resolução de nome → ID
+    # Name → ID resolution
     # ------------------------------------------------------------------
 
     def _resolve_site(
@@ -485,26 +490,28 @@ class SharePoint:
         site_name: Optional[str],
     ) -> str:
         """
-        Devolve site_id.
+        Returns a site_id.
 
-        Prioridade:
-        1. ``site_id`` explícito
-        2. ``site_name`` começando com ``/`` → combina com ``hostname`` do construtor
-           Ex: site_name='/teams/meutime'  +  hostname='empresa.sharepoint.com'
-        3. ``site_name`` sem ``/`` → busca por ``displayName`` em todos os sites
-        4. ``hostname`` + ``site_path`` definidos no construtor (site padrão)
-        5. Erro
+        Priority:
+        1. Explicit ``site_id``
+        2. ``site_name`` starting with ``/`` → combined with the constructor's
+           ``hostname``.
+           E.g. site_name='/teams/myteam'  +  hostname='company.sharepoint.com'
+        3. ``site_name`` without ``/`` → looked up by ``displayName`` across
+           all sites
+        4. ``hostname`` + ``site_path`` set on the constructor (default site)
+        5. Error
         """
         if site_id:
             return site_id
 
         if site_name:
             if site_name.startswith("/"):
-                # Caminho relativo — combina com hostname do construtor
+                # Relative path — combined with the constructor's hostname
                 if not self._default_hostname:
                     raise ValueError(
-                        f"site_name='{site_name}' é um caminho e requer "
-                        "hostname definido no construtor de SharePoint."
+                        f"site_name='{site_name}' is a path and requires "
+                        "hostname to be set on the SharePoint constructor."
                     )
                 url = (
                     f"{GRAPH_BASE}/sites/{self._default_hostname}:"
@@ -512,15 +519,15 @@ class SharePoint:
                 )
                 return self._get(url)["id"]
 
-            # Display name — busca em todos os sites
+            # Display name — search across all sites
             all_sites = self._fetch(f"{GRAPH_BASE}/sites?search=*")
             name_lower = site_name.lower()
             for s in all_sites:
                 if s.get("displayName", "").lower() == name_lower:
                     return s["id"]
             raise ValueError(
-                f"Site '{site_name}' não encontrado. "
-                "Use SELECT * FROM sites para ver os nomes disponíveis."
+                f"Site '{site_name}' not found. "
+                "Use SELECT * FROM sites to see the available names."
             )
 
         if self._default_hostname and self._default_site_path:
@@ -533,8 +540,8 @@ class SharePoint:
             return self._default_site_id
 
         raise ValueError(
-            "Forneça site_id, site_name, ou inicialize SharePoint "
-            "com hostname e site_path."
+            "Provide site_id, site_name, or initialize SharePoint "
+            "with hostname and site_path."
         )
 
     def _resolve_list(
@@ -544,36 +551,37 @@ class SharePoint:
         list_name: Optional[str],
     ) -> str:
         """
-        Devolve list_id (sempre um GUID, seguro para URLs).
+        Returns a list_id (always a GUID, safe for URLs).
 
-        Aceita:
-        - ``list_id``: GUID ou nome já URL-encoded → usado diretamente
-        - ``list_name``: nome de exibição (com espaços, acentos, etc.) → lookup pelo
-          ``displayName``; o GUID retornado é então usado na URL.
+        Accepts:
+        - ``list_id``: GUID or already URL-encoded name → used directly
+        - ``list_name``: display name (with spaces, accents, etc.) → looked
+          up by ``displayName``; the returned GUID is then used in the URL.
         """
         if list_id:
             return list_id
         if not list_name:
-            raise ValueError("Forneça list_id ou list_name.")
+            raise ValueError("Provide list_id or list_name.")
         all_lists = self._fetch(f"{GRAPH_BASE}/sites/{site_id}/lists")
         name_lower = list_name.lower()
         for lst in all_lists:
             if lst.get("displayName", "").lower() == name_lower:
                 return lst["id"]
         raise ValueError(
-            f"Lista '{list_name}' não encontrada no site '{site_id}'. "
-            "Use SELECT * FROM lists(site_id=...) para ver as listas disponíveis."
+            f"List '{list_name}' not found in site '{site_id}'. "
+            "Use SELECT * FROM lists(site_id=...) to see the available lists."
         )
 
     def _get_column_display_map(self, site_id: str, list_id: str) -> Dict[str, str]:
         """
-        Devolve ``{nome_interno: displayName}`` para as colunas de uma lista,
-        com cache por (site_id, list_id).
+        Returns ``{internal_name: displayName}`` for a list's columns,
+        cached per (site_id, list_id).
 
-        O Graph API retorna os campos de um item usando o nome **interno**
-        da coluna (``field_1``, ``OData__ColorTag``, etc.), que raramente bate
-        com o nome exibido na UI do SharePoint. Este mapa permite apresentar
-        os dados com os mesmos nomes que o usuário vê no navegador.
+        The Graph API returns an item's fields keyed by the column's
+        **internal** name (``field_1``, ``OData__ColorTag``, etc.), which
+        rarely matches the name shown in the SharePoint UI. This map lets
+        the data be presented with the same names the user sees in the
+        browser.
         """
         cache_key = f"{site_id}:{list_id}"
         if cache_key not in self._column_map_cache:
@@ -594,10 +602,10 @@ class SharePoint:
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
-        Lista todos os sites SharePoint acessíveis (requer Sites.Read.All).
+        Lists all accessible SharePoint sites (requires Sites.Read.All).
 
-        Use o ``id`` retornado como ``site_id``, ou o ``displayName``
-        como ``site_name``, nos outros métodos.
+        Use the returned ``id`` as ``site_id``, or the ``displayName``
+        as ``site_name``, in the other methods.
         """
         url = f"{GRAPH_BASE}/sites?search=*"
         return pd.json_normalize(self._fetch(url, limit=limit), sep="_")
@@ -608,14 +616,14 @@ class SharePoint:
         site_path: str,
     ) -> pd.DataFrame:
         """
-        Busca um site pelo hostname e caminho.
+        Looks up a site by hostname and path.
 
         Parameters
         ----------
         hostname : str
-            Ex: ``contoso.sharepoint.com``
+            E.g. ``contoso.sharepoint.com``
         site_path : str
-            Ex: ``/sites/marketing``
+            E.g. ``/sites/marketing``
         """
         url = f"{GRAPH_BASE}/sites/{hostname}:{quote(site_path)}"
         return pd.json_normalize([self._get(url)], sep="_")
@@ -631,23 +639,24 @@ class SharePoint:
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
-        Todas as SharePoint Lists de um site.
+        All SharePoint Lists in a site.
 
         Parameters
         ----------
         site_id : str, optional
-            ID do site. Use ``site_id`` **ou** ``site_name``.
+            Site ID. Use ``site_id`` **or** ``site_name``.
         site_name : str, optional
-            Nome de exibição do site (``displayName``). Faz lookup automático do ID.
+            Site display name (``displayName``). Automatically looks up
+            the ID.
 
-        Exemplos
+        Examples
         --------
         ::
 
-            # por ID (inline)
+            # by ID (inline)
             duck.sql("SELECT * FROM lists(site_id='abc123')")
 
-            # por nome (WHERE push-down)
+            # by name (WHERE push-down)
             duck.sql("SELECT * FROM lists WHERE site_name = 'Intranet'")
         """
         sid = self._resolve_site(site_id, site_name)
@@ -663,16 +672,16 @@ class SharePoint:
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
-        Colunas (schema) de uma SharePoint List.
+        Columns (schema) of a SharePoint List.
 
-        Aceita IDs diretos ou nomes de exibição (lookup automático).
+        Accepts direct IDs or display names (automatic lookup).
 
         Parameters
         ----------
         site_id / site_name : str
-            Identificação do site — forneça um dos dois.
+            Site identification — provide one of the two.
         list_id / list_name : str
-            Identificação da lista — forneça um dos dois.
+            List identification — provide one of the two.
         """
         sid = self._resolve_site(site_id, site_name)
         lid = self._resolve_list(sid, list_id, list_name)
@@ -689,50 +698,50 @@ class SharePoint:
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
-        Items de uma SharePoint List com campos expandidos.
+        Items of a SharePoint List with expanded fields.
 
-        Os campos customizados da lista aparecem como colunas de primeiro
-        nível. Metadados internos do Graph ficam prefixados com ``_``
-        (``_item_id``, ``_created_at``, etc.).
+        The list's custom fields show up as top-level columns. Internal
+        Graph metadata is prefixed with ``_`` (``_item_id``,
+        ``_created_at``, etc.).
 
-        Aceita IDs diretos ou nomes de exibição (lookup automático).
+        Accepts direct IDs or display names (automatic lookup).
 
         Parameters
         ----------
         site_id / site_name : str
-            Identificação do site — forneça um dos dois.
+            Site identification — provide one of the two.
         list_id / list_name : str
-            Identificação da lista — forneça um dos dois.
+            List identification — provide one of the two.
         column_names : {"display", "internal"}
-            ``"display"`` (padrão): usa o mesmo nome de coluna que aparece
-            na UI do SharePoint (ex: ``Status``), resolvido via
-            ``/lists/{id}/columns``. ``"internal"``: usa o nome bruto do
-            Graph API (ex: ``field_1``), sem custo extra de request.
-            Qualquer que seja o modo, o ``WHERE``/``SELECT`` da query opera
-            sobre os nomes já resolvidos — não é preciso conhecer o outro.
+            ``"display"`` (default): uses the same column name shown in
+            the SharePoint UI (e.g. ``Status``), resolved via
+            ``/lists/{id}/columns``. ``"internal"``: uses the Graph API's
+            raw name (e.g. ``field_1``), with no extra request cost.
+            Either way, the query's ``WHERE``/``SELECT`` operate on the
+            already-resolved names — you don't need to know the other one.
 
-        Exemplos
+        Examples
         --------
         ::
 
-            # por IDs (inline)
+            # by IDs (inline)
             duck.sql("SELECT * FROM list_items(site_id='abc', list_id='def')")
 
-            # por nomes (WHERE push-down — lookup automático)
+            # by names (WHERE push-down — automatic lookup)
             duck.sql(
                 "SELECT * FROM list_items"
-                " WHERE site_name = 'Intranet' AND list_name = 'Tarefas'"
+                " WHERE site_name = 'Intranet' AND list_name = 'Tasks'"
                 " AND Status = 'Active'"
             )
 
-            # nomes internos do Graph, sem lookup de colunas
+            # Graph internal names, without a columns lookup
             duck.sql(
                 "SELECT * FROM list_items(column_names='internal')"
-                " WHERE site_name = 'Intranet' AND list_name = 'Tarefas'"
+                " WHERE site_name = 'Intranet' AND list_name = 'Tasks'"
             )
         """
         if column_names not in ("display", "internal"):
-            raise ValueError("column_names deve ser 'display' ou 'internal'.")
+            raise ValueError("column_names must be 'display' or 'internal'.")
         sid = self._resolve_site(site_id, site_name)
         lid = self._resolve_list(sid, list_id, list_name)
         column_map = (
@@ -752,12 +761,12 @@ class SharePoint:
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
-        Document libraries (drives) de um site.
+        Document libraries (drives) of a site.
 
         Parameters
         ----------
         site_id / site_name : str
-            Identificação do site — forneça um dos dois.
+            Site identification — provide one of the two.
         """
         sid = self._resolve_site(site_id, site_name)
         url = f"{GRAPH_BASE}/sites/{sid}/drives"
@@ -772,23 +781,23 @@ class SharePoint:
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
-        Arquivos e pastas dentro de um drive (document library).
+        Files and folders inside a drive (document library).
 
-        Colunas úteis: ``name``, ``size``, ``webUrl``, ``is_file``,
+        Useful columns: ``name``, ``size``, ``webUrl``, ``is_file``,
         ``file_mimeType``, ``folder_childCount``, ``lastModifiedDateTime``.
 
         Parameters
         ----------
         site_id / site_name : str
-            Identificação do site — forneça um dos dois.
+            Site identification — provide one of the two.
         drive_id : str
-            ID do drive (obrigatório). Obtenha via ``SELECT * FROM drives(...)``.
+            Drive ID (required). Obtain it via ``SELECT * FROM drives(...)``.
         folder_path : str, optional
-            Caminho relativo à raiz. Ex: ``/Documents/Reports``.
-            Sem este parâmetro lista a raiz do drive.
+            Path relative to the root. E.g. ``/Documents/Reports``.
+            Without this parameter, lists the drive's root.
         """
         if not drive_id:
-            raise ValueError("drive_id é obrigatório.")
+            raise ValueError("drive_id is required.")
         sid = self._resolve_site(site_id, site_name)
         if folder_path:
             path = f"/sites/{sid}/drives/{drive_id}/root:{folder_path}:/children"
@@ -815,17 +824,17 @@ class SharePoint:
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
-        Pesquisa arquivos em um site via Graph API.
+        Searches files in a site via the Graph API.
 
         Parameters
         ----------
         site_id / site_name : str
-            Identificação do site — forneça um dos dois.
+            Site identification — provide one of the two.
         query : str
-            Termo de busca (obrigatório).
+            Search term (required).
         """
         if not query:
-            raise ValueError("query é obrigatório.")
+            raise ValueError("query is required.")
         sid = self._resolve_site(site_id, site_name)
         url = f"{GRAPH_BASE}/sites/{sid}/drive/search(q='{query}')"
         return pd.json_normalize(self._fetch(url, limit=limit), sep="_")
@@ -839,17 +848,18 @@ class SharePoint:
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
-        Versões de um arquivo específico.
+        Versions of a specific file.
 
         Parameters
         ----------
         site_id / site_name : str
-            Identificação do site — forneça um dos dois.
+            Site identification — provide one of the two.
         drive_id, item_id : str
-            Obrigatórios. ``item_id`` vem da coluna ``id`` de ``drive_items()``.
+            Required. ``item_id`` comes from the ``id`` column of
+            ``drive_items()``.
         """
         if not drive_id or not item_id:
-            raise ValueError("drive_id e item_id são obrigatórios.")
+            raise ValueError("drive_id and item_id are required.")
         sid = self._resolve_site(site_id, site_name)
         url = (
             f"{GRAPH_BASE}/sites/{sid}"
@@ -858,11 +868,11 @@ class SharePoint:
         return pd.json_normalize(self._fetch(url, limit=limit), sep="_")
 
     # ------------------------------------------------------------------
-    # Streaming (iter_*) — para uso com DuckAPI.stream()
+    # Streaming (iter_*) — for use with DuckAPI.stream()
     # ------------------------------------------------------------------
 
     def iter_sites(self) -> Iterator[pd.DataFrame]:
-        """Faz yield de uma página de sites por vez."""
+        """Yields one page of sites at a time."""
         for page in self._iter_pages(f"{GRAPH_BASE}/sites?search=*"):
             yield pd.json_normalize(page, sep="_")
 
@@ -871,7 +881,7 @@ class SharePoint:
         site_id: Optional[str] = None,
         site_name: Optional[str] = None,
     ) -> Iterator[pd.DataFrame]:
-        """Faz yield de uma página de listas por vez."""
+        """Yields one page of lists at a time."""
         sid = self._resolve_site(site_id, site_name)
         for page in self._iter_pages(f"{GRAPH_BASE}/sites/{sid}/lists"):
             yield pd.json_normalize(page, sep="_")
@@ -884,12 +894,12 @@ class SharePoint:
         list_name: Optional[str] = None,
         column_names: str = "display",
     ) -> Iterator[pd.DataFrame]:
-        """Faz yield de uma página de items por vez (campos expandidos).
+        """Yields one page of items at a time (fields expanded).
 
-        Ver ``list_items`` para o significado de ``column_names``.
+        See ``list_items`` for the meaning of ``column_names``.
         """
         if column_names not in ("display", "internal"):
-            raise ValueError("column_names deve ser 'display' ou 'internal'.")
+            raise ValueError("column_names must be 'display' or 'internal'.")
         sid = self._resolve_site(site_id, site_name)
         lid = self._resolve_list(sid, list_id, list_name)
         column_map = (
@@ -906,9 +916,9 @@ class SharePoint:
         site_name: Optional[str] = None,
         folder_path: Optional[str] = None,
     ) -> Iterator[pd.DataFrame]:
-        """Faz yield de uma página de arquivos/pastas por vez."""
+        """Yields one page of files/folders at a time."""
         if not drive_id:
-            raise ValueError("drive_id é obrigatório.")
+            raise ValueError("drive_id is required.")
         sid = self._resolve_site(site_id, site_name)
         if folder_path:
             path = f"/sites/{sid}/drives/{drive_id}/root:{folder_path}:/children"

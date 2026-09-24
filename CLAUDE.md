@@ -119,7 +119,7 @@ class MyAPI:
 
 | Concern | Rule |
 |---|---|
-| Structural param (URL path) | Required positional, no default, document as "obrigatório" |
+| Structural param (URL path) | Required positional, no default, document as "required" |
 | Column-filter param | `Optional[X] = None`; filter the DataFrame after fetching |
 | `limit` | Always `Optional[int] = None`, always last; pass straight to `_fetch` |
 | Return type | `pd.DataFrame`; dot-separated nested keys become `_` via `sep="_"` |
@@ -142,29 +142,29 @@ duck.register_api_function("other",   api.other_method)
 
 ---
 
-## Streaming (paginação incremental)
+## Streaming (incremental pagination)
 
-`DuckAPI.sql()` materializa todos os dados antes de retornar. Para datasets grandes, use `DuckAPI.stream()`, que faz yield de um `pd.DataFrame` por página à medida que cada requisição HTTP completa.
+`DuckAPI.sql()` materializes all the data before returning. For large datasets, use `DuckAPI.stream()`, which yields one `pd.DataFrame` per page as each HTTP request completes.
 
-### Registro duplo
+### Dual registration
 
 ```python
-duck.register_api_function("assets", r7.assets)          # para sql()
-duck.register_streaming_function("assets", r7.iter_assets)  # para stream()
+duck.register_api_function("assets", r7.assets)          # for sql()
+duck.register_streaming_function("assets", r7.iter_assets)  # for stream()
 ```
 
-### Uso no Jupyter
+### Usage in Jupyter
 
 ```python
 for chunk in duck.stream("SELECT * FROM assets WHERE severity = 'critical'"):
-    display(chunk)   # aparece conforme cada página chega
+    display(chunk)   # shows up as each page arrives
 ```
 
-### Contrato do `iter_*` (InsightVM e wrappers novos)
+### `iter_*` contract (InsightVM and new wrappers)
 
-- Aceita os mesmos filtros de coluna que o método normal (sem `limit` — stream itera tudo).
-- Faz `yield pd.DataFrame` por página via `self._iter_pages(path)`.
-- Filtros client-side são aplicados antes do yield; páginas que ficam vazias após o filtro são puladas.
+- Accepts the same column filters as the regular method (no `limit` — stream iterates everything).
+- `yield`s one `pd.DataFrame` per page via `self._iter_pages(path)`.
+- Client-side filters are applied before the yield; pages that end up empty after filtering are skipped.
 
 ```python
 def iter_records(self, status=None) -> Iterator[pd.DataFrame]:
@@ -176,22 +176,22 @@ def iter_records(self, status=None) -> Iterator[pd.DataFrame]:
             yield df
 ```
 
-### Limitações do `stream()`
+### `stream()` limitations
 
-| Comportamento | Detalhe |
+| Behavior | Detail |
 |---|---|
-| Tabelas | Uma por query — sem JOINs entre funções |
-| `WHERE` / `SELECT` | Aplicados por chunk (correto) |
-| `LIMIT N` | Aplicado por chunk, não globalmente |
-| `ORDER BY` / agregações | Operam por chunk, não sobre o total |
+| Tables | One per query — no JOINs between functions |
+| `WHERE` / `SELECT` | Applied per chunk (correct) |
+| `LIMIT N` | Applied per chunk, not globally |
+| `ORDER BY` / aggregations | Operate per chunk, not over the total |
 
 ---
 
 ## SharePoint (Microsoft Graph API)
 
-`duckduck/sharepoint.py` implementa o mesmo contrato acima mas com diferenças de protocolo.
+`duckduck/sharepoint.py` implements the same contract above but with protocol differences.
 
-### Autenticação (MSAL)
+### Authentication (MSAL)
 
 ```python
 from duckduck import SharePoint
@@ -199,38 +199,38 @@ from duckduck import SharePoint
 # Client secret
 sp = SharePoint(tenant_id, client_id, client_secret)
 
-# Thumbprint SHA-1 + chave PEM (sem dependência extra)
+# SHA-1 thumbprint + PEM key (no extra dependency)
 sp = SharePoint.from_thumbprint(tenant_id, client_id, thumbprint, private_key_pem)
 
-# Arquivo PFX/P12 (requer: pip install cryptography)
+# PFX/P12 file (requires: pip install cryptography)
 sp = SharePoint.from_pfx(tenant_id, client_id, "/path/cert.pfx", pfx_password="...")
 
-# PEM cert + PEM key (requer: pip install cryptography)
+# PEM cert + PEM key (requires: pip install cryptography)
 sp = SharePoint.from_pem_cert(tenant_id, client_id, private_key_pem, cert_pem)
 ```
 
-`msal.ConfidentialClientApplication` mantém cache de token em memória; o token é renovado automaticamente quando expira.
+`msal.ConfidentialClientApplication` keeps a token cache in memory; the token is renewed automatically when it expires.
 
-### PEM com `\n` literal (segredos do AWS Secrets Manager)
+### PEM with a literal `\n` (AWS Secrets Manager secrets)
 
-Quando a chave privada/certificado vem de um segredo (`SecretsManager.get_secret`,
-env var, etc.) que foi escapado duas vezes, a quebra de linha chega como o
-texto literal de 2 caracteres `\n` em vez de um newline real — o PEM fica
-inválido para MSAL/`cryptography`. `from_thumbprint` e `from_pem_cert`
-corrigem isso automaticamente via `_normalize_pem` (heurística segura: o
-corpo base64 de um PEM nunca contém `\`, então só reescreve quando não há
-newline real na string). Isso cobre `from_secret` também, já que ele delega
-para esses dois construtores.
+When the private key/certificate comes from a secret (`SecretsManager.get_secret`,
+env var, etc.) that was escaped twice, the line break arrives as the literal
+2-character text `\n` instead of a real newline — the PEM becomes invalid for
+MSAL/`cryptography`. `from_thumbprint` and `from_pem_cert` fix this
+automatically via `_normalize_pem` (safe heuristic: a PEM's base64 body never
+contains `\`, so it only rewrites when there's no real newline in the
+string). This also covers `from_secret`, since it delegates to these two
+constructors.
 
-### Paginação `@odata.nextLink`
+### `@odata.nextLink` pagination
 
-O Graph API **não** usa `page`/`totalPages`. Ele retorna `@odata.nextLink` na resposta quando há mais dados:
+The Graph API does **not** use `page`/`totalPages`. It returns `@odata.nextLink` in the response when there's more data:
 
 ```json
 {"value": [...], "@odata.nextLink": "https://graph.microsoft.com/v1.0/...&$skiptoken=..."}
 ```
 
-O método `_iter_pages(url)` segue o link até não haver mais. O parâmetro de tamanho de página é `$top=N` (não `size` nem `pageSize`).
+The `_iter_pages(url)` method follows the link until there's nothing left. The page-size parameter is `$top=N` (not `size` or `pageSize`).
 
 ```python
 def _iter_pages(self, url: str) -> Iterator[List[Dict]]:
@@ -245,54 +245,57 @@ def _iter_pages(self, url: str) -> Iterator[List[Dict]]:
         next_url = payload.get("@odata.nextLink")
 ```
 
-### Campos aninhados de listas (`_normalize_list_items`)
+### Nested list fields (`_normalize_list_items`)
 
-O Graph API retorna items de lista assim:
+The Graph API returns list items like this:
 
 ```json
 {"id": "1", "fields": {"Title": "foo", "Status": "Active"}}
 ```
 
-`_normalize_list_items()` eleva o sub-objeto `fields` para colunas de primeiro nível, prefixando metadados com `_`:
+`_normalize_list_items()` elevates the `fields` sub-object into top-level columns, prefixing metadata with `_`:
 
 ```
 _item_id | _created_at | Title | Status
 1        | 2024-01-01  | foo   | Active
 ```
 
-Isso permite `WHERE Title = 'foo'` diretamente no SQL, sem qualificar com `fields_`.
+This allows `WHERE Title = 'foo'` directly in SQL, without qualifying with `fields_`.
 
-### Nomes de coluna: internos vs. displayName (`column_names`)
+### Column names: internal vs. displayName (`column_names`)
 
-O Graph API expõe os campos de um item de lista pelo **nome interno** da coluna
-(`field_1`, `OData__ColorTag`, etc.), que raramente bate com o nome que aparece
-no cabeçalho da coluna na UI do SharePoint. `list_items()` / `iter_list_items()`
-aceitam `column_names: Literal["display", "internal"] = "display"`:
+The Graph API exposes a list item's fields by the column's **internal name**
+(`field_1`, `OData__ColorTag`, etc.), which rarely matches the name shown in
+the column header in the SharePoint UI. `list_items()` / `iter_list_items()`
+accept `column_names: Literal["display", "internal"] = "display"`:
 
-- **`"display"`** (padrão): busca `/lists/{id}/columns` (cache por `site_id:list_id`
-  em `SharePoint._column_map_cache`) e renomeia os campos de `fields` para o
-  `displayName` **antes** de registrar o DataFrame no DuckDB. Qualquer `WHERE`/
-  `SELECT` da query já opera sobre o nome exibido na web — não há resolução
-  adicional no `core.py`, porque o nome já é a coluna real do DataFrame.
-- **`"internal"`**: pula a busca de `/columns` (uma requisição HTTP a menos) e
-  mantém o nome bruto do Graph.
+- **`"display"`** (default): fetches `/lists/{id}/columns` (cached per
+  `site_id:list_id` in `SharePoint._column_map_cache`) and renames the
+  `fields` entries to their `displayName` **before** registering the
+  DataFrame in DuckDB. Any `WHERE`/`SELECT` in the query already operates on
+  the name shown on the web — there's no additional resolution in
+  `core.py`, because the display name is already the DataFrame's real
+  column.
+- **`"internal"`**: skips the `/columns` lookup (one fewer HTTP request) and
+  keeps the Graph API's raw name.
 
 ```python
-# padrão — nomes como na web
+# default — names as shown on the web
 duck.sql("SELECT * FROM list_items(site_id='abc', list_id='def') WHERE Status = 'Active'")
 
-# nomes internos do Graph, sem request extra
+# Graph internal names, no extra request
 duck.sql("SELECT * FROM list_items(site_id='abc', list_id='def', column_names='internal')")
 ```
 
-Ao adicionar normalização de campos em outro wrapper: sempre resolva e renomeie
-**antes** de `self.conn.register(...)` — nunca depois. Push-down e `WHERE` do
-DuckAPI trabalham em cima das colunas do DataFrame já materializado, então
-qualquer mapeamento de nomes precisa acontecer nesse ponto único.
+When adding field normalization to another wrapper: always resolve and
+rename **before** `self.conn.register(...)` — never after. DuckAPI's
+push-down and `WHERE` operate on top of the columns of the already
+materialized DataFrame, so any name mapping needs to happen at that single
+point.
 
-### Parâmetros estruturais no SharePoint
+### Structural parameters in SharePoint
 
-`site_id`, `list_id`, `drive_id`, `item_id`, `folder_path` são sempre estruturais (formam a URL). Todos obrigatórios, sem default:
+`site_id`, `list_id`, `drive_id`, `item_id`, `folder_path` are always structural (they build the URL). All required, no default:
 
 ```python
 def list_items(self, site_id: str, list_id: str, limit: Optional[int] = None) -> pd.DataFrame:
@@ -301,29 +304,29 @@ def list_items(self, site_id: str, list_id: str, limit: Optional[int] = None) ->
 ```
 
 ```sql
--- site_id e list_id são estruturais → inline
+-- site_id and list_id are structural → inline
 SELECT * FROM list_items(site_id='abc', list_id='def') WHERE Title = 'Report'
 ```
 
-### Dependências
+### Dependencies
 
-| Feature | Pacote |
+| Feature | Package |
 |---|---|
-| Base | `msal>=1.20` (já em `[dependencies]`) |
+| Base | `msal>=1.20` (already in `[dependencies]`) |
 | PFX / PEM cert auth | `cryptography>=41.0` (`pip install "duckduck[cert]"`) |
 
 ---
 
-## Auto-registro (`DuckAPI.auto_register`)
+## Auto-registration (`DuckAPI.auto_register`)
 
-Registrar cada método manualmente (`register_api_function`/`register_streaming_function`
-método a método) fica repetitivo quando se quer subir todos os wrappers de
-uma vez. `DuckAPI.auto_register()` instancia os wrappers conhecidos (ver
-`duckduck/registry.py` → `SERVICE_REGISTRY`) e registra todas as tabelas
-automaticamente, resolvendo credenciais de três formas — a referência do
-segredo pode estar hardcoded no código, vir de uma variável de
-ambiente/config em runtime, ou as credenciais podem ser passadas direto
-(offline, sem tocar o AWS Secrets Manager):
+Registering each method by hand (`register_api_function`/`register_streaming_function`
+method by method) gets repetitive when you want to bring up every wrapper at
+once. `DuckAPI.auto_register()` instantiates the known wrappers (see
+`duckduck/registry.py` → `SERVICE_REGISTRY`) and registers all their tables
+automatically, resolving credentials in three ways — the secret reference
+can be hardcoded in the code, come from an environment variable/config at
+runtime, or the credentials can be passed directly (offline, without
+touching AWS Secrets Manager):
 
 ```python
 from duckduck import DuckAPI, SecretsManager
@@ -332,16 +335,16 @@ duck = DuckAPI()
 instances = duck.auto_register(
     {
         "sharepoint": {
-            "secret_id": "prod/sharepoint/duckduck",   # referência hardcoded
-            "hostname": "empresa.sharepoint.com",
-            "site_path": "/teams/meutime",
+            "secret_id": "prod/sharepoint/duckduck",   # hardcoded reference
+            "hostname": "company.sharepoint.com",
+            "site_path": "/teams/myteam",
         },
         "insightvm": {
-            "secret_id": os.environ["INSIGHTVM_SECRET_ID"],  # referência em runtime
+            "secret_id": os.environ["INSIGHTVM_SECRET_ID"],  # runtime reference
         },
         "insightvm_dev": {
-            "type": "insightvm",       # múltiplas instâncias do mesmo wrapper
-            "credentials": {            # offline — sem AWS Secrets Manager
+            "type": "insightvm",       # multiple instances of the same wrapper
+            "credentials": {            # offline — no AWS Secrets Manager
                 "host": "dev.local", "username": "a", "password": "b",
             },
         },
@@ -349,27 +352,27 @@ instances = duck.auto_register(
     secrets=SecretsManager(region_name="us-east-1"),
 )
 
-duck.sql("SELECT * FROM sharepoint_list_items WHERE list_name = 'Tarefas'")
+duck.sql("SELECT * FROM sharepoint_list_items WHERE list_name = 'Tasks'")
 duck.sql("SELECT * FROM insightvm_assets WHERE hostname = 'web-prod'")
 ```
 
-### Regras
+### Rules
 
-| Concern | Regra |
+| Concern | Rule |
 |---|---|
-| Prefixo de tabela | Sempre `{nome_no_dict}_{tabela}` — evita colisão quando dois serviços expõem a mesma tabela (ex: `sites` em SharePoint e InsightVM) e permite múltiplas instâncias do mesmo wrapper |
-| `type` | Opcional; default é o próprio `nome`. Use quando o `nome` não bate com uma chave de `SERVICE_REGISTRY` (ex: `insightvm_dev`) |
-| `secret_id` vs `credentials` | Mutuamente exclusivos; `secret_id` requer `secrets=SecretsManager(...)` |
-| Segredo do AWS Secrets Manager | JSON plano com as chaves esperadas pelo `from_secret` do wrapper (`tenant_id`/`client_id`/`client_secret` para SharePoint; `host`/`username`/`password` para InsightVM) |
-| Retorno | `{nome: instância}` — para chamar métodos que não viraram tabela (ex: `instances["sharepoint"].site_by_path(...)`) |
+| Table prefix | Always `{name_in_dict}_{table}` — avoids collisions when two services expose the same table (e.g. `sites` in SharePoint and InsightVM) and allows multiple instances of the same wrapper |
+| `type` | Optional; defaults to `name` itself. Use it when `name` doesn't match a `SERVICE_REGISTRY` key (e.g. `insightvm_dev`) |
+| `secret_id` vs `credentials` | Mutually exclusive; `secret_id` requires `secrets=SecretsManager(...)` |
+| AWS Secrets Manager secret | Plain JSON with the keys expected by the wrapper's `from_secret` (`tenant_id`/`client_id`/`client_secret` for SharePoint; `host`/`username`/`password` for InsightVM) |
+| Return value | `{name: instance}` — to call methods that didn't become a table (e.g. `instances["sharepoint"].site_by_path(...)`) |
 
-### Adicionando um wrapper ao auto-registro
+### Adding a wrapper to auto-registration
 
-1. Implemente `Wrapper.from_secret(cls, secret: dict, **overrides) -> "Wrapper"` na classe do wrapper — decide o modo de autenticação a partir das chaves de `secret` e repassa `overrides` (hostname, site_path, default_page_size, etc.) ao construtor.
-2. Acrescente uma entrada em `SERVICE_REGISTRY` (`duckduck/registry.py`) com `factory=Wrapper.from_secret` e os mapas `tables`/`streaming_tables`.
+1. Implement `Wrapper.from_secret(cls, secret: dict, **overrides) -> "Wrapper"` on the wrapper class — it decides the authentication mode from the keys in `secret` and passes `overrides` (hostname, site_path, default_page_size, etc.) through to the constructor.
+2. Add an entry to `SERVICE_REGISTRY` (`duckduck/registry.py`) with `factory=Wrapper.from_secret` and the `tables`/`streaming_tables` maps.
 
-### Dependências
+### Dependencies
 
-| Feature | Pacote |
+| Feature | Package |
 |---|---|
-| AWS Secrets Manager | `boto3>=1.28` (`pip install "duckduck[aws]"`) — não é necessário no modo offline (`credentials=`) |
+| AWS Secrets Manager | `boto3>=1.28` (`pip install "duckduck[aws]"`) — not needed in offline mode (`credentials=`) |

@@ -1,4 +1,4 @@
-"""Testes unitários para o wrapper SharePoint."""
+"""Unit tests for the SharePoint wrapper."""
 
 from unittest.mock import MagicMock, patch
 
@@ -23,7 +23,7 @@ DRIVE_ID = "drive-111"
 
 
 def _make_sp(msal_cls):
-    """Cria SharePoint com MSAL mockado."""
+    """Creates a SharePoint instance with MSAL mocked."""
     mock_app = MagicMock()
     mock_app.acquire_token_silent.return_value = None
     mock_app.acquire_token_for_client.return_value = {"access_token": "tok123"}
@@ -32,7 +32,7 @@ def _make_sp(msal_cls):
 
 
 # ---------------------------------------------------------------------------
-# Autenticação
+# Authentication
 # ---------------------------------------------------------------------------
 
 
@@ -66,7 +66,7 @@ def test_auth_error_raises(msal_cls):
     msal_cls.return_value = mock_app
     sp = SharePoint(TENANT, CLIENT, SECRET)
 
-    with pytest.raises(ValueError, match="Falha na autenticação"):
+    with pytest.raises(ValueError, match="authentication failed"):
         sp._get_token()
 
 
@@ -79,13 +79,13 @@ def test_from_thumbprint(msal_cls):
 
     sp = SharePoint.from_thumbprint(TENANT, CLIENT, "AA:BB:CC", "-----BEGIN PRIVATE KEY-----\n...")
     assert sp._get_token() == "tok"
-    # Verifica que thumbprint foi normalizado (sem ':', maiúsculo)
+    # Verifies the thumbprint was normalized (no ':', uppercase)
     call_credential = msal_cls.call_args[1]["client_credential"]
     assert call_credential["thumbprint"] == "AABBCC"
 
 
 # ---------------------------------------------------------------------------
-# _normalize_pem — corrige \n literal (comum em segredos com escaping duplo)
+# _normalize_pem — fixes a literal \n (common with double-escaped secrets)
 # ---------------------------------------------------------------------------
 
 
@@ -110,9 +110,9 @@ def test_normalize_pem_noop_without_backslash_n():
 @patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
 def test_from_thumbprint_fixes_escaped_newlines(msal_cls):
     """
-    PEM vindo de um segredo do AWS Secrets Manager com escaping duplo chega
-    como '...\\n...' (2 caracteres) em vez de quebra de linha real.
-    from_thumbprint deve corrigir isso automaticamente.
+    A PEM coming from a double-escaped AWS Secrets Manager secret arrives
+    as '...\\n...' (2 characters) instead of a real line break.
+    from_thumbprint must fix this automatically.
     """
     mock_app = MagicMock()
     mock_app.acquire_token_silent.return_value = None
@@ -129,7 +129,7 @@ def test_from_thumbprint_fixes_escaped_newlines(msal_cls):
 
 @patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
 def test_from_secret_thumbprint_fixes_escaped_newlines(msal_cls):
-    """Mesma correção via from_secret, como chega de SecretsManager.get_secret."""
+    """Same fix via from_secret, as it arrives from SecretsManager.get_secret."""
     msal_cls.return_value = MagicMock()
 
     sp = SharePoint.from_secret({
@@ -180,7 +180,7 @@ def test_with_top_replaces_existing(msal_cls):
 
 
 # ---------------------------------------------------------------------------
-# _iter_pages — paginação nextLink
+# _iter_pages — nextLink pagination
 # ---------------------------------------------------------------------------
 
 
@@ -273,33 +273,33 @@ def test_normalize_list_items_elevates_fields():
 
 
 def test_normalize_list_items_renames_via_column_map():
-    """Campos com nome interno (field_1) viram o displayName do mapa."""
+    """Fields with an internal name (field_1) become the map's displayName."""
     items = [
         {"id": "1", "fields": {"field_1": "Foo", "Status": "Active"}},
     ]
-    column_map = {"field_1": "Nome do Cliente", "Status": "Situação"}
+    column_map = {"field_1": "Customer Name", "Status": "Situation"}
 
     df = SharePoint._normalize_list_items(items, column_map=column_map)
 
-    assert "Nome do Cliente" in df.columns
-    assert "Situação" in df.columns
+    assert "Customer Name" in df.columns
+    assert "Situation" in df.columns
     assert "field_1" not in df.columns
-    assert list(df["Nome do Cliente"]) == ["Foo"]
+    assert list(df["Customer Name"]) == ["Foo"]
 
 
 def test_normalize_list_items_keeps_unmapped_fields():
-    """Campos sem entrada no mapa mantêm o nome original."""
+    """Fields with no entry in the map keep their original name."""
     items = [{"id": "1", "fields": {"field_1": "Foo", "Extra": "bar"}}]
-    column_map = {"field_1": "Nome"}
+    column_map = {"field_1": "Name"}
 
     df = SharePoint._normalize_list_items(items, column_map=column_map)
 
-    assert "Nome" in df.columns
-    assert "Extra" in df.columns  # não estava no mapa, mantém original
+    assert "Name" in df.columns
+    assert "Extra" in df.columns  # not in the map, keeps its original name
 
 
 # ---------------------------------------------------------------------------
-# _get_column_display_map — resolução de nomes internos → displayName
+# _get_column_display_map — internal name → displayName resolution
 # ---------------------------------------------------------------------------
 
 
@@ -308,46 +308,46 @@ def test_get_column_display_map_builds_dict(msal_cls):
     sp = _make_sp(msal_cls)
 
     columns_data = [
-        {"name": "field_1", "displayName": "Nome do Cliente"},
-        {"name": "Status", "displayName": "Situação"},
+        {"name": "field_1", "displayName": "Customer Name"},
+        {"name": "Status", "displayName": "Situation"},
     ]
     with patch.object(sp, "_fetch", return_value=columns_data):
         col_map = sp._get_column_display_map(SITE_ID, LIST_ID)
 
-    assert col_map == {"field_1": "Nome do Cliente", "Status": "Situação"}
+    assert col_map == {"field_1": "Customer Name", "Status": "Situation"}
 
 
 @patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
 def test_get_column_display_map_is_cached(msal_cls):
     sp = _make_sp(msal_cls)
 
-    columns_data = [{"name": "field_1", "displayName": "Nome"}]
+    columns_data = [{"name": "field_1", "displayName": "Name"}]
     with patch.object(sp, "_fetch", return_value=columns_data) as mock_fetch:
         sp._get_column_display_map(SITE_ID, LIST_ID)
         sp._get_column_display_map(SITE_ID, LIST_ID)
 
-    mock_fetch.assert_called_once()  # segunda chamada usa o cache
+    mock_fetch.assert_called_once()  # second call uses the cache
 
 
 @patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
 def test_list_items_display_names_by_default(msal_cls):
-    """Por padrão, list_items() resolve nomes internos para displayName."""
+    """By default, list_items() resolves internal names to displayName."""
     sp = _make_sp(msal_cls)
 
-    columns_data = [{"name": "field_1", "displayName": "Nome do Cliente"}]
+    columns_data = [{"name": "field_1", "displayName": "Customer Name"}]
     items_data = [{"id": "i1", "fields": {"field_1": "ACME"}}]
 
     with patch.object(sp, "_fetch", side_effect=[columns_data, items_data]):
         df = sp.list_items(site_id=SITE_ID, list_id=LIST_ID)
 
-    assert "Nome do Cliente" in df.columns
+    assert "Customer Name" in df.columns
     assert "field_1" not in df.columns
-    assert list(df["Nome do Cliente"]) == ["ACME"]
+    assert list(df["Customer Name"]) == ["ACME"]
 
 
 @patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
 def test_list_items_internal_names_skip_columns_fetch(msal_cls):
-    """column_names='internal' não faz request extra em /columns."""
+    """column_names='internal' doesn't make an extra request to /columns."""
     sp = _make_sp(msal_cls)
 
     items_data = [{"id": "i1", "fields": {"field_1": "ACME"}}]
@@ -355,7 +355,7 @@ def test_list_items_internal_names_skip_columns_fetch(msal_cls):
     with patch.object(sp, "_fetch", return_value=items_data) as mock_fetch:
         df = sp.list_items(site_id=SITE_ID, list_id=LIST_ID, column_names="internal")
 
-    mock_fetch.assert_called_once()  # só a chamada de items, sem /columns
+    mock_fetch.assert_called_once()  # only the items call, no /columns
     assert "field_1" in df.columns
 
 
@@ -396,7 +396,7 @@ def test_sites_pushes_limit(msal_cls):
 
 
 # ---------------------------------------------------------------------------
-# lists() e list_items()
+# lists() and list_items()
 # ---------------------------------------------------------------------------
 
 
@@ -425,7 +425,7 @@ def test_list_items_expands_fields(msal_cls):
 
 
 # ---------------------------------------------------------------------------
-# drive_items() — is_file derivado
+# drive_items() — derived is_file column
 # ---------------------------------------------------------------------------
 
 
@@ -467,7 +467,7 @@ def test_iter_list_items_yields_dataframes(msal_cls):
 
 
 # ---------------------------------------------------------------------------
-# Integração com DuckAPI.stream()
+# Integration with DuckAPI.stream()
 # ---------------------------------------------------------------------------
 
 
@@ -502,7 +502,7 @@ def test_duckapi_stream_list_items(msal_cls):
 
 
 # ---------------------------------------------------------------------------
-# Resolução por nome (_resolve_site / _resolve_list)
+# Resolution by name (_resolve_site / _resolve_list)
 # ---------------------------------------------------------------------------
 
 
@@ -536,7 +536,7 @@ def test_resolve_site_not_found_raises(msal_cls):
     sp = _make_sp(msal_cls)
 
     with patch.object(sp, "_fetch", return_value=[{"id": "s1", "displayName": "Intranet"}]):
-        with pytest.raises(ValueError, match="não encontrado"):
+        with pytest.raises(ValueError, match="not found"):
             sp._resolve_site(None, "Unknown")
 
 
@@ -545,11 +545,11 @@ def test_resolve_list_by_name(msal_cls):
     sp = _make_sp(msal_cls)
 
     lists_data = [
-        {"id": "l1", "displayName": "Tarefas"},
-        {"id": "l2", "displayName": "Documentos"},
+        {"id": "l1", "displayName": "Tasks"},
+        {"id": "l2", "displayName": "Documents"},
     ]
     with patch.object(sp, "_fetch", return_value=lists_data):
-        resolved = sp._resolve_list(SITE_ID, None, "Tarefas")
+        resolved = sp._resolve_list(SITE_ID, None, "Tasks")
 
     assert resolved == "l1"
 
@@ -559,25 +559,25 @@ def test_list_items_by_name_end_to_end(msal_cls):
     sp = _make_sp(msal_cls)
 
     sites_data = [{"id": SITE_ID, "displayName": "Intranet"}]
-    lists_data = [{"id": LIST_ID, "displayName": "Tarefas"}]
+    lists_data = [{"id": LIST_ID, "displayName": "Tasks"}]
     columns_data = [{"name": "Title", "displayName": "Title"}]
     items_data = [{"id": "i1", "fields": {"Title": "Fix bug"}}]
 
     fetch_calls = iter([sites_data, lists_data, columns_data, items_data])
     with patch.object(sp, "_fetch", side_effect=fetch_calls):
-        df = sp.list_items(site_name="Intranet", list_name="Tarefas")
+        df = sp.list_items(site_name="Intranet", list_name="Tasks")
 
     assert list(df["Title"]) == ["Fix bug"]
 
 
 # ---------------------------------------------------------------------------
-# Default hostname + site_path no construtor
+# Default hostname + site_path on the constructor
 # ---------------------------------------------------------------------------
 
 
 @patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
 def test_default_site_used_when_no_site_given(msal_cls):
-    """Sem site_id/site_name, usa o site padrão do construtor."""
+    """Without site_id/site_name, uses the constructor's default site."""
     mock_app = MagicMock()
     mock_app.acquire_token_silent.return_value = None
     mock_app.acquire_token_for_client.return_value = {"access_token": "tok"}
@@ -585,35 +585,35 @@ def test_default_site_used_when_no_site_given(msal_cls):
 
     sp = SharePoint(
         TENANT, CLIENT, "secret",
-        hostname="empresa.sharepoint.com",
-        site_path="/teams/meutime",
+        hostname="company.sharepoint.com",
+        site_path="/teams/myteam",
     )
 
-    lists_data = [{"id": LIST_ID, "displayName": "Tarefas"}]
+    lists_data = [{"id": LIST_ID, "displayName": "Tasks"}]
     columns_data = [{"name": "Title", "displayName": "Title"}]
     items_data = [{"id": "i1", "fields": {"Title": "Item"}}]
 
     with patch.object(sp, "_get", return_value={"id": SITE_ID}) as mock_get, \
          patch.object(sp, "_fetch", side_effect=iter([lists_data, columns_data, items_data])):
-        df = sp.list_items(list_name="Tarefas")
+        df = sp.list_items(list_name="Tasks")
 
-    # Verifica que o site foi resolvido via site_by_path com URL-encoding
+    # Verifies the site was resolved via site_by_path with URL-encoding
     called_url = mock_get.call_args[0][0]
-    assert "empresa.sharepoint.com" in called_url
-    assert "%2Fteams%2Fmeutime" in called_url or "/teams/meutime" in called_url
+    assert "company.sharepoint.com" in called_url
+    assert "%2Fteams%2Fmyteam" in called_url or "/teams/myteam" in called_url
     assert list(df["Title"]) == ["Item"]
 
 
 @patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
 def test_default_site_cached(msal_cls):
-    """_get para resolver o site padrão é chamado apenas uma vez."""
+    """_get to resolve the default site is only called once."""
     mock_app = MagicMock()
     mock_app.acquire_token_silent.return_value = None
     mock_app.acquire_token_for_client.return_value = {"access_token": "tok"}
     msal_cls.return_value = mock_app
 
     sp = SharePoint(TENANT, CLIENT, "secret",
-                    hostname="empresa.sharepoint.com", site_path="/teams/meutime")
+                    hostname="company.sharepoint.com", site_path="/teams/myteam")
 
     with patch.object(sp, "_get", return_value={"id": SITE_ID}) as mock_get, \
          patch.object(sp, "_fetch", return_value=[]):
@@ -626,30 +626,30 @@ def test_default_site_cached(msal_cls):
         except Exception:
             pass
 
-    assert mock_get.call_count == 1  # resolvido só na primeira chamada
+    assert mock_get.call_count == 1  # resolved only on the first call
 
 
 @patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
 def test_site_name_as_path_uses_hostname(msal_cls):
-    """site_name começando com / combina com hostname do construtor."""
+    """site_name starting with / combines with the constructor's hostname."""
     mock_app = MagicMock()
     mock_app.acquire_token_silent.return_value = None
     mock_app.acquire_token_for_client.return_value = {"access_token": "tok"}
     msal_cls.return_value = mock_app
 
-    sp = SharePoint(TENANT, CLIENT, "secret", hostname="empresa.sharepoint.com")
+    sp = SharePoint(TENANT, CLIENT, "secret", hostname="company.sharepoint.com")
 
     with patch.object(sp, "_get", return_value={"id": SITE_ID}) as mock_get, \
          patch.object(sp, "_fetch", return_value=[{"id": "l1"}]):
         sp.lists(site_name="/sites/marketing")
 
     called_url = mock_get.call_args[0][0]
-    assert "empresa.sharepoint.com" in called_url
+    assert "company.sharepoint.com" in called_url
 
 
 @patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
 def test_site_name_as_path_without_hostname_raises(msal_cls):
-    """site_name com / sem hostname no construtor deve levantar ValueError."""
+    """site_name with / but no hostname on the constructor must raise ValueError."""
     sp = _make_sp(msal_cls)
 
     with pytest.raises(ValueError, match="hostname"):
@@ -657,7 +657,7 @@ def test_site_name_as_path_without_hostname_raises(msal_cls):
 
 
 # ---------------------------------------------------------------------------
-# from_secret — construção a partir de um dict de credenciais
+# from_secret — construction from a credentials dict
 # ---------------------------------------------------------------------------
 
 
@@ -694,14 +694,14 @@ def test_from_secret_passes_overrides(msal_cls):
 
     sp = SharePoint.from_secret(
         {"tenant_id": TENANT, "client_id": CLIENT, "client_secret": SECRET},
-        hostname="empresa.sharepoint.com",
-        site_path="/teams/meutime",
+        hostname="company.sharepoint.com",
+        site_path="/teams/myteam",
     )
 
-    assert sp._default_hostname == "empresa.sharepoint.com"
-    assert sp._default_site_path == "/teams/meutime"
+    assert sp._default_hostname == "company.sharepoint.com"
+    assert sp._default_site_path == "/teams/myteam"
 
 
 def test_from_secret_unrecognized_credentials_raises():
-    with pytest.raises(ValueError, match="não contém credenciais reconhecidas"):
+    with pytest.raises(ValueError, match="does not contain recognized credentials"):
         SharePoint.from_secret({"tenant_id": TENANT, "client_id": CLIENT})

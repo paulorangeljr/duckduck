@@ -1,38 +1,38 @@
 """
-InsightVM API wrapper para uso com DuckAPI.
+InsightVM API wrapper for use with DuckAPI.
 
-Convenção de uso
-----------------
-A sintaxe ``FROM func(param=val)`` é reservada para parâmetros
-**estruturais** — aqueles que a API precisa para montar a URL ou o
-corpo da requisição e que *não* correspondem a colunas do resultado
-(ex: ``asset_id`` que vira ``/assets/{id}/vulnerabilities``).
+Usage convention
+-----------------
+The ``FROM func(param=val)`` syntax is reserved for **structural**
+parameters — the ones the API needs to build the URL or request body and
+that *don't* correspond to columns in the result (e.g. ``asset_id``,
+which becomes ``/assets/{id}/vulnerabilities``).
 
-Filtros de colunas normais (``hostname``, ``severity``, ``status``,
-etc.) pertencem ao ``WHERE`` do SQL e são injetados na função via
-push-down automático do DuckAPI.
+Regular column filters (``hostname``, ``severity``, ``status``, etc.)
+belong in the SQL ``WHERE`` clause and are injected into the function via
+DuckAPI's automatic push-down.
 
-Exemplos de queries suportadas
--------------------------------
+Supported query examples
+-------------------------
 ::
 
-    # Assets paginados — limit vai como page_size da API
+    # Paginated assets — limit is passed as the API's page_size
     SELECT * FROM assets LIMIT 25
 
-    # Filtro de hostname via WHERE → push-down para a API
+    # hostname filter via WHERE → pushed down to the API
     SELECT * FROM assets WHERE hostname = 'web-prod'
 
-    # Combinando WHERE e LIMIT
+    # Combining WHERE and LIMIT
     SELECT * FROM assets WHERE hostname = 'web-prod' LIMIT 50
 
-    # asset_id é estrutural (monta a URL) → inline obrigatório
+    # asset_id is structural (builds the URL) → required inline
     SELECT * FROM asset_vulnerabilities(asset_id=42) LIMIT 100
 
-    # Filtro de coluna via WHERE em endpoint estrutural
+    # Column filter via WHERE on a structural endpoint
     SELECT * FROM asset_vulnerabilities(asset_id=42)
      WHERE severity = 'critical'
 
-    # Políticas: policy_id estrutural, status via WHERE
+    # Policies: policy_id structural, status via WHERE
     SELECT * FROM policy_rules(policy_id=7) WHERE status = 'failed'
 """
 
@@ -47,20 +47,19 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class InsightVM:
     """
-    Cliente para a API v3 do Rapid7 InsightVM / Nexpose.
+    Client for the Rapid7 InsightVM / Nexpose v3 API.
 
     Parameters
     ----------
     host : str
-        Hostname ou IP do console InsightVM (sem protocolo).
+        Hostname or IP of the InsightVM console (no protocol).
     username : str
     password : str
     verify : bool
-        Verificação de certificado TLS. Padrão False para ambientes
-        com certificados auto-assinados.
+        TLS certificate verification. Defaults to False for environments
+        with self-signed certificates.
     default_page_size : int
-        Tamanho de página padrão quando ``limit`` não é passado pelo
-        DuckAPI.
+        Default page size when ``limit`` isn't passed by DuckAPI.
     """
 
     def __init__(
@@ -82,17 +81,17 @@ class InsightVM:
     @classmethod
     def from_secret(cls, secret: Dict[str, Any], **overrides) -> "InsightVM":
         """
-        Constrói InsightVM a partir de um dict de credenciais (ex: um
-        segredo do AWS Secrets Manager via ``SecretsManager.get_secret``).
+        Builds an InsightVM client from a credentials dict (e.g. an AWS
+        Secrets Manager secret via ``SecretsManager.get_secret``).
 
         Parameters
         ----------
         secret : dict
-            Chaves esperadas: ``host``, ``username``, ``password``.
+            Expected keys: ``host``, ``username``, ``password``.
         **overrides
-            Sobrescreve/adiciona kwargs do construtor (ex: ``verify``,
-            ``default_page_size``) — útil quando esses valores não estão
-            no segredo, e sim na config de ``auto_register``.
+            Overrides/adds constructor kwargs (e.g. ``verify``,
+            ``default_page_size``) — useful when those values aren't in
+            the secret but come from the ``auto_register`` config instead.
         """
         host = overrides.pop("host", None) or secret["host"]
         username = overrides.pop("username", None) or secret["username"]
@@ -130,10 +129,11 @@ class InsightVM:
         params: Optional[Dict] = None,
     ) -> Iterator[List[Dict]]:
         """
-        Gerador que faz yield de uma página de registros por vez.
+        Generator that yields one page of records at a time.
 
-        Útil para streaming incremental: a primeira página é retornada
-        assim que a primeira requisição completa, sem esperar o total.
+        Useful for incremental streaming: the first page is returned as
+        soon as the first request completes, without waiting for the
+        total.
         """
         params = params or {}
         page = 0
@@ -156,11 +156,11 @@ class InsightVM:
         limit: Optional[int] = None,
     ) -> List[Dict]:
         """
-        Busca registros de um endpoint paginado.
+        Fetches records from a paginated endpoint.
 
-        Se ``limit`` for fornecido, faz uma única requisição com
-        ``size=limit`` (primeira página apenas) — sem iterar todas as
-        páginas. Sem ``limit``, pagina completamente com ``default_page_size``.
+        If ``limit`` is provided, makes a single request with
+        ``size=limit`` (first page only) — without iterating every page.
+        Without ``limit``, paginates fully with ``default_page_size``.
         """
         params = params or {}
 
@@ -168,7 +168,7 @@ class InsightVM:
             payload = self._get(path, {**params, "size": limit, "page": 0})
             return payload.get("resources", [])
 
-        # Paginação completa
+        # Full pagination
         page = 0
         all_resources: List[Dict] = []
         while True:
@@ -193,25 +193,25 @@ class InsightVM:
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
-        Lista assets, com push-down opcional de hostname, ip e limit.
+        Lists assets, with optional push-down of hostname, ip and limit.
 
-        Push-down de WHERE
-        ------------------
-        - ``hostname`` → busca por ``host-name contains <value>``
-        - ``ip``       → busca por ``ip-address is <value>``
+        WHERE push-down
+        ----------------
+        - ``hostname`` → searches for ``host-name contains <value>``
+        - ``ip``       → searches for ``ip-address is <value>``
 
-        Quando hostname ou ip são passados, usa o endpoint de busca
-        ``/assets/search`` que suporta filtros server-side.
-        Sem filtros, pagina ``/assets`` normalmente.
+        When hostname or ip are passed, uses the ``/assets/search``
+        endpoint, which supports server-side filters.
+        Without filters, paginates ``/assets`` normally.
 
         Parameters
         ----------
         hostname : str, optional
-            Fragmento de hostname para filtro server-side.
+            Hostname fragment for the server-side filter.
         ip : str, optional
-            Endereço IP exato para filtro server-side.
+            Exact IP address for the server-side filter.
         limit : int, optional
-            Número máximo de registros (page_size da API).
+            Maximum number of records (the API's page_size).
         """
         if hostname or ip:
             filters = []
@@ -252,22 +252,22 @@ class InsightVM:
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
-        Lista vulnerabilidades do banco de dados do InsightVM.
+        Lists vulnerabilities from the InsightVM vulnerability database.
 
-        Push-down de WHERE
-        ------------------
-        - ``severity``    → filtra client-side pelo campo severity
+        WHERE push-down
+        ----------------
+        - ``severity``    → filters client-side on the severity field
           (Critical, Severe, Moderate)
-        - ``cvss_score``  → filtra client-side por cvss >= valor
+        - ``cvss_score``  → filters client-side by cvss >= value
 
         Parameters
         ----------
         severity : str, optional
-            Nível de severidade exato (Critical, Severe, Moderate).
+            Exact severity level (Critical, Severe, Moderate).
         cvss_score : float, optional
-            Score CVSS mínimo.
+            Minimum CVSS score.
         limit : int, optional
-            Número máximo de registros retornados.
+            Maximum number of records returned.
         """
         resources = self._fetch("/vulnerabilities", limit=limit)
 
@@ -287,7 +287,7 @@ class InsightVM:
         return df
 
     # ------------------------------------------------------------------
-    # Vulnerabilities de um asset específico
+    # Vulnerabilities of a specific asset
     # ------------------------------------------------------------------
 
     def asset_vulnerabilities(
@@ -298,18 +298,18 @@ class InsightVM:
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
-        Vulnerabilidades encontradas em um asset específico.
+        Vulnerabilities found on a specific asset.
 
         Parameters
         ----------
         asset_id : int
-            ID do asset (obrigatório).
+            Asset ID (required).
         status : str, optional
             ``vulnerable``, ``vulnerable-version``, ``vulnerable-potential``.
         severity : str, optional
             Critical, Severe, Moderate.
         limit : int, optional
-            Número máximo de registros.
+            Maximum number of records.
         """
         resources = self._fetch(f"/assets/{asset_id}/vulnerabilities", limit=limit)
 
@@ -333,14 +333,14 @@ class InsightVM:
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
-        Lista sites de scan.
+        Lists scan sites.
 
         Parameters
         ----------
         name : str, optional
-            Fragmento do nome do site para filtro client-side.
+            Site name fragment for the client-side filter.
         limit : int, optional
-            Número máximo de registros.
+            Maximum number of records.
         """
         resources = self._fetch("/sites", limit=limit)
 
@@ -359,7 +359,7 @@ class InsightVM:
         self,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
-        """Lista scan engines registrados."""
+        """Lists registered scan engines."""
         resources = self._fetch("/scan_engines", limit=limit)
         return pd.json_normalize(resources, sep="_")
 
@@ -374,16 +374,16 @@ class InsightVM:
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
-        Lista execuções de scan.
+        Lists scan runs.
 
         Parameters
         ----------
         status : str, optional
             running, finished, stopped, error, paused, aborted, unknown.
         site_id : int, optional
-            Filtra scans de um site específico.
+            Filters scans for a specific site.
         limit : int, optional
-            Número máximo de registros.
+            Maximum number of records.
         """
         path = f"/sites/{site_id}/scans" if site_id else "/scans"
         resources = self._fetch(path, limit=limit)
@@ -403,7 +403,7 @@ class InsightVM:
         self,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
-        """Lista templates de relatório disponíveis."""
+        """Lists available report templates."""
         payload = self._get("/report_templates")
         resources = payload.get("resources", [payload] if isinstance(payload, dict) else payload)
         df = pd.json_normalize(resources, sep="_")
@@ -419,7 +419,7 @@ class InsightVM:
         self,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
-        """Lista relatórios gerados."""
+        """Lists generated reports."""
         resources = self._fetch("/reports", limit=limit)
         return pd.json_normalize(resources, sep="_")
 
@@ -434,16 +434,16 @@ class InsightVM:
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
-        Lista tags de assets.
+        Lists asset tags.
 
         Parameters
         ----------
         name : str, optional
-            Fragmento do nome da tag para filtro client-side.
+            Tag name fragment for the client-side filter.
         tag_type : str, optional
             owner, location, custom, criticality.
         limit : int, optional
-            Número máximo de registros.
+            Maximum number of records.
         """
         resources = self._fetch("/tags", limit=limit)
 
@@ -468,16 +468,16 @@ class InsightVM:
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
-        Lista grupos de assets.
+        Lists asset groups.
 
         Parameters
         ----------
         name : str, optional
-            Fragmento do nome do grupo.
+            Group name fragment.
         group_type : str, optional
-            static ou dynamic.
+            static or dynamic.
         limit : int, optional
-            Número máximo de registros.
+            Maximum number of records.
         """
         resources = self._fetch("/asset_groups", limit=limit)
 
@@ -501,14 +501,14 @@ class InsightVM:
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
-        Lista usuários do console.
+        Lists console users.
 
         Parameters
         ----------
         login : str, optional
-            Login exato para filtro client-side.
+            Exact login for the client-side filter.
         limit : int, optional
-            Número máximo de registros.
+            Maximum number of records.
         """
         resources = self._fetch("/users", limit=limit)
 
@@ -529,14 +529,14 @@ class InsightVM:
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
-        Lista políticas de compliance disponíveis.
+        Lists available compliance policies.
 
         Parameters
         ----------
         name : str, optional
-            Fragmento do nome da política.
+            Policy name fragment.
         limit : int, optional
-            Número máximo de registros.
+            Maximum number of records.
         """
         resources = self._fetch("/policies", limit=limit)
 
@@ -558,16 +558,16 @@ class InsightVM:
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
-        Regras de uma política de compliance.
+        Rules of a compliance policy.
 
         Parameters
         ----------
         policy_id : int
-            ID da política (obrigatório).
+            Policy ID (required).
         status : str, optional
             passed, failed, not-applicable.
         limit : int, optional
-            Número máximo de registros.
+            Maximum number of records.
         """
         resources = self._fetch(f"/policies/{policy_id}/rules", limit=limit)
 
@@ -588,14 +588,14 @@ class InsightVM:
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
-        Lista projetos de remediação.
+        Lists remediation projects.
 
         Parameters
         ----------
         status : str, optional
             active, expired, paused, completed.
         limit : int, optional
-            Número máximo de registros.
+            Maximum number of records.
         """
         resources = self._fetch("/remediation/projects", limit=limit)
 
@@ -607,14 +607,14 @@ class InsightVM:
         return df
 
     # ------------------------------------------------------------------
-    # Streaming (iter_*) — para uso com DuckAPI.stream()
+    # Streaming (iter_*) — for use with DuckAPI.stream()
     # ------------------------------------------------------------------
     #
-    # Cada método iter_* aceita os mesmos filtros de coluna que a versão
-    # normal, mas faz yield de um pd.DataFrame por página à medida que
-    # cada requisição HTTP retorna — sem acumular tudo em memória.
+    # Each iter_* method accepts the same column filters as the regular
+    # version, but yields one pd.DataFrame per page as each HTTP request
+    # returns — without accumulating everything in memory.
     #
-    # Registro:
+    # Registration:
     #   duck.register_api_function("assets", r7.assets)
     #   duck.register_streaming_function("assets", r7.iter_assets)
     # ------------------------------------------------------------------
@@ -624,9 +624,9 @@ class InsightVM:
         hostname: Optional[str] = None,
         ip: Optional[str] = None,
     ) -> Iterator[pd.DataFrame]:
-        """Faz yield de uma página de assets por vez."""
+        """Yields one page of assets at a time."""
         if hostname or ip:
-            # O endpoint de busca retorna tudo em uma chamada; yield único.
+            # The search endpoint returns everything in a single call; single yield.
             yield self.assets(hostname=hostname, ip=ip)
             return
         for page in self._iter_pages("/assets"):
@@ -636,7 +636,7 @@ class InsightVM:
         self,
         severity: Optional[str] = None,
     ) -> Iterator[pd.DataFrame]:
-        """Faz yield de uma página de vulnerabilidades por vez."""
+        """Yields one page of vulnerabilities at a time."""
         for page in self._iter_pages("/vulnerabilities"):
             df = pd.json_normalize(page, sep="_")
             if severity and "severity" in df.columns:
@@ -650,7 +650,7 @@ class InsightVM:
         status: Optional[str] = None,
         severity: Optional[str] = None,
     ) -> Iterator[pd.DataFrame]:
-        """Faz yield de uma página de vulnerabilidades do asset por vez."""
+        """Yields one page of the asset's vulnerabilities at a time."""
         for page in self._iter_pages(f"/assets/{asset_id}/vulnerabilities"):
             df = pd.json_normalize(page, sep="_")
             if status and "status" in df.columns:
@@ -664,7 +664,7 @@ class InsightVM:
         self,
         name: Optional[str] = None,
     ) -> Iterator[pd.DataFrame]:
-        """Faz yield de uma página de sites por vez."""
+        """Yields one page of sites at a time."""
         for page in self._iter_pages("/sites"):
             df = pd.json_normalize(page, sep="_")
             if name and "name" in df.columns:
@@ -677,7 +677,7 @@ class InsightVM:
         status: Optional[str] = None,
         site_id: Optional[int] = None,
     ) -> Iterator[pd.DataFrame]:
-        """Faz yield de uma página de scans por vez."""
+        """Yields one page of scans at a time."""
         path = f"/sites/{site_id}/scans" if site_id else "/scans"
         for page in self._iter_pages(path):
             df = pd.json_normalize(page, sep="_")
@@ -691,7 +691,7 @@ class InsightVM:
         policy_id: int,
         status: Optional[str] = None,
     ) -> Iterator[pd.DataFrame]:
-        """Faz yield de uma página de regras da política por vez."""
+        """Yields one page of the policy's rules at a time."""
         for page in self._iter_pages(f"/policies/{policy_id}/rules"):
             df = pd.json_normalize(page, sep="_")
             if status and "status" in df.columns:

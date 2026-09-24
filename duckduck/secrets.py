@@ -1,10 +1,10 @@
 """
-Resolução de credenciais para ``DuckAPI.auto_register`` via AWS Secrets
-Manager, com fallback para credenciais fornecidas diretamente (offline).
+Credential resolution for ``DuckAPI.auto_register`` via AWS Secrets
+Manager, with a fallback to directly-provided credentials (offline).
 
-Modos de uso
-------------
-Referência de segredo hardcoded no código::
+Usage modes
+-----------
+Hardcoded secret reference in the code::
 
     from duckduck import DuckAPI, SecretsManager
 
@@ -14,14 +14,14 @@ Referência de segredo hardcoded no código::
         secrets=SecretsManager(region_name="us-east-1"),
     )
 
-Referência passada em runtime (env var, config externa, etc.)::
+Reference passed at runtime (env var, external config, etc.)::
 
     duck.auto_register(
         {"sharepoint": {"secret_id": os.environ["SP_SECRET_ID"]}},
         secrets=SecretsManager(),
     )
 
-Offline — sem tocar o AWS Secrets Manager::
+Offline — without touching AWS Secrets Manager::
 
     duck.auto_register({
         "sharepoint": {
@@ -43,30 +43,30 @@ except ImportError:
 
 class SecretsManager:
     """
-    Wrapper fino sobre ``boto3.client('secretsmanager')`` com cache em
-    memória — cada segredo é buscado no máximo uma vez por processo.
+    Thin wrapper over ``boto3.client('secretsmanager')`` with an
+    in-memory cache — each secret is fetched at most once per process.
 
-    O ``SecretString`` do segredo deve ser um JSON plano com as chaves
-    esperadas pelo ``from_secret`` do wrapper de destino (ver
+    The secret's ``SecretString`` must be plain JSON with the keys
+    expected by the target wrapper's ``from_secret`` (see
     ``SharePoint.from_secret`` / ``InsightVM.from_secret``).
 
     Parameters
     ----------
     region_name : str, optional
-        Região AWS. Sem isso, usa a configuração padrão da sessão boto3
-        (variável de ambiente, ``~/.aws/config``, etc.).
+        AWS region. Without this, uses the boto3 session's default
+        configuration (environment variable, ``~/.aws/config``, etc.).
     client : optional
-        Cliente boto3 já construído (ou um mock, para testes). Quando
-        fornecido, ``region_name`` é ignorado e ``boto3`` não precisa
-        estar instalado.
+        An already-built boto3 client (or a mock, for tests). When
+        provided, ``region_name`` is ignored and ``boto3`` doesn't need
+        to be installed.
     """
 
     def __init__(self, region_name: Optional[str] = None, client: Optional[Any] = None):
         if client is None and boto3 is None:
             raise ImportError(
-                "boto3 é necessário para usar AWS Secrets Manager.\n"
-                "Instale com:  pip install \"duckduck[aws]\"\n"
-                "ou use credentials= em auto_register() para modo offline."
+                "boto3 is required to use AWS Secrets Manager.\n"
+                "Install with:  pip install \"duckduck[aws]\"\n"
+                "or use credentials= in auto_register() for offline mode."
             )
         self._client = client if client is not None else boto3.client(
             "secretsmanager", region_name=region_name
@@ -74,14 +74,14 @@ class SecretsManager:
         self._cache: Dict[str, Dict[str, Any]] = {}
 
     def get_secret(self, secret_id: str) -> Dict[str, Any]:
-        """Busca (e cacheia) um segredo JSON pelo nome ou ARN."""
+        """Fetches (and caches) a JSON secret by name or ARN."""
         if secret_id not in self._cache:
             response = self._client.get_secret_value(SecretId=secret_id)
             raw = response.get("SecretString")
             if raw is None:
                 raise ValueError(
-                    f"Segredo '{secret_id}' não tem SecretString "
-                    "(SecretBinary não é suportado)."
+                    f"Secret '{secret_id}' has no SecretString "
+                    "(SecretBinary is not supported)."
                 )
             self._cache[secret_id] = json.loads(raw)
         return self._cache[secret_id]
