@@ -290,3 +290,60 @@ def test_blocker_hook_keeps_refused_conditions_out_of_where():
     kwargs, consumed = map_conditions({"where"}, conds, blocker)
     assert kwargs == {"where": [conds[0]]} and consumed == [conds[0]]
     assert assign_conditions({"where"}, conds, blocker) == {conds[0]: "where"}
+
+
+# ---------------------------------------------------------------------------
+# Regressions: structural params in WHERE next to `where`; empty results
+# ---------------------------------------------------------------------------
+
+
+def test_structural_param_in_where_still_filled_when_function_takes_where():
+    calls = []
+
+    def table(table_name, where=None, limit=None):
+        calls.append((table_name, where))
+        return [{"name": "a", "dns_domain": "x.auql.net"}]
+
+    duck = DuckAPI()
+    duck.register_api_function("t", table)
+    df = duck.sql("SELECT * FROM t WHERE table_name = 'cmdb_ci' AND dns_domain LIKE '%auql%'").df()
+    table_name, where = calls[-1]
+    assert table_name == "cmdb_ci"
+    assert [(c.column, c.op) for c in where] == [("dns_domain", "like")]  # not table_name
+    assert list(df.columns) == ["name", "dns_domain"]  # structural condition stripped from the query
+
+
+def _empty_duck(rows=None):
+    duck = DuckAPI()
+    duck.register_api_function("t", lambda table_name, where=None, limit=None: rows if rows is not None else [])
+    duck.register_api_function("u", lambda limit=None: [{"k": 1, "v": "x"}])
+    return duck
+
+
+def test_empty_result_takes_its_columns_from_the_query():
+    df = _empty_duck().sql("SELECT name, dns_domain FROM t(table_name='x') WHERE dns_domain LIKE '%a%' ORDER BY name").df()
+    assert df.empty and list(df.columns) == ["name", "dns_domain"]
+
+
+def test_empty_result_supports_numeric_and_aggregate_queries():
+    duck = _empty_duck()
+    row = duck.sql("SELECT count(*) AS n, sum(score) AS s FROM t(table_name='x') WHERE score >= 5").df().iloc[0]
+    assert row["n"] == 0 and pd.isna(row["s"])  # SQL: sum over no rows is NULL
+
+
+def test_empty_select_star_without_references_uses_a_placeholder():
+    df = _empty_duck().sql("SELECT * FROM t(table_name='x')").df()
+    assert df.empty and list(df.columns) == [DuckAPI.EMPTY_PLACEHOLDER_COLUMN]
+
+
+def test_empty_source_in_a_join_uses_only_its_own_qualified_columns():
+    df = _empty_duck().sql("SELECT a.name, b.v FROM t(table_name='x') a JOIN u b ON a.k = b.k").df()
+    assert df.empty and list(df.columns) == ["name", "v"]
+
+
+def test_empty_frame_with_columns_is_used_as_is():
+    typed = pd.DataFrame({"hostname": pd.Series(dtype="string"), "severity": pd.Series(dtype="int64")})
+    duck = DuckAPI()
+    duck.register_api_function("t", lambda limit=None: typed)
+    df = duck.sql("SELECT * FROM t WHERE severity > 3").df()
+    assert df.empty and list(df.columns) == ["hostname", "severity"]

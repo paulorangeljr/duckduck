@@ -138,14 +138,14 @@ def assign_conditions(
     blocker: Optional[Callable[[Condition], Optional[str]]] = None,
 ) -> Dict[Condition, str]:
     """
-    Which parameter each condition goes to (``where`` when the function has
-    one — minus any its ``blocker`` refuses); conditions left out stay with
-    DuckDB.
+    Which parameter each condition goes to; conditions left out stay with
+    DuckDB. Named parameters come first — an ``eq`` on a structural
+    parameter (``WHERE table_name = 'x'``) must fill that parameter even
+    when the function also takes ``where`` — and ``where`` gets whatever's
+    left, minus any condition the connector's ``blocker`` refuses.
     """
     params = set(params)
     conditions = list(conditions)
-    if WHERE_PARAM in params:
-        return {c: WHERE_PARAM for c in conditions if blocker is None or blocker(c) is None}
     assigned: Dict[Condition, str] = {}
     used: Set[str] = set()
     for c in conditions:
@@ -157,9 +157,13 @@ def assign_conditions(
             target = next((p for p in candidates if p in params), None)
         elif c.op in COMPARISON_SUFFIXES:
             target = c.column + COMPARISON_SUFFIXES[c.op]
-        if target and target in params and target not in used:
+        if target and target != WHERE_PARAM and target in params and target not in used:
             assigned[c] = target
             used.add(target)
+    if WHERE_PARAM in params:
+        for c in conditions:
+            if c not in assigned and (blocker is None or blocker(c) is None):
+                assigned[c] = WHERE_PARAM
     return assigned
 
 

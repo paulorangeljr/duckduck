@@ -838,6 +838,15 @@ class DuckAPI:
         merged.update(explicit)
         return merged, report
 
+    @staticmethod
+    def _structural_names(fn, explicit: Dict[str, Any]) -> set:
+        """Inline arguments + required parameters: never result columns by convention."""
+        required = {
+            name for name, p in inspect.signature(fn).parameters.items()
+            if p.default is inspect.Parameter.empty and p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)
+        }
+        return {k.lower() for k in explicit} | {k.lower() for k in required} | {"where", "limit"}
+
     def _log_call(self, fn_name: str, kwargs: Dict[str, Any], report: List[str]) -> None:
         if not logger.isEnabledFor(logging.INFO):
             return
@@ -935,6 +944,7 @@ class DuckAPI:
         function_name: str,
         fetch_function,
         kwargs: Dict[str, Any],
+        fallback_columns: Optional[List[str]] = None,
     ) -> tuple:
         """
         Calls the function, converts the result to a DataFrame and
@@ -947,7 +957,15 @@ class DuckAPI:
         validated = self._validate_arguments(function_name, fetch_function, kwargs)
         started = time.perf_counter()
         data = fetch_function(**validated)
-        df = self._to_dataframe(data, function_name)
+        df = self._to_dataframe(data, function_name, allow_empty=True)
+        if len(df.columns) == 0:
+            # No rows and nothing to infer columns from (e.g. an empty JSON
+            # list): shape an empty table from the columns the query itself
+            # uses, so it runs and returns nothing instead of failing.
+            # object dtype → DuckDB accepts it in comparisons, LIKE, sums...
+            columns = list(fallback_columns or []) or [self.EMPTY_PLACEHOLDER_COLUMN]
+            df = pd.DataFrame({c: pd.Series(dtype="object") for c in columns})
+            logger.info("  %s: no rows returned — empty result with columns %s", function_name, columns)
         logger.info("  %s: %s rows × %s columns in %.2fs", function_name, f"{len(df):,}", len(df.columns),
                     time.perf_counter() - started)
 
@@ -955,6 +973,30 @@ class DuckAPI:
         table_name = f"_api_{function_name}_{self._table_counter}"
         self.conn.register(table_name, df)
         return table_name, list(df.columns)
+
+    #: Sole column of an empty result when neither the source nor the query
+    #: says which columns there are (``SELECT *`` over zero rows).
+    EMPTY_PLACEHOLDER_COLUMN = "_no_rows"
+
+    @staticmethod
+    def _referenced_columns(parsed: Optional[exp.Expression], names: set, exclude: set) -> List[str]:
+        """
+        Columns the query uses from the table called ``names`` (its name or
+        alias) — qualified with one of them, or unqualified — minus
+        ``exclude`` (structural parameters, which aren't result columns).
+        """
+        if parsed is None:
+            return []
+        found: List[str] = []
+        for col in parsed.find_all(exp.Column):
+            name = col.name
+            qualifier = col.table.lower() if col.table else None
+            if not name or name == "*" or name.lower() in exclude:
+                continue
+            if qualifier is None or qualifier in names:
+                if name not in found:
+                    found.append(name)
+        return found
 
     def fetch(self, name: str, **kwargs) -> pd.DataFrame:
         """
@@ -1181,6 +1223,10 @@ class DuckAPI:
         structural_used: set = set()  # WHERE filters consumed that aren't columns
         started = time.perf_counter()
         sources = 0
+        try:
+            parsed = sqlglot.parse_one(query, dialect="duckdb")
+        except Exception:
+            parsed = None
 
         for fn_name, fn in self.functions.items():
 
@@ -1195,7 +1241,8 @@ class DuckAPI:
                 names = {fn_name, self._alias_at(rewritten, m.end())} - {None}
                 kwargs, report = self._plan_call(fn, pushdown, explicit, names)
                 self._log_call(fn_name, kwargs, report)
-                tname, df_cols = self._materialize(fn_name, fn, kwargs)
+                fallback = self._referenced_columns(parsed, names, self._structural_names(fn, explicit))
+                tname, df_cols = self._materialize(fn_name, fn, kwargs, fallback)
                 sources += 1
                 # WHERE filters that reached the function but aren't result columns
                 structural_used.update(
@@ -1214,7 +1261,8 @@ class DuckAPI:
                 names = {fn_name, self._alias_at(rewritten, m.end())} - {None}
                 kwargs, report = self._plan_call(fn, pushdown, {}, names)
                 self._log_call(fn_name, kwargs, report)
-                tname, df_cols = self._materialize(fn_name, fn, kwargs)
+                fallback = self._referenced_columns(parsed, names, self._structural_names(fn, {}))
+                tname, df_cols = self._materialize(fn_name, fn, kwargs, fallback)
                 sources += 1
                 structural_used.update(
                     k for k in pushdown.filters
