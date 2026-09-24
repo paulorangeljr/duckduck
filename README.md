@@ -22,7 +22,8 @@ pip install -e ".[azure]"   # Azure Key Vault support (auto_register)
 pip install -e ".[adx]"     # Azure Data Explorer (Kusto) connector
 pip install -e ".[database]"  # SQL databases (+ your engine's driver, e.g. pyodbc)
 pip install -e ".[semantic]"  # natural-language search (duckduck.semantic)
-pip install -e ".[llm]"     # Claude, for catalog drafting / LLM extraction
+pip install -e ".[llm]"     # Claude (Claude API or Microsoft Foundry), for catalog drafting / LLM extraction
+pip install -e ".[azure-openai]"  # an Azure OpenAI deployment instead
 pip install -e ".[dev]"     # pytest, for running the test suite
 ```
 
@@ -432,6 +433,8 @@ the same local/AWS/Azure `authentication` blocks the connectors use:
   In a notebook, the kernel only sees environment variables that existed
   when it started, so either restart the kernel or set
   `os.environ["ANTHROPIC_API_KEY"]` before calling anything.
+  **LLMs on Azure** (or behind a gateway) are set with `provider` in the
+  `llm` block. See [LLM providers](#llm-providers-claude-api-azure-gateways) below.
   Without an explicit table list, it drafts every plain table **and every
   table behind your connectors**, found through their catalogs (each Glue
   table via `glue_table(database=…, table_name=…)`, each ADX table, each
@@ -488,6 +491,59 @@ ask("Which users accessed github in the last 24hrs?", duck=duck)
 search = SemanticSearch.from_config(duck)      # or keep the whole pipeline around
 search.search("Which hosts queried example.com?")
 ```
+
+### LLM providers (Claude API, Azure, gateways)
+
+`provider` in the `llm` block chooses where the model runs. Every
+connection setting can be written in the block, stored in the
+`authentication` secret (same `local`/`aws`/`azure` blocks as the
+connectors), or left to the provider's standard environment variables.
+Header values written as `"$secret.<key>"` are also read from the secret.
+
+| `provider` | Settings | Key (if none is found, the Azure providers use Entra ID via `DefaultAzureCredential`) |
+|---|---|---|
+| `anthropic` (default) | `model`, `base_url` (a gateway), `headers` | `ANTHROPIC_API_KEY` |
+| `foundry`: Claude on Microsoft Foundry | `model` (the deployment name), `resource` **or** `endpoint`, `tenant_id` | `ANTHROPIC_FOUNDRY_API_KEY`; endpoint from `ANTHROPIC_FOUNDRY_RESOURCE` / `ANTHROPIC_FOUNDRY_BASE_URL` |
+| `azure_openai` | `deployment`, `endpoint`, `api_version`, `tenant_id`, `headers` | `AZURE_OPENAI_API_KEY`; `AZURE_OPENAI_ENDPOINT`, `OPENAI_API_VERSION` |
+
+```json
+"llm": {
+  "provider": "azure_openai",
+  "endpoint": "https://my-resource.openai.azure.com",
+  "deployment": "gpt-prod",
+  "api_version": "2024-10-21",
+  "headers": {"Ocp-Apim-Subscription-Key": "$secret.apim_key"},
+  "authentication": {"type": "azure", "vault_url": "https://kv.vault.azure.net/", "secret_id": "azure-openai",
+                     "api_key": "$secret.key"}
+}
+```
+
+```json
+"llm": {"provider": "foundry", "resource": "my-foundry", "model": "claude-opus-5"}
+```
+
+This Foundry block sets no key, so it uses Entra ID: `az login`, a
+managed identity, or the `AZURE_*` variables. Entra ID needs
+`pip install -e ".[azure]"`.
+
+The same thing from Python, building the pieces yourself:
+
+```python
+from duckduck.semantic import AzureOpenAILLM, Catalog, CatalogGenerator, ClaudeLLM, LLMExtractor, SemanticSearch
+
+llm = AzureOpenAILLM("gpt-prod", endpoint="https://my-resource.openai.azure.com", api_key=...)
+llm = ClaudeLLM.on_foundry(model="claude-opus-5", resource="my-foundry")      # Entra ID
+llm = ClaudeLLM(base_url="https://llm-gateway.corp", default_headers={"Authorization": "Bearer ..."})
+
+draft = CatalogGenerator(llm, duck).generate()                     # catalog drafting
+catalog = Catalog.load("semantic_catalog.yaml")
+search = SemanticSearch(catalog, duck, extractor=LLMExtractor(catalog, llm))  # LLM extraction
+```
+
+Anything else (another cloud, a local model) plugs in by implementing
+`generate(system, prompt, output_model)`: it must return `output_model`
+parsed from the answer, so the provider needs structured output (JSON
+schema).
 
 See `examples/semantic/catalog.yaml` for the catalog format and the
 "Semantic search" section of `CLAUDE.md` for the design.

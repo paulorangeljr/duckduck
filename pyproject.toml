@@ -41,6 +41,10 @@ semantic = [
 llm = [
     "anthropic>=1.8",
 ]
+azure-openai = [
+    "openai>=1.40",
+    "azure-identity>=1.15",
+]
 dev = [
     "pytest>=8.0",
     "pytest-mock>=3.14",

@@ -34,9 +34,9 @@ config file); omitted → the built-in default prompt.
 
 import json
 import os
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, ClassVar, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .generation import TableSpec
 from .intent import Thresholds
@@ -56,14 +56,57 @@ class DecisionEngineConfig(_Strict):
 
 
 class LLMConfig(_Strict):
-    provider: Literal["anthropic"] = "anthropic"
+    """
+    ``provider``:
+
+    - ``anthropic`` — the Claude API (or a gateway in front of it: ``base_url`` + ``headers``).
+    - ``foundry`` — Claude deployed on Microsoft Foundry (Azure): ``resource`` or ``endpoint``;
+      ``model`` is the deployment name.
+    - ``azure_openai`` — an Azure OpenAI deployment: ``endpoint``, ``deployment``, ``api_version``.
+
+    Credentials: the ``authentication`` block's ``api_key``, else the provider's env var
+    (``ANTHROPIC_API_KEY`` / ``ANTHROPIC_FOUNDRY_API_KEY`` / ``AZURE_OPENAI_API_KEY``), else — Azure
+    providers only — Entra ID (``DefaultAzureCredential``, pinned by ``tenant_id``). Every
+    connection setting (``endpoint``, ``deployment``, ``api_version``, ``resource``, ``tenant_id``,
+    ``base_url``) may also come from the authentication secret instead of the file; ``headers``
+    values written ``"$secret.<key>"`` do too.
+    """
+
+    provider: Literal["anthropic", "foundry", "azure_openai"] = "anthropic"
     model: str = "claude-opus-5"
     max_tokens: int = 16000
-    effort: Optional[Literal["low", "medium", "high", "xhigh", "max"]] = None
+    #: Claude: ``output_config.effort``; Azure OpenAI: ``reasoning_effort``.
+    effort: Optional[Literal["minimal", "low", "medium", "high", "xhigh", "max"]] = None
+    #: Claude API only (server-side refusal fallback); off by default on Foundry.
     fallbacks: Optional[str] = "default"
     base_url: Optional[str] = None
-    #: Omitted → the SDK's own credential resolution (ANTHROPIC_API_KEY, ...).
+    endpoint: Optional[str] = None
+    resource: Optional[str] = None
+    deployment: Optional[str] = None
+    api_version: Optional[str] = None
+    tenant_id: Optional[str] = None
+    headers: Dict[str, str] = Field(default_factory=dict)
+    #: Omitted → the SDK's own credential resolution (env vars; Entra ID on Azure).
     authentication: Optional[Dict[str, Any]] = None
+
+    _ONLY_FOR: ClassVar[Dict[str, tuple]] = {
+        "resource": ("foundry",),
+        "deployment": ("azure_openai",),
+        "api_version": ("azure_openai",),
+        "endpoint": ("foundry", "azure_openai"),
+        "tenant_id": ("foundry", "azure_openai"),
+        "fallbacks": ("anthropic", "foundry"),
+    }
+
+    @model_validator(mode="after")
+    def _fields_match_provider(self) -> "LLMConfig":
+        for name, providers in self._ONLY_FOR.items():
+            if name in self.model_fields_set and self.provider not in providers:
+                raise ValueError(
+                    f"llm.{name} applies to provider {' / '.join(repr(p) for p in providers)}, "
+                    f"not {self.provider!r}"
+                )
+        return self
 
 
 class ExtractorConfig(_Strict):
@@ -159,7 +202,7 @@ class SemanticConfig(_Strict):
         return JEVAdapter(client, retries=cfg.retries, timeout=cfg.timeout + 5)
 
     def build_llm(self, duck: Any):
-        from .llm import ClaudeLLM
+        from .llm import AzureOpenAILLM, ClaudeLLM
 
         if self.llm is None:
             where = f"the 'semantic' section of {self.config_file}" if self.config_file else "the semantic config"
@@ -173,14 +216,39 @@ class SemanticConfig(_Strict):
             )
         cfg = self.llm
         creds = duck.resolve_credentials(cfg.authentication, "semantic.llm") if cfg.authentication else {}
-        if cfg.authentication and not creds.get("api_key"):
+        headers = _resolve_headers(cfg.headers, creds) or None
+
+        def setting(name: str) -> Optional[str]:
+            return getattr(cfg, name) or creds.get(name)
+
+        api_key = creds.get("api_key")
+        if cfg.provider == "azure_openai":
+            if not setting("deployment"):
+                raise ValueError(
+                    "llm.provider 'azure_openai' needs 'deployment' (the name you gave the model "
+                    "deployment in Azure), in the llm block or the authentication secret."
+                )
+            return AzureOpenAILLM(
+                deployment=setting("deployment"), endpoint=setting("endpoint"), api_version=setting("api_version"),
+                api_key=api_key, tenant_id=setting("tenant_id"), max_tokens=cfg.max_tokens,
+                reasoning_effort=cfg.effort, default_headers=headers,
+            )
+        if cfg.provider == "foundry":
+            return ClaudeLLM.on_foundry(
+                model=cfg.model, resource=setting("resource"), base_url=setting("endpoint") or setting("base_url"),
+                api_key=api_key, tenant_id=setting("tenant_id"), default_headers=headers,
+                fallbacks=cfg.fallbacks if "fallbacks" in cfg.model_fields_set else None,
+                max_tokens=cfg.max_tokens, effort=cfg.effort,
+            )
+        gateway_auth = any(h.lower() in ("x-api-key", "authorization") for h in cfg.headers)
+        if cfg.authentication and not api_key and not gateway_auth:
             raise ValueError(
                 f"The 'llm' authentication block resolved to keys {sorted(creds)} but no 'api_key'. "
                 f"If the secret stores it under another name, map it: \"api_key\": \"$secret.<its key>\"."
             )
         return ClaudeLLM(
-            model=cfg.model, api_key=creds.get("api_key"), max_tokens=cfg.max_tokens,
-            effort=cfg.effort, fallbacks=cfg.fallbacks, base_url=cfg.base_url,
+            model=cfg.model, api_key=api_key, max_tokens=cfg.max_tokens,
+            effort=cfg.effort, fallbacks=cfg.fallbacks, base_url=setting("base_url"), default_headers=headers,
         )
 
     def build_extractor(self, catalog, duck: Any):
@@ -206,3 +274,19 @@ class SemanticConfig(_Strict):
             exclude=cfg.exclude,
             max_tables=cfg.max_tables,
         )
+
+
+def _resolve_headers(headers: Dict[str, str], creds: Dict[str, Any]) -> Dict[str, str]:
+    """``"$secret.<key>"`` header values come from the resolved authentication block."""
+    resolved = {}
+    for name, value in headers.items():
+        if isinstance(value, str) and value.startswith("$secret."):
+            key = value[len("$secret."):]
+            if key not in creds:
+                raise ValueError(
+                    f"llm.headers[{name!r}] refers to {value!r}, but the llm authentication block "
+                    f"resolved to keys {sorted(creds)}."
+                )
+            value = creds[key]
+        resolved[name] = str(value)
+    return resolved
