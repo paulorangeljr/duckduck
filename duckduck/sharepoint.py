@@ -55,6 +55,7 @@ Exemplos de queries
 import re
 import threading
 from typing import Any, Dict, Iterator, List, Optional
+from urllib.parse import quote
 
 import pandas as pd
 import requests
@@ -90,9 +91,23 @@ class SharePoint:
         client_id: str,
         client_secret: str,
         default_page_size: int = DEFAULT_PAGE_SIZE,
+        hostname: Optional[str] = None,
+        site_path: Optional[str] = None,
     ):
-        """Autenticação via client secret."""
-        self._setup(tenant_id, client_id, client_secret, default_page_size)
+        """
+        Autenticação via client secret.
+
+        Parameters
+        ----------
+        hostname : str, optional
+            Hostname do tenant SharePoint. Ex: ``minhaempresa.sharepoint.com``.
+        site_path : str, optional
+            Caminho do site padrão. Ex: ``/teams/meutime``.
+            Quando ambos fornecidos, todas as queries usam esse site por padrão
+            sem precisar de ``site_id`` ou ``site_name``.
+        """
+        self._setup(tenant_id, client_id, client_secret, default_page_size,
+                    hostname, site_path)
 
     @classmethod
     def from_thumbprint(
@@ -103,6 +118,8 @@ class SharePoint:
         private_key_pem: str,
         passphrase: Optional[bytes] = None,
         default_page_size: int = DEFAULT_PAGE_SIZE,
+        hostname: Optional[str] = None,
+        site_path: Optional[str] = None,
     ) -> "SharePoint":
         """
         Autenticação via thumbprint SHA-1 + chave privada PEM.
@@ -120,6 +137,8 @@ class SharePoint:
             Se a string não começar com ``-----``, é interpretada como caminho de arquivo.
         passphrase : bytes, optional
             Senha da chave privada, se criptografada.
+        hostname / site_path : str, optional
+            Site padrão — ver ``__init__``.
         """
         import pathlib
 
@@ -133,7 +152,7 @@ class SharePoint:
         if passphrase is not None:
             credential["passphrase"] = passphrase
         obj = cls.__new__(cls)
-        obj._setup(tenant_id, client_id, credential, default_page_size)
+        obj._setup(tenant_id, client_id, credential, default_page_size, hostname, site_path)
         return obj
 
     @classmethod
@@ -144,11 +163,18 @@ class SharePoint:
         pfx_path: str,
         pfx_password: Optional[str] = None,
         default_page_size: int = DEFAULT_PAGE_SIZE,
+        hostname: Optional[str] = None,
+        site_path: Optional[str] = None,
     ) -> "SharePoint":
         """
         Autenticação via arquivo PFX/P12.
 
         Requer: ``pip install cryptography``
+
+        Parameters
+        ----------
+        hostname / site_path : str, optional
+            Site padrão — ver ``__init__``.
         """
         try:
             from cryptography.hazmat.primitives import hashes
@@ -178,6 +204,8 @@ class SharePoint:
         return cls.from_thumbprint(
             tenant_id, client_id, thumbprint, pem_key,
             default_page_size=default_page_size,
+            hostname=hostname,
+            site_path=site_path,
         )
 
     @classmethod
@@ -188,11 +216,18 @@ class SharePoint:
         private_key_pem: str,
         cert_pem: str,
         default_page_size: int = DEFAULT_PAGE_SIZE,
+        hostname: Optional[str] = None,
+        site_path: Optional[str] = None,
     ) -> "SharePoint":
         """
         Autenticação via PEM (chave privada RSA + certificado X.509).
 
         Requer: ``pip install cryptography``
+
+        Parameters
+        ----------
+        hostname / site_path : str, optional
+            Site padrão — ver ``__init__``.
         """
         try:
             from cryptography import x509
@@ -208,6 +243,8 @@ class SharePoint:
         return cls.from_thumbprint(
             tenant_id, client_id, thumbprint, private_key_pem,
             default_page_size=default_page_size,
+            hostname=hostname,
+            site_path=site_path,
         )
 
     # ------------------------------------------------------------------
@@ -220,9 +257,14 @@ class SharePoint:
         client_id: str,
         credential: Any,
         default_page_size: int,
+        hostname: Optional[str] = None,
+        site_path: Optional[str] = None,
     ) -> None:
         self.default_page_size = default_page_size
         self._lock = threading.Lock()
+        self._default_hostname = hostname
+        self._default_site_path = site_path
+        self._default_site_id: Optional[str] = None  # resolvido lazily
         # ConfidentialClientApplication mantém cache de token em memória
         self._msal_app = msal.ConfidentialClientApplication(
             client_id,
@@ -348,19 +390,57 @@ class SharePoint:
         site_id: Optional[str],
         site_name: Optional[str],
     ) -> str:
-        """Devolve site_id; faz lookup pelo displayName se só site_name fornecido."""
+        """
+        Devolve site_id.
+
+        Prioridade:
+        1. ``site_id`` explícito
+        2. ``site_name`` começando com ``/`` → combina com ``hostname`` do construtor
+           Ex: site_name='/teams/meutime'  +  hostname='empresa.sharepoint.com'
+        3. ``site_name`` sem ``/`` → busca por ``displayName`` em todos os sites
+        4. ``hostname`` + ``site_path`` definidos no construtor (site padrão)
+        5. Erro
+        """
         if site_id:
             return site_id
-        if not site_name:
-            raise ValueError("Forneça site_id ou site_name.")
-        all_sites = self._fetch(f"{GRAPH_BASE}/sites?search=*")
-        name_lower = site_name.lower()
-        for s in all_sites:
-            if s.get("displayName", "").lower() == name_lower:
-                return s["id"]
+
+        if site_name:
+            if site_name.startswith("/"):
+                # Caminho relativo — combina com hostname do construtor
+                if not self._default_hostname:
+                    raise ValueError(
+                        f"site_name='{site_name}' é um caminho e requer "
+                        "hostname definido no construtor de SharePoint."
+                    )
+                url = (
+                    f"{GRAPH_BASE}/sites/{self._default_hostname}:"
+                    f"{quote(site_name)}"
+                )
+                return self._get(url)["id"]
+
+            # Display name — busca em todos os sites
+            all_sites = self._fetch(f"{GRAPH_BASE}/sites?search=*")
+            name_lower = site_name.lower()
+            for s in all_sites:
+                if s.get("displayName", "").lower() == name_lower:
+                    return s["id"]
+            raise ValueError(
+                f"Site '{site_name}' não encontrado. "
+                "Use SELECT * FROM sites para ver os nomes disponíveis."
+            )
+
+        if self._default_hostname and self._default_site_path:
+            if self._default_site_id is None:
+                url = (
+                    f"{GRAPH_BASE}/sites/{self._default_hostname}:"
+                    f"{quote(self._default_site_path)}"
+                )
+                self._default_site_id = self._get(url)["id"]
+            return self._default_site_id
+
         raise ValueError(
-            f"Site '{site_name}' não encontrado. "
-            "Use SELECT * FROM sites para ver os nomes disponíveis."
+            "Forneça site_id, site_name, ou inicialize SharePoint "
+            "com hostname e site_path."
         )
 
     def _resolve_list(
@@ -369,7 +449,14 @@ class SharePoint:
         list_id: Optional[str],
         list_name: Optional[str],
     ) -> str:
-        """Devolve list_id; faz lookup pelo displayName se só list_name fornecido."""
+        """
+        Devolve list_id (sempre um GUID, seguro para URLs).
+
+        Aceita:
+        - ``list_id``: GUID ou nome já URL-encoded → usado diretamente
+        - ``list_name``: nome de exibição (com espaços, acentos, etc.) → lookup pelo
+          ``displayName``; o GUID retornado é então usado na URL.
+        """
         if list_id:
             return list_id
         if not list_name:
@@ -416,7 +503,7 @@ class SharePoint:
         site_path : str
             Ex: ``/sites/marketing``
         """
-        url = f"{GRAPH_BASE}/sites/{hostname}:{site_path}"
+        url = f"{GRAPH_BASE}/sites/{hostname}:{quote(site_path)}"
         return pd.json_normalize([self._get(url)], sep="_")
 
     # ------------------------------------------------------------------

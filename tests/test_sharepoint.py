@@ -408,3 +408,88 @@ def test_list_items_by_name_end_to_end(msal_cls):
         df = sp.list_items(site_name="Intranet", list_name="Tarefas")
 
     assert list(df["Title"]) == ["Fix bug"]
+
+
+# ---------------------------------------------------------------------------
+# Default hostname + site_path no construtor
+# ---------------------------------------------------------------------------
+
+
+@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+def test_default_site_used_when_no_site_given(msal_cls):
+    """Sem site_id/site_name, usa o site padrão do construtor."""
+    mock_app = MagicMock()
+    mock_app.acquire_token_silent.return_value = None
+    mock_app.acquire_token_for_client.return_value = {"access_token": "tok"}
+    msal_cls.return_value = mock_app
+
+    sp = SharePoint(
+        TENANT, CLIENT, "secret",
+        hostname="empresa.sharepoint.com",
+        site_path="/teams/meutime",
+    )
+
+    lists_data = [{"id": LIST_ID, "displayName": "Tarefas"}]
+    items_data = [{"id": "i1", "fields": {"Title": "Item"}}]
+
+    with patch.object(sp, "_get", return_value={"id": SITE_ID}) as mock_get, \
+         patch.object(sp, "_fetch", side_effect=iter([lists_data, items_data])):
+        df = sp.list_items(list_name="Tarefas")
+
+    # Verifica que o site foi resolvido via site_by_path com URL-encoding
+    called_url = mock_get.call_args[0][0]
+    assert "empresa.sharepoint.com" in called_url
+    assert "%2Fteams%2Fmeutime" in called_url or "/teams/meutime" in called_url
+    assert list(df["Title"]) == ["Item"]
+
+
+@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+def test_default_site_cached(msal_cls):
+    """_get para resolver o site padrão é chamado apenas uma vez."""
+    mock_app = MagicMock()
+    mock_app.acquire_token_silent.return_value = None
+    mock_app.acquire_token_for_client.return_value = {"access_token": "tok"}
+    msal_cls.return_value = mock_app
+
+    sp = SharePoint(TENANT, CLIENT, "secret",
+                    hostname="empresa.sharepoint.com", site_path="/teams/meutime")
+
+    with patch.object(sp, "_get", return_value={"id": SITE_ID}) as mock_get, \
+         patch.object(sp, "_fetch", return_value=[]):
+        try:
+            sp.lists()
+        except Exception:
+            pass
+        try:
+            sp.lists()
+        except Exception:
+            pass
+
+    assert mock_get.call_count == 1  # resolvido só na primeira chamada
+
+
+@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+def test_site_name_as_path_uses_hostname(msal_cls):
+    """site_name começando com / combina com hostname do construtor."""
+    mock_app = MagicMock()
+    mock_app.acquire_token_silent.return_value = None
+    mock_app.acquire_token_for_client.return_value = {"access_token": "tok"}
+    msal_cls.return_value = mock_app
+
+    sp = SharePoint(TENANT, CLIENT, "secret", hostname="empresa.sharepoint.com")
+
+    with patch.object(sp, "_get", return_value={"id": SITE_ID}) as mock_get, \
+         patch.object(sp, "_fetch", return_value=[{"id": "l1"}]):
+        sp.lists(site_name="/sites/marketing")
+
+    called_url = mock_get.call_args[0][0]
+    assert "empresa.sharepoint.com" in called_url
+
+
+@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+def test_site_name_as_path_without_hostname_raises(msal_cls):
+    """site_name com / sem hostname no construtor deve levantar ValueError."""
+    sp = _make_sp(msal_cls)
+
+    with pytest.raises(ValueError, match="hostname"):
+        sp._resolve_site(None, "/sites/marketing")
