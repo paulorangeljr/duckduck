@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from duckduck import DuckAPI, SharePoint
+from duckduck.sharepoint import _normalize_pem
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +82,65 @@ def test_from_thumbprint(msal_cls):
     # Verifica que thumbprint foi normalizado (sem ':', maiúsculo)
     call_credential = msal_cls.call_args[1]["client_credential"]
     assert call_credential["thumbprint"] == "AABBCC"
+
+
+# ---------------------------------------------------------------------------
+# _normalize_pem — corrige \n literal (comum em segredos com escaping duplo)
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_pem_converts_literal_backslash_n():
+    raw = "-----BEGIN PRIVATE KEY-----\\nMIIE...\\n-----END PRIVATE KEY-----\\n"
+    normalized = _normalize_pem(raw)
+
+    assert "\\n" not in normalized
+    assert normalized == "-----BEGIN PRIVATE KEY-----\nMIIE...\n-----END PRIVATE KEY-----\n"
+
+
+def test_normalize_pem_keeps_real_newlines_untouched():
+    raw = "-----BEGIN PRIVATE KEY-----\nMIIE...\n-----END PRIVATE KEY-----\n"
+    assert _normalize_pem(raw) == raw
+
+
+def test_normalize_pem_noop_without_backslash_n():
+    raw = "-----BEGIN PRIVATE KEY-----MIIE...-----END PRIVATE KEY-----"
+    assert _normalize_pem(raw) == raw
+
+
+@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+def test_from_thumbprint_fixes_escaped_newlines(msal_cls):
+    """
+    PEM vindo de um segredo do AWS Secrets Manager com escaping duplo chega
+    como '...\\n...' (2 caracteres) em vez de quebra de linha real.
+    from_thumbprint deve corrigir isso automaticamente.
+    """
+    mock_app = MagicMock()
+    mock_app.acquire_token_silent.return_value = None
+    mock_app.acquire_token_for_client.return_value = {"access_token": "tok"}
+    msal_cls.return_value = mock_app
+
+    escaped_pem = "-----BEGIN PRIVATE KEY-----\\nMIIE...\\n-----END PRIVATE KEY-----\\n"
+    SharePoint.from_thumbprint(TENANT, CLIENT, "AABBCC", escaped_pem)
+
+    call_credential = msal_cls.call_args[1]["client_credential"]
+    assert "\\n" not in call_credential["private_key"]
+    assert call_credential["private_key"].count("\n") == 3
+
+
+@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+def test_from_secret_thumbprint_fixes_escaped_newlines(msal_cls):
+    """Mesma correção via from_secret, como chega de SecretsManager.get_secret."""
+    msal_cls.return_value = MagicMock()
+
+    sp = SharePoint.from_secret({
+        "tenant_id": TENANT, "client_id": CLIENT,
+        "thumbprint": "AABBCC",
+        "private_key_pem": "-----BEGIN PRIVATE KEY-----\\nMIIE...\\n-----END PRIVATE KEY-----\\n",
+    })
+
+    assert isinstance(sp, SharePoint)
+    call_credential = msal_cls.call_args[1]["client_credential"]
+    assert "\\n" not in call_credential["private_key"]
 
 
 @patch("duckduck.sharepoint.msal.ConfidentialClientApplication")

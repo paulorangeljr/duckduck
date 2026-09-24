@@ -211,6 +211,17 @@ sp = SharePoint.from_pem_cert(tenant_id, client_id, private_key_pem, cert_pem)
 
 `msal.ConfidentialClientApplication` mantém cache de token em memória; o token é renovado automaticamente quando expira.
 
+### PEM com `\n` literal (segredos do AWS Secrets Manager)
+
+Quando a chave privada/certificado vem de um segredo (`SecretsManager.get_secret`,
+env var, etc.) que foi escapado duas vezes, a quebra de linha chega como o
+texto literal de 2 caracteres `\n` em vez de um newline real — o PEM fica
+inválido para MSAL/`cryptography`. `from_thumbprint` e `from_pem_cert`
+corrigem isso automaticamente via `_normalize_pem` (heurística segura: o
+corpo base64 de um PEM nunca contém `\`, então só reescreve quando não há
+newline real na string). Isso cobre `from_secret` também, já que ele delega
+para esses dois construtores.
+
 ### Paginação `@odata.nextLink`
 
 O Graph API **não** usa `page`/`totalPages`. Ele retorna `@odata.nextLink` na resposta quando há mais dados:

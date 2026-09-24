@@ -74,6 +74,25 @@ GRAPH_SCOPE = ["https://graph.microsoft.com/.default"]
 DEFAULT_PAGE_SIZE = 200
 
 
+def _normalize_pem(pem_text: str) -> str:
+    """
+    Corrige PEM cuja quebra de linha veio como a sequência literal de dois
+    caracteres ``\\n`` em vez de um newline real (``\\x0a``).
+
+    Acontece com frequência quando a chave/certificado passa por um segredo
+    do AWS Secrets Manager (ou outra var de ambiente) com escaping duplo:
+    o JSON já foi decodificado, mas sobrou um ``\\n`` literal dentro da
+    string em vez da quebra de linha que ele deveria representar.
+
+    O corpo base64 de um PEM nunca contém ``\\`` (alfabeto é A-Z a-z 0-9 + /
+    =), então a heurística — só reescreve se não houver newline real — é
+    segura.
+    """
+    if "\\n" in pem_text and "\n" not in pem_text:
+        return pem_text.replace("\\n", "\n")
+    return pem_text
+
+
 class SharePoint:
     """
     Cliente para SharePoint via Microsoft Graph API.
@@ -135,6 +154,8 @@ class SharePoint:
         private_key_pem : str
             Conteúdo PEM da chave privada **ou** caminho para o arquivo ``.pem``/``.key``.
             Se a string não começar com ``-----``, é interpretada como caminho de arquivo.
+            Quebras de linha vindas como ``\\n`` literal (comum em segredos do
+            AWS Secrets Manager) são corrigidas automaticamente.
         passphrase : bytes, optional
             Senha da chave privada, se criptografada.
         hostname / site_path : str, optional
@@ -144,6 +165,7 @@ class SharePoint:
 
         if not private_key_pem.strip().startswith("-----"):
             private_key_pem = pathlib.Path(private_key_pem).read_text()
+        private_key_pem = _normalize_pem(private_key_pem)
 
         credential: Dict[str, Any] = {
             "thumbprint": thumbprint.replace(":", "").upper(),
@@ -228,6 +250,12 @@ class SharePoint:
         ----------
         hostname / site_path : str, optional
             Site padrão — ver ``__init__``.
+
+        Notes
+        -----
+        Quebras de linha vindas como ``\\n`` literal em ``private_key_pem``
+        ou ``cert_pem`` (comum em segredos do AWS Secrets Manager) são
+        corrigidas automaticamente.
         """
         try:
             from cryptography import x509
@@ -238,6 +266,7 @@ class SharePoint:
                 "Instale com:  pip install cryptography"
             ) from exc
 
+        cert_pem = _normalize_pem(cert_pem)
         cert = x509.load_pem_x509_certificate(cert_pem.encode())
         thumbprint = cert.fingerprint(hashes.SHA1()).hex()
         return cls.from_thumbprint(
