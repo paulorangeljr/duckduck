@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "duckduck"
+version = "0.1.0"
+description = "Query external APIs with SQL using DuckDB"
+requires-python = ">=3.10"
+dependencies = [
+    "duckdb>=0.10",
+    "pandas>=2.0",
+    "requests>=2.31",
+    "sqlglot>=23.0",
+    "urllib3>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-mock>=3.14",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["duckduck*"]
