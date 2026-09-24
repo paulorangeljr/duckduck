@@ -60,6 +60,8 @@ from urllib.parse import quote
 import pandas as pd
 import requests
 
+from .logs import PageProgress, log_http
+
 try:
     import msal
 except ImportError as exc:
@@ -390,6 +392,7 @@ class SharePoint:
             },
             timeout=30,
         )
+        log_http("sharepoint", r)
         r.raise_for_status()
         return r.json()
 
@@ -412,9 +415,11 @@ class SharePoint:
             url = self._with_top(url, self.default_page_size)
 
         next_url: Optional[str] = url
+        progress = PageProgress("sharepoint", url.split("?")[0].replace(GRAPH_BASE, "") or url)
         while next_url:
             payload = self._get(next_url)
             items = payload.get("value", [])
+            progress.page(len(items))  # Graph gives no total: no time-left estimate
             if items:
                 yield items
             next_url = payload.get("@odata.nextLink")

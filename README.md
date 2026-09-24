@@ -124,6 +124,28 @@ duck.register_api_function("vulnerabilities", r7.vulnerabilities)
 duck.sql("SELECT * FROM assets WHERE hostname = 'web-prod' LIMIT 25").df()
 ```
 
+## Seeing what happens: verbose mode
+
+```python
+duck = DuckAPI(verbose=True)      # or "debug", or DUCKDUCK_VERBOSE=info
+duck.sql("SELECT hostName FROM assets WHERE riskScore >= 200 LIMIT 3").df()
+```
+
+```
+▶ assets()
+    ✗ riskscore >= 200 — no riskscore_gte parameter, DuckDB filters
+    ✗ LIMIT 3 — not every WHERE condition reached the source
+GET https://console.local/api/3/assets?size=500&page=0 → 200 (0.15s, 779 B)
+/assets: page 1/3 · 500/1,250 rows · 0.2s elapsed · ~0.3s left
+...
+  assets: 1,250 rows × 4 columns in 0.46s
+```
+
+Every table call shows what was sent to the source and what DuckDB had to
+filter itself (and why), every HTTP request, pagination progress with time
+left (when the API reports a total), and the SQL/KQL sent to databases and
+ADX. `"debug"` adds request bodies. Secrets are always masked.
+
 ## Streaming large results
 
 `sql()` waits for all pages before returning. For large datasets, use

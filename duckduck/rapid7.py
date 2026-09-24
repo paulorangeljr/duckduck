@@ -42,6 +42,7 @@ import pandas as pd
 import requests
 import urllib3
 
+from .logs import PageProgress, instrument_session
 from .pushdown import require_like
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -77,6 +78,7 @@ class InsightVM:
         self.default_page_size = default_page_size
 
         self.session = requests.Session()
+        instrument_session(self.session, "insightvm")
         self.session.auth = (username, password)
         self.session.verify = verify
 
@@ -139,6 +141,7 @@ class InsightVM:
         """
         params = params or {}
         page = 0
+        progress = PageProgress("insightvm", path)
         while True:
             payload = self._get(
                 path, {**params, "size": self.default_page_size, "page": page}
@@ -146,7 +149,9 @@ class InsightVM:
             resources = payload.get("resources", [])
             if resources:
                 yield resources
-            total_pages = payload.get("page", {}).get("totalPages", 1)
+            page_info = payload.get("page", {})
+            total_pages = page_info.get("totalPages", 1)
+            progress.page(len(resources), total_pages=total_pages, total_rows=page_info.get("totalResources"))
             page += 1
             if page >= total_pages:
                 break
@@ -173,11 +178,14 @@ class InsightVM:
         # Full pagination
         page = 0
         all_resources: List[Dict] = []
+        progress = PageProgress("insightvm", path)
         while True:
             payload = self._get(path, {**params, "size": self.default_page_size, "page": page})
             resources = payload.get("resources", [])
             all_resources.extend(resources)
-            total_pages = payload.get("page", {}).get("totalPages", 1)
+            page_info = payload.get("page", {})
+            total_pages = page_info.get("totalPages", 1)
+            progress.page(len(resources), total_pages=total_pages, total_rows=page_info.get("totalResources"))
             page += 1
             if page >= total_pages:
                 break

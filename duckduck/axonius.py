@@ -55,6 +55,7 @@ from typing import Any, Dict, Iterator, List, Optional
 import pandas as pd
 import requests
 
+from .logs import PageProgress, instrument_session
 from .pushdown import require_like
 
 
@@ -87,6 +88,7 @@ class Axonius:
         self.default_page_size = default_page_size
 
         self.session = requests.Session()
+        instrument_session(self.session, "axonius")
         self.session.headers.update({
             "api-key": api_key,
             "api-secret": api_secret,
@@ -130,10 +132,12 @@ class Axonius:
     def _iter_pages(self, path: str, filter_aql: Optional[str] = None) -> Iterator[List[Dict]]:
         """Generator that pages via offset/limit, yielding one page at a time."""
         offset = 0
+        progress = PageProgress("axonius", path)
         while True:
             body = self._build_body(offset, self.default_page_size, filter_aql)
             payload = self._post(path, body)
             items = payload.get("data", [])
+            progress.page(len(items))
             if items:
                 yield items
             if len(items) < self.default_page_size:

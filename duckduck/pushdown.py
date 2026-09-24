@@ -121,6 +121,32 @@ def conditions_to_sql(conditions: Iterable[Condition], columns: Iterable[str]) -
     return " AND ".join(parts) if parts else None
 
 
+def assign_conditions(params: Iterable[str], conditions: Iterable[Condition]) -> Dict[Condition, str]:
+    """
+    Which parameter each condition goes to (``where`` for all of them when
+    the function has one); conditions left out stay with DuckDB.
+    """
+    params = set(params)
+    conditions = list(conditions)
+    if WHERE_PARAM in params:
+        return {c: WHERE_PARAM for c in conditions}
+    assigned: Dict[Condition, str] = {}
+    used: Set[str] = set()
+    for c in conditions:
+        target = None
+        if c.op == "eq":
+            target = c.column
+        elif c.op in ("like", "ilike") and parse_like(c.value) is not None:
+            candidates = [f"{c.column}_like", f"{c.column}_ilike"] if c.op == "like" else [f"{c.column}_ilike"]
+            target = next((p for p in candidates if p in params), None)
+        elif c.op in COMPARISON_SUFFIXES:
+            target = c.column + COMPARISON_SUFFIXES[c.op]
+        if target and target in params and target not in used:
+            assigned[c] = target
+            used.add(target)
+    return assigned
+
+
 def map_conditions(
     params: Iterable[str], conditions: Iterable[Condition]
 ) -> Tuple[Dict[str, Any], List[Condition]]:
@@ -132,23 +158,12 @@ def map_conditions(
     Structural params declared in the signature are just more ``eq``
     targets here; the caller decides what else to pass.
     """
-    params: Set[str] = set(params)
-    kwargs: Dict[str, Any] = {}
-    consumed: List[Condition] = []
     conditions = list(conditions)
-    for c in conditions:
-        target = None
-        if c.op == "eq":
-            target = c.column
-        elif c.op in ("like", "ilike") and parse_like(c.value) is not None:
-            candidates = [f"{c.column}_like", f"{c.column}_ilike"] if c.op == "like" else [f"{c.column}_ilike"]
-            target = next((p for p in candidates if p in params), None)
-        elif c.op in COMPARISON_SUFFIXES:
-            target = c.column + COMPARISON_SUFFIXES[c.op]
-        if target and target in params and target not in kwargs:
+    assigned = assign_conditions(params, conditions)
+    kwargs: Dict[str, Any] = {}
+    for c, target in assigned.items():
+        if target == WHERE_PARAM:
+            kwargs[WHERE_PARAM] = conditions
+        else:
             kwargs[target] = c.value
-            consumed.append(c)
-    if WHERE_PARAM in params and conditions:
-        kwargs[WHERE_PARAM] = conditions
-        consumed = conditions
-    return kwargs, consumed
+    return kwargs, [c for c in conditions if c in assigned]

@@ -15,8 +15,10 @@ DataFrame.
 import ast
 import inspect
 import json
+import logging
 import os
 import re
+import time
 import warnings
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -26,7 +28,10 @@ import pandas as pd
 import sqlglot
 import sqlglot.expressions as exp
 
-from .pushdown import Condition, map_conditions
+from .logs import get_logger, set_verbose, short, verbose_from_env
+from .pushdown import Condition, assign_conditions, map_conditions, parse_like
+
+logger = get_logger("core")
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +81,8 @@ class PushDownContext:
     #: window / subquery / set operation. Otherwise capping rows at the
     #: source would change the answer.
     limit_safe: bool = True
+    #: Why ``limit_safe`` is False (e.g. ``"ORDER BY"``), for verbose output.
+    limit_blocker: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -136,15 +143,44 @@ def _extract_filters(node: exp.Expression, ctx: "PushDownContext") -> None:
     ctx.complete = False
 
 
-def _limit_safe(parsed: exp.Expression) -> bool:
-    """Whether a source-side LIMIT can't change the query's answer (see PushDownContext)."""
+def _limit_blocker(parsed: exp.Expression) -> Optional[str]:
+    """
+    Why a source-side LIMIT could change the query's answer, or None when
+    it can't (see PushDownContext.limit_safe).
+    """
     if not isinstance(parsed, exp.Select):
-        return False  # UNION etc.
-    if parsed.args.get("joins") or parsed.args.get("group") or parsed.args.get("distinct"):
-        return False
-    if parsed.args.get("order") or parsed.args.get("having") or parsed.args.get("with"):
-        return False
-    return not any(parsed.find(t) for t in (exp.AggFunc, exp.Window, exp.Subquery))
+        return "set operation (UNION/EXCEPT/INTERSECT)"
+    for arg, reason in (
+        ("joins", "JOIN"), ("group", "GROUP BY"), ("distinct", "DISTINCT"),
+        ("order", "ORDER BY"), ("having", "HAVING"), ("with", "WITH/CTE"),
+    ):
+        if parsed.args.get(arg):
+            return reason
+    for node, reason in ((exp.AggFunc, "aggregate"), (exp.Window, "window function"), (exp.Subquery, "subquery")):
+        if parsed.find(node):
+            return reason
+    return None
+
+
+_OP_SQL = {"eq": "=", "like": "LIKE", "ilike": "ILIKE", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
+
+
+def _describe_condition(c: Condition) -> str:
+    column = f"{c.table}.{c.column}" if c.table else c.column
+    return f"{column} {_OP_SQL.get(c.op, c.op)} {c.value!r}"
+
+
+def _why_not_pushed(c: Condition, accepted: set) -> str:
+    if c.op in ("like", "ilike"):
+        has_param = f"{c.column}_ilike" in accepted or (c.op == "like" and f"{c.column}_like" in accepted)
+        if has_param and parse_like(c.value) is None:
+            return "pattern not translatable ('_' wildcard / inner '%'), DuckDB filters"
+        if c.op == "ilike" and f"{c.column}_like" in accepted:
+            return f"{c.column}_like is case-sensitive, ILIKE needs {c.column}_ilike; DuckDB filters"
+        return f"no {c.column}_like/_ilike parameter, DuckDB filters"
+    if c.op == "eq":
+        return f"no '{c.column}' parameter, DuckDB filters"
+    return f"no {c.column}_{c.op} parameter, DuckDB filters"
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +232,24 @@ class DuckAPI:
     correctness even when the API returns extra data.
     """
 
-    def __init__(self, database: str = ":memory:"):
+    def __init__(self, database: str = ":memory:", verbose=None):
+        """
+        Parameters
+        ----------
+        database : str
+            DuckDB database (default in-memory).
+        verbose : bool or str, optional
+            ``True``/``"info"``: log, per query, how each table was called,
+            which WHERE/LIMIT went to the source (and why not, when not),
+            every HTTP request, pagination progress with elapsed/remaining
+            time. ``"debug"`` adds request bodies and query parameters.
+            Defaults to the ``DUCKDUCK_VERBOSE`` environment variable; off
+            when neither is set. See ``duckduck.logs``.
+        """
+        if verbose is None:
+            verbose = verbose_from_env()
+        if verbose is not None:
+            set_verbose(verbose)
         self.conn = duckdb.connect(database)
         self.functions: Dict[str, Any] = {}
         self._streaming_functions: Dict[str, Any] = {}
@@ -703,7 +756,8 @@ class DuckAPI:
         if where_node is not None:
             _extract_filters(where_node, ctx)
 
-        ctx.limit_safe = _limit_safe(parsed)
+        ctx.limit_blocker = _limit_blocker(parsed)
+        ctx.limit_safe = ctx.limit_blocker is None
         return ctx
 
     # ------------------------------------------------------------------
@@ -732,22 +786,65 @@ class DuckAPI:
         the query shape allows it (``limit_safe``), every WHERE condition
         was extractable, and the function consumes all of them.
         """
+        return self._plan_call(fetch_function, pushdown, explicit, names, allow_limit)[0]
+
+    def _plan_call(
+        self,
+        fetch_function,
+        pushdown: PushDownContext,
+        explicit: Dict[str, Any],
+        names: Optional[set] = None,
+        allow_limit: bool = True,
+    ) -> Tuple[Dict[str, Any], List[str]]:
+        """``_merge_kwargs`` plus a human-readable push-down report (one line per decision)."""
         accepted = set(inspect.signature(fetch_function).parameters.keys())
         applicable = [
             c for c in pushdown.conditions
             if c.table is None or names is None or c.table in names
         ]
         merged, consumed = map_conditions(accepted, applicable)
+        targets = assign_conditions(accepted, applicable)
 
-        if (
-            allow_limit and pushdown.limit is not None and "limit" in accepted
-            and pushdown.limit_safe and pushdown.complete
-            and len(consumed) == len(pushdown.conditions)
-        ):
-            merged["limit"] = pushdown.limit
+        report: List[str] = []
+        for c in applicable:
+            if c in targets:
+                report.append(f"✓ {_describe_condition(c)} → {targets[c]}")
+            else:
+                report.append(f"✗ {_describe_condition(c)} — {_why_not_pushed(c, accepted)}")
+        if not pushdown.complete:
+            report.append("✗ part of the WHERE (OR / NOT / IN / functions...) — DuckDB only")
+
+        if pushdown.limit is not None:
+            blocker = None
+            if not allow_limit:
+                blocker = "stream() reads every page"
+            elif "limit" not in accepted:
+                blocker = "function has no limit parameter"
+            elif not pushdown.limit_safe:
+                blocker = f"{pushdown.limit_blocker} in the query"
+            elif not pushdown.complete:
+                blocker = "WHERE has conditions DuckDB must apply first"
+            elif len(consumed) != len(pushdown.conditions):
+                blocker = "not every WHERE condition reached the source"
+            if blocker is None:
+                merged["limit"] = pushdown.limit
+                report.append(f"✓ LIMIT {pushdown.limit} → limit")
+            else:
+                report.append(f"✗ LIMIT {pushdown.limit} — {blocker}")
 
         merged.update(explicit)
-        return merged
+        return merged, report
+
+    def _log_call(self, fn_name: str, kwargs: Dict[str, Any], report: List[str]) -> None:
+        if not logger.isEnabledFor(logging.INFO):
+            return
+        args = ", ".join(
+            f"{k}=[{len(v)} conditions]" if k == "where" and isinstance(v, list) else f"{k}={short(v, 60)}"
+            for k, v in kwargs.items()
+        )
+        logger.info("▶ %s(%s)", fn_name, args)
+        for line in report:
+            logger.info("    %s", line)
 
     #: Words that can follow a table reference but are never its alias.
     _NOT_ALIASES = {
@@ -845,8 +942,11 @@ class DuckAPI:
         (table_name, df_columns) : (str, list[str])
         """
         validated = self._validate_arguments(function_name, fetch_function, kwargs)
+        started = time.perf_counter()
         data = fetch_function(**validated)
         df = self._to_dataframe(data, function_name)
+        logger.info("  %s: %s rows × %s columns in %.2fs", function_name, f"{len(df):,}", len(df.columns),
+                    time.perf_counter() - started)
 
         self._table_counter += 1
         table_name = f"_api_{function_name}_{self._table_counter}"
@@ -869,7 +969,10 @@ class DuckAPI:
         if fn is None:
             raise KeyError(f"No table registered as '{name}'.")
         validated = self._validate_arguments(name, fn, kwargs)
-        return self._to_dataframe(fn(**validated), name, allow_empty=True)
+        started = time.perf_counter()
+        df = self._to_dataframe(fn(**validated), name, allow_empty=True)
+        logger.info("  %s: %s rows in %.2fs", name, f"{len(df):,}", time.perf_counter() - started)
+        return df
 
     def _strip_where_conditions(self, query: str, keys: set) -> str:
         """
@@ -1073,6 +1176,8 @@ class DuckAPI:
         pushdown = self._extract_pushdown(query)
         rewritten = query
         structural_used: set = set()  # WHERE filters consumed that aren't columns
+        started = time.perf_counter()
+        sources = 0
 
         for fn_name, fn in self.functions.items():
 
@@ -1085,8 +1190,10 @@ class DuckAPI:
             while m := with_args_pat.search(rewritten):
                 explicit = self._parse_kwargs(m.group(1))
                 names = {fn_name, self._alias_at(rewritten, m.end())} - {None}
-                kwargs = self._merge_kwargs(fn, pushdown, explicit, names)
+                kwargs, report = self._plan_call(fn, pushdown, explicit, names)
+                self._log_call(fn_name, kwargs, report)
                 tname, df_cols = self._materialize(fn_name, fn, kwargs)
+                sources += 1
                 # WHERE filters that reached the function but aren't result columns
                 structural_used.update(
                     k for k in pushdown.filters
@@ -1102,8 +1209,10 @@ class DuckAPI:
 
             while m := bare_pat.search(rewritten):
                 names = {fn_name, self._alias_at(rewritten, m.end())} - {None}
-                kwargs = self._merge_kwargs(fn, pushdown, {}, names)
+                kwargs, report = self._plan_call(fn, pushdown, {}, names)
+                self._log_call(fn_name, kwargs, report)
                 tname, df_cols = self._materialize(fn_name, fn, kwargs)
+                sources += 1
                 structural_used.update(
                     k for k in pushdown.filters
                     if k in kwargs and k not in df_cols
@@ -1114,6 +1223,10 @@ class DuckAPI:
         if structural_used:
             rewritten = self._strip_where_conditions(rewritten, structural_used)
 
+        if sources:
+            logger.info("%d source(s) fetched in %.2fs — DuckDB runs the rest of the query", sources,
+                        time.perf_counter() - started)
+            logger.debug("    %s", " ".join(rewritten.split()))
         return self.conn.sql(rewritten)
 
     # ------------------------------------------------------------------
@@ -1171,7 +1284,8 @@ class DuckAPI:
 
             # WHERE push-down onto the generator's own parameters (no limit:
             # stream iterates every page)
-            kwargs = self._merge_kwargs(iter_fn, pushdown, explicit, {fn_name}, allow_limit=False)
+            kwargs, report = self._plan_call(iter_fn, pushdown, explicit, {fn_name}, allow_limit=False)
+            self._log_call(fn_name, kwargs, report)
 
             # Rewrites the query, replacing func(...) / func with the chunk table name
             chunk_table = f"_stream_{fn_name}"
@@ -1182,11 +1296,18 @@ class DuckAPI:
             )
             chunk_query = bare_pat.sub(rf"\1 {chunk_table}", chunk_query)
 
+            started, chunks, rows_in, rows_out = time.perf_counter(), 0, 0, 0
             for chunk_df in iter_fn(**kwargs):
                 if chunk_df.empty:
                     continue
                 self.conn.register(chunk_table, chunk_df)
-                yield self.conn.sql(chunk_query).df()
+                result = self.conn.sql(chunk_query).df()
+                chunks += 1
+                rows_in += len(chunk_df)
+                rows_out += len(result)
+                logger.info("  %s: chunk %d · %s rows read · %s kept · %.1fs elapsed", fn_name, chunks,
+                            f"{rows_in:,}", f"{rows_out:,}", time.perf_counter() - started)
+                yield result
 
             return
 

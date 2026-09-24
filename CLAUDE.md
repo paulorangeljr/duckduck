@@ -69,6 +69,16 @@ What a connector can filter server-side is declared in its signature:
 - `stream()` maps against the *iter function's* own signature, never pushing LIMIT.
 - `SQLDatabase` translates DuckDB LIKE semantics exactly per dialect: `\` escaped and declared as ESCAPE (MySQL treats it as one by default), and on SQL Server `[` escaped (a character class there). Values are always bound parameters.
 
+### Verbose mode (`duckduck/logs.py`)
+
+`DuckAPI(verbose=True | "info" | "debug")` (or the `DUCKDUCK_VERBOSE` env var; `python -m duckduck.semantic -v`) attaches one console handler to the `duckduck` logger — standard `logging`, so an app can route the same records elsewhere instead; it's process-wide (last call wins) and silent by default.
+
+- **Per call** (`DuckAPI._plan_call` → `_log_call`): `▶ assets(hostname_ilike='db%', limit=5)` then one line per decision — `✓ cond → param` or `✗ cond — why` (`_why_not_pushed`: no parameter / untranslatable LIKE / `_like` can't take ILIKE), and the LIMIT's fate with its blocker (`_limit_blocker` names it: ORDER BY, JOIN, aggregate...; or "not every WHERE condition reached the source"). `pushdown.assign_conditions` is the single source of truth for condition → parameter, used by both `map_conditions` and the report.
+- **HTTP**: `instrument_session()` adds a `requests` response hook (InsightVM, ServiceNow, Axonius sessions); SharePoint and the ServiceNow OAuth token call use `log_http()` directly (the token call with `log_body=False` — its form body is the client secret). One line per response: method, URL, status, time, size; request body at DEBUG.
+- **Pagination**: `PageProgress.page(rows, total_pages=, total_rows=)` in each connector's pager logs page n[/total] · rows · elapsed · `~left` — the estimate only when the API reports a total (InsightVM `page.totalPages`/`totalResources`, ServiceNow's `X-Total-Count` header via `ServiceNow._last_total`; Graph and Axonius give none).
+- **Query-language sources**: `SQLDatabase` logs the compiled SQL (bound params at DEBUG), `DataExplorer` the KQL/command, `LakehouseConnection` the DuckDB scan; the semantic executor logs pushed vs. residual per source.
+- **Secrets**: never logged. `Authorization`-style headers aren't printed at all; URL query params and JSON/form body fields whose name matches `_SENSITIVE` (password, secret, token, api key, auth...) become `***`. `tests/test_verbose.py` asserts this at DEBUG level.
+
 ### SQL rewriting
 
 `DuckAPI.sql()` iterates registered functions and rewrites the query with two regex passes per function:

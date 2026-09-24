@@ -52,11 +52,15 @@ Usage
 from __future__ import annotations
 
 import re
+import time
 from typing import Any, Dict, Iterator, List, Optional
 
 import pandas as pd
 
 from .pushdown import Condition, parse_like
+from .logs import get_logger
+
+logger = get_logger("adx")
 
 try:
     from azure.kusto.data import ClientRequestProperties, KustoClient, KustoConnectionStringBuilder
@@ -262,10 +266,15 @@ class DataExplorer:
     def _run(self, kql: str) -> pd.DataFrame:
         # execute_query (never execute): a query that starts with "." would
         # otherwise run as a control command (.drop, .set ...).
+        logger.info("KQL on %s/%s: %s", self.base_url, self.database, " ".join(kql.split()))
+        started = time.perf_counter()
         response = self.client.execute_query(self.database, kql, self._properties())
-        return dataframe_from_result_table(response.primary_results[0])
+        df = dataframe_from_result_table(response.primary_results[0])
+        logger.info("    → %s rows in %.2fs", f"{len(df):,}", time.perf_counter() - started)
+        return df
 
     def _run_mgmt(self, command: str) -> pd.DataFrame:
+        logger.info("command on %s/%s: %s", self.base_url, self.database, command)
         response = self.client.execute_mgmt(self.database, command, self._properties())
         return dataframe_from_result_table(response.primary_results[0])
 

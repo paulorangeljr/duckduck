@@ -50,11 +50,15 @@ Via ``auto_register()`` (connector ``"database"``, registered as
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, Iterator, List, Optional
 
 import pandas as pd
 
 from .pushdown import Condition
+from .logs import get_logger
+
+logger = get_logger("database")
 
 try:
     import sqlalchemy as sa
@@ -223,7 +227,17 @@ class SQLDatabase:
             stmt = stmt.where(*clauses)
         if limit is not None:
             stmt = stmt.limit(limit)
+        self._log_statement(stmt)
         return pd.read_sql(stmt, self.engine)
+
+    def _log_statement(self, stmt) -> None:
+        """The SQL sent to the database at INFO (placeholders), bound values at DEBUG."""
+        if not logger.isEnabledFor(logging.INFO):
+            return
+        compiled = stmt.compile(dialect=self.engine.dialect)
+        logger.info("%s: %s", self.engine.dialect.name, " ".join(str(compiled).split()))
+        if compiled.params:
+            logger.debug("    params: %s", compiled.params)
 
     def query(
         self,
@@ -245,6 +259,7 @@ class SQLDatabase:
             for a true server-side limit, add it to ``sql`` itself using
             your engine's syntax.
         """
+        logger.info("%s: %s", self.engine.dialect.name, " ".join(sql.split()))
         df = pd.read_sql_query(sql, self.engine)
         if limit is not None:
             df = df.head(limit)
@@ -266,6 +281,7 @@ class SQLDatabase:
         clauses = self._where_clauses(tbl, where)
         if clauses:
             stmt = stmt.where(*clauses)
+        self._log_statement(stmt)
         for chunk in pd.read_sql(stmt, self.engine, chunksize=chunksize):
             if not chunk.empty:
                 yield chunk

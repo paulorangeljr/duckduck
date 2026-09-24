@@ -23,7 +23,10 @@ from typing import List, Optional
 import duckdb
 import pandas as pd
 
+from .logs import get_logger
 from .pushdown import Condition, conditions_to_sql
+
+logger = get_logger("lakehouse")
 
 
 class LakehouseConnection:
@@ -69,4 +72,5 @@ class LakehouseConnection:
                 sql += f" WHERE {body}"
         if limit is not None:
             sql += f" LIMIT {int(limit)}"
+        logger.info("DuckDB scan: %s", sql)
         return self._conn.sql(sql).df()

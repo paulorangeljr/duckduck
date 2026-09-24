@@ -33,10 +33,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from ..logs import get_logger
 from ..pushdown import Condition, map_conditions
 from .catalog import Catalog
 from .compiler import compile_plan, default_order, display_relation
 from .plan import LogicalQueryPlan
+
+logger = get_logger("semantic")
 
 _EMPTY_DTYPES = {
     "string": "string",
@@ -165,6 +168,12 @@ class PlanExecutor:
             fetch.kwargs["limit"] = plan.limit
             fetch.limit_pushed = True
 
+        logger.info(
+            "▶ %s ← %s(%s) · pushed: %s · DuckDB: %s · limit %s",
+            source, src.table, ", ".join(f"{k}={v!r}" for k, v in fetch.kwargs.items()),
+            ", ".join(fetch.pushed_filters) or "—", ", ".join(fetch.residual_filters) or "—",
+            "pushed" if fetch.limit_pushed else "not pushed",
+        )
         df = self.duck.fetch(src.table, **fetch.kwargs)
         fetch.rows = len(df)
 

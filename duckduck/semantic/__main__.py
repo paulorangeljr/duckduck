@@ -16,7 +16,7 @@ import sys
 def _duck(args):
     from duckduck import DuckAPI
 
-    duck = DuckAPI()
+    duck = DuckAPI(verbose=args.verbose)
     duck.auto_register(config_path=args.config, on_error="warn")
     return duck
 
@@ -81,6 +81,8 @@ def cmd_jev_check(args) -> int:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="python -m duckduck.semantic")
     parser.add_argument("--config", help="config file (default: duckduck.json lookup)")
+    parser.add_argument("-v", "--verbose", nargs="?", const="info", default=None, choices=["info", "debug"],
+                        help="log API calls, push-down decisions and pagination progress (default level: info)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     gen = sub.add_parser("generate-catalog", help="draft the semantic catalog with the LLM")

@@ -57,6 +57,7 @@ from typing import Any, Dict, Iterator, List, Optional
 import pandas as pd
 import requests
 
+from .logs import PageProgress, instrument_session, log_http
 from .pushdown import require_like
 
 
@@ -220,6 +221,8 @@ class ServiceNow:
         self.base_url = base_url
         self.default_page_size = default_page_size
         self.session = requests.Session()
+        instrument_session(self.session, "servicenow")
+        self._last_total: Optional[int] = None
         self.session.verify = verify
         self.session.headers.update({"Accept": "application/json"})
 
@@ -248,6 +251,7 @@ class ServiceNow:
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             timeout=30,
         )
+        log_http("servicenow", r, log_body=False)  # the body carries client_secret
         if not r.ok:
             # r.raise_for_status() drops the response body — but that's exactly
             # where Azure AD (and most OAuth2 providers) put the actual reason
@@ -275,6 +279,9 @@ class ServiceNow:
             timeout=60,
         )
         r.raise_for_status()
+        # ServiceNow reports the query's total row count in a header.
+        total = r.headers.get("X-Total-Count")
+        self._last_total = int(total) if isinstance(total, str) and total.isdigit() else None
         return r.json()
 
     #: SQL LIKE pattern kind (``duckduck.pushdown.parse_like``) → encoded-query operator.
@@ -323,6 +330,7 @@ class ServiceNow:
         yielding one page of records at a time.
         """
         offset = 0
+        progress = PageProgress("servicenow", table_name)
         while True:
             params: Dict[str, Any] = {
                 "sysparm_limit": self.default_page_size,
@@ -337,6 +345,9 @@ class ServiceNow:
 
             payload = self._get(table_name, params)
             results = payload.get("result", [])
+            total = self._last_total
+            pages = -(-total // self.default_page_size) if total else None
+            progress.page(len(results), total_pages=pages, total_rows=total)
             if results:
                 yield results
             if len(results) < self.default_page_size:
