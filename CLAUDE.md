@@ -504,9 +504,30 @@ question ─► RuleBasedExtractor (values: time, IPs, domains, enums, free text
 - **Execution does not go through `DuckAPI.sql()`.** Its push-down is global (one LIMIT/WHERE handed to every function in the query), wrong for joins. `PlanExecutor` calls `DuckAPI.fetch()` per source instead: `eq` filters → API kwargs when the function accepts them; `limit` only for a single-source, non-DISTINCT plan with **no residual filter and no ORDER BY** (an API's first N rows aren't the newest N). DuckDB re-applies every filter regardless.
 - **Unavailable sources degrade, not crash.** A catalog source whose DuckAPI table isn't registered (e.g. its connector failed `auto_register(on_error="warn")`) is dropped with an always-shown `RuntimeWarning`; `strict=True` raises instead.
 
-### The lexical baseline and JEV
+### Decision engines: lexical baseline and Jev
 
-`LexicalDecisionEngine` scores token overlap against catalog text (entity/activity keywords, source descriptions) and returns the caller's `prior` for structural confirmations (field/relationship relevance). It's what makes the MVP set in `examples/semantic/evaluation.json` pass offline, and it's deliberately crude — richer phrasing is what JEV is for. To plug JEV in, implement `JEVBackend` (`decide(state, question, options)` / `classify(...)`, returning a score per option label) and pass `engine=JEVAdapter(backend)`. The real JEV API contract wasn't available when this was built, so there's no bundled HTTP client for it.
+`LexicalDecisionEngine` scores token overlap against catalog text (entity/activity keywords, source descriptions) and returns the caller's `prior` for structural confirmations (field/relationship relevance). It's what makes the MVP set in `examples/semantic/evaluation.json` pass offline, and it's deliberately crude — richer phrasing is what Jev is for.
+
+`jev.py` — `JevClient` is the `JEVBackend` for the Jev REST API (`POST https://www.jevai.org/api/v1/decisions`, `Authorization: Bearer <key>`), wrapped by `JEVAdapter` (retries, timeout, normalization). It uses Jev's native endpoint, not a preset: yes/no → a `noul` question, pick-one → a `choice` question with the option descriptions as `criteria`, and `decide_batch` sends several `noul` questions in one request — `JEVAdapter.decide_many` uses it so source relevance for every retrieved candidate is **one** round trip. The state sent is compact (`user_question`, `subject`/`candidates`, `facts`, `catalog_prior_probability`); lexical `terms` are never sent. `JevAPIError.retryable` distinguishes 429/5xx/network (retried) from bad key/bad request/unparseable answer (fails immediately — `JEVAdapter._call` stops on `retryable=False`). Answer parsing accepts a bare number or `{noul|probability}` for `noul`, and `{probabilities}` or `{choice, confidence}` for `choice`; anything else raises quoting the raw answer — **the exact per-answer envelope wasn't verifiable while building this (the host was blocked by the sandbox network policy)**, so `python -m duckduck.semantic jev-check` exists to confirm it against the live API with a real key.
+
+### LLM: catalog drafting and value extraction
+
+`llm.py` — `LLMClient` protocol (`generate(system, prompt, output_model) -> output_model`); `ClaudeLLM` implements it with the Anthropic SDK's structured outputs (`messages.parse(output_format=Model)`), default model `claude-opus-5`, server-side refusal fallback on by default (`fallbacks="default"`; set `None` behind gateways that reject it). Output models passed to it must stay schema-friendly: lists of objects, no free-form `Dict` fields (that's why `generation.py` has its own `Gen*` shapes instead of reusing `Catalog`).
+
+- **`llm_extraction.py` — `LLMExtractor`**: the extraction half of interpreting a question (values + their semantic types, enumerated values, time range). Judgments stay with the decision engine. Everything the LLM returns is checked against the catalog (enum must be a real field's stored value, semantic type must exist, timestamps must parse) and dropped otherwise; shape-recognized literals (IPs, domains) from the rule-based pass stay authoritative. On any LLM failure it falls back to `RuleBasedExtractor` with an always-shown `RuntimeWarning` (`on_error="raise"` to fail instead).
+- **`generation.py` — `CatalogGenerator`**: pass 1 profiles each table through `DuckAPI.fetch` (columns, dtypes, `sample_rows` rows, connector description, owner `notes`) and asks for a `GenSource`; pass 2 shows all drafts and asks for the shared `GenVocabulary` (entities, activities, relationships). `_assemble` then sanitizes deterministically — fields must be real columns, relationships must join real fields of different sources, claimed entities/activities must be defined — logging every drop in `GenerationResult.warnings` (also written as a YAML header comment). Output is a draft for human review; `sample_rows=0` sends no data values to the LLM.
+
+System prompts for all three LLM calls are configurable (inline or `*_file`); the defaults are the module constants, also copied to `examples/semantic/prompts/` as a starting point.
+
+### Configuration (`semantic` section of `duckduck.json`) and CLI
+
+`config.py` — `SemanticConfig` (Pydantic, `extra="forbid"`): `catalog_path`, `decision_engine` (`lexical` | `jev` + `authentication`), `llm` (+ `authentication`), `extractor` (`rules` | `llm` + prompt), `catalog_generation` (prompts, `sample_rows`, `tables` as `TableSpec`s with structural `args`), `thresholds`, `allowed_sources`. Credentials go through `DuckAPI.resolve_credentials` — the same `local`/`aws`/`azure` + `$secret.<key>` resolution as the connectors (the Jev/LLM block must yield an `api_key`; an LLM block without `authentication` falls back to the SDK's own env resolution). Relative paths resolve against the config file's directory. `SemanticSearch.from_config(duck)` builds everything; see `duckduck.example.json` for a full `semantic` section.
+
+```bash
+python -m duckduck.semantic generate-catalog          # LLM drafts semantic_catalog.yaml
+python -m duckduck.semantic ask "Which users accessed github in the last 24hrs?"
+python -m duckduck.semantic jev-check                 # one real Jev call: key + network + parsing
+```
 
 ### Example + evaluation
 

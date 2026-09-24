@@ -72,7 +72,7 @@ def test_jev_adapter_retries_then_succeeds():
 
 def test_jev_adapter_gives_up_after_retries():
     backend = FakeJEV(decide={"YES": 1}, fail_times=10)
-    with pytest.raises(DecisionEngineError, match="after 2 attempts"):
+    with pytest.raises(DecisionEngineError, match="after 2 attempt"):
         JEVAdapter(backend, retries=1, backoff=0).decide(DecisionState(query="q"), "?", "s")
 
 

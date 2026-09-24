@@ -131,6 +131,39 @@ class SemanticSearch:
         self.validator = QueryValidator(self.catalog, allowed_sources=allowed_sources)
         self.executor = PlanExecutor(self.catalog, duck) if duck is not None else None
 
+    @classmethod
+    def from_config(
+        cls,
+        duck: Any,
+        config_path: Optional[str] = None,
+        section: str = "semantic",
+        **overrides: Any,
+    ) -> "SemanticSearch":
+        """
+        Builds everything from the ``"semantic"`` section of
+        ``duckduck.json`` (see ``duckduck.semantic.config``): catalog path,
+        decision engine (lexical or Jev + its key), LLM extractor and its
+        prompt, thresholds, authorization. ``overrides`` go straight to
+        the constructor (e.g. ``clock=``).
+        """
+        from .config import SemanticConfig
+
+        cfg = SemanticConfig.load(duck, config_path, section)
+        kwargs = dict(
+            engine=cfg.build_engine(duck),
+            thresholds=cfg.thresholds,
+            allowed_sources=cfg.allowed_sources,
+            default_limit=cfg.default_limit,
+            strict=cfg.strict,
+        )
+        kwargs.update(overrides)
+        search = cls(cfg.path(cfg.catalog_path), duck, **kwargs)
+        # built against the *available* catalog subset
+        extractor = cfg.build_extractor(search.catalog, duck)
+        if extractor is not None and "extractor" not in overrides:
+            search.interpreter.extractor = extractor
+        return search
+
     # ------------------------------------------------------------------
 
     def plan(self, question: str) -> SearchResult:

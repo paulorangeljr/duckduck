@@ -335,11 +335,28 @@ result.results     # pd.DataFrame
 result.decisions   # every judgment, with its probability
 ```
 
-The default decision engine is an offline lexical baseline. To use JEV,
-implement its two-method `JEVBackend` protocol and pass
-`engine=JEVAdapter(backend)`. See `examples/semantic/catalog.yaml` for the
-catalog format and the "Semantic search" section of `CLAUDE.md` for the
-design.
+Everything can be configured in the `semantic` section of
+`duckduck.json` (see `duckduck.example.json`), with API keys pulled from
+the same local/AWS/Azure `authentication` blocks the connectors use:
+
+- **Jev** (`decision_engine.type: "jev"`) makes the judgments. The
+  default is an offline lexical baseline.
+- **An LLM** (Claude by default, `pip install -e ".[llm]"`) drafts the
+  semantic catalog from your registered tables and extracts values from
+  questions (`extractor.type: "llm"`). You can replace every system prompt.
+
+```bash
+python -m duckduck.semantic generate-catalog   # draft semantic_catalog.yaml, then review it
+python -m duckduck.semantic ask "Which users accessed github in the last 24hrs?"
+python -m duckduck.semantic jev-check          # verify the Jev key/network
+```
+
+```python
+search = SemanticSearch.from_config(duck)      # reads the semantic section
+```
+
+See `examples/semantic/catalog.yaml` for the catalog format and the
+"Semantic search" section of `CLAUDE.md` for the design.
 
 ## Adding your own API wrapper
 

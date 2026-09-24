@@ -446,6 +446,16 @@ class DuckAPI:
 
         return instances
 
+    def resolve_credentials(self, auth: Dict[str, Any], name: str = "credentials") -> Dict[str, Any]:
+        """
+        Resolves a standalone ``authentication`` block (same ``local`` /
+        ``aws`` / ``azure`` shapes as ``auto_register``) into a plain
+        credentials dict — for things configured next to the connectors
+        that aren't connectors themselves (e.g. ``duckduck.semantic``'s
+        Jev and LLM API keys).
+        """
+        return self._resolve_authentication(name, auth, {}, {})
+
     def _resolve_authentication(
         self,
         name: str,

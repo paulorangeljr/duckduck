@@ -15,6 +15,7 @@ Requires ``pip install "duckduck[semantic]"`` (pydantic, PyYAML).
 """
 
 from .catalog import Catalog
+from .config import SemanticConfig
 from .decisions import (
     BinaryDecision,
     Classification,
@@ -28,9 +29,13 @@ from .decisions import (
 from .engine import SearchResult, SemanticSearch
 from .evaluation import evaluate, load_dataset
 from .extraction import RuleBasedExtractor
+from .generation import CatalogGenerator, GenerationResult, TableSpec
 from .graph import RelationshipGraph
 from .intent import ClarificationNeeded, DecisionRecord, SemanticIntent, Thresholds
 from .interpreter import SemanticInterpreter
+from .jev import JevAPIError, JevClient
+from .llm import ClaudeLLM, LLMClient, LLMError
+from .llm_extraction import LLMExtractor
 from .plan import Filter, Join, LogicalQueryPlan, TimeRangeFilter
 from .planner import QueryPlanner
 from .retrieval import LexicalRetriever
@@ -39,16 +44,24 @@ from .validator import PlanValidationError, QueryValidator
 __all__ = [
     "BinaryDecision",
     "Catalog",
-    "Classification",
+    "CatalogGenerator",
     "ClarificationNeeded",
+    "Classification",
+    "ClaudeLLM",
     "DecisionEngine",
     "DecisionEngineError",
     "DecisionRecord",
     "DecisionState",
     "Filter",
+    "GenerationResult",
     "JEVAdapter",
     "JEVBackend",
+    "JevAPIError",
+    "JevClient",
     "Join",
+    "LLMClient",
+    "LLMError",
+    "LLMExtractor",
     "LexicalDecisionEngine",
     "LexicalRetriever",
     "LogicalQueryPlan",
@@ -58,9 +71,11 @@ __all__ = [
     "RelationshipGraph",
     "RuleBasedExtractor",
     "SearchResult",
+    "SemanticConfig",
     "SemanticIntent",
     "SemanticInterpreter",
     "SemanticSearch",
+    "TableSpec",
     "Thresholds",
     "TimeRangeFilter",
     "evaluate",

@@ -123,17 +123,22 @@ class SemanticInterpreter:
 
     def _decide_resources(self, intent: SemanticIntent, ex: Extraction, decisions: List[DecisionRecord]) -> None:
         activity = self.catalog.activities.get(intent.activity) if intent.activity else None
-        free_text = [lit for lit in ex.literals if lit.kind == "term" and not self._hinted_type(lit.hint)]
+        free_text = [lit for lit in ex.literals if lit.kind == "term" and not self._known_type(lit)]
 
         for lit in ex.literals:
-            sem_type = self._shape_semantic_type(lit.kind) if lit.kind in _SHAPE_TYPES else self._hinted_type(lit.hint)
+            sem_type = self._known_type(lit)
             if sem_type:
-                # Recognized by shape (an IP, a domain) or named right before
-                # the value ("user alice") — no need to ask anyone.
+                # Recognized by shape (an IP, a domain), typed by the extractor,
+                # or named right before the value ("user alice").
+                if lit.kind in _SHAPE_TYPES:
+                    how, by = f"shape: {lit.kind}", "deterministic"
+                elif lit.semantic_type == sem_type:
+                    how, by = "typed by the extractor", "extractor"
+                else:
+                    how, by = f"preceded by '{lit.hint}'", "deterministic"
                 decisions.append(DecisionRecord(
                     kind="resource_type", question=f"What kind of value is {lit.value!r}?",
-                    answer=sem_type, probability=0.99, decided_by="deterministic",
-                    subject=f"shape: {lit.kind}" if lit.kind in _SHAPE_TYPES else f"preceded by '{lit.hint}'",
+                    answer=sem_type, probability=0.99, decided_by=by, subject=how,
                 ))
                 intent.resources.append(ResourceFilter(type=sem_type, value=lit.value, confidence=0.99, literal_kind=lit.kind))
                 continue
@@ -189,6 +194,14 @@ class SemanticInterpreter:
                     [label for label, _ in result.ranked()[:4]],
                 )
 
+    def _known_type(self, lit) -> Optional[str]:
+        """A literal's semantic type when it's knowable without asking anyone."""
+        if lit.kind in _SHAPE_TYPES:
+            return self._shape_semantic_type(lit.kind)
+        if lit.semantic_type in self._semantic_types:
+            return lit.semantic_type
+        return self._hinted_type(lit.hint)
+
     def _hinted_type(self, hint: Optional[str]) -> Optional[str]:
         """Entity named by the word right before a value, if fields carry that semantic type."""
         if not hint:
@@ -209,10 +222,16 @@ class SemanticInterpreter:
     def _decide_sources(self, intent: SemanticIntent, ex: Extraction, decisions: List[DecisionRecord]) -> None:
         retrieved: Dict[str, float] = dict(self.retriever.search(intent.question, self.top_k))
         scored: List[ScoredSource] = []
+        question = "Is this source relevant to answering the question?"
+        state = DecisionState(query=intent.question, terms=ex.terms)
+        subjects = {name: self.catalog.describe_source(name) for name in retrieved}
+        decide_many = getattr(self.engine, "decide_many", None)
+        if decide_many is not None:  # one round trip for every candidate
+            results = decide_many(state, question, subjects)
+        else:
+            results = {name: self.engine.decide(state, question, subj) for name, subj in subjects.items()}
         for name, retrieval_score in retrieved.items():
-            question = "Is this source relevant to answering the question?"
-            subject = self.catalog.describe_source(name)
-            result = self.engine.decide(DecisionState(query=intent.question, terms=ex.terms), question, subject)
+            result = results[name]
             threshold = self.thresholds.critical if self.catalog.sources[name].critical else self.thresholds.source
             record = DecisionRecord(
                 kind="source_relevance", question=question, subject=name,

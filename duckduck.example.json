@@ -54,7 +54,9 @@
         "secret_id": "prod/sqlserver-rds",
         "drivername": "mssql+pyodbc",
         "database": "$secret.dbname",
-        "query": { "driver": "ODBC Driver 17 for SQL Server" }
+        "query": {
+          "driver": "ODBC Driver 17 for SQL Server"
+        }
       }
     },
     "servicenow": {
@@ -99,6 +101,66 @@
         "type": "local",
         "account_name": "mystorageacct"
       }
+    }
+  },
+  "semantic": {
+    "catalog_path": "semantic_catalog.yaml",
+    "default_limit": 1000,
+    "allowed_sources": null,
+    "thresholds": {
+      "source": 0.8,
+      "field": 0.85,
+      "relationship": 0.9,
+      "critical": 0.98
+    },
+    "decision_engine": {
+      "type": "jev",
+      "model": "typesafe-ai/jev",
+      "timeout": 15,
+      "retries": 2,
+      "authentication": {
+        "type": "aws",
+        "region_name": "us-east-1",
+        "secret_id": "prod/jev",
+        "api_key": "$secret.jev_api_key"
+      }
+    },
+    "llm": {
+      "provider": "anthropic",
+      "model": "claude-opus-5",
+      "effort": "high",
+      "authentication": {
+        "type": "azure",
+        "vault_url": "https://my-vault.vault.azure.net/",
+        "secret_id": "anthropic-api",
+        "api_key": "$secret.key"
+      }
+    },
+    "extractor": {
+      "type": "llm",
+      "system_prompt_file": "prompts/extraction.md",
+      "on_error": "fallback"
+    },
+    "catalog_generation": {
+      "output_path": "semantic_catalog.yaml",
+      "sample_rows": 5,
+      "source_prompt_file": "prompts/catalog_source.md",
+      "link_prompt_file": "prompts/catalog_link.md",
+      "tables": [
+        {
+          "name": "proxy_logs",
+          "table": "glue_table",
+          "args": {
+            "database": "security",
+            "table_name": "proxy_logs"
+          },
+          "notes": "Zscaler proxy logs, one row per HTTP request"
+        },
+        {
+          "name": "incidents",
+          "table": "servicenow_incidents"
+        }
+      ]
     }
   }
 }

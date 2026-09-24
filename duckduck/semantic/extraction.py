@@ -39,6 +39,10 @@ class ExtractedLiteral(BaseModel):
     #: Stem of the catalog word right before the value ("user *alice*" →
     #: "user") — usually names the value's type.
     hint: Optional[str] = None
+    #: Catalog semantic type, when the extractor itself typed the value
+    #: (the LLM extractor does; the rule-based one leaves it to the
+    #: interpreter).
+    semantic_type: Optional[str] = None
 
 
 class EnumMatch(BaseModel):

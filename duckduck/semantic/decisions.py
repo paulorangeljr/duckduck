@@ -169,6 +169,28 @@ class JEVAdapter:
         logger.info("jev.classify %r -> %s (%.3f)", question, result.choice, result.probability)
         return result
 
+    def decide_many(
+        self, state: DecisionState, question: str, subjects: Mapping[str, str]
+    ) -> Dict[str, BinaryDecision]:
+        """
+        The same yes/no ``question`` about several subjects. One request when
+        the backend has ``decide_batch`` (Jev's multi-question calls), else
+        one ``decide`` per subject.
+        """
+        batch = getattr(self.backend, "decide_batch", None)
+        if batch is None or not subjects:
+            return {name: self.decide(state, question, subject) for name, subject in subjects.items()}
+        keys = {f"q{i}": name for i, name in enumerate(subjects)}
+        payload = {**state.model_dump(), "candidates": dict(subjects)}
+        texts = {key: f"{question} Candidate: '{name}' (described in candidates.{name})." for key, name in keys.items()}
+        raw = self._call(lambda p, q, labels: batch(p, texts), payload, question, list(keys))
+        out = {}
+        for key, name in keys.items():
+            p = min(max(float(raw.get(key, 0.5)), 0.0), 1.0)
+            out[name] = BinaryDecision(question=question, subject=subjects[name], answer=p >= 0.5, probability=p)
+            logger.info("jev.decide_many %r on %r -> P(yes)=%.3f", question, name, p)
+        return out
+
     def _call(self, fn: Callable, payload: Dict[str, Any], question: str, labels: List[str]):
         last_error: Optional[BaseException] = None
         for attempt in range(self.retries + 1):
@@ -180,10 +202,12 @@ class JEVAdapter:
             except Exception as exc:  # backend/network error
                 last_error = exc
                 logger.warning("jev call failed (attempt %d): %s", attempt + 1, exc)
+                if not getattr(exc, "retryable", True):
+                    break  # bad key / bad request: retrying can't help
             if attempt < self.retries:
                 time.sleep(self.backoff * (2 ** attempt))
         raise DecisionEngineError(
-            f"JEV failed after {self.retries + 1} attempts on {question!r}: {last_error!r}"
+            f"JEV failed after {attempt + 1} attempt(s) on {question!r}: {last_error!r}"
         ) from last_error
 
 
@@ -218,6 +242,11 @@ class LexicalDecisionEngine:
             coverage = sum(1 for t in state.terms if t in vocab) / len(state.terms)
             p = 0.05 + 0.9 * coverage
         return BinaryDecision(question=question, subject=subject, answer=p >= 0.5, probability=p)
+
+    def decide_many(
+        self, state: DecisionState, question: str, subjects: Mapping[str, str]
+    ) -> Dict[str, BinaryDecision]:
+        return {name: self.decide(state, question, subject) for name, subject in subjects.items()}
 
     def classify(
         self, state: DecisionState, question: str, options: Mapping[str, str]
