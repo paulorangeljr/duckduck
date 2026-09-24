@@ -139,3 +139,48 @@ duck.register_api_function("other",   api.other_method)
 ```
 
 **Tests:** mock the HTTP session (`requests.Session`) and assert that push-down kwargs reach the method. See `tests/test_core.py` for the `tracked_*` wrapper pattern used to spy on calls.
+
+---
+
+## Streaming (paginação incremental)
+
+`DuckAPI.sql()` materializa todos os dados antes de retornar. Para datasets grandes, use `DuckAPI.stream()`, que faz yield de um `pd.DataFrame` por página à medida que cada requisição HTTP completa.
+
+### Registro duplo
+
+```python
+duck.register_api_function("assets", r7.assets)          # para sql()
+duck.register_streaming_function("assets", r7.iter_assets)  # para stream()
+```
+
+### Uso no Jupyter
+
+```python
+for chunk in duck.stream("SELECT * FROM assets WHERE severity = 'critical'"):
+    display(chunk)   # aparece conforme cada página chega
+```
+
+### Contrato do `iter_*` (InsightVM e wrappers novos)
+
+- Aceita os mesmos filtros de coluna que o método normal (sem `limit` — stream itera tudo).
+- Faz `yield pd.DataFrame` por página via `self._iter_pages(path)`.
+- Filtros client-side são aplicados antes do yield; páginas que ficam vazias após o filtro são puladas.
+
+```python
+def iter_records(self, status=None) -> Iterator[pd.DataFrame]:
+    for page in self._iter_pages("/records"):
+        df = pd.json_normalize(page, sep="_")
+        if status and "status" in df.columns:
+            df = df[df["status"] == status]
+        if not df.empty:
+            yield df
+```
+
+### Limitações do `stream()`
+
+| Comportamento | Detalhe |
+|---|---|
+| Tabelas | Uma por query — sem JOINs entre funções |
+| `WHERE` / `SELECT` | Aplicados por chunk (correto) |
+| `LIMIT N` | Aplicado por chunk, não globalmente |
+| `ORDER BY` / agregações | Operam por chunk, não sobre o total |

@@ -156,6 +156,7 @@ class DuckAPI:
     def __init__(self, database: str = ":memory:"):
         self.conn = duckdb.connect(database)
         self.functions: Dict[str, Any] = {}
+        self._streaming_functions: Dict[str, Any] = {}
         self._table_counter = 0
 
     # ------------------------------------------------------------------
@@ -176,6 +177,21 @@ class DuckAPI:
             recebem push-down automático.
         """
         self.functions[name.lower()] = fetch_function
+
+    def register_streaming_function(self, name: str, iter_function) -> None:
+        """
+        Registra uma função geradora para uso com ``stream()``.
+
+        Parameters
+        ----------
+        name : str
+            Mesmo nome usado em ``register_api_function``.
+        iter_function : callable
+            Generator que aceita os mesmos kwargs de filtro que a função
+            regular e faz ``yield`` de um ``pd.DataFrame`` por página.
+            Não precisa aceitar ``limit`` — stream itera todas as páginas.
+        """
+        self._streaming_functions[name.lower()] = iter_function
 
     # ------------------------------------------------------------------
     # Parse de kwargs inline:  func(x=1, y="a")
@@ -402,6 +418,93 @@ class DuckAPI:
                 rewritten = rewritten[: m.start()] + f"{op} {tname}" + rewritten[m.end() :]
 
         return self.conn.sql(rewritten)
+
+    # ------------------------------------------------------------------
+    # Streaming (paginação incremental)
+    # ------------------------------------------------------------------
+
+    def stream(self, query: str):
+        """
+        Executa a query página a página, fazendo ``yield`` de um
+        ``pd.DataFrame`` por página à medida que cada requisição retorna.
+
+        Diferente de ``sql()``, não espera todos os dados antes de
+        devolver o primeiro resultado — útil para datasets grandes ou
+        para exibir progresso no Jupyter.
+
+        Requer que a função tenha sido registrada também via
+        ``register_streaming_function()``.
+
+        Limitações
+        ----------
+        - Suporta apenas uma tabela por query (sem JOINs entre funções).
+        - ``LIMIT N`` e ``WHERE`` são aplicados **por página** (não globalmente).
+          Para um LIMIT global use ``sql()`` com o LIMIT desejado.
+        - ``ORDER BY`` e agregações operam por chunk, não sobre o total.
+
+        Exemplo
+        -------
+        ::
+
+            duck.register_api_function("assets", r7.assets)
+            duck.register_streaming_function("assets", r7.iter_assets)
+
+            for chunk in duck.stream("SELECT * FROM assets WHERE severity = 'critical'"):
+                display(chunk)   # exibe conforme chega cada página
+
+        Yields
+        ------
+        pd.DataFrame
+            Resultado da query aplicado sobre cada página da API.
+        """
+        pushdown = self._extract_pushdown(query)
+
+        for fn_name, iter_fn in self._streaming_functions.items():
+            if not re.search(rf"\b{re.escape(fn_name)}\b", query, re.IGNORECASE):
+                continue
+
+            # Kwargs explícitos da chamada inline
+            explicit: Dict[str, Any] = {}
+            inline_pat = re.compile(
+                rf"\b{re.escape(fn_name)}\s*\((.*?)\)",
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            if m := inline_pat.search(query):
+                explicit = self._parse_kwargs(m.group(1))
+
+            # Filtros do WHERE que a função geradora aceita (sem limit)
+            fn = self.functions.get(fn_name)
+            if fn is not None:
+                sig = inspect.signature(fn)
+                accepted = set(sig.parameters.keys()) - {"limit"}
+                kwargs: Dict[str, Any] = {
+                    col: val for col, val in pushdown.filters.items() if col in accepted
+                }
+            else:
+                kwargs = dict(pushdown.filters)
+            kwargs.update(explicit)
+
+            # Reescreve a query substituindo func(...) / func pelo nome do chunk
+            chunk_table = f"_stream_{fn_name}"
+            chunk_query = inline_pat.sub(chunk_table, query)
+            bare_pat = re.compile(
+                rf"\b(FROM|JOIN)\s+{re.escape(fn_name)}\b(?!\s*\()",
+                flags=re.IGNORECASE,
+            )
+            chunk_query = bare_pat.sub(rf"\1 {chunk_table}", chunk_query)
+
+            for chunk_df in iter_fn(**kwargs):
+                if chunk_df.empty:
+                    continue
+                self.conn.register(chunk_table, chunk_df)
+                yield self.conn.sql(chunk_query).df()
+
+            return
+
+        raise ValueError(
+            f"Nenhuma streaming function registrada para a query.\n"
+            f"Use register_streaming_function() para registrar um gerador."
+        )
 
     # ------------------------------------------------------------------
 

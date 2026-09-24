@@ -36,7 +36,7 @@ Exemplos de queries suportadas
     SELECT * FROM policy_rules(policy_id=7) WHERE status = 'failed'
 """
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Iterator, List, Optional, Union
 
 import pandas as pd
 import requests
@@ -103,6 +103,31 @@ class InsightVM:
         )
         r.raise_for_status()
         return r.json()
+
+    def _iter_pages(
+        self,
+        path: str,
+        params: Optional[Dict] = None,
+    ) -> Iterator[List[Dict]]:
+        """
+        Gerador que faz yield de uma página de registros por vez.
+
+        Útil para streaming incremental: a primeira página é retornada
+        assim que a primeira requisição completa, sem esperar o total.
+        """
+        params = params or {}
+        page = 0
+        while True:
+            payload = self._get(
+                path, {**params, "size": self.default_page_size, "page": page}
+            )
+            resources = payload.get("resources", [])
+            if resources:
+                yield resources
+            total_pages = payload.get("page", {}).get("totalPages", 1)
+            page += 1
+            if page >= total_pages:
+                break
 
     def _fetch(
         self,
@@ -560,3 +585,96 @@ class InsightVM:
             df = df[df["status"].str.lower() == status.lower()]
 
         return df
+
+    # ------------------------------------------------------------------
+    # Streaming (iter_*) — para uso com DuckAPI.stream()
+    # ------------------------------------------------------------------
+    #
+    # Cada método iter_* aceita os mesmos filtros de coluna que a versão
+    # normal, mas faz yield de um pd.DataFrame por página à medida que
+    # cada requisição HTTP retorna — sem acumular tudo em memória.
+    #
+    # Registro:
+    #   duck.register_api_function("assets", r7.assets)
+    #   duck.register_streaming_function("assets", r7.iter_assets)
+    # ------------------------------------------------------------------
+
+    def iter_assets(
+        self,
+        hostname: Optional[str] = None,
+        ip: Optional[str] = None,
+    ) -> Iterator[pd.DataFrame]:
+        """Faz yield de uma página de assets por vez."""
+        if hostname or ip:
+            # O endpoint de busca retorna tudo em uma chamada; yield único.
+            yield self.assets(hostname=hostname, ip=ip)
+            return
+        for page in self._iter_pages("/assets"):
+            yield pd.json_normalize(page, sep="_")
+
+    def iter_vulnerabilities(
+        self,
+        severity: Optional[str] = None,
+    ) -> Iterator[pd.DataFrame]:
+        """Faz yield de uma página de vulnerabilidades por vez."""
+        for page in self._iter_pages("/vulnerabilities"):
+            df = pd.json_normalize(page, sep="_")
+            if severity and "severity" in df.columns:
+                df = df[df["severity"].str.lower() == severity.lower()]
+            if not df.empty:
+                yield df
+
+    def iter_asset_vulnerabilities(
+        self,
+        asset_id: int,
+        status: Optional[str] = None,
+        severity: Optional[str] = None,
+    ) -> Iterator[pd.DataFrame]:
+        """Faz yield de uma página de vulnerabilidades do asset por vez."""
+        for page in self._iter_pages(f"/assets/{asset_id}/vulnerabilities"):
+            df = pd.json_normalize(page, sep="_")
+            if status and "status" in df.columns:
+                df = df[df["status"].str.lower() == status.lower()]
+            if severity and "severity" in df.columns:
+                df = df[df["severity"].str.lower() == severity.lower()]
+            if not df.empty:
+                yield df
+
+    def iter_sites(
+        self,
+        name: Optional[str] = None,
+    ) -> Iterator[pd.DataFrame]:
+        """Faz yield de uma página de sites por vez."""
+        for page in self._iter_pages("/sites"):
+            df = pd.json_normalize(page, sep="_")
+            if name and "name" in df.columns:
+                df = df[df["name"].str.contains(name, case=False, na=False)]
+            if not df.empty:
+                yield df
+
+    def iter_scans(
+        self,
+        status: Optional[str] = None,
+        site_id: Optional[int] = None,
+    ) -> Iterator[pd.DataFrame]:
+        """Faz yield de uma página de scans por vez."""
+        path = f"/sites/{site_id}/scans" if site_id else "/scans"
+        for page in self._iter_pages(path):
+            df = pd.json_normalize(page, sep="_")
+            if status and "status" in df.columns:
+                df = df[df["status"].str.lower() == status.lower()]
+            if not df.empty:
+                yield df
+
+    def iter_policy_rules(
+        self,
+        policy_id: int,
+        status: Optional[str] = None,
+    ) -> Iterator[pd.DataFrame]:
+        """Faz yield de uma página de regras da política por vez."""
+        for page in self._iter_pages(f"/policies/{policy_id}/rules"):
+            df = pd.json_normalize(page, sep="_")
+            if status and "status" in df.columns:
+                df = df[df["status"].str.lower() == status.lower()]
+            if not df.empty:
+                yield df

@@ -1,5 +1,6 @@
 """Testes unitários para DuckAPI com push-down de predicados."""
 
+import pandas as pd
 import pytest
 
 from duckduck import DuckAPI, PushDownContext
@@ -250,3 +251,89 @@ def test_context_manager():
         d.register_api_function("v", lambda: [{"x": 1}])
         df = d.sql("SELECT * FROM v").df()
     assert len(df) == 1
+
+
+# ---------------------------------------------------------------------------
+# stream()
+# ---------------------------------------------------------------------------
+
+
+def iter_vulns_pages(severity=None):
+    """Simulates a 3-page generator."""
+    pages = [
+        [{"id": "CVE-001", "severity": "critical"}, {"id": "CVE-002", "severity": "high"}],
+        [{"id": "CVE-003", "severity": "critical"}, {"id": "CVE-004", "severity": "medium"}],
+        [{"id": "CVE-005", "severity": "critical"}],
+    ]
+    for page in pages:
+        df = pd.DataFrame(page)
+        if severity:
+            df = df[df["severity"] == severity]
+        if not df.empty:
+            yield df
+
+
+def test_stream_yields_multiple_chunks():
+    d = DuckAPI()
+    d.register_api_function("vulns", make_vulns)
+    d.register_streaming_function("vulns", iter_vulns_pages)
+
+    chunks = list(d.stream("SELECT * FROM vulns"))
+    assert len(chunks) == 3
+    assert all(hasattr(c, "columns") for c in chunks)
+    d.close()
+
+
+def test_stream_applies_where_per_chunk():
+    d = DuckAPI()
+    d.register_api_function("vulns", make_vulns)
+    d.register_streaming_function("vulns", iter_vulns_pages)
+
+    chunks = list(d.stream("SELECT * FROM vulns WHERE severity = 'critical'"))
+    for chunk in chunks:
+        assert all(chunk["severity"] == "critical")
+    d.close()
+
+
+def test_stream_pushes_down_filter_to_generator():
+    received = []
+
+    def spy_iter(severity=None):
+        received.append({"severity": severity})
+        yield pd.DataFrame([{"id": "CVE-001", "severity": severity or "any"}])
+
+    d = DuckAPI()
+    d.register_api_function("vulns", make_vulns)
+    d.register_streaming_function("vulns", spy_iter)
+
+    list(d.stream("SELECT * FROM vulns WHERE severity = 'critical'"))
+    assert received[0]["severity"] == "critical"
+    d.close()
+
+
+def test_stream_no_streaming_function_raises():
+    d = DuckAPI()
+    d.register_api_function("vulns", make_vulns)
+
+    with pytest.raises(ValueError, match="streaming function"):
+        list(d.stream("SELECT * FROM vulns"))
+    d.close()
+
+
+def test_stream_inline_structural_param():
+    pages_received = []
+
+    def iter_asset_vulns(asset_id):
+        pages_received.append(asset_id)
+        yield pd.DataFrame([{"id": "CVE-001", "asset_id": asset_id, "severity": "critical"}])
+
+    def asset_vulns(asset_id, limit=None):
+        return [{"id": "CVE-001", "asset_id": asset_id, "severity": "critical"}]
+
+    d = DuckAPI()
+    d.register_api_function("asset_vulns", asset_vulns)
+    d.register_streaming_function("asset_vulns", iter_asset_vulns)
+
+    list(d.stream("SELECT * FROM asset_vulns(asset_id=42)"))
+    assert pages_received == [42]
+    d.close()
