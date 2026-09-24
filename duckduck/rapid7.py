@@ -104,17 +104,32 @@ class InsightVM:
         r.raise_for_status()
         return r.json()
 
-    def _paginate(self, path: str, params: Optional[Dict] = None) -> List[Dict]:
-        """Itera sobre todas as páginas de um endpoint paginado."""
+    def _fetch(
+        self,
+        path: str,
+        params: Optional[Dict] = None,
+        limit: Optional[int] = None,
+    ) -> List[Dict]:
+        """
+        Busca registros de um endpoint paginado.
+
+        Se ``limit`` for fornecido, faz uma única requisição com
+        ``size=limit`` (primeira página apenas) — sem iterar todas as
+        páginas. Sem ``limit``, pagina completamente com ``default_page_size``.
+        """
         params = params or {}
+
+        if limit is not None:
+            payload = self._get(path, {**params, "size": limit, "page": 0})
+            return payload.get("resources", [])
+
+        # Paginação completa
         page = 0
         all_resources: List[Dict] = []
-
         while True:
-            payload = self._get(path, {**params, "page": page})
+            payload = self._get(path, {**params, "size": self.default_page_size, "page": page})
             resources = payload.get("resources", [])
             all_resources.extend(resources)
-
             total_pages = payload.get("page", {}).get("totalPages", 1)
             page += 1
             if page >= total_pages:
@@ -153,8 +168,6 @@ class InsightVM:
         limit : int, optional
             Número máximo de registros (page_size da API).
         """
-        page_size = limit or self.default_page_size
-
         if hostname or ip:
             filters = []
             if hostname:
@@ -174,13 +187,13 @@ class InsightVM:
             payload = self._post(
                 "/assets/search",
                 body,
-                params={"size": page_size, "page": 0},
+                params={"size": limit or self.default_page_size, "page": 0},
             )
             return pd.json_normalize(
                 payload.get("resources", []), sep="_"
             )
 
-        resources = self._paginate("/assets", {"size": page_size})
+        resources = self._fetch("/assets", limit=limit)
         return pd.json_normalize(resources, sep="_")
 
     # ------------------------------------------------------------------
@@ -211,8 +224,7 @@ class InsightVM:
         limit : int, optional
             Número máximo de registros retornados.
         """
-        page_size = limit or self.default_page_size
-        resources = self._paginate("/vulnerabilities", {"size": page_size})
+        resources = self._fetch("/vulnerabilities", limit=limit)
 
         df = pd.json_normalize(resources, sep="_")
 
@@ -226,9 +238,6 @@ class InsightVM:
             )
             if score_col:
                 df = df[pd.to_numeric(df[score_col], errors="coerce") >= cvss_score]
-
-        if limit:
-            df = df.head(limit)
 
         return df
 
@@ -257,11 +266,7 @@ class InsightVM:
         limit : int, optional
             Número máximo de registros.
         """
-        page_size = limit or self.default_page_size
-        resources = self._paginate(
-            f"/assets/{asset_id}/vulnerabilities",
-            {"size": page_size},
-        )
+        resources = self._fetch(f"/assets/{asset_id}/vulnerabilities", limit=limit)
 
         df = pd.json_normalize(resources, sep="_")
 
@@ -270,9 +275,6 @@ class InsightVM:
 
         if severity and not df.empty and "severity" in df.columns:
             df = df[df["severity"].str.lower() == severity.lower()]
-
-        if limit:
-            df = df.head(limit)
 
         return df
 
@@ -295,16 +297,12 @@ class InsightVM:
         limit : int, optional
             Número máximo de registros.
         """
-        page_size = limit or self.default_page_size
-        resources = self._paginate("/sites", {"size": page_size})
+        resources = self._fetch("/sites", limit=limit)
 
         df = pd.json_normalize(resources, sep="_")
 
         if name and not df.empty and "name" in df.columns:
             df = df[df["name"].str.contains(name, case=False, na=False)]
-
-        if limit:
-            df = df.head(limit)
 
         return df
 
@@ -317,8 +315,7 @@ class InsightVM:
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """Lista scan engines registrados."""
-        page_size = limit or self.default_page_size
-        resources = self._paginate("/scan_engines", {"size": page_size})
+        resources = self._fetch("/scan_engines", limit=limit)
         return pd.json_normalize(resources, sep="_")
 
     # ------------------------------------------------------------------
@@ -343,20 +340,13 @@ class InsightVM:
         limit : int, optional
             Número máximo de registros.
         """
-        page_size = limit or self.default_page_size
-
-        if site_id:
-            resources = self._paginate(f"/sites/{site_id}/scans", {"size": page_size})
-        else:
-            resources = self._paginate("/scans", {"size": page_size})
+        path = f"/sites/{site_id}/scans" if site_id else "/scans"
+        resources = self._fetch(path, limit=limit)
 
         df = pd.json_normalize(resources, sep="_")
 
         if status and not df.empty and "status" in df.columns:
             df = df[df["status"].str.lower() == status.lower()]
-
-        if limit:
-            df = df.head(limit)
 
         return df
 
@@ -385,12 +375,8 @@ class InsightVM:
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """Lista relatórios gerados."""
-        page_size = limit or self.default_page_size
-        resources = self._paginate("/reports", {"size": page_size})
-        df = pd.json_normalize(resources, sep="_")
-        if limit:
-            df = df.head(limit)
-        return df
+        resources = self._fetch("/reports", limit=limit)
+        return pd.json_normalize(resources, sep="_")
 
     # ------------------------------------------------------------------
     # Tags
@@ -414,8 +400,7 @@ class InsightVM:
         limit : int, optional
             Número máximo de registros.
         """
-        page_size = limit or self.default_page_size
-        resources = self._paginate("/tags", {"size": page_size})
+        resources = self._fetch("/tags", limit=limit)
 
         df = pd.json_normalize(resources, sep="_")
 
@@ -424,9 +409,6 @@ class InsightVM:
 
         if tag_type and not df.empty and "type" in df.columns:
             df = df[df["type"].str.lower() == tag_type.lower()]
-
-        if limit:
-            df = df.head(limit)
 
         return df
 
@@ -452,8 +434,7 @@ class InsightVM:
         limit : int, optional
             Número máximo de registros.
         """
-        page_size = limit or self.default_page_size
-        resources = self._paginate("/asset_groups", {"size": page_size})
+        resources = self._fetch("/asset_groups", limit=limit)
 
         df = pd.json_normalize(resources, sep="_")
 
@@ -462,9 +443,6 @@ class InsightVM:
 
         if group_type and not df.empty and "type" in df.columns:
             df = df[df["type"].str.lower() == group_type.lower()]
-
-        if limit:
-            df = df.head(limit)
 
         return df
 
@@ -487,16 +465,12 @@ class InsightVM:
         limit : int, optional
             Número máximo de registros.
         """
-        page_size = limit or self.default_page_size
-        resources = self._paginate("/users", {"size": page_size})
+        resources = self._fetch("/users", limit=limit)
 
         df = pd.json_normalize(resources, sep="_")
 
         if login and not df.empty and "login" in df.columns:
             df = df[df["login"].str.lower() == login.lower()]
-
-        if limit:
-            df = df.head(limit)
 
         return df
 
@@ -519,16 +493,12 @@ class InsightVM:
         limit : int, optional
             Número máximo de registros.
         """
-        page_size = limit or self.default_page_size
-        resources = self._paginate("/policies", {"size": page_size})
+        resources = self._fetch("/policies", limit=limit)
 
         df = pd.json_normalize(resources, sep="_")
 
         if name and not df.empty and "title" in df.columns:
             df = df[df["title"].str.contains(name, case=False, na=False)]
-
-        if limit:
-            df = df.head(limit)
 
         return df
 
@@ -554,19 +524,12 @@ class InsightVM:
         limit : int, optional
             Número máximo de registros.
         """
-        page_size = limit or self.default_page_size
-        resources = self._paginate(
-            f"/policies/{policy_id}/rules",
-            {"size": page_size},
-        )
+        resources = self._fetch(f"/policies/{policy_id}/rules", limit=limit)
 
         df = pd.json_normalize(resources, sep="_")
 
         if status and not df.empty and "status" in df.columns:
             df = df[df["status"].str.lower() == status.lower()]
-
-        if limit:
-            df = df.head(limit)
 
         return df
 
@@ -589,15 +552,11 @@ class InsightVM:
         limit : int, optional
             Número máximo de registros.
         """
-        page_size = limit or self.default_page_size
-        resources = self._paginate("/remediation/projects", {"size": page_size})
+        resources = self._fetch("/remediation/projects", limit=limit)
 
         df = pd.json_normalize(resources, sep="_")
 
         if status and not df.empty and "status" in df.columns:
             df = df[df["status"].str.lower() == status.lower()]
-
-        if limit:
-            df = df.head(limit)
 
         return df
