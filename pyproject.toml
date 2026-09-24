@@ -9,6 +9,7 @@ description = "Query external APIs with SQL using DuckDB"
 requires-python = ">=3.10"
 dependencies = [
     "duckdb>=0.10",
+    "msal>=1.20",
     "pandas>=2.0",
     "requests>=2.31",
     "sqlglot>=23.0",
@@ -16,6 +17,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+cert = [
+    "cryptography>=41.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-mock>=3.14",

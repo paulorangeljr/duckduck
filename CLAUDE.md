@@ -184,3 +184,91 @@ def iter_records(self, status=None) -> Iterator[pd.DataFrame]:
 | `WHERE` / `SELECT` | Aplicados por chunk (correto) |
 | `LIMIT N` | Aplicado por chunk, não globalmente |
 | `ORDER BY` / agregações | Operam por chunk, não sobre o total |
+
+---
+
+## SharePoint (Microsoft Graph API)
+
+`duckduck/sharepoint.py` implementa o mesmo contrato acima mas com diferenças de protocolo.
+
+### Autenticação (MSAL)
+
+```python
+from duckduck import SharePoint
+
+# Client secret
+sp = SharePoint(tenant_id, client_id, client_secret)
+
+# Thumbprint SHA-1 + chave PEM (sem dependência extra)
+sp = SharePoint.from_thumbprint(tenant_id, client_id, thumbprint, private_key_pem)
+
+# Arquivo PFX/P12 (requer: pip install cryptography)
+sp = SharePoint.from_pfx(tenant_id, client_id, "/path/cert.pfx", pfx_password="...")
+
+# PEM cert + PEM key (requer: pip install cryptography)
+sp = SharePoint.from_pem_cert(tenant_id, client_id, private_key_pem, cert_pem)
+```
+
+`msal.ConfidentialClientApplication` mantém cache de token em memória; o token é renovado automaticamente quando expira.
+
+### Paginação `@odata.nextLink`
+
+O Graph API **não** usa `page`/`totalPages`. Ele retorna `@odata.nextLink` na resposta quando há mais dados:
+
+```json
+{"value": [...], "@odata.nextLink": "https://graph.microsoft.com/v1.0/...&$skiptoken=..."}
+```
+
+O método `_iter_pages(url)` segue o link até não haver mais. O parâmetro de tamanho de página é `$top=N` (não `size` nem `pageSize`).
+
+```python
+def _iter_pages(self, url: str) -> Iterator[List[Dict]]:
+    if "$top=" not in url:
+        url = self._with_top(url, self.default_page_size)
+    next_url = url
+    while next_url:
+        payload = self._get(next_url)
+        items = payload.get("value", [])
+        if items:
+            yield items
+        next_url = payload.get("@odata.nextLink")
+```
+
+### Campos aninhados de listas (`_normalize_list_items`)
+
+O Graph API retorna items de lista assim:
+
+```json
+{"id": "1", "fields": {"Title": "foo", "Status": "Active"}}
+```
+
+`_normalize_list_items()` eleva o sub-objeto `fields` para colunas de primeiro nível, prefixando metadados com `_`:
+
+```
+_item_id | _created_at | Title | Status
+1        | 2024-01-01  | foo   | Active
+```
+
+Isso permite `WHERE Title = 'foo'` diretamente no SQL, sem qualificar com `fields_`.
+
+### Parâmetros estruturais no SharePoint
+
+`site_id`, `list_id`, `drive_id`, `item_id`, `folder_path` são sempre estruturais (formam a URL). Todos obrigatórios, sem default:
+
+```python
+def list_items(self, site_id: str, list_id: str, limit: Optional[int] = None) -> pd.DataFrame:
+    url = f"{GRAPH_BASE}/sites/{site_id}/lists/{list_id}/items?expand=fields"
+    return self._normalize_list_items(self._fetch(url, limit=limit))
+```
+
+```sql
+-- site_id e list_id são estruturais → inline
+SELECT * FROM list_items(site_id='abc', list_id='def') WHERE Title = 'Report'
+```
+
+### Dependências
+
+| Feature | Pacote |
+|---|---|
+| Base | `msal>=1.20` (já em `[dependencies]`) |
+| PFX / PEM cert auth | `cryptography>=41.0` (`pip install "duckduck[cert]"`) |
