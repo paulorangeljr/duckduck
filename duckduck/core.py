@@ -126,27 +126,31 @@ class DuckAPI:
         # Push-down de LIMIT
         duck.sql("SELECT * FROM assets LIMIT 10").df()
 
-        # Push-down de parâmetro explícito + LIMIT
-        duck.sql("SELECT * FROM assets(hostname='web') LIMIT 50").df()
+        # Filtro de coluna via WHERE → push-down automático
+        duck.sql("SELECT * FROM assets WHERE hostname = 'web' LIMIT 50").df()
 
         # Push-down de WHERE simples
         duck.sql("SELECT * FROM vulns WHERE severity = 'critical'").df()
 
-        # JOIN entre APIs
+        # Parâmetro estrutural (monta URL) inline + filtro de coluna no WHERE
         duck.sql('''
             SELECT a.ip, v.title
-            FROM assets(hostname='web') AS a
+            FROM assets AS a
             JOIN asset_vulns(asset_id=42) AS v ON true
+            WHERE a.hostname = 'web' AND v.severity = 'critical'
         ''').df()
 
-    Push-down de predicados
-    -----------------------
-    Quando a função registrada tem um parâmetro com o **mesmo nome**
-    que a coluna do WHERE (ou o parâmetro ``limit``), o valor é
-    enviado para a API **antes** de materializar o DataFrame.
+    Convenção: inline vs WHERE
+    --------------------------
+    A sintaxe ``func(param=val)`` deve ser usada **apenas** para
+    parâmetros estruturais que não correspondem a colunas do resultado
+    (ex: ``asset_id`` que determina o endpoint ``/assets/{id}/vulns``).
 
-    O DuckDB ainda aplica o filtro sobre o resultado, garantindo
-    correção mesmo quando a API retornar dados extras.
+    Filtros de colunas normais pertencem ao ``WHERE`` e são injetados
+    automaticamente como kwargs quando a função aceita aquele parâmetro.
+
+    O DuckDB aplica o filtro sobre o resultado de qualquer forma,
+    garantindo correção mesmo quando a API retornar dados extras.
     """
 
     def __init__(self, database: str = ":memory:"):
@@ -353,10 +357,15 @@ class DuckAPI:
         registradas pelos DataFrames correspondentes.
 
         Suporta:
-        - ``FROM func``           → sem parâmetros, com push-down de WHERE/LIMIT
-        - ``FROM func(x=1)``      → parâmetros explícitos + push-down
-        - ``JOIN func(x=1) AS f`` → idem
+        - ``FROM func``                → push-down de WHERE/LIMIT automático
+        - ``FROM func(struct_id=1)``   → parâmetro estrutural (monta URL/path)
+                                         + push-down de WHERE/LIMIT
+        - ``JOIN func(struct_id=1)``   → idem
         - Múltiplas referências à mesma função ou funções diferentes
+
+        A sintaxe ``func(param=val)`` deve ser usada apenas para parâmetros
+        que **não são colunas** do resultado (ex: IDs que determinam o
+        endpoint da API). Filtros de colunas pertencem ao ``WHERE``.
 
         Returns
         -------

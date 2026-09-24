@@ -1,34 +1,38 @@
 """
 InsightVM API wrapper para uso com DuckAPI.
 
-Cada método público corresponde a um endpoint da API v3 do InsightVM e
-aceita os parâmetros de push-down que o DuckAPI injeta automaticamente:
+Convenção de uso
+----------------
+A sintaxe ``FROM func(param=val)`` é reservada para parâmetros
+**estruturais** — aqueles que a API precisa para montar a URL ou o
+corpo da requisição e que *não* correspondem a colunas do resultado
+(ex: ``asset_id`` que vira ``/assets/{id}/vulnerabilities``).
 
-- ``limit``   → tamanho da página (page_size da API)
-- filtros de WHERE com o mesmo nome do parâmetro do método
+Filtros de colunas normais (``hostname``, ``severity``, ``status``,
+etc.) pertencem ao ``WHERE`` do SQL e são injetados na função via
+push-down automático do DuckAPI.
 
 Exemplos de queries suportadas
 -------------------------------
 ::
 
-    # Assets paginados
+    # Assets paginados — limit vai como page_size da API
     SELECT * FROM assets LIMIT 25
 
-    # Busca por hostname com push-down do filtro
-    SELECT * FROM assets(hostname='web-prod')
+    # Filtro de hostname via WHERE → push-down para a API
+    SELECT * FROM assets WHERE hostname = 'web-prod'
 
-    # Vulnerabilidades de um asset específico
+    # Combinando WHERE e LIMIT
+    SELECT * FROM assets WHERE hostname = 'web-prod' LIMIT 50
+
+    # asset_id é estrutural (monta a URL) → inline obrigatório
     SELECT * FROM asset_vulnerabilities(asset_id=42) LIMIT 100
 
-    # WHERE com push-down de severidade
-    SELECT * FROM vulnerabilities WHERE severity = 'Critical' LIMIT 50
+    # Filtro de coluna via WHERE em endpoint estrutural
+    SELECT * FROM asset_vulnerabilities(asset_id=42)
+     WHERE severity = 'critical'
 
-    # JOIN entre assets e vulnerabilidades
-    SELECT a.ip, v.title, v.severity
-    FROM assets(hostname='db') AS a
-    JOIN asset_vulnerabilities(asset_id=a.id) AS v ON true
-
-    # Políticas e resultados de compliance
+    # Políticas: policy_id estrutural, status via WHERE
     SELECT * FROM policy_rules(policy_id=7) WHERE status = 'failed'
 """
 
