@@ -34,11 +34,11 @@ MISSING_KEY_HELP = (
     "  - set ANTHROPIC_API_KEY in the environment of *this* process (a notebook kernel only sees "
     "variables that existed when it started: restart it, or set os.environ[\"ANTHROPIC_API_KEY\"] "
     "before building the LLM), or\n"
-    "  - add an \"authentication\" block to the \"llm\" section of the semantic config that yields "
+    "  - add an \"authentication\" block to the LLM's declaration (top-level \"llms\" section) that yields "
     "an api_key, e.g. {\"type\": \"aws\", \"secret_id\": \"prod/anthropic\", \"api_key\": \"$secret.key\"}, or\n"
     "  - pass ClaudeLLM(api_key=...) when building it in code.\n"
     "Using a model on Azure instead? Set \"provider\": \"foundry\" (Claude on Microsoft Foundry) or "
-    "\"azure_openai\" in the llm block."
+    "\"azure_openai\" in the LLM's declaration."
 )
 
 
@@ -161,8 +161,8 @@ class ClaudeLLM:
         if not (resource or base_url):
             raise ValueError(
                 "Claude on Foundry needs its endpoint: 'resource' (the Foundry resource name, as in "
-                "https://<resource>.services.ai.azure.com) or a full 'endpoint'/base_url — in the llm "
-                "config block, the authentication secret, or ANTHROPIC_FOUNDRY_RESOURCE / "
+                "https://<resource>.services.ai.azure.com) or a full 'endpoint'/base_url — in the LLM's "
+                "declaration, its authentication secret, or ANTHROPIC_FOUNDRY_RESOURCE / "
                 "ANTHROPIC_FOUNDRY_BASE_URL."
             )
         api_key = api_key or os.environ.get("ANTHROPIC_FOUNDRY_API_KEY")
@@ -261,7 +261,7 @@ class AzureOpenAILLM:
             if not endpoint:
                 raise ValueError(
                     "Azure OpenAI needs its endpoint (https://<resource>.openai.azure.com): 'endpoint' in "
-                    "the llm config block, in the authentication secret, or AZURE_OPENAI_ENDPOINT."
+                    "the LLM's declaration, in its authentication secret, or AZURE_OPENAI_ENDPOINT."
                 )
             kwargs = {
                 "azure_endpoint": endpoint,

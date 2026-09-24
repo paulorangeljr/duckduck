@@ -33,7 +33,7 @@ def test_every_config_is_valid_json_with_known_connectors(name):
     for service, spec in config["services"].items():
         assert spec.get("connector", service) in SERVICE_REGISTRY, (name, service)
     if "semantic" in config:
-        SemanticConfig.model_validate(config["semantic"])
+        SemanticConfig.from_file_data(config, CONFIGS[name])
 
 
 def test_reference_catalog_generation_tables_exist():
@@ -63,7 +63,7 @@ def test_offline_semantic_config_explains_the_missing_llm():
     with pytest.raises(ValueError) as info:
         generate_catalog(config_path=CONFIGS["semantic-local"], write=False)
     message = str(info.value)
-    assert CONFIGS["semantic-local"] in message and '"llm": {"model": "claude-opus-5"}' in message
+    assert CONFIGS["semantic-local"] in message and '"llms": {"claude": {"model": "claude-opus-5"}}' in message
     assert "duckduck.online.json" in message
 
 

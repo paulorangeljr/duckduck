@@ -426,15 +426,16 @@ the same local/AWS/Azure `authentication` blocks the connectors use:
 - **An LLM** (Claude by default, `pip install -e ".[llm]"`) drafts the
   semantic catalog from your registered tables and extracts values from
   questions (`extractor.type: "llm"`). You can replace every system prompt.
-  Its key comes from `ANTHROPIC_API_KEY` or from an `authentication`
-  block in the `llm` section that yields an `api_key`
+  LLMs are declared by name in the top-level `llms` section and named
+  in `semantic.llm`. The key comes from `ANTHROPIC_API_KEY` or from an
+  `authentication` block in the LLM's declaration that yields an `api_key`
   (`{"type": "aws", "secret_id": "prod/anthropic", "api_key": "$secret.key"}`).
   If it finds neither, it fails at startup and tells you where to put the key.
   In a notebook, the kernel only sees environment variables that existed
   when it started, so either restart the kernel or set
   `os.environ["ANTHROPIC_API_KEY"]` before calling anything.
   **LLMs on Azure** (or behind a gateway) are set with `provider` in the
-  `llm` block. See [LLM providers](#llm-providers-claude-api-azure-gateways) below.
+  LLM's declaration. See [LLM providers](#llm-providers-claude-api-azure-gateways) below.
   Without an explicit table list, it drafts every plain table **and every
   table behind your connectors**, found through their catalogs (each Glue
   table via `glue_table(database=…, table_name=…)`, each ADX table, each
@@ -501,7 +502,7 @@ search.search("Which hosts queried example.com?")
 
 ### LLM providers (Claude API, Azure, gateways)
 
-`provider` in the `llm` block chooses where the model runs. Every
+`provider` in an LLM's declaration chooses where the model runs. Every
 connection setting can be written in the block, stored in the
 `authentication` secret (same `local`/`aws`/`azure` blocks as the
 connectors), or left to the provider's standard environment variables.
@@ -513,23 +514,25 @@ Header values written as `"$secret.<key>"` are also read from the secret.
 | `foundry`: Claude on Microsoft Foundry | `model` (the deployment name), `resource` **or** `endpoint`, `tenant_id` | `ANTHROPIC_FOUNDRY_API_KEY`; endpoint from `ANTHROPIC_FOUNDRY_RESOURCE` / `ANTHROPIC_FOUNDRY_BASE_URL` |
 | `azure_openai` | `deployment`, `endpoint`, `api_version`, `tenant_id`, `headers` | `AZURE_OPENAI_API_KEY`; `AZURE_OPENAI_ENDPOINT`, `OPENAI_API_VERSION` |
 
+Each LLM is declared by name in the top-level `llms` section of
+`duckduck.json` (see below):
+
 ```json
-"llm": {
-  "provider": "azure_openai",
-  "endpoint": "https://my-resource.openai.azure.com",
-  "deployment": "gpt-prod",
-  "api_version": "2024-10-21",
-  "headers": {"Ocp-Apim-Subscription-Key": "$secret.apim_key"},
-  "authentication": {"type": "azure", "vault_url": "https://kv.vault.azure.net/", "secret_id": "azure-openai",
-                     "api_key": "$secret.key"}
+"llms": {
+  "azure_gpt": {
+    "provider": "azure_openai",
+    "endpoint": "https://my-resource.openai.azure.com",
+    "deployment": "gpt-prod",
+    "api_version": "2024-10-21",
+    "headers": {"Ocp-Apim-Subscription-Key": "$secret.apim_key"},
+    "authentication": {"type": "azure", "vault_url": "https://kv.vault.azure.net/", "secret_id": "azure-openai",
+                       "api_key": "$secret.key"}
+  },
+  "claude_foundry": {"provider": "foundry", "resource": "my-foundry", "model": "claude-opus-5"}
 }
 ```
 
-```json
-"llm": {"provider": "foundry", "resource": "my-foundry", "model": "claude-opus-5"}
-```
-
-This Foundry block sets no key, so it uses Entra ID: `az login`, a
+`claude_foundry` sets no key, so it uses Entra ID: `az login`, a
 managed identity, or the `AZURE_*` variables. Entra ID needs
 `pip install -e ".[azure]"`.
 
@@ -547,37 +550,44 @@ catalog = Catalog.load("semantic_catalog.yaml")
 search = SemanticSearch(catalog, duck, extractor=LLMExtractor(catalog, llm))  # LLM extraction
 ```
 
-**A different LLM per stage.** Declare your LLMs once under `llms`, each
-with a name and a complete configuration (provider, model, credentials).
-Then refer to them by name:
+**Declaring LLMs and choosing one per stage.** LLMs are declared once, by
+name, in the top-level `llms` section of `duckduck.json`, next to
+`services`. Each declaration is complete: provider, model, credentials.
+`semantic` only refers to them by name:
 
 ```json
-"llms": {
-  "claude_strong": {"provider": "anthropic", "model": "claude-opus-5"},
-  "claude_fast":   {"provider": "anthropic", "model": "claude-haiku-4-5"},
-  "azure_gpt":     {"provider": "azure_openai", "endpoint": "https://my-resource.openai.azure.com",
-                    "deployment": "gpt-mini",
-                    "authentication": {"type": "azure", "vault_url": "https://kv.vault.azure.net/",
-                                       "secret_id": "azure-openai", "api_key": "$secret.key"}}
-},
-"llm": "claude_strong",
-"extractor":          {"type": "llm", "llm": "azure_gpt"},
-"catalog_generation": {"llm": "claude_fast", "link_llm": "claude_strong"}
+{
+  "services": { ... },
+
+  "llms": {
+    "claude_strong": {"provider": "anthropic", "model": "claude-opus-5"},
+    "claude_fast":   {"provider": "anthropic", "model": "claude-haiku-4-5"},
+    "azure_gpt":     {"provider": "azure_openai", "endpoint": "https://my-resource.openai.azure.com",
+                      "deployment": "gpt-mini",
+                      "authentication": {"type": "azure", "vault_url": "https://kv.vault.azure.net/",
+                                         "secret_id": "azure-openai", "api_key": "$secret.key"}}
+  },
+
+  "semantic": {
+    "llm": "claude_strong",
+    "extractor":          {"type": "llm", "llm": "azure_gpt"},
+    "catalog_generation": {"llm": "claude_fast", "link_llm": "claude_strong"}
+  }
+}
 ```
 
-| Where | Stage | Calls | If omitted |
+| In `semantic` | Stage | Calls | If omitted |
 |---|---|---|---|
 | `llm` | the default for every stage below | | no LLM |
 | `extractor.llm` | pulls values out of each question (`extractor.type: "llm"`) | 1 per question | `llm` |
 | `catalog_generation.llm` | drafts each table | 1 per table | `llm` |
 | `catalog_generation.link_llm` | entities, activities and joins across all tables | 1 per run | `catalog_generation.llm`, then `llm` |
 
-Any of these can be an inline block instead of a name (`"llm": {"model":
-"claude-opus-5"}`), so a single-LLM config needs no `llms` section. A
-block is always a complete LLM: nothing is inherited from elsewhere. A
-name that `llms` doesn't declare fails when the config loads, and the
-error lists the declared names. With `-v`, each stage logs the LLM it got
-(`llm for extractor: azure_gpt (azure_openai gpt-mini)`).
+Even a single LLM is declared in `llms` and named in `semantic.llm`.
+When the config loads, it's rejected if an LLM block is written inside
+`semantic` or if a name isn't declared in `llms`. Each error says what to
+move where, or lists the declared names. With `-v`, each stage logs the
+LLM it got (`llm for extractor: azure_gpt (azure_openai gpt-mini)`).
 
 Anything else (another cloud, a local model) plugs in by implementing
 `generate(system, prompt, output_model)`: it must return `output_model`

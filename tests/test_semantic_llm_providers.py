@@ -162,10 +162,19 @@ def test_claude_api_gateway_authenticating_by_header_needs_no_api_key():
 # ---------------------------------------------------------------------------
 
 
-def _config(tmp_path, llm):
+def _semantic(tmp_path, llms=None, **semantic):
+    """A duckduck.json with ``llms`` at the top level (next to services) and ``semantic``."""
+    data = {"services": {}, "semantic": {"catalog_path": CATALOG_PATH, **semantic}}
+    if llms is not None:
+        data["llms"] = llms
     path = tmp_path / "duckduck.json"
-    path.write_text(json.dumps({"services": {}, "semantic": {"catalog_path": CATALOG_PATH, "llm": llm}}))
+    path.write_text(json.dumps(data))
     return SemanticConfig.load(DuckAPI(), str(path))
+
+
+def _config(tmp_path, llm):
+    """One LLM, declared at the top level as "main" and named as the default."""
+    return _semantic(tmp_path, llms={"main": llm}, llm="main")
 
 
 def test_config_azure_openai_settings_and_header_from_the_secret(tmp_path):
@@ -225,10 +234,6 @@ def test_config_header_referring_to_a_missing_secret_key(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _semantic(tmp_path, **semantic):
-    path = tmp_path / "duckduck.json"
-    path.write_text(json.dumps({"services": {}, "semantic": {"catalog_path": CATALOG_PATH, **semantic}}))
-    return SemanticConfig.load(DuckAPI(), str(path))
 
 
 LLMS = {
@@ -257,19 +262,30 @@ def test_unset_stages_fall_back(tmp_path):
     assert cfg.llm_config("catalog_link")[0] == "fast"     # → catalog_generation.llm, then the default
 
 
-def test_inline_blocks_still_work_and_are_complete(tmp_path):
-    cfg = _semantic(
-        tmp_path,
-        llm={"model": "claude-opus-5", "authentication": {"type": "local", "api_key": "k"}},
-        extractor={"type": "llm", "llm": {"model": "claude-haiku-4-5"}},
-    )
-    name, extractor = cfg.llm_config("extractor")
-    assert name is None and extractor.model == "claude-haiku-4-5"
-    assert extractor.authentication is None  # nothing inherited: one block = one complete LLM
+@pytest.mark.parametrize("semantic", [
+    {"llm": {"model": "claude-opus-5"}},
+    {"extractor": {"type": "llm", "llm": {"model": "claude-haiku-4-5"}}},
+    {"catalog_generation": {"link_llm": {"model": "claude-opus-5"}}},
+])
+def test_a_block_where_a_name_belongs_says_to_declare_it_at_the_top_level(tmp_path, semantic):
+    with pytest.raises(ValueError, match=r"(?s)is the name of an LLM, not a block.*\"llms\": \{\"my_llm\""):
+        _semantic(tmp_path, **semantic)
+
+
+def test_llms_inside_semantic_is_rejected_pointing_to_the_top_level(tmp_path):
+    data = {"services": {}, "semantic": {"catalog_path": CATALOG_PATH, "llms": LLMS, "llm": "strong"}}
+    with pytest.raises(ValueError, match="'llms' goes at the top level of the file"):
+        SemanticConfig.from_file_data(data)
+
+
+def test_file_level_llms_sit_next_to_services(tmp_path):
+    data = {"services": {}, "llms": LLMS, "semantic": {"catalog_path": CATALOG_PATH, "llm": "fast"}}
+    cfg = SemanticConfig.from_file_data(data)
+    assert set(cfg.llms) == set(LLMS) and cfg.llm_config()[1].model == "claude-haiku-4-5"
 
 
 def test_unknown_llm_name_fails_at_load_listing_the_declared_ones(tmp_path):
-    with pytest.raises(ValueError, match=r"extractor.llm refers to LLM 'fsat'.*declared: azure, fast, strong"):
+    with pytest.raises(ValueError, match=r"semantic.extractor.llm refers to LLM 'fsat'.*top-level 'llms'.*declared: azure, fast, strong"):
         _semantic(tmp_path, llms=LLMS, extractor={"type": "llm", "llm": "fsat"})
 
 
@@ -278,9 +294,9 @@ def test_invalid_declared_llm_fails_at_load(tmp_path):
         _semantic(tmp_path, llms={"bad": {"deployment": "x"}})
 
 
-def test_no_llm_anywhere_explains_both_ways_to_declare_one(tmp_path):
+def test_no_llm_named_explains_where_to_declare_it(tmp_path):
     cfg = _semantic(tmp_path, llms=LLMS)
-    with pytest.raises(ValueError, match=r"(?s)'extractor.llm'.*\"llms\""):
+    with pytest.raises(ValueError, match=r"(?s)'extractor.llm'.*top-level \"llms\""):
         cfg.build_llm(DuckAPI(), "extractor")
 
 

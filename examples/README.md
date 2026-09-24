@@ -68,7 +68,7 @@ result.results
 
 ```bash
 pip install -e ".[semantic,llm]"
-export ANTHROPIC_API_KEY=...        # or an "authentication" block in the "llm" section
+export ANTHROPIC_API_KEY=...        # or an "authentication" block in the LLM's entry under "llms"
 export JEV_API_KEY=...              # or an "authentication" block in "decision_engine"
 ```
 

@@ -231,10 +231,8 @@ def test_claude_llm_takes_the_key_from_the_environment_or_the_argument(monkeypat
 def test_llm_authentication_block_without_api_key_says_how_to_map_it(tmp_path):
     from duckduck.semantic import SemanticConfig
 
-    path = _write_config(tmp_path, {
-        "catalog_path": CATALOG_PATH,
-        "llm": {"authentication": {"type": "local", "key": "sk-test"}},
-    })
+    path = _write_config(tmp_path, {"catalog_path": CATALOG_PATH, "llm": "main"},
+                         llms={"main": {"authentication": {"type": "local", "key": "sk-test"}}})
     cfg = SemanticConfig.load(DuckAPI(), path)
     with pytest.raises(ValueError, match=r"\['key'\].*\"\$secret\.<its key>\""):
         cfg.build_llm(DuckAPI())
@@ -425,11 +423,14 @@ def test_default_specs_skip_tables_needing_structural_args():
 # ---------------------------------------------------------------------------
 
 
-def _write_config(tmp_path, semantic):
+def _write_config(tmp_path, semantic, llms=None):
     (tmp_path / "prompts").mkdir()
     (tmp_path / "prompts" / "extract.md").write_text("PROMPT FROM FILE")
     path = tmp_path / "duckduck.json"
-    path.write_text(json.dumps({"services": {}, "semantic": semantic}))
+    data = {"services": {}, "semantic": semantic}
+    if llms is not None:
+        data["llms"] = llms  # top level, next to services
+    path.write_text(json.dumps(data))
     return str(path)
 
 
@@ -458,9 +459,9 @@ def test_from_config_builds_jev_with_key_from_authentication(tmp_path, monkeypat
 def test_from_config_llm_extractor_reads_prompt_file(tmp_path, monkeypatch):
     path = _write_config(tmp_path, {
         "catalog_path": CATALOG_PATH,
-        "llm": {"model": "claude-opus-5", "authentication": {"type": "local", "api_key": "sk-test"}},
+        "llm": "claude",
         "extractor": {"type": "llm", "system_prompt_file": "prompts/extract.md"},
-    })
+    }, llms={"claude": {"model": "claude-opus-5", "authentication": {"type": "local", "api_key": "sk-test"}}})
     built = {}
 
     def fake_init(self, **kwargs):
@@ -489,7 +490,7 @@ def test_example_config_semantic_section_is_valid():
     from semantic_helpers import REPO
 
     with open(f"{REPO}/duckduck.example.json") as f:
-        cfg = SemanticConfig.model_validate(json.load(f)["semantic"])
+        cfg = SemanticConfig.from_file_data(json.load(f))
     assert cfg.decision_engine.type == "jev" and cfg.extractor.type == "llm"
     assert cfg.catalog_generation.tables[0].args == {"database": "security", "table_name": "proxy_logs"}
 
