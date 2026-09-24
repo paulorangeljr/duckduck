@@ -479,6 +479,23 @@ class DuckAPI:
 
         return backend_cache[cache_key]
 
+    def _find_default_config_file(self) -> Optional[str]:
+        """
+        Walks from the current directory up to the filesystem root
+        looking for ``DEFAULT_CONFIG_PATH`` ("duckduck.json") — so
+        ``auto_register()`` finds the project's config even when called
+        from a subdirectory of the project, not just its root.
+        """
+        directory = os.path.abspath(os.getcwd())
+        while True:
+            candidate = os.path.join(directory, self.DEFAULT_CONFIG_PATH)
+            if os.path.isfile(candidate):
+                return candidate
+            parent = os.path.dirname(directory)
+            if parent == directory:
+                return None
+            directory = parent
+
     def _load_auto_register_config(
         self,
         config_path: Optional[str],
@@ -487,18 +504,25 @@ class DuckAPI:
         Resolves the ``services`` dict for ``auto_register()`` from a
         JSON file when no ``services`` dict was passed in code.
 
-        Path lookup order: ``config_path`` → ``DUCKDUCK_CONFIG`` env var
-        → ``DEFAULT_CONFIG_PATH`` ("duckduck.json") in the current
-        directory.
+        Path lookup order: ``config_path`` argument → ``DUCKDUCK_CONFIG``
+        env var → ``DEFAULT_CONFIG_PATH`` ("duckduck.json"), searched from
+        the current directory upward through its parents (see
+        ``_find_default_config_file``) — so it's found regardless of
+        which subdirectory of the project ``auto_register()`` is called
+        from.
         """
-        path = config_path or os.environ.get("DUCKDUCK_CONFIG", self.DEFAULT_CONFIG_PATH)
+        if config_path:
+            path = config_path
+        else:
+            path = os.environ.get("DUCKDUCK_CONFIG") or self._find_default_config_file()
 
-        if not os.path.isfile(path):
+        if not path or not os.path.isfile(path):
             raise ValueError(
                 f"auto_register() got no 'services' dict and found no config "
-                f"file at '{path}'. Pass services=..., pass config_path=..., "
-                f"set the DUCKDUCK_CONFIG environment variable, or create "
-                f"'{self.DEFAULT_CONFIG_PATH}' in the current directory."
+                f"file{f' at {path!r}' if path else ''}. Pass services=..., "
+                f"pass config_path=..., set the DUCKDUCK_CONFIG environment "
+                f"variable, or create '{self.DEFAULT_CONFIG_PATH}' in the "
+                f"project directory."
             )
 
         with open(path, "r", encoding="utf-8") as f:

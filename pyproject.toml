@@ -27,6 +27,9 @@ azure = [
     "azure-identity>=1.15",
     "azure-keyvault-secrets>=4.7",
 ]
+database = [
+    "sqlalchemy>=2.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-mock>=3.14",

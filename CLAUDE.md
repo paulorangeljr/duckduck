@@ -402,6 +402,17 @@ Passing `services=` explicitly always skips the file lookup entirely, even if no
 | Fetched secret shape | Plain JSON with the keys expected by the connector's `from_secret` (`tenant_id`/`client_id`/`client_secret` for SharePoint; `host`/`username`/`password` for InsightVM) |
 | Return value | `{name: instance}` — to call methods that didn't become a table (e.g. `instances["sharepoint"].site_by_path(...)`) |
 
+### Generic database connector (`connector: "database"`)
+
+`duckduck/database.py` — `SQLDatabase`, built on SQLAlchemy — covers SQL Server, MySQL, PostgreSQL, SQLite, Oracle, etc. through their SQLAlchemy dialect driver. Unlike SharePoint/InsightVM there's no fixed set of endpoints, so it registers just two tables (`{name}_table`, `{name}_query`) and reuses the existing structural-parameter convention instead of needing a table list in the config:
+
+```sql
+SELECT * FROM sqlserver_table(table_name='dbo.Customers') WHERE status = 'active' LIMIT 50
+SELECT * FROM mysql_query(sql='SELECT * FROM orders WHERE total > 100')
+```
+
+`table_name`/`sql` are structural (required, no default); `limit` on `table()` is pushed down server-side via SQLAlchemy's `.limit()` (translates to `TOP`/`LIMIT`/`FETCH` per dialect); `limit` on `query()` is applied client-side after the raw query runs. Column filters in `WHERE` aren't pushed down server-side for either — DuckDB applies them on the fetched result, same as any push-down parameter a wrapper doesn't recognize. `from_secret` accepts either a full `connection_string` or discrete `drivername`/`username`/`password`/`host`/`port`/`database` fields (the latter matches what managed secrets, e.g. AWS RDS, already store).
+
 ### Adding a wrapper to auto-registration
 
 1. Implement `Wrapper.from_secret(cls, secret: dict, **overrides) -> "Wrapper"` on the wrapper class — it decides the authentication mode from the keys in `secret` and passes `overrides` (hostname, site_path, default_page_size, etc.) through to the constructor.
@@ -417,4 +428,5 @@ A backend just needs `get_secret(secret_id: str) -> dict` — see `SecretsManage
 |---|---|
 | AWS Secrets Manager | `boto3>=1.28` (`pip install "duckduck[aws]"`) |
 | Azure Key Vault | `azure-identity>=1.15`, `azure-keyvault-secrets>=4.7` (`pip install "duckduck[azure]"`) |
+| `connector: "database"` | `sqlalchemy>=2.0` (`pip install "duckduck[database]"`) + the driver for your engine (`pyodbc` for SQL Server, `PyMySQL` for MySQL, `psycopg2-binary` for PostgreSQL, ...) |
 | `authentication.type: "local"` | none — fully offline |

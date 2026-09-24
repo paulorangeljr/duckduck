@@ -528,6 +528,20 @@ def test_auto_register_loads_from_default_json_file(tmp_path, monkeypatch):
     duck.close()
 
 
+def test_auto_register_finds_default_json_in_parent_directory(tmp_path, monkeypatch):
+    """Called from a subdirectory of the project, still finds duckduck.json at its root."""
+    (tmp_path / "duckduck.json").write_text(json.dumps({"services": _local_insightvm_config()}))
+    subdir = tmp_path / "scripts" / "nested"
+    subdir.mkdir(parents=True)
+    monkeypatch.chdir(subdir)
+
+    duck = DuckAPI()
+    instances = duck.auto_register()
+
+    assert instances["insightvm"].base_url == "https://console.local/api/3"
+    duck.close()
+
+
 def test_auto_register_config_path_argument(tmp_path):
     config_file = tmp_path / "custom.json"
     config_file.write_text(json.dumps({"services": _local_insightvm_config()}))
@@ -596,4 +610,39 @@ def test_auto_register_json_file_with_aws_secret(tmp_path, monkeypatch):
 
     fake_boto3.client.assert_called_once_with("secretsmanager", region_name="us-east-1")
     assert instances["insightvm"].base_url == "https://x.local/api/3"
+    duck.close()
+
+
+# ---------------------------------------------------------------------------
+# connector = "database" — generic SQL database (SQL Server, MySQL, ...)
+# ---------------------------------------------------------------------------
+
+
+def test_auto_register_database_connector(monkeypatch):
+    import duckduck.database as database_module
+
+    fake_sa = MagicMock()
+    monkeypatch.setattr(database_module, "sa", fake_sa)
+
+    duck = DuckAPI()
+    instances = duck.auto_register({
+        "sqlserver": {
+            "connector": "database",
+            "authentication": {
+                "type": "local",
+                "connection_string": (
+                    "mssql+pyodbc://user:pass@host:1433/db"
+                    "?driver=ODBC+Driver+17+for+SQL+Server"
+                ),
+            },
+        },
+    })
+
+    fake_sa.create_engine.assert_called_once_with(
+        "mssql+pyodbc://user:pass@host:1433/db?driver=ODBC+Driver+17+for+SQL+Server"
+    )
+    assert "sqlserver_table" in duck.functions
+    assert "sqlserver_query" in duck.functions
+    assert "sqlserver_table" in duck._streaming_functions
+    assert instances["sqlserver"] is not None
     duck.close()

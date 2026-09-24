@@ -28,6 +28,21 @@
         "username": "a",
         "password": "b"
       }
+    },
+    "sqlserver": {
+      "connector": "database",
+      "authentication": {
+        "type": "local",
+        "connection_string": "mssql+pyodbc://user:pass@host:1433/db?driver=ODBC+Driver+17+for+SQL+Server"
+      }
+    },
+    "mysql": {
+      "connector": "database",
+      "authentication": {
+        "type": "aws",
+        "region_name": "us-east-1",
+        "secret_id": "prod/mysql"
+      }
     }
   }
 }

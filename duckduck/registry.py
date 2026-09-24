@@ -2,7 +2,7 @@
 Central registry of the API wrappers supported by
 ``DuckAPI.auto_register`` (see ``core.py``).
 
-Each entry maps a "type" (``"sharepoint"``, ``"insightvm"``) to:
+Each entry maps a "type" (``"sharepoint"``, ``"insightvm"``, ``"database"``) to:
 
 - ``factory``          : classmethod that builds the instance from a
                           credentials dict (``Wrapper.from_secret``)
@@ -16,6 +16,7 @@ becomes available in ``DuckAPI.auto_register()``.
 
 from typing import Any, Callable, Dict, NamedTuple
 
+from .database import SQLDatabase
 from .rapid7 import InsightVM
 from .sharepoint import SharePoint
 
@@ -71,6 +72,17 @@ SERVICE_REGISTRY: Dict[str, ServiceSpec] = {
             "sites": "iter_sites",
             "scans": "iter_scans",
             "policy_rules": "iter_policy_rules",
+        },
+    ),
+    "database": ServiceSpec(
+        factory=SQLDatabase.from_secret,
+        tables={
+            "table": "table",
+            "query": "query",
+        },
+        streaming_tables={
+            "table": "iter_table",
+            "query": "iter_query",
         },
     ),
 }
