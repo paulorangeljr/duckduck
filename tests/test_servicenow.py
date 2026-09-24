@@ -15,7 +15,9 @@ def _make_sn():
 def _response(payload, status=200):
     r = MagicMock()
     r.status_code = status
+    r.ok = status < 400
     r.json.return_value = payload
+    r.text = str(payload)
     r.raise_for_status = MagicMock()
     return r
 
@@ -128,6 +130,26 @@ def test_ensure_token_fetches_and_caches():
     assert body["grant_type"] == "client_credentials"
     assert body["resource"] == "api://resource-id"
     assert sn.session.headers["Authorization"] == "Bearer tok123"
+
+
+def test_ensure_token_failure_surfaces_response_body():
+    """
+    A 400 from the token endpoint must surface the actual response body
+    (Azure AD puts the real reason in "error"/"error_description" there,
+    e.g. AADSTS7000215 for a bad client_secret) -- raise_for_status()
+    alone drops it, leaving a debugging dead end.
+    """
+    sn = ServiceNow.from_oauth2(
+        token_url="https://login.microsoftonline.com/tenant/oauth2/token",
+        client_id="cid", client_secret="wrong-secret", instance="dev12345",
+    )
+    error_body = {
+        "error": "invalid_client",
+        "error_description": "AADSTS7000215: Invalid client secret provided.",
+    }
+    with patch("duckduck.servicenow.requests.post", return_value=_response(error_body, status=400)):
+        with pytest.raises(ValueError, match="AADSTS7000215"):
+            sn._ensure_token()
 
 
 def test_ensure_token_refreshes_after_expiry():

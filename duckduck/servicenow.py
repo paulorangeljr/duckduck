@@ -246,7 +246,14 @@ class ServiceNow:
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             timeout=30,
         )
-        r.raise_for_status()
+        if not r.ok:
+            # r.raise_for_status() drops the response body — but that's exactly
+            # where Azure AD (and most OAuth2 providers) put the actual reason
+            # ("error"/"error_description", e.g. AADSTS7000215 for a bad
+            # client_secret or AADSTS900023 for a bad tenant), so surface it.
+            raise ValueError(
+                f"ServiceNow OAuth2 token request failed ({r.status_code}): {r.text}"
+            )
         payload = r.json()
 
         self.session.headers["Authorization"] = f"Bearer {payload['access_token']}"
