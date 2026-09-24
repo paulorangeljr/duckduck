@@ -33,13 +33,16 @@ config file); omitted → the built-in default prompt.
 """
 
 import json
+import logging
 import os
-from typing import Any, ClassVar, Dict, List, Literal, Optional
+from typing import Any, ClassVar, Dict, List, Literal, Optional, Tuple
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .generation import TableSpec
 from .intent import Thresholds
+
+logger = logging.getLogger("duckduck.semantic.llm")
 
 
 class _Strict(BaseModel):
@@ -111,6 +114,8 @@ class LLMConfig(_Strict):
 
 class ExtractorConfig(_Strict):
     type: Literal["rules", "llm"] = "rules"
+    #: This stage's own LLM (see ``SemanticConfig.llm_config``).
+    llm: Optional[Dict[str, Any]] = None
     system_prompt: Optional[str] = None
     system_prompt_file: Optional[str] = None
     on_error: Literal["fallback", "raise"] = "fallback"
@@ -135,6 +140,12 @@ class CatalogGenerationConfig(_Strict):
     exclude: List[str] = Field(default_factory=list)
     #: Cap on tables drafted per run — each one is an LLM call.
     max_tables: int = Field(default=50, ge=1)
+    #: LLM for drafting each table (one call per table) and, unless
+    #: ``link_llm`` is set, for the final vocabulary/joins call.
+    llm: Optional[Dict[str, Any]] = None
+    #: LLM for the final call only (entities, activities, joins across
+    #: every table) — layered on top of ``llm``.
+    link_llm: Optional[Dict[str, Any]] = None
 
 
 class SemanticConfig(_Strict):
@@ -151,6 +162,44 @@ class SemanticConfig(_Strict):
     base_dir: str = "."
     #: The file this was loaded from (for error messages).
     config_file: Optional[str] = None
+
+    #: stage → the per-stage blocks layered on top of the top-level ``llm``, in order.
+    LLM_STAGES: ClassVar[Dict[str, Tuple[str, ...]]] = {
+        "extractor": ("extractor.llm",),
+        "catalog_generation": ("catalog_generation.llm",),
+        "catalog_link": ("catalog_generation.llm", "catalog_generation.link_llm"),
+    }
+
+    @model_validator(mode="after")
+    def _stage_llms_are_valid(self) -> "SemanticConfig":
+        for stage in self.LLM_STAGES:
+            self.llm_config(stage)  # fail at load time, naming the block
+        return self
+
+    def llm_config(self, stage: Optional[str] = None) -> Optional[LLMConfig]:
+        """
+        The effective LLM settings for a stage: the top-level ``llm``, with
+        each of the stage's own blocks layered on top — a block inherits
+        everything it doesn't set (provider, credentials, endpoint...), so
+        ``{"model": "..."}`` is enough to change just the model. A block
+        naming a different ``provider`` inherits nothing.
+        """
+        merged: Optional[Dict[str, Any]] = self.llm.model_dump(exclude_unset=True) if self.llm else None
+        where = "llm"
+        for path in self.LLM_STAGES.get(stage, ()) if stage else ():
+            section, key = path.split(".")
+            block = getattr(getattr(self, section), key)
+            if block is None:
+                continue
+            same_provider = merged is not None and block.get("provider", merged.get("provider", "anthropic")) == merged.get("provider", "anthropic")
+            merged = {**merged, **block} if same_provider else dict(block)
+            where = path
+        if merged is None:
+            return None
+        try:
+            return LLMConfig.model_validate(merged)
+        except ValidationError as exc:
+            raise ValueError(f"semantic.{where} (merged over the blocks above it): {exc}") from exc
 
     @classmethod
     def load(cls, duck: Any, config_path: Optional[str] = None, section: str = "semantic") -> "SemanticConfig":
@@ -201,20 +250,26 @@ class SemanticConfig(_Strict):
         # the adapter's timeout is a backstop above the HTTP client's own
         return JEVAdapter(client, retries=cfg.retries, timeout=cfg.timeout + 5)
 
-    def build_llm(self, duck: Any):
+    def build_llm(self, duck: Any, stage: Optional[str] = None):
+        """The LLM client for ``stage`` (``extractor`` / ``catalog_generation`` / ``catalog_link``)."""
         from .llm import AzureOpenAILLM, ClaudeLLM
 
-        if self.llm is None:
+        cfg = self.llm_config(stage)
+        if cfg is None:
             where = f"the 'semantic' section of {self.config_file}" if self.config_file else "the semantic config"
+            own = self.LLM_STAGES.get(stage, ())
             raise ValueError(
                 f"This needs an LLM (catalog generation / extractor type 'llm'), but {where} has no "
-                f"'llm' block. Add one, e.g.\n"
+                f"'llm' block{f' (nor {own[-1]!r})' if own else ''}. Add one, e.g.\n"
                 f'    "llm": {{"model": "claude-opus-5"}}\n'
                 f"(API key from the ANTHROPIC_API_KEY environment variable, or an \"authentication\" "
                 f"block like the connectors'), and `pip install -e \".[llm]\"`. "
                 f"See examples/semantic/duckduck.online.json."
             )
-        cfg = self.llm
+        logger.info(
+            "llm for %s: %s %s", stage or "default", cfg.provider,
+            cfg.deployment if cfg.provider == "azure_openai" else cfg.model,
+        )
         creds = duck.resolve_credentials(cfg.authentication, "semantic.llm") if cfg.authentication else {}
         headers = _resolve_headers(cfg.headers, creds) or None
 
@@ -258,14 +313,17 @@ class SemanticConfig(_Strict):
         if cfg.type == "rules":
             return None  # SemanticSearch's default
         prompt = self.prompt(cfg.system_prompt, cfg.system_prompt_file, DEFAULT_EXTRACTION_PROMPT)
-        return LLMExtractor(catalog, self.build_llm(duck), system_prompt=prompt, on_error=cfg.on_error)
+        return LLMExtractor(catalog, self.build_llm(duck, "extractor"), system_prompt=prompt, on_error=cfg.on_error)
 
     def build_generator(self, duck: Any):
         from .generation import DEFAULT_LINK_PROMPT, DEFAULT_SOURCE_PROMPT, CatalogGenerator
 
         cfg = self.catalog_generation
+        source_llm = self.build_llm(duck, "catalog_generation")
+        link_llm = self.build_llm(duck, "catalog_link") if cfg.link_llm is not None else None
         return CatalogGenerator(
-            self.build_llm(duck), duck,
+            source_llm, duck,
+            link_llm=link_llm,
             source_prompt=self.prompt(cfg.source_prompt, cfg.source_prompt_file, DEFAULT_SOURCE_PROMPT),
             link_prompt=self.prompt(cfg.link_prompt, cfg.link_prompt_file, DEFAULT_LINK_PROMPT),
             sample_rows=cfg.sample_rows,

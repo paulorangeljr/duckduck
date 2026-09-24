@@ -445,6 +445,13 @@ the same local/AWS/Azure `authentication` blocks the connectors use:
   "catalog_generation": {"include": ["security.*", "ProxyLogs"], "exclude": ["*_tmp"], "max_tables": 50}
   ```
 
+**Which catalog is used?** `ask` always reads `catalog_path`.
+`generate-catalog` writes to `catalog_generation.output_path` and never
+changes what `ask` reads: a draft only takes effect once you review it and
+point `catalog_path` at it, or copy it over the file `catalog_path` names.
+Setting both to the same file skips the review and makes each generation
+replace the live catalog. That's fine for a first draft, risky afterwards.
+
 Every command works from the terminal **and** from Python — the CLI is a
 thin wrapper over the same functions, so both run identical code:
 
@@ -539,6 +546,28 @@ draft = CatalogGenerator(llm, duck).generate()                     # catalog dra
 catalog = Catalog.load("semantic_catalog.yaml")
 search = SemanticSearch(catalog, duck, extractor=LLMExtractor(catalog, llm))  # LLM extraction
 ```
+
+**One LLM per stage.** The top-level `llm` is the default. Each stage can
+have its own block, which inherits everything it doesn't set: provider,
+credentials, endpoint. So `{"model": "..."}` alone just switches the model.
+A block that names a different `provider` inherits nothing.
+
+| Block | Stage | Calls |
+|---|---|---|
+| `extractor.llm` | pulls values out of each question (`extractor.type: "llm"`) | 1 per question |
+| `catalog_generation.llm` | drafts each table | 1 per table |
+| `catalog_generation.link_llm` | entities, activities and joins across all tables (layered on `catalog_generation.llm`) | 1 per run |
+
+```json
+"llm": {"provider": "anthropic", "model": "claude-opus-5"},
+"extractor": {"type": "llm", "llm": {"model": "claude-haiku-4-5"}},
+"catalog_generation": {
+  "llm": {"model": "claude-sonnet-5"},
+  "link_llm": {"model": "claude-opus-5"}
+}
+```
+
+With `-v`, each stage logs which model it got (`llm for extractor: anthropic claude-haiku-4-5`).
 
 Anything else (another cloud, a local model) plugs in by implementing
 `generate(system, prompt, output_model)`: it must return `output_model`

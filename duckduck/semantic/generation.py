@@ -199,8 +199,11 @@ class CatalogGenerator:
         include: Optional[List[str]] = None,
         exclude: Optional[List[str]] = None,
         max_tables: int = 50,
+        link_llm: Optional[LLMClient] = None,
     ):
         self.llm = llm
+        #: The final vocabulary/joins call (one call, over every table) — ``llm`` when omitted.
+        self.link_llm = link_llm or llm
         self.duck = duck
         self.source_prompt = source_prompt
         self.link_prompt = link_prompt
@@ -370,7 +373,7 @@ class CatalogGenerator:
             }
             for name, d in drafts.items()
         }
-        vocab = self.llm.generate(self.link_prompt, "Drafted sources:\n" + json.dumps(overview, indent=1), GenVocabulary)
+        vocab = self.link_llm.generate(self.link_prompt, "Drafted sources:\n" + json.dumps(overview, indent=1), GenVocabulary)
 
         by_name = {s.name: s for s in specs}
         catalog = self._assemble(drafts, vocab, columns, by_name, warnings)

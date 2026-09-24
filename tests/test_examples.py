@@ -85,7 +85,7 @@ class ScriptedLLM:
 def test_online_generate_catalog_uses_prompt_files_and_never_overwrites_catalog(monkeypatch, tmp_path):
     seen = []
 
-    def build_llm(self, duck):
+    def build_llm(self, duck, stage=None):
         llm = ScriptedLLM()
         original = llm.generate
         llm.generate = lambda s, p, m: seen.append(s) or original(s, p, m)

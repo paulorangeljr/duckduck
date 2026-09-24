@@ -218,3 +218,101 @@ def test_config_header_referring_to_a_missing_secret_key(tmp_path):
                              "authentication": {"type": "local", "api_key": "k"}})
     with pytest.raises(ValueError, match=r"\$secret\.nope.*\['api_key'\]"):
         cfg.build_llm(DuckAPI())
+
+
+# ---------------------------------------------------------------------------
+# one LLM per stage
+# ---------------------------------------------------------------------------
+
+
+def _semantic(tmp_path, **semantic):
+    path = tmp_path / "duckduck.json"
+    path.write_text(json.dumps({"services": {}, "semantic": {"catalog_path": CATALOG_PATH, **semantic}}))
+    return SemanticConfig.load(DuckAPI(), str(path))
+
+
+def test_stage_block_inherits_everything_it_does_not_set(tmp_path):
+    cfg = _semantic(
+        tmp_path,
+        llm={"provider": "azure_openai", "endpoint": "https://res.openai.azure.com", "deployment": "gpt-big",
+             "authentication": {"type": "local", "api_key": "k"}},
+        extractor={"type": "llm", "llm": {"deployment": "gpt-mini"}},
+    )
+    extractor = cfg.llm_config("extractor")
+    assert extractor.provider == "azure_openai" and extractor.deployment == "gpt-mini"
+    assert extractor.endpoint == "https://res.openai.azure.com" and extractor.authentication == {"type": "local", "api_key": "k"}
+    assert cfg.llm_config("catalog_generation").deployment == "gpt-big"  # untouched stages keep the default
+
+
+def test_link_llm_layers_on_the_catalog_generation_block(tmp_path):
+    cfg = _semantic(
+        tmp_path,
+        llm={"model": "claude-opus-5"},
+        catalog_generation={"llm": {"model": "claude-haiku-4-5", "max_tokens": 4000},
+                            "link_llm": {"model": "claude-opus-5"}},
+    )
+    assert cfg.llm_config("catalog_generation").model == "claude-haiku-4-5"
+    link = cfg.llm_config("catalog_link")
+    assert link.model == "claude-opus-5" and link.max_tokens == 4000
+
+
+def test_stage_block_with_another_provider_inherits_nothing(tmp_path):
+    cfg = _semantic(
+        tmp_path,
+        llm={"provider": "anthropic", "model": "claude-opus-5", "authentication": {"type": "local", "api_key": "k"}},
+        extractor={"type": "llm", "llm": {"provider": "azure_openai", "deployment": "gpt-mini"}},
+    )
+    extractor = cfg.llm_config("extractor")
+    assert extractor.provider == "azure_openai" and extractor.authentication is None
+
+
+def test_stage_block_alone_without_a_top_level_llm(tmp_path):
+    cfg = _semantic(tmp_path, catalog_generation={"llm": {"model": "claude-haiku-4-5"}})
+    assert cfg.llm_config("catalog_generation").model == "claude-haiku-4-5"
+    assert cfg.llm_config("extractor") is None
+    with pytest.raises(ValueError, match="'extractor.llm'"):
+        cfg.build_llm(DuckAPI(), "extractor")
+
+
+def test_invalid_stage_block_fails_at_load_naming_it(tmp_path):
+    with pytest.raises(ValueError, match="semantic.extractor.llm"):
+        _semantic(tmp_path, llm={"model": "claude-opus-5"}, extractor={"type": "llm", "llm": {"deployment": "x"}})
+
+
+def test_each_stage_gets_its_own_client(tmp_path, monkeypatch):
+    cfg = _semantic(
+        tmp_path,
+        llm={"model": "claude-opus-5"},
+        extractor={"type": "llm", "llm": {"model": "claude-haiku-4-5"}},
+        catalog_generation={"llm": {"model": "claude-sonnet-5"}, "link_llm": {"model": "claude-opus-5"}},
+    )
+    monkeypatch.setattr(SemanticConfig, "build_llm",
+                        lambda self, duck, stage=None: self.llm_config(stage).model)
+    gen = cfg.build_generator(DuckAPI())
+    assert (gen.llm, gen.link_llm) == ("claude-sonnet-5", "claude-opus-5")
+    from duckduck.semantic import Catalog
+    assert cfg.build_extractor(Catalog.load(CATALOG_PATH), DuckAPI()).llm == "claude-haiku-4-5"
+
+
+def test_generator_uses_the_link_llm_for_the_final_call():
+    from duckduck.semantic import CatalogGenerator
+    from duckduck.semantic.generation import GenEntity, GenField, GenVocabulary
+
+    calls = []
+
+    class Fake:
+        def __init__(self, name):
+            self.name = name
+
+        def generate(self, system, prompt, output_model):
+            calls.append((self.name, output_model.__name__))
+            if output_model is GenVocabulary:
+                return GenVocabulary(entities=[GenEntity(name="host", keywords=["hosts"])])
+            return GenSource(description="Hosts.", fields=[GenField(name="hostname")])
+
+    import pandas as pd
+
+    duck = DuckAPI()
+    duck.register_api_function("hosts", lambda: pd.DataFrame({"hostname": ["a"]}))
+    CatalogGenerator(Fake("cheap"), duck, link_llm=Fake("strong")).generate()
+    assert calls == [("cheap", "GenSource"), ("strong", "GenVocabulary")]

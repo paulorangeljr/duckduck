@@ -98,7 +98,7 @@ def gen_config(tmp_path, monkeypatch):
     }))
     from duckduck.semantic.config import SemanticConfig
 
-    monkeypatch.setattr(SemanticConfig, "build_llm", lambda self, duck: ScriptedLLM())
+    monkeypatch.setattr(SemanticConfig, "build_llm", lambda self, duck, stage=None: ScriptedLLM())
     return tmp_path, str(cfg)
 
 
