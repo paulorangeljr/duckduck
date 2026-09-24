@@ -45,6 +45,40 @@ def test_from_secret_overrides_win():
 
 
 # ---------------------------------------------------------------------------
+# host= — custom domain / on-prem, as an alternative to instance=
+# ---------------------------------------------------------------------------
+
+
+def test_host_used_as_is():
+    sn = ServiceNow(username="admin", password="secret", host="servicenow.mycompany.com")
+    assert sn.base_url == "https://servicenow.mycompany.com/api/now"
+
+
+def test_host_takes_precedence_over_instance():
+    sn = ServiceNow(
+        instance="dev12345", username="admin", password="secret", host="servicenow.mycompany.com"
+    )
+    assert sn.base_url == "https://servicenow.mycompany.com/api/now"
+
+
+def test_neither_instance_nor_host_raises():
+    with pytest.raises(ValueError, match="instance' or 'host'"):
+        ServiceNow(username="admin", password="secret")
+
+
+def test_missing_credentials_raises():
+    with pytest.raises(ValueError, match="username' and 'password'"):
+        ServiceNow(instance="dev12345", username="admin", password="")
+
+
+def test_from_secret_with_host():
+    sn = ServiceNow.from_secret({
+        "host": "servicenow.mycompany.com", "username": "admin", "password": "secret",
+    })
+    assert sn.base_url == "https://servicenow.mycompany.com/api/now"
+
+
+# ---------------------------------------------------------------------------
 # _build_query
 # ---------------------------------------------------------------------------
 

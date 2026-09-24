@@ -55,9 +55,10 @@ class ServiceNow:
 
     Parameters
     ----------
-    instance : str
+    instance : str, optional
         The instance name, e.g. ``"dev12345"`` for
-        ``dev12345.service-now.com`` (don't include the domain).
+        ``dev12345.service-now.com`` (don't include the domain). Provide
+        **either** ``instance`` **or** ``host``.
     username : str
     password : str
     default_page_size : int
@@ -65,17 +66,28 @@ class ServiceNow:
     verify : bool
         TLS certificate verification. Defaults to True — ServiceNow
         instances always have valid certificates.
+    host : str, optional
+        Full hostname to use as-is instead of ``{instance}.service-now.com``
+        — for a custom domain / on-prem deployment that isn't on the
+        standard ServiceNow cloud domain. E.g. ``"servicenow.mycompany.com"``.
     """
 
     def __init__(
         self,
-        instance: str,
-        username: str,
-        password: str,
+        instance: Optional[str] = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
         default_page_size: int = 200,
         verify: bool = True,
+        host: Optional[str] = None,
     ):
-        self.base_url = f"https://{instance}.service-now.com/api/now"
+        if not username or not password:
+            raise ValueError("ServiceNow requires 'username' and 'password'.")
+        if not instance and not host:
+            raise ValueError("Provide either 'instance' or 'host'.")
+
+        resolved_host = host or f"{instance}.service-now.com"
+        self.base_url = f"https://{resolved_host}/api/now"
         self.default_page_size = default_page_size
 
         self.session = requests.Session()
@@ -92,12 +104,14 @@ class ServiceNow:
         Parameters
         ----------
         secret : dict
-            Expected keys: ``instance``, ``username``, ``password``.
+            Expected keys: ``username``, ``password``, plus **either**
+            ``instance`` **or** ``host`` (see ``__init__``).
         """
-        instance = overrides.pop("instance", None) or secret["instance"]
+        instance = overrides.pop("instance", None) or secret.get("instance")
+        host = overrides.pop("host", None) or secret.get("host")
         username = overrides.pop("username", None) or secret["username"]
         password = overrides.pop("password", None) or secret["password"]
-        return cls(instance, username, password, **overrides)
+        return cls(instance=instance, username=username, password=password, host=host, **overrides)
 
     # ------------------------------------------------------------------
     # HTTP helpers
