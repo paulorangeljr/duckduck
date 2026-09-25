@@ -812,6 +812,28 @@ python -m duckduck.semantic feedback-export    # what still fails, as a brief fo
   value, missing data, too many questions) and say why. Optionally you say
   what would have been right: the tables, the kind of answer, what it
   asks about, or *"word X means field = value"*.
+- **Choosing systems while typing.** When you pause, the page asks for
+  a *preview*: one decision-engine batch for entity, kind of answer and
+  the relevance of candidate tables. It uses rule-based extraction (no
+  LLM), runs nothing and records nothing. Chips then appear next to the
+  input: **Systems** (the systems the question points at) and **About**
+  (the entity).
+  - Clicking *Systems* lists every table you may use, grouped by system
+    (the `auto_register` service: SharePoint, the database...). The
+    suggested ones are ticked, with their relevance, and each system has
+    an **only this** button. Your choice goes with the question: only
+    those tables are used, joins included.
+  - Clicking *About* lets you pick the entity, which is then never asked.
+  - *Let it choose* goes back to the automatic choice.
+
+  In Python: `search.preview("...")` and `search.search("...",
+  only_sources=["sharepoint_list_items"])`, or
+  `search.conversation(..., only_sources=..., pinned={"entity": "user"})`.
+  The restriction narrows `allowed_sources`, never widens it. It's
+  recorded as a `scope` decision (by the user). When the chosen tables
+  can't answer, the question back only offers what they can: "which
+  machines…" limited to the firewall offers its IPs, since the hostnames
+  live in the inventory.
 - **History.** Every question, with its result and its rating.
 - **Dashboard.** Answer rate overall, by kind of answer and by table; what
   went wrong; how often it asked back; searches per day.

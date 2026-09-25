@@ -6,7 +6,8 @@ runs it with FastAPI + uvicorn (``pip install "duckduck[server]"``). One
 HTML page (``webpage.PAGE``) over a JSON API:
 
 ==========================================  ==============================================
-``POST /api/ask {question, user}``          starts a conversation → its first result
+``POST /api/preview {question}``            while typing: entity, answer kind, relevant tables by system
+``POST /api/ask {question, user, only_sources, entity}``  starts a conversation → its first result
 ``POST /api/answer {conversation_id, reply}`` answers the open clarification → next result
 ``POST /api/feedback {search_id, verdict, categories, reason, expected, user}``
 ``GET  /api/searches``, ``/api/searches/{id}``  history / one search's decision trail
@@ -129,13 +130,34 @@ def create_app(
         question = str(body.get("question") or "").strip()
         if not question:
             raise HTTPException(400, "empty question")
-        conv = state["search"].conversation(question, user=body.get("user") or None)
+        only = body.get("only_sources")
+        entity = body.get("entity")
+        search = state["search"]
+        if entity is not None and entity not in search.catalog.entities:
+            raise HTTPException(400, f"unknown entity {entity!r}")
+        try:
+            conv = search.conversation(question, user=body.get("user") or None,
+                                       only_sources=list(only) if only is not None else None,
+                                       pinned={"entity": entity} if entity else None)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
         with lock:
             convs = state["conversations"]
             convs[conv.id] = conv
             while len(convs) > MAX_CONVERSATIONS:
                 convs.popitem(last=False)
         return dump(payload(conv))
+
+    @app.post("/api/preview")
+    def preview(body: Dict[str, Any] = Body(...)):
+        question = str(body.get("question") or "").strip()
+        if len(question) < 3:
+            return dump({"question": question, "systems": [], "sources": [], "entity": None})
+        try:
+            return dump(state["search"].preview(question))
+        except Exception as exc:  # a preview is a hint: never an error on screen while typing
+            logger.info("preview failed: %s", exc)
+            return dump({"question": question, "error": str(exc), "systems": [], "sources": [], "entity": None})
 
     @app.post("/api/answer")
     def answer(body: Dict[str, Any] = Body(...)):

@@ -11,6 +11,7 @@ on a guess), an invalid plan as ``status="invalid_plan"``.
 
 import inspect
 import logging
+from collections import OrderedDict
 import os
 import time
 import warnings
@@ -32,6 +33,7 @@ from .interpreter import SemanticInterpreter
 from .plan import LogicalQueryPlan
 from .planner import QueryPlanner, SourcePlan, TrivialAnswer
 from .retrieval import CatalogRetriever
+from . import scope
 from .shapes import ACROSS_SHAPES, AnswerShapes, load_answer_shapes
 from .validator import PlanValidationError, QueryValidator
 
@@ -106,6 +108,8 @@ class SearchResult:
     search_id: Optional[str] = None
     #: The conversation this round belongs to (``SemanticSearch.conversation``).
     conversation_id: Optional[str] = None
+    #: The tables the user limited this question to (``search(only_sources=...)``), or ``None``.
+    only_sources: Optional[List[str]] = None
     #: ``lookup`` / ``locate``: one row per table checked (source, found, rows, matched_on,
     #: description). For ``locate`` that *is* the answer, so ``results`` holds it too; for
     #: ``lookup``, ``results`` holds the rows found, every table's under one set of columns.
@@ -155,6 +159,7 @@ class SearchResult:
             "status": self.status,
             "search_id": self.search_id,
             "conversation_id": self.conversation_id,
+            "only_sources": self.only_sources,
             "intent": self.intent.model_dump(mode="json") if self.intent else None,
             "sources": [s.model_dump() for s in self.sources],
             "query_plan": self.query_plan.model_dump(mode="json") if self.query_plan else None,
@@ -259,6 +264,8 @@ class SemanticSearch:
             allowed_sources=allowed_sources, default_limit=default_limit, texts=self.texts, shapes=self.shapes,
         )
         self.validator = QueryValidator(self.catalog, allowed_sources=allowed_sources)
+        self._previews: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()  # preview() cache, per question text
+        self._table_labels: Optional[Dict[str, str]] = None
         #: ``FeedbackStore`` — every search is recorded (its decision trail, never its rows), and
         #: ``feedback()`` stores what the user said about it. ``None``: nothing recorded.
         self.feedback_store = feedback
@@ -323,28 +330,40 @@ class SemanticSearch:
     # ------------------------------------------------------------------
 
     def conversation(self, question: str, execute: bool = True, max_rounds: int = 5,
-                     user: Optional[str] = None) -> "Conversation":
+                     user: Optional[str] = None, only_sources: Optional[Iterable[str]] = None,
+                     pinned: Optional[Dict[str, Any]] = None) -> "Conversation":
         """
         Asks ``question`` and keeps the thread: while the result needs
         clarification, ``conversation.answer(reply)`` pins the chosen option
         and asks again — each round settles one decision, so it ends.
         """
-        return Conversation(self, question, execute=execute, max_rounds=max_rounds, user=user)
+        return Conversation(self, question, execute=execute, max_rounds=max_rounds, user=user,
+                            only_sources=only_sources, pinned=pinned)
 
     def plan(self, question: str) -> SearchResult:
         """Interprets and plans ``question`` without executing anything."""
         return self.search(question, execute=False)
 
     def search(self, question: str, execute: bool = True, pinned: Optional[Dict[str, Any]] = None,
-               conversation_id: Optional[str] = None, user: Optional[str] = None) -> SearchResult:
+               conversation_id: Optional[str] = None, user: Optional[str] = None,
+               only_sources: Optional[Iterable[str]] = None) -> SearchResult:
         """
         Answers ``question``. ``pinned``: decisions settled by the user's
         answers to earlier clarifications (``ClarificationOption.pins``) —
-        ``conversation()`` keeps track of them for you. With a feedback
-        store, the result is recorded (``result.search_id``).
+        ``conversation()`` keeps track of them for you. ``only_sources``: the
+        tables the user chose for this question (``preview()`` offers them) —
+        nothing else is used, joins included. With a feedback store, the
+        result is recorded (``result.search_id``).
         """
-        result = self._search(question, execute, pinned)
+        only = self._check_scope(only_sources)
+        with scope.only_sources(only):
+            result = self._search(question, execute, pinned)
         result.conversation_id = conversation_id
+        if only is not None:
+            result.only_sources = sorted(only)
+            result.decisions.insert(0, DecisionRecord(
+                kind="scope", question="Which tables may this question use?", subject=", ".join(sorted(only)),
+                answer=sorted(only), probability=1.0, decided_by="user"))
         if self.feedback_store is not None:
             try:
                 result.search_id = self.feedback_store.record_search(
@@ -353,6 +372,69 @@ class SemanticSearch:
             except Exception as exc:  # recording must never cost the user their answer
                 logger.warning("feedback: couldn't record the search (%s)", exc)
         return result
+
+    def _check_scope(self, only_sources: Optional[Iterable[str]]) -> Optional[frozenset]:
+        if only_sources is None:
+            return None
+        only = frozenset(only_sources)
+        unknown = sorted(only - set(self.catalog.sources))
+        if unknown:
+            raise ValueError(f"only_sources: unknown table(s) {unknown}; known: {sorted(self.catalog.sources)}")
+        if not only:
+            raise ValueError("only_sources: choose at least one table")
+        return only
+
+    def preview(self, question: str) -> Dict[str, Any]:
+        """
+        What the question seems to be about, while it's being typed — one
+        decision-engine batch (entity, answer kind, relevance of the
+        candidate tables), rule-based extraction (no LLM), nothing executed
+        or recorded. ``systems``: every table the user may choose, grouped by
+        the system it lives in (the ``auto_register`` service), those judged
+        relevant marked — what the web app's "Systems" chip lists.
+        """
+        key = " ".join(question.lower().split())
+        cached = self._previews.get(key)
+        if cached is not None:
+            self._previews.move_to_end(key)
+            return cached
+        seen = self.interpreter.preview(question, self.clock())
+        seen["systems"] = self._systems({s["source"]: s for s in seen["sources"]})
+        self._previews[key] = seen
+        while len(self._previews) > 256:
+            self._previews.popitem(last=False)
+        return seen
+
+    def _systems(self, judged: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Every table the user may use, grouped by system, relevant ones first."""
+        labels: Dict[str, str] = {}
+        if self.duck is not None and hasattr(self.duck, "list_tables"):
+            if self._table_labels is None:
+                try:
+                    listed = self.duck.list_tables()
+                    self._table_labels = dict(zip(listed["name"], listed["source"]))
+                except Exception:
+                    self._table_labels = {}
+            labels = self._table_labels
+        service_of = getattr(self.duck, "service_of", {}) if self.duck is not None else {}
+        groups: Dict[str, Dict[str, Any]] = {}
+        for name, src in self.catalog.sources.items():
+            if not (self.planner.allowed is None or name in self.planner.allowed):
+                continue
+            table = (src.table or "").lower()
+            system = service_of.get(table) or ("DuckDB" if src.relation else "other")
+            group = groups.setdefault(system, {"system": system, "label": labels.get(table) or "", "sources": []})
+            j = judged.get(name, {})
+            group["sources"].append({
+                "source": name, "description": src.description.strip().split(". ")[0].rstrip("."),
+                "probability": j.get("probability"), "relevant": bool(j.get("relevant")),
+            })
+        out = list(groups.values())
+        for g in out:
+            g["sources"].sort(key=lambda s: (not s["relevant"], -(s["probability"] or 0), s["source"]))
+            g["relevant"] = any(s["relevant"] for s in g["sources"])
+        out.sort(key=lambda g: (not g["relevant"], g["system"]))
+        return out
 
     def feedback(self, result: Union["SearchResult", str], verdict: str, categories: Iterable[str] = (),
                  reason: str = "", expected: Optional[Dict[str, Any]] = None, user: Optional[str] = None) -> str:
@@ -647,7 +729,8 @@ class Conversation:
     """
 
     def __init__(self, search: "SemanticSearch", question: str, execute: bool = True, max_rounds: int = 5,
-                 user: Optional[str] = None):
+                 user: Optional[str] = None, only_sources: Optional[Iterable[str]] = None,
+                 pinned: Optional[Dict[str, Any]] = None):
         import uuid
 
         self.search = search
@@ -655,9 +738,11 @@ class Conversation:
         #: Ties every round's recorded search together (``SearchResult.conversation_id``).
         self.id = uuid.uuid4().hex[:16]
         self.user = user
+        #: The tables the user chose before asking — kept for every round.
+        self.only_sources = sorted(only_sources) if only_sources is not None else None
         self.execute = execute
         self.max_rounds = max_rounds
-        self.pinned: Dict[str, Any] = {}
+        self.pinned: Dict[str, Any] = dict(pinned or {})  # e.g. the entity chosen before asking
         #: One entry per reply: what was asked, the reply, the option it picked (or None).
         self.history: List[Dict[str, Any]] = []
         self.result: SearchResult = self._ask()
@@ -697,7 +782,7 @@ class Conversation:
 
     def _ask(self) -> SearchResult:
         return self.search.search(self.question, execute=self.execute, pinned=self.pinned,
-                                  conversation_id=self.id, user=self.user)
+                                  conversation_id=self.id, user=self.user, only_sources=self.only_sources)
 
     def _interpret(self, reply: str, followup: Clarification) -> Optional[ClarificationOption]:
         """Free text → an option, by the decision engine (a choice question), when it's sure enough."""

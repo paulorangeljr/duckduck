@@ -30,6 +30,7 @@ from .intent import (
 )
 from .retrieval import CatalogRetriever, LexicalRetriever
 from .memory import as_fact, question_template
+from .scope import in_scope
 from .shapes import ACROSS_SHAPES, AnswerShapes, catalog_topic
 from .text import vocabulary
 
@@ -58,6 +59,7 @@ class SemanticInterpreter:
         self.engine = engine
         self.retriever = retriever or LexicalRetriever(catalog)
         self.extractor = extractor or RuleBasedExtractor(catalog)
+        self._preview_rules = RuleBasedExtractor(catalog)  # preview(): no LLM while typing
         self.thresholds = thresholds or Thresholds()
         self.top_k = top_k
         #: The questions asked back to the user.
@@ -96,10 +98,11 @@ class SemanticInterpreter:
             return intent, decisions  # nothing to decide about the data — no entity, activity or tables to ask about
         try:
             refused = {k[7:] for k, v in pins.items() if k.startswith("source:") and v is False}
+            refused |= {n for n in self.catalog.sources if not in_scope(n)}  # the user narrowed the tables
             ranked = self.retriever.search(intent.working_question, self.top_k + len(refused))
             retrieved = dict([(n, sc) for n, sc in ranked if n not in refused][: self.top_k])
             for key, value in pins.items():  # a source the user picked is a candidate whatever retrieval said
-                if key.startswith("source:") and value and key[7:] in self.catalog.sources:
+                if key.startswith("source:") and value and key[7:] in self.catalog.sources and in_scope(key[7:]):
                     retrieved.setdefault(key[7:], 0.0)
             for case in intent.similar_cases:  # ... and so is one a similar confirmed question used (still judged)
                 for name in case.get("sources") or []:
@@ -244,7 +247,7 @@ class SemanticInterpreter:
         wanted = [x for x in (intent.target_entity, intent.activity) if x]
         extra = [
             name for name, src in self.catalog.sources.items()
-            if name not in exclude and any(w in src.entities or w in src.activities for w in wanted)
+            if name not in exclude and in_scope(name) and any(w in src.entities or w in src.activities for w in wanted)
         ]
         return {name: 0.0 for name in extra[: self.top_k]}
 
@@ -299,6 +302,53 @@ class SemanticInterpreter:
             intent.activity, intent.activity_confidence = result.choice, result.probability
 
     _SHAPE_QUESTION = "What kind of answer does the question ask for?"
+
+    def preview(self, question: str, now: datetime) -> Dict[str, Any]:
+        """
+        While the question is typed: the entity, the answer kind and the
+        relevance of the candidate tables, from one engine batch — never
+        raising, nothing recorded. Rule-based extraction only (an LLM on
+        every pause would be slow and costly).
+        """
+        ex = self._preview_rules.extract(question, now)
+        intent = SemanticIntent(question=question, time_range=ex.time_range, value_filters=ex.enum_matches,
+                                literals=self._without_shape_words([question], ex.literals))
+        if self.memory is not None:
+            intent.similar_cases = self.memory.similar(question_template(question, intent.literals))
+        candidates, _ = self._candidates(intent)
+        if candidates == ["catalog"]:
+            return {"question": question, "answer_shape": {"choice": "catalog", "probability": 1.0, "sure": True},
+                    "catalog_topic": catalog_topic(question), "entity": None, "sources": []}
+        ranked = self.retriever.search(question, self.top_k)
+        names = [n for n, _ in ranked][: self.top_k]
+        for case in intent.similar_cases:
+            names += [n for n in case.get("sources") or [] if n in self.catalog.sources and n not in names]
+        asks = [a for a in (self._entity_ask(intent, ex, {}), self._shape_ask(intent, {})) if a]
+        asks += self._source_asks(intent, ex, names)
+        answers = ask_all(self.engine, asks)
+        entity = answers.get("entity")
+        shape = answers.get("answer_shape")
+        sources = []
+        for name in names:
+            result = answers.get(f"source:{name}")
+            if result is None:
+                continue
+            threshold = self.thresholds.critical if self.catalog.sources[name].critical else self.thresholds.source
+            sources.append({"source": name, "probability": round(result.probability, 3),
+                            "relevant": result.probability >= threshold})
+        return {
+            "question": question,
+            "answer_shape": ({"choice": candidates[0], "probability": 1.0, "sure": True} if len(candidates) == 1 else
+                             {"choice": shape.choice, "probability": round(shape.probability, 3),
+                              "sure": shape.probability >= self.thresholds.answer_shape}),
+            "entity": None if entity is None else {
+                "choice": entity.choice, "probability": round(entity.probability, 3),
+                "sure": entity.probability >= self.thresholds.entity,
+                "ranked": [[e, round(p, 3)] for e, p in entity.ranked()],
+                "descriptions": {e: d.description.strip() for e, d in self.catalog.entities.items()},
+            },
+            "sources": sources,
+        }
 
     def _about_the_catalog(self, intent: SemanticIntent, decisions: List[DecisionRecord], pins: Dict[str, Any]) -> bool:
         """"What kind of information do you have?" — answered from the catalog, before any other decision."""

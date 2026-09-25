@@ -23,6 +23,7 @@ from .decisions import CRITERIA, Ask, DecisionEngine, DecisionState, ask_all
 from .graph import Path, RelationshipGraph
 from .clarify import ClarificationTexts
 from .intent import FIELD_SHAPES, Clarification, ClarificationNeeded, DecisionRecord, SemanticIntent, Thresholds
+from .scope import in_scope
 from .shapes import AnswerShapes
 from .plan import Filter, Join, LogicalQueryPlan, TimeRangeFilter
 from .text import content_stems, stem, tokenize
@@ -535,7 +536,8 @@ class QueryPlanner:
                 raise exc
 
     def _is_allowed(self, source: str) -> bool:
-        return self.allowed is None or source in self.allowed
+        """Authorized (``allowed_sources``) and chosen for this question (``scope.only_sources``)."""
+        return (self.allowed is None or source in self.allowed) and in_scope(source)
 
 
 def _words_after(question: str, shapes: AnswerShapes) -> Set[str]:

@@ -94,6 +94,34 @@ textarea { width: 100%; min-height: 60px; }
          transition: opacity .2s; pointer-events: none; }
 .toast.show { opacity: 1; }
 .error { color: var(--bad); }
+/* while typing: what the question seems to be about */
+.chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.chips:empty { margin-top: 0; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px; border-radius: 999px;
+        border: 1px solid var(--border); background: var(--surface-2); color: var(--ink); font: inherit;
+        font-size: 13px; cursor: pointer; animation: pop .22s ease-out both; }
+.chip:disabled { cursor: default; }
+.chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
+.chip.mine .dot { background: var(--good); }
+.chip .k { color: var(--ink-2); }
+.chip[aria-expanded="true"] { outline: 2px solid var(--accent); }
+.chip.thinking { color: var(--muted); border-style: dashed; }
+.chip.thinking .dot { background: var(--muted); animation: blink 1s ease-in-out infinite; }
+@keyframes pop { from { opacity: 0; transform: translateY(4px) scale(.96); } to { opacity: 1; transform: none; } }
+@keyframes blink { 50% { opacity: .3; } }
+.panel { margin-top: 10px; border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
+         background: var(--surface); animation: pop .18s ease-out both; }
+.panel h4 { margin: 10px 0 4px; font-size: 14px; display: flex; gap: 8px; align-items: center; }
+.panel h4:first-child { margin-top: 0; }
+.panel h4 .label { color: var(--muted); font-weight: 400; font-size: 12px; }
+.srcrow { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px; align-items: center;
+          padding: 5px 0 5px 22px; font-size: 14px; }
+.srcrow .desc { grid-column: 2; color: var(--muted); font-size: 12.5px; margin-top: -2px; }
+.tag { font-size: 11px; padding: 0 7px; border-radius: 999px; border: 1px solid var(--accent); color: var(--accent); }
+.rel { width: 64px; height: 6px; background: var(--grid); border-radius: 3px; position: relative; }
+.rel span { position: absolute; inset: 0 auto 0 0; background: var(--bar); border-radius: 0 3px 3px 0; }
+.panel .foot { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; flex-wrap: wrap; }
+@media (prefers-reduced-motion: reduce) { .chip, .panel { animation: none; } .chip.thinking .dot { animation: none; } }
 @media (max-width: 600px) { .user { margin-left: 0; width: 100%; } .ask { flex-direction: column; } }
 </style>
 </head>
@@ -115,6 +143,8 @@ textarea { width: 100%; min-height: 60px; }
         <input id="question" placeholder="Ask about your data — e.g. Which hosts have critical alerts?" autocomplete="off">
         <button class="primary" type="submit">Ask</button>
       </form>
+      <div class="chips" id="chips" aria-live="polite"></div>
+      <div class="panel" id="chippanel" hidden></div>
     </div>
     <div id="conversation"></div>
   </section>
@@ -148,13 +178,13 @@ let META = null;
 const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } },
                 set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
 
-async function api(path, body) {
+async function api(path, body, signal) {
   const headers = {"Content-Type": "application/json"};
   const token = store.get("duckduck-token"); if (token) headers["X-Duckduck-Token"] = token;
-  const r = await fetch(path, body === undefined ? {headers} : {method: "POST", headers, body: JSON.stringify(body)});
+  const r = await fetch(path, body === undefined ? {headers, signal} : {method: "POST", headers, signal, body: JSON.stringify(body)});
   if (r.status === 401) {
     const t = prompt("This server needs its access token:");
-    if (t) { store.set("duckduck-token", t); return api(path, body); }
+    if (t) { store.set("duckduck-token", t); return api(path, body, signal); }
   }
   const text = await r.text();
   let data;
@@ -176,12 +206,123 @@ document.querySelectorAll("nav button").forEach(b => b.addEventListener("click",
 $("#user").value = store.get("duckduck-user") || "";
 $("#user").addEventListener("change", () => store.set("duckduck-user", $("#user").value));
 
+// ---- while typing: what the question seems to be about --------------------
+// A pause in typing asks /api/preview (one decision-engine batch, nothing run). The chips show the systems
+// and the entity it points at; clicking one lets the user choose. Their choice goes with the question:
+// only_sources (nothing else is used, joins included) and entity (pinned, never asked).
+const pre = {data: null, chosen: null, entity: null, open: null, seq: 0, timer: null, ctrl: null, thinking: false};
+$("#question").addEventListener("input", () => {
+  clearTimeout(pre.timer);
+  if (!$("#question").value.trim()) { Object.assign(pre, {data: null, chosen: null, entity: null, open: null}); drawChips(); return; }
+  pre.timer = setTimeout(runPreview, 600);
+});
+async function runPreview() {
+  const q = $("#question").value.trim();
+  if (q.length < 8 || q.split(/\s+/).length < 2) return;
+  pre.ctrl?.abort(); pre.ctrl = new AbortController();
+  const mine = ++pre.seq; pre.thinking = true; drawChips();
+  try {
+    const d = await api("/api/preview", {question: q}, pre.ctrl.signal);
+    if (mine !== pre.seq) return;
+    pre.data = d.error ? null : d;
+  } catch (err) { if (err.name === "AbortError") return; }
+  pre.thinking = false; drawChips();
+}
+const allSources = () => (pre.data?.systems || []).flatMap(g => g.sources.map(s => s.source));
+const suggested = () => { const rel = (pre.data?.systems || []).flatMap(g => g.sources.filter(s => s.relevant).map(s => s.source));
+                          return new Set(rel.length ? rel : allSources()); };
+function drawChips() {
+  const box = $("#chips"), d = pre.data, chips = [];
+  if (d) {
+    const shape = d.answer_shape?.choice;
+    if (shape === "catalog") chips.push(`<button class="chip" type="button" disabled><span class="dot"></span><span class="k">About</span> the catalog itself</button>`);
+    if (shape !== "catalog" && (d.systems || []).length) {
+      let label;
+      if (pre.chosen) {
+        const whole = d.systems.filter(g => g.sources.every(s => pre.chosen.has(s.source)));
+        const covered = whole.reduce((n, g) => n + g.sources.length, 0) === pre.chosen.size;
+        label = covered && whole.length ? `only ${whole.map(g => g.system).join(", ")}` : `${pre.chosen.size} table${pre.chosen.size === 1 ? "" : "s"} chosen`;
+      }
+      else {
+        const sys = d.systems.filter(g => g.relevant).map(g => g.system);
+        label = sys.length ? sys.join(", ") : "any";
+      }
+      chips.push(`<button class="chip ${pre.chosen ? "mine" : ""}" type="button" data-open="systems" aria-expanded="${pre.open === "systems"}"><span class="dot"></span><span class="k">Systems</span> ${esc(label)}</button>`);
+    }
+    const e = d.entity;
+    if (shape !== "catalog" && e && (pre.entity || e.sure)) {
+      const name = (pre.entity || e.choice).replace(/_/g, " ");
+      chips.push(`<button class="chip ${pre.entity ? "mine" : ""}" type="button" data-open="entity" aria-expanded="${pre.open === "entity"}"><span class="dot"></span><span class="k">About</span> ${esc(name)}</button>`);
+    }
+    if (shape && !["list", "catalog"].includes(shape) && d.answer_shape.sure)
+      chips.push(`<button class="chip" type="button" disabled><span class="dot"></span><span class="k">Answer</span> ${esc(SHAPE_WORDS[shape] || shape)}</button>`);
+  }
+  if (pre.thinking) chips.push(`<span class="chip thinking"><span class="dot"></span>reading your question…</span>`);
+  box.innerHTML = chips.join("");
+  box.querySelectorAll("[data-open]").forEach(b => b.addEventListener("click", () => {
+    pre.open = pre.open === b.dataset.open ? null : b.dataset.open; drawChips();
+  }));
+  drawPanel();
+}
+function drawPanel() {
+  const panel = $("#chippanel"), d = pre.data;
+  if (!d || !pre.open) { panel.hidden = true; return; }
+  panel.hidden = false;
+  if (pre.open === "systems") {
+    const picked = pre.chosen || suggested();
+    panel.innerHTML = `<p class="muted small" style="margin:0 0 6px">Which systems and tables should answer this? ${pre.chosen ? "" : "Suggested ones are ticked."}</p>` +
+      d.systems.map(g => `<h4><label class="check"><input type="checkbox" data-system="${esc(g.system)}"
+          ${g.sources.every(s => picked.has(s.source)) ? "checked" : ""}
+          data-some="${g.sources.some(s => picked.has(s.source)) && !g.sources.every(s => picked.has(s.source)) ? 1 : 0}"> ${esc(g.system)}</label>
+          ${g.label ? `<span class="label">${esc(g.label)}</span>` : ""}
+          <button class="secondary small" type="button" data-only="${esc(g.system)}" style="padding:2px 8px;margin-left:auto;font-size:12px;white-space:nowrap">only this</button></h4>` +
+        g.sources.map(s => `<label class="srcrow"><input type="checkbox" data-source="${esc(s.source)}" ${picked.has(s.source) ? "checked" : ""}>
+          <span>${esc(s.source)} ${s.relevant ? `<span class="tag">suggested</span>` : ""}</span>
+          ${s.probability === null || s.probability === undefined ? "<span></span>" : `<span class="rel" title="relevance ${Math.round(s.probability * 100)}%"><span style="width:${Math.round(s.probability * 100)}%"></span></span>`}
+          ${s.description ? `<span class="desc">${esc(s.description)}</span>` : ""}</label>`).join("")).join("") +
+      `<div class="foot"><button class="secondary" type="button" id="useall">Let it choose</button>
+        <button class="primary" type="button" id="paneldone">Done</button></div>`;
+    panel.querySelectorAll("[data-source]").forEach(cb => cb.addEventListener("change", () => {
+      const set = new Set(pre.chosen || suggested());
+      cb.checked ? set.add(cb.dataset.source) : set.delete(cb.dataset.source);
+      pre.chosen = set; drawChips();
+    }));
+    panel.querySelectorAll("[data-system]").forEach(cb => { cb.indeterminate = cb.dataset.some === "1"; });
+    panel.querySelectorAll("[data-only]").forEach(b => b.addEventListener("click", () => {
+      pre.chosen = new Set(d.systems.find(g => g.system === b.dataset.only).sources.map(s => s.source)); drawChips();
+    }));
+    panel.querySelectorAll("[data-system]").forEach(cb => cb.addEventListener("change", () => {
+      const set = new Set(pre.chosen || suggested());
+      d.systems.find(g => g.system === cb.dataset.system).sources.forEach(s => cb.checked ? set.add(s.source) : set.delete(s.source));
+      pre.chosen = set; drawChips();
+    }));
+    $("#useall").addEventListener("click", () => { pre.chosen = null; pre.open = null; drawChips(); });
+  } else {
+    const e = d.entity, desc = e.descriptions || {};
+    panel.innerHTML = `<p class="muted small" style="margin:0 0 6px">What should the answer be about?</p>` +
+      e.ranked.map(([name, p]) => `<label class="srcrow"><input type="radio" name="ent" value="${esc(name)}" ${(pre.entity || (e.sure ? e.choice : "")) === name ? "checked" : ""}>
+        <span>${esc(name.replace(/_/g, " "))}</span>
+        <span class="rel" title="${Math.round(p * 100)}%"><span style="width:${Math.round(p * 100)}%"></span></span>
+        ${desc[name] ? `<span class="desc">${esc(desc[name])}</span>` : ""}</label>`).join("") +
+      `<div class="foot"><button class="secondary" type="button" id="useall">Let it decide</button>
+        <button class="primary" type="button" id="paneldone">Done</button></div>`;
+    panel.querySelectorAll("input[name=ent]").forEach(r => r.addEventListener("change", () => { pre.entity = r.value; drawChips(); }));
+    $("#useall").addEventListener("click", () => { pre.entity = null; pre.open = null; drawChips(); });
+  }
+  $("#paneldone").addEventListener("click", () => { pre.open = null; drawChips(); });
+}
+
 // ---- ask ---------------------------------------------------------------
 $("#askform").addEventListener("submit", async (e) => {
   e.preventDefault();
   const q = $("#question").value.trim(); if (!q) return;
+  clearTimeout(pre.timer); pre.ctrl?.abort(); pre.thinking = false; pre.open = null; drawChips();
+  if (pre.chosen && pre.chosen.size === 0) { toast("Choose at least one table, or let it choose."); return; }
+  const body = {question: q, user: user()};
+  if (pre.chosen) body.only_sources = [...pre.chosen];
+  if (pre.entity) body.entity = pre.entity;
   $("#conversation").innerHTML = `<div class="card muted">Thinking…</div>`;
-  try { render(await api("/api/ask", {question: q, user: user()})); }
+  try { render(await api("/api/ask", body)); }
   catch (err) { $("#conversation").innerHTML = `<div class="card error">${esc(err.message)}</div>`; }
 });
 
@@ -222,6 +363,7 @@ function render(c) {
     const tables = shape === "catalog" ? [] : (r.query_plan ? r.query_plan.sources : (r.sections || []).filter(s => s.rows).map(s => s.source));
     const n = (r.results || []).length;
     html += `<div class="card"><div class="row"><span class="pill">${esc(SHAPE_WORDS[shape] || shape)}</span>
+      ${r.only_sources ? `<span class="pill" title="you chose these tables">only: ${esc(r.only_sources.join(", "))}</span>` : ""}
       ${tables.map(s => `<span class="pill">${esc(s)}</span>`).join("")}
       <span class="muted small">${n} row${n === 1 ? "" : "s"}${c.truncated ? " (first 500 shown)" : ""}</span></div>
       ${table(r.results)}
