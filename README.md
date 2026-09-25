@@ -922,19 +922,33 @@ filter on.
 **Everything about a value (`lookup`) and where it is (`locate`).** Both
 look in **every table that has a field of the value's type**, not only
 in the tables retrieval picked. Each value in the question is looked up
-on its own. `results` is then a summary with one row per table (`source`,
-`found`, `rows`, `matched_on`, `description`), and `sections` holds each
-table's part:
+on its own, and no join is needed: it's one query per table.
+
+- **`lookup` answers with the information itself.** `results` holds every
+  row found, from every table, under one set of columns, with `source`
+  first.
+- **`locate` answers with the tables.** Its `results` is the summary.
+- **Both fill `summary`** (one row per table: `source`, `found`, `rows`,
+  `matched_on`, `description`) and **`sections`** (each table's part).
 
 ```python
-result = search.search("What can I find for this ip 10.0.0.196")
-result.results                      # which tables had it, and how many rows
-for sec in result.sections:         # lookup: every column of the matching rows
+result = search.search("Bring me information for this ip 10.0.0.196")
+result.results     # source | ip | rule | severity | owner | department — the rows found
+result.summary     # which tables had it, and how many rows
+for sec in result.sections:
     print(sec.source, sec.matched_on, sec.rows)
-    sec.results                     # pd.DataFrame (None for locate, which only counts)
-result.to_json()                    # "sections": [{source, matched_on, rows, sql, results}, ...]
+    sec.results    # that table's rows, its own columns (None for locate, which only counts)
+result.to_json()   # "results", "summary", "sections": [{source, matched_on, rows, sql, results}, ...]
 ```
 
+- **Clear wording is a lookup:** "information for/about/on", "details
+  for", "bring me data on", "everything related to", "tudo sobre" and so
+  on. A question that carries a value but no such wording ("10.0.0.196?",
+  "show me 10.0.0.196") asks the decision engine whether it wants a list
+  or everything about the value, in the same batch as entity and
+  activity. Offline, the lexical engine assumes a list.
+- **No question about which table.** A lookup never asks which table
+  should answer, since it looks in all of them.
 - The question's other values (enumerated ones like "critical", a time
   range) apply in the tables that have those fields. With a time range,
   tables without a time field are skipped.

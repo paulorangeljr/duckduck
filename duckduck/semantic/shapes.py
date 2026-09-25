@@ -61,6 +61,8 @@ DEFAULT_WORDING: Dict[str, Dict[str, List[str]]] = {
         "what do you have on", "what do you know about", "tell me about", "everything about", "all about",
         "details about", "details of", "details on", "information about", "information on", "info on",
         "info about", "investigate", "look up", "lookup",
+        "re:\\b(bring|give|get|show|fetch|pull|find)( me| us)?( all| the| any)? (info|information|details|data|everything)\\b",
+        "re:\\b(info|information|details|data|everything|anything)\\s+(about|on|for|regarding|related to)\\b",
         "o que tem sobre", "o que temos sobre", "o que há sobre", "o que existe sobre", "o que sabemos sobre",
         "o que eu encontro", "o que encontro", "tudo sobre", "detalhes de", "detalhes do", "detalhes da",
         "detalhes sobre", "informações sobre", "informacoes sobre", "investigue", "investigar",

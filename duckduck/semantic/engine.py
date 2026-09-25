@@ -64,6 +64,15 @@ class Section:
         }
 
 
+def _rows_found(sections: List[Section]) -> pd.DataFrame:
+    """Every table's rows under one set of columns (a union by column name), ``source`` first."""
+    frames = [s.results.assign(source=s.source) for s in sections if s.results is not None and not s.results.empty]
+    if not frames:
+        return pd.DataFrame(columns=["source"])
+    rows = pd.concat(frames, ignore_index=True, sort=False)
+    return rows[["source", *[c for c in rows.columns if c != "source"]]]
+
+
 def _records(df: Optional[pd.DataFrame]) -> List[Dict[str, Any]]:
     return df.astype(object).where(df.notna(), None).to_dict(orient="records") if df is not None else []
 
@@ -91,8 +100,12 @@ class SearchResult:
     pinned: Dict[str, Any] = field(default_factory=dict)
     #: Live checks run for the decision engine (``live_evidence``): field, value, found.
     evidence: List[Any] = field(default_factory=list)
-    #: ``lookup`` / ``locate``: one entry per table checked; ``results`` is then the summary table.
+    #: ``lookup`` / ``locate``: one entry per table checked.
     sections: List[Section] = field(default_factory=list)
+    #: ``lookup`` / ``locate``: one row per table checked (source, found, rows, matched_on,
+    #: description). For ``locate`` that *is* the answer, so ``results`` holds it too; for
+    #: ``lookup``, ``results`` holds the rows found, every table's under one set of columns.
+    summary: Optional[pd.DataFrame] = None
 
     @property
     def clarification_question(self) -> Optional[str]:
@@ -118,8 +131,8 @@ class SearchResult:
                 lines += ["", self.followup.render()]
             return "\n".join(lines)
         if self.sections:
-            if self.results is not None:
-                lines += ["", self.results.to_string(index=False)]
+            if self.summary is not None:
+                lines += ["", self.summary.to_string(index=False)]
             for sec in self.sections:
                 if sec.results is not None and not sec.results.empty:
                     lines += ["", f"── {sec.source} ({sec.rows} rows, matched on {', '.join(sec.matched_on)})",
@@ -145,6 +158,7 @@ class SearchResult:
                 "fetches": [vars(f) for f in self.fetches],
             },
             "results": _records(self.results),
+            "summary": _records(self.summary) if self.summary is not None else None,
             "sections": [s.to_dict() for s in self.sections],
             "decisions": [d.model_dump(mode="json") for d in self.decisions],
             "clarification": self.clarification,
@@ -400,11 +414,12 @@ class SemanticSearch:
         result.sql = "\n\n".join(f"-- {s.source}\n{s.sql}" for s in result.sections) or None
         if execute:
             result.sections.sort(key=lambda s: -s.rows)  # where it was found first
-            result.results = pd.DataFrame(
+            result.summary = pd.DataFrame(
                 [{"source": s.source, "found": s.rows > 0, "rows": s.rows, "matched_on": ", ".join(s.matched_on),
                   "description": s.description} for s in result.sections],
                 columns=["source", "found", "rows", "matched_on", "description"],
             )
+            result.results = result.summary if intent.answer_shape == "locate" else _rows_found(result.sections)
             result.status = "ok"
 
     def _catalog_listing(self, intent: SemanticIntent) -> pd.DataFrame:

@@ -27,7 +27,7 @@ def test_lookup_brings_every_table_holding_the_value():
     result = _ok("What I can find for this ip 10.0.0.3")
     shape = next(d for d in result.decisions if d.kind == "answer_shape")
     assert shape.answer == "lookup" and shape.decided_by == "deterministic"
-    assert result.results.to_dict("records") == [
+    assert result.summary.to_dict("records") == [
         {"source": "alerts", "found": True, "rows": 3, "matched_on": "ip",
          "description": "Security alerts raised about IP addresses."},
         {"source": "owners", "found": True, "rows": 1, "matched_on": "ip", "description": "Who owns each IP address."},
@@ -38,6 +38,13 @@ def test_lookup_brings_every_table_holding_the_value():
     payload = json.loads(result.to_json())
     assert payload["sections"][1]["results"] == [{"ip": "10.0.0.3", "owner": "ana", "department": "ops"}]
     assert "── owners (1 rows, matched on ip)" in result.report()
+    # the answer itself: every row found, one set of columns, where it came from first
+    rows = result.results
+    assert list(rows.columns) == ["source", "ip", "rule", "severity", "owner", "department"]
+    assert rows["source"].tolist() == ["alerts", "alerts", "alerts", "owners"]
+    assert payload["results"][3] == {"source": "owners", "ip": "10.0.0.3", "rule": None, "severity": None,
+                                     "owner": "ana", "department": "ops"}
+    assert payload["summary"][0]["source"] == "alerts"
 
 
 def test_lookup_applies_the_question_s_other_values_where_they_fit():
@@ -49,14 +56,14 @@ def test_lookup_applies_the_question_s_other_values_where_they_fit():
 
 def test_each_value_is_looked_up_on_its_own():
     result = _ok("Tell me about 10.0.0.1 and 10.0.0.2")
-    assert result.results.set_index("source")["matched_on"].to_dict() == {
+    assert result.summary.set_index("source")["matched_on"].to_dict() == {
         "alerts": "ip = 10.0.0.1, ip = 10.0.0.2", "owners": "ip = 10.0.0.1, ip = 10.0.0.2"}
-    assert result.results.set_index("source")["rows"].to_dict() == {"alerts": 3, "owners": 2}
+    assert result.summary.set_index("source")["rows"].to_dict() == {"alerts": 3, "owners": 2}
 
 
 def test_a_value_found_nowhere():
     result = _ok("Everything about 192.168.9.9")
-    assert result.results["found"].tolist() == [False, False]
+    assert result.summary["found"].tolist() == [False, False] and result.results.empty
     assert all(s.results.empty for s in result.sections)
 
 
@@ -84,7 +91,7 @@ def test_locate_without_a_value_answers_from_the_catalog():
 
 def test_a_list_that_would_only_repeat_the_value_becomes_a_lookup():
     result = _ok("Which hosts are 10.0.0.196?")
-    shape = next(d for d in result.decisions if d.kind == "answer_shape")
+    shape = [d for d in result.decisions if d.kind == "answer_shape"][-1]  # after the engine read it as a list
     assert shape.answer == "lookup" and "only repeat '10.0.0.196'" in shape.subject
     # different fields of the same type are a real list: "which IPs connected to 10.0.0.5" (src vs dst)
 
@@ -168,3 +175,40 @@ def test_config_inline_or_file(tmp_path):
     with pytest.raises(ValueError, match="unknown shape"):
         SemanticConfig.load(DuckAPI(), str(cfg_file))
 
+
+
+# ---------------------------------------------------------------------------
+# "Bring me information for this ip ..." — the information, without a detour
+
+
+def test_information_for_a_value_is_a_lookup_with_no_table_question():
+    result = _ok("Bring me information for this ip 10.0.0.2")
+    assert result.intent.answer_shape == "lookup"
+    assert not [d for d in result.decisions if d.kind == "source_relevance" and d.decided_by == "user"]
+    assert result.to_dict()["results"] == [
+        {"source": "alerts", "ip": "10.0.0.2", "rule": "malware", "severity": "critical", "owner": None,
+         "department": None},
+        {"source": "owners", "ip": "10.0.0.2", "rule": None, "severity": None, "owner": "bob", "department": "eng"},
+    ]
+
+
+@pytest.mark.parametrize("question", ["Get me data on 10.0.0.1", "details for 10.0.0.1",
+                                      "show me everything related to 10.0.0.1", "info on 10.0.0.1"])
+def test_more_lookup_wording(question):
+    assert AnswerShapes().candidates(question)[0] == ["lookup"]
+
+
+def test_a_value_with_no_wording_lets_the_engine_choose_list_or_lookup(monkeypatch):
+    from test_answer_shapes import _jev_search
+
+    search, jev = _jev_search(monkeypatch, shape={"list": 0.1, "lookup": 0.9})
+    result = search.search("10.0.0.2?")
+    assert set(jev.bodies[0]["questions"]["answer_shape"]["criteria"]) == {"list", "lookup"}
+    assert "default" not in json.dumps(jev.bodies[0]["state"])  # the lexical fallback hint never reaches Jev
+    assert result.status == "ok" and result.intent.answer_shape == "lookup"
+
+
+def test_offline_the_usual_reading_is_a_list():
+    result = _ok("Which IPs have critical alerts from 10.0.0.2?")
+    shape = next(d for d in result.decisions if d.kind == "answer_shape")
+    assert shape.answer == "list" and shape.probability == pytest.approx(0.9)

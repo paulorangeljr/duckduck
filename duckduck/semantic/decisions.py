@@ -54,6 +54,9 @@ class DecisionState(BaseModel):
     prior: Optional[float] = None
     #: The question as the user wrote it, when ``query`` is its English reading.
     original_query: Optional[str] = None
+    #: For a choice: the option to assume when there's no evidence either way — used by the
+    #: offline lexical engine only (a real engine reads the question; never sent to it).
+    default: Optional[str] = None
 
 
 class BinaryDecision(BaseModel):
@@ -421,6 +424,8 @@ class LexicalDecisionEngine:
         for label, description in options.items():
             vocab = vocabulary([label.replace("_", " "), description])
             scores[label] = sum(1 for t in state.terms if t in vocab) + self.smoothing
+        if state.default in scores and max(scores.values()) <= self.smoothing:  # no evidence: the usual reading
+            scores = {label: (0.9 if label == state.default else 0.1 / max(len(scores) - 1, 1)) for label in scores}
         return Classification(
             question=question, probabilities=normalize_probabilities(scores, list(options))
         )

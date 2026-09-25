@@ -306,12 +306,25 @@ class SemanticInterpreter:
     def _shape_ask(self, intent: SemanticIntent, pins: Dict[str, Any]) -> Optional[Ask]:
         if pins.get("answer_shape") in self.shapes.descriptions:
             return None
-        candidates, words = self.shapes.candidates(intent.working_question)
+        candidates, words = self._candidates(intent)
         if len(candidates) == 1:
             return None
         return Ask(key="answer_shape", question=self._SHAPE_QUESTION,
                    options={c: self.shapes.descriptions[c] for c in candidates},
-                   state=intent.decision_state(facts={"wording": words}))
+                   state=intent.decision_state(facts={"wording": words} if words else {},
+                                               default="list" if candidates == ["list", "lookup"] else None))
+
+    def _candidates(self, intent: SemanticIntent) -> Tuple[List[str], str]:
+        """
+        The wording's candidates — plus, when nothing in the wording says
+        what kind of answer and the question carries a value ("bring me
+        information for 10.0.0.196"), everything about that value
+        (``lookup``) as an alternative to a list: the engine reads which.
+        """
+        candidates, words = self.shapes.candidates(intent.working_question)
+        if candidates == ["list"] and any(lit.kind != "term" or lit.semantic_type for lit in intent.literals):
+            return ["list", "lookup"], words
+        return candidates, words
 
     def _apply_shape(self, intent: SemanticIntent, result: Any, decisions: List[DecisionRecord],
                      pins: Dict[str, Any]) -> None:
@@ -325,7 +338,7 @@ class SemanticInterpreter:
             intent.answer_shape = pins["answer_shape"]
             decisions.append(_by_user("answer_shape", self._SHAPE_QUESTION, intent.answer_shape, None))
             return
-        candidates, words = self.shapes.candidates(intent.working_question)
+        candidates, words = self._candidates(intent)
         if len(candidates) == 1:
             intent.answer_shape = candidates[0]
             if candidates[0] != "list":
