@@ -35,7 +35,7 @@ from .graph import RelationshipGraph
 from .intent import ClarificationNeeded, DecisionRecord, SemanticIntent, Thresholds
 from .interpreter import SemanticInterpreter
 from .jev import JevAPIError, JevClient
-from .llm import AzureOpenAILLM, ClaudeLLM, LLMClient, LLMError
+from .llm import AzureOpenAILLM, ClaudeLLM, LLMClient, LLMError, OpenRouterLLM
 from .llm_extraction import LLMExtractor
 from .plan import Filter, Join, LogicalQueryPlan, TimeRangeFilter
 from .planner import QueryPlanner
@@ -63,6 +63,7 @@ __all__ = [
     "Join",
     "LLMClient",
     "LLMError",
+    "OpenRouterLLM",
     "LLMExtractor",
     "LexicalDecisionEngine",
     "LexicalRetriever",

@@ -18,7 +18,7 @@ Entra ID (``DefaultAzureCredential``: managed identity, ``az login``,
 """
 
 import os
-from typing import Any, Callable, Mapping, Optional, Protocol, Type, TypeVar
+from typing import Any, Callable, Dict, Mapping, Optional, Protocol, Type, TypeVar
 
 from pydantic import BaseModel
 
@@ -209,7 +209,55 @@ class ClaudeLLM:
         return parsed
 
 
-class AzureOpenAILLM:
+class _ChatCompletionsLLM:
+    """``generate`` over an OpenAI-style ``chat.completions.parse`` (Azure OpenAI, OpenRouter)."""
+
+    #: What the request's ``model`` is (the deployment on Azure, the model id on OpenRouter).
+    model_id: str
+    max_tokens: int
+    #: The request parameter carrying ``max_tokens``.
+    TOKENS_PARAM = "max_completion_tokens"
+    #: Where a refusal-by-filter comes from, for the error message.
+    FILTER_NAME = "the provider's content filter"
+
+    def _extra(self) -> Dict[str, Any]:
+        return {}
+
+    def generate(self, system: str, prompt: str, output_model: Type[T]) -> T:
+        kwargs = dict(
+            model=self.model_id,
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+            response_format=output_model,
+            **{self.TOKENS_PARAM: self.max_tokens},
+            **self._extra(),
+        )
+        completions = self.client.chat.completions
+        if not hasattr(completions, "parse"):  # openai < 1.92 only has it under beta
+            completions = self.client.beta.chat.completions
+        try:
+            response = completions.parse(**kwargs)
+        except Exception as exc:
+            # the SDK raises these itself instead of returning the finish reason
+            name = type(exc).__name__
+            if name == "LengthFinishReasonError":
+                raise LLMError(f"answer truncated at max_tokens={self.max_tokens}; raise it") from exc
+            if name == "ContentFilterFinishReasonError":
+                raise LLMError(f"the answer was blocked by {self.FILTER_NAME}") from exc
+            raise
+        choice = response.choices[0]
+        if getattr(choice.message, "refusal", None):
+            raise LLMError(f"the model declined the request ({choice.message.refusal})")
+        if choice.finish_reason == "length":
+            raise LLMError(f"answer truncated at max_tokens={self.max_tokens}; raise it")
+        if choice.finish_reason == "content_filter":
+            raise LLMError(f"the answer was blocked by {self.FILTER_NAME}")
+        parsed = getattr(choice.message, "parsed", None)
+        if parsed is None:
+            raise LLMError("the model returned no parseable output")
+        return parsed
+
+
+class AzureOpenAILLM(_ChatCompletionsLLM):
     """
     An Azure OpenAI deployment, with structured outputs
     (``chat.completions.parse(response_format=Model)``).
@@ -235,6 +283,7 @@ class AzureOpenAILLM:
     """
 
     DEFAULT_API_VERSION = "2024-10-21"
+    FILTER_NAME = "the Azure content filter"
 
     def __init__(
         self,
@@ -249,7 +298,7 @@ class AzureOpenAILLM:
         default_headers: Optional[Mapping[str, str]] = None,
         client: Any = None,
     ):
-        self.deployment = deployment
+        self.deployment = self.model_id = deployment
         self.max_tokens = max_tokens
         self.reasoning_effort = reasoning_effort
         if client is None:
@@ -277,36 +326,76 @@ class AzureOpenAILLM:
             client = openai.AzureOpenAI(**kwargs)
         self.client = client
 
-    def generate(self, system: str, prompt: str, output_model: Type[T]) -> T:
-        kwargs = dict(
-            model=self.deployment,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-            response_format=output_model,
-            max_completion_tokens=self.max_tokens,
-        )
+    def _extra(self) -> Dict[str, Any]:
+        return {"reasoning_effort": self.reasoning_effort} if self.reasoning_effort else {}
+
+
+class OpenRouterLLM(_ChatCompletionsLLM):
+    """
+    Any model on OpenRouter (``https://openrouter.ai``), through its
+    OpenAI-compatible API with structured outputs.
+
+    Parameters
+    ----------
+    model : str
+        The OpenRouter model id (``vendor/model``, as listed on
+        openrouter.ai/models).
+    api_key : str, optional
+        Default: ``OPENROUTER_API_KEY``.
+    require_parameters : bool
+        Route only to providers that honour every request parameter —
+        above all ``response_format`` (structured output), which this
+        client depends on. Default ``True``.
+    reasoning_effort : str, optional
+        Sent as OpenRouter's ``reasoning.effort``.
+    default_headers : dict, optional
+        E.g. ``HTTP-Referer`` / ``X-Title`` (OpenRouter's app attribution).
+    """
+
+    DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
+    TOKENS_PARAM = "max_tokens"
+    FILTER_NAME = "the provider's content filter"
+
+    def __init__(
+        self,
+        model: str,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        max_tokens: int = 16000,
+        reasoning_effort: Optional[str] = None,
+        require_parameters: bool = True,
+        default_headers: Optional[Mapping[str, str]] = None,
+        client: Any = None,
+    ):
+        if not model:
+            raise ValueError("OpenRouter needs 'model': the model id as listed on openrouter.ai/models (vendor/model).")
+        self.model_id = model
+        self.max_tokens = max_tokens
+        self.reasoning_effort = reasoning_effort
+        self.require_parameters = require_parameters
+        if client is None:
+            try:
+                import openai
+            except ImportError as exc:
+                raise ImportError('OpenRouterLLM needs the OpenAI SDK: pip install "duckduck[openrouter]"') from exc
+            api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
+            if not api_key:
+                raise ValueError(
+                    "No OpenRouter API key: set OPENROUTER_API_KEY, or give the ai_providers entry an "
+                    "\"authentication\" block that yields an api_key."
+                )
+            kwargs = {"api_key": api_key, "base_url": base_url or self.DEFAULT_BASE_URL}
+            if default_headers:
+                kwargs["default_headers"] = dict(default_headers)
+            client = openai.OpenAI(**kwargs)
+        self.client = client
+
+    def _extra(self) -> Dict[str, Any]:
+        body: Dict[str, Any] = {}
+        if self.require_parameters:
+            body["provider"] = {"require_parameters": True}
         if self.reasoning_effort:
-            kwargs["reasoning_effort"] = self.reasoning_effort
-        completions = self.client.chat.completions
-        if not hasattr(completions, "parse"):  # openai < 1.92 only has it under beta
-            completions = self.client.beta.chat.completions
-        try:
-            response = completions.parse(**kwargs)
-        except Exception as exc:
-            # the SDK raises these itself instead of returning the finish reason
-            name = type(exc).__name__
-            if name == "LengthFinishReasonError":
-                raise LLMError(f"answer truncated at max_tokens={self.max_tokens}; raise it") from exc
-            if name == "ContentFilterFinishReasonError":
-                raise LLMError("the answer was blocked by the Azure content filter") from exc
-            raise
-        choice = response.choices[0]
-        if getattr(choice.message, "refusal", None):
-            raise LLMError(f"the model declined the request ({choice.message.refusal})")
-        if choice.finish_reason == "length":
-            raise LLMError(f"answer truncated at max_tokens={self.max_tokens}; raise it")
-        if choice.finish_reason == "content_filter":
-            raise LLMError("the answer was blocked by the Azure content filter")
-        parsed = getattr(choice.message, "parsed", None)
-        if parsed is None:
-            raise LLMError("the model returned no parseable output")
-        return parsed
+            body["reasoning"] = {"effort": self.reasoning_effort}
+        return {"extra_body": body} if body else {}
+
+

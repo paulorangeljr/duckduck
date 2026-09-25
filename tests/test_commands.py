@@ -93,7 +93,7 @@ def gen_config(tmp_path, monkeypatch):
     cfg = tmp_path / "duckduck.json"
     cfg.write_text(json.dumps({
         "services": {"syn": {"connector": "python", "module": "gen.py", "table_prefix": ""}},
-        "llms": {"claude": {"authentication": {"type": "local", "api_key": "sk-test"}}},
+        "ai_providers": {"claude": {"authentication": {"type": "local", "api_key": "sk-test"}}},
         "semantic": {"default_llm": "claude", "catalog_generation": {"output_path": "drafted.yaml"}},
     }))
     from duckduck.semantic.config import SemanticConfig
@@ -121,9 +121,11 @@ def test_generate_catalog_python_and_cli(gen_config, capsys):
 
 def test_jev_check_python_and_cli(tmp_path, monkeypatch, capsys):
     cfg = tmp_path / "duckduck.json"
-    cfg.write_text(json.dumps({"services": {}, "semantic": {
-        "decision_engine": {"type": "jev", "authentication": {"type": "local", "api_key": "k"}},
-    }}))
+    cfg.write_text(json.dumps({
+        "services": {},
+        "ai_providers": {"jev": {"provider": "jev", "authentication": {"type": "local", "api_key": "k"}}},
+        "semantic": {"decision_engine": {"ai_provider": "jev"}},
+    }))
 
     def fake_post(self, url, data, timeout):
         options = json.loads(data)["questions"]["answer"]["criteria"]
@@ -139,6 +141,6 @@ def test_jev_check_python_and_cli(tmp_path, monkeypatch, capsys):
 
 
 def test_jev_check_without_jev_configured(capsys):
-    with pytest.raises(ValueError, match="isn't 'jev'"):
+    with pytest.raises(ValueError, match="names no ai_provider"):
         jev_check(config_path=LOCAL_CONFIG)
     assert main(["--config", LOCAL_CONFIG, "jev-check"]) == 1

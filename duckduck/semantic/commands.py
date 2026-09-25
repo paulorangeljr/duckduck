@@ -25,7 +25,8 @@ in a notebook, build it once and reuse it::
     ask("Which users accessed github in the last 24hrs?", duck=duck)
 """
 
-from typing import Any, Optional
+import os
+from typing import Any, List, Optional, Union
 
 from .engine import SearchResult, SemanticSearch
 from .generation import GenerationResult
@@ -64,30 +65,54 @@ def generate_catalog(
     duck: Any = None,
     verbose: Any = None,
     write: bool = True,
+    force: Union[bool, str, List[str], None] = False,
 ) -> GenerationResult:
     """
-    Drafts the semantic catalog with the configured LLM from the tables
-    in ``semantic.catalog_generation`` (or every registered table callable
-    without structural args). Writes the YAML to ``out`` (default:
-    ``catalog_generation.output_path``) unless ``write=False``; the
-    result's ``path`` says where, ``warnings`` what was dropped.
+    Brings the semantic catalog up to date with the configured LLM. It
+    reads and updates ``catalog_generation.output_path`` — by default
+    ``catalog_path``, the catalog ``ask`` reads — drafting only what's
+    missing, expired (``max_age``) or forced; hand-written sources and
+    your ``notes`` are kept. ``force=True`` redrafts every generated
+    source; a name / list of names or fnmatch patterns redrafts those
+    (hand-written ones included). ``out`` overrides the file;
+    ``write=False`` keeps the result in memory. Nothing to redraft → no
+    LLM call and the file is left untouched.
     """
     from .config import SemanticConfig
 
     duck = duck if duck is not None else connect(config_path, verbose)
     cfg = SemanticConfig.load(duck, config_path)
-    result = cfg.build_generator(duck).generate(cfg.catalog_generation.tables)
-    if write:
-        result.path = out or cfg.path(cfg.catalog_generation.output_path)
-        result.write(result.path)
+    return refresh_catalog(cfg, duck, out=out, write=write, force=force)
+
+
+def refresh_catalog(cfg: Any, duck: Any, out: Optional[str] = None, write: bool = True,
+                    force: Union[bool, str, List[str], None] = False) -> GenerationResult:
+    """``generate_catalog`` for an already-loaded ``SemanticConfig``."""
+    from .catalog import Catalog
+
+    target = cfg.catalog_target(out)
+    existing = None
+    if os.path.isfile(target):
+        try:
+            existing = Catalog.load(target)
+        except Exception as exc:
+            raise ValueError(
+                f"{target} isn't a valid catalog, so it can't be updated (fix it, or move it away to draft "
+                f"a new one): {exc}"
+            ) from exc
+    result = cfg.build_generator(duck).generate(cfg.catalog_generation.tables, existing=existing, force=force)
+    if write and result.changed:
+        result.write(target)
     return result
 
 
 def jev_check(config_path: Optional[str] = None, verbose: Any = None):
     """
-    One real Jev call (key, network access, response parsing) using the
-    config's ``semantic.decision_engine``. Returns the ``Classification``;
-    raises if the engine isn't Jev or the call fails.
+    One real decision call (key, network access, response parsing) through
+    the config's ``semantic.decision_engine`` — whichever ``ai_providers``
+    entry it names: Jev on TypeSafe's API, Jev on OpenRouter, or a chat
+    model. Returns the ``Classification``; raises if no AI decision engine
+    is configured or the call fails.
     """
     from duckduck import DuckAPI
 
@@ -96,8 +121,10 @@ def jev_check(config_path: Optional[str] = None, verbose: Any = None):
 
     duck = DuckAPI(verbose=verbose)  # no connectors needed, only credential resolution
     cfg = SemanticConfig.load(duck, config_path)
-    if cfg.decision_engine.type != "jev":
-        raise ValueError("semantic.decision_engine.type isn't 'jev' in the config")
+    if cfg.decision_engine.ai_provider is None:
+        raise ValueError(
+            "semantic.decision_engine names no ai_provider (it's the offline lexical engine) — nothing to check"
+        )
     return cfg.build_engine(duck).classify(
         DecisionState(query="Which users accessed github in the last 24hrs?"),
         "What entity is the user asking for?",

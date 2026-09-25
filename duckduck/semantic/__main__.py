@@ -5,7 +5,7 @@ functions in ``duckduck.semantic.commands`` (``ask``, ``generate_catalog``,
 commands read ``duckduck.json`` (or ``--config``): connectors from
 ``services``, everything else from its ``semantic`` section.
 
-    python -m duckduck.semantic generate-catalog [--out semantic_catalog.yaml]
+    python -m duckduck.semantic generate-catalog [--force [NAME ...]] [--out semantic_catalog.yaml]
     python -m duckduck.semantic ask "Which users accessed github in the last 24hrs?"
     python -m duckduck.semantic jev-check
 """
@@ -18,7 +18,8 @@ from .commands import ask, generate_catalog, jev_check
 
 
 def cmd_generate(args) -> int:
-    result = generate_catalog(config_path=args.config, out=args.out, verbose=args.verbose)
+    force = False if args.force is None else (args.force or True)  # bare --force → everything
+    result = generate_catalog(config_path=args.config, out=args.out, verbose=args.verbose, force=force)
     print(result.summary())
     return 0
 
@@ -49,8 +50,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help="log API calls, push-down decisions and pagination progress (default level: info)")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    gen = sub.add_parser("generate-catalog", help="draft the semantic catalog with the LLM")
-    gen.add_argument("--out", help="output YAML (default: catalog_generation.output_path)")
+    gen = sub.add_parser("generate-catalog", help="bring the semantic catalog up to date with the LLM")
+    gen.add_argument("--out", help="catalog file to update (default: output_path, else catalog_path)")
+    gen.add_argument(
+        "--force", nargs="*", metavar="NAME",
+        help="redraft even if not expired: every generated source (no NAME), or the sources "
+             "matching each NAME / fnmatch pattern (hand-written ones included)",
+    )
     gen.set_defaults(fn=cmd_generate, python=generate_catalog)
 
     q = sub.add_parser("ask", help="answer a question")

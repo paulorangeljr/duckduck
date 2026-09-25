@@ -63,7 +63,7 @@ def test_offline_semantic_config_explains_the_missing_llm():
     with pytest.raises(ValueError) as info:
         generate_catalog(config_path=CONFIGS["semantic-local"], write=False)
     message = str(info.value)
-    assert CONFIGS["semantic-local"] in message and '"llms": {"claude": {"model": "claude-opus-5"}}' in message
+    assert CONFIGS["semantic-local"] in message and '"ai_providers": {"claude": {"provider": "anthropic", "model": "claude-opus-5"}}' in message
     assert "duckduck.online.json" in message
 
 

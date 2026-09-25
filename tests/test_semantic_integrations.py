@@ -386,7 +386,7 @@ def test_catalog_generation_drafts_sanitizes_and_validates(tmp_path):
     out = tmp_path / "catalog.yaml"
     result.write(str(out))
     text = out.read_text()
-    assert text.startswith("# Semantic catalog drafted by an LLM")
+    assert text.startswith("# Semantic catalog. Sources with generated_at are maintained by generate-catalog")
     assert Catalog.load(str(out)).sources["fw"].time_field == "timestamp"
 
 
@@ -423,13 +423,13 @@ def test_default_specs_skip_tables_needing_structural_args():
 # ---------------------------------------------------------------------------
 
 
-def _write_config(tmp_path, semantic, llms=None):
+def _write_config(tmp_path, semantic, llms=None):  # llms → the file's ai_providers
     (tmp_path / "prompts").mkdir()
     (tmp_path / "prompts" / "extract.md").write_text("PROMPT FROM FILE")
     path = tmp_path / "duckduck.json"
     data = {"services": {}, "semantic": semantic}
     if llms is not None:
-        data["llms"] = llms  # top level, next to services
+        data["ai_providers"] = llms  # top level, next to services
     path.write_text(json.dumps(data))
     return str(path)
 
@@ -437,11 +437,11 @@ def _write_config(tmp_path, semantic, llms=None):
 def test_from_config_builds_jev_with_key_from_authentication(tmp_path, monkeypatch):
     path = _write_config(tmp_path, {
         "catalog_path": CATALOG_PATH,
-        "decision_engine": {"type": "jev", "model": "typesafe-ai/jev",
-                            "authentication": {"type": "local", "api_key": "jev-secret"}},
+        "decision_engine": {"ai_provider": "jev"},
         "thresholds": {"source": 0.9},
         "allowed_sources": ["auth_logs"],
-    })
+    }, llms={"jev": {"provider": "jev", "model": "typesafe-ai/jev",
+                     "authentication": {"type": "local", "api_key": "jev-secret"}}})
     fake = RoutingJev()
     monkeypatch.setattr("requests.Session.post", lambda self, url, data, timeout: fake(url, data, timeout))
     duck = DuckAPI()
@@ -491,7 +491,7 @@ def test_example_config_semantic_section_is_valid():
 
     with open(f"{REPO}/duckduck.example.json") as f:
         cfg = SemanticConfig.from_file_data(json.load(f))
-    assert cfg.decision_engine.type == "jev" and cfg.extractor.type == "llm"
+    assert cfg.decision_engine.ai_provider == "jev" and cfg.extractor.type == "llm"
     assert cfg.catalog_generation.tables[0].args == {"database": "security", "table_name": "proxy_logs"}
 
 
@@ -568,8 +568,20 @@ def test_include_exclude_and_max_tables(tmp_path):
     duck = _discovery_duck(tmp_path)
     gen = CatalogGenerator(FakeLLM(), duck, include=["security.*"], exclude=["*dns*"])
     assert [s.name for s in gen.plan_specs()[0]] == ["security_proxy_logs"]
-    specs, notes = CatalogGenerator(FakeLLM(), duck, max_tables=2).plan_specs()
-    assert len(specs) == 2 and any("5 tables matched; drafting only the first 2" in n for n in notes)
+    assert len(CatalogGenerator(FakeLLM(), duck, max_tables=2).plan_specs()[0]) == 5  # the cap is per run
+
+    class FirstColumn:
+        def generate(self, system, prompt, output_model):
+            if output_model is GenVocabulary:
+                return GenVocabulary()
+            profile = json.loads(prompt.split("Table profile:\n", 1)[1])
+            return GenSource(description="d", fields=[GenField(name=next(iter(profile["columns"])))])
+
+    first = CatalogGenerator(FirstColumn(), duck, max_tables=2).generate()
+    assert len(first.drafted) == 2 and len(first.deferred) == 3
+    assert any("5 sources needed drafting; drafted 2 (max_tables)" in w for w in first.warnings)
+    second = CatalogGenerator(FirstColumn(), duck, max_tables=2).generate(existing=first.catalog)
+    assert set(second.drafted).isdisjoint(first.drafted) and len(second.deferred) == 1  # converges run by run
     assert [s.name for s in CatalogGenerator(FakeLLM(), duck, discover=False).plan_specs()[0]] == ["assets"]
 
 

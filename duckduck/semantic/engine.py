@@ -10,6 +10,8 @@ on a guess), an invalid plan as ``status="invalid_plan"``.
 """
 
 import inspect
+import logging
+import os
 import time
 import warnings
 from dataclasses import dataclass, field
@@ -30,6 +32,8 @@ from .plan import LogicalQueryPlan
 from .planner import QueryPlanner
 from .retrieval import CatalogRetriever
 from .validator import PlanValidationError, QueryValidator
+
+logger = logging.getLogger("duckduck.semantic")
 
 
 def _utcnow() -> datetime:
@@ -162,11 +166,15 @@ class SemanticSearch:
         ``duckduck.json`` (see ``duckduck.semantic.config``): catalog path,
         decision engine (lexical or Jev + its key), LLM extractor and its
         prompt, thresholds, authorization. ``overrides`` go straight to
-        the constructor (e.g. ``clock=``).
+        the constructor (e.g. ``clock=``). With
+        ``catalog_generation.auto_refresh``, missing/expired sources are
+        drafted into ``catalog_path`` first.
         """
         from .config import SemanticConfig
 
         cfg = SemanticConfig.load(duck, config_path, section)
+        if cfg.catalog_generation.auto_refresh:
+            _auto_refresh(cfg, duck)
         kwargs = dict(
             engine=cfg.build_engine(duck),
             thresholds=cfg.thresholds,
@@ -259,3 +267,20 @@ class SemanticSearch:
         return Catalog.model_construct(
             sources=keep, entities=catalog.entities, activities=catalog.activities, relationships=rels,
         )
+
+
+def _auto_refresh(cfg: Any, duck: Any) -> None:
+    """Drafts what's missing/expired before searching; a failure keeps the catalog as it is."""
+    from .commands import refresh_catalog
+
+    try:
+        result = refresh_catalog(cfg, duck)
+    except Exception as exc:
+        if not os.path.isfile(cfg.path(cfg.catalog_path)):
+            raise
+        with warnings.catch_warnings():
+            warnings.simplefilter("always", RuntimeWarning)
+            warnings.warn(f"catalog auto_refresh failed, using the catalog as it is: {exc}", RuntimeWarning, stacklevel=3)
+        return
+    if result.changed:
+        logger.info("catalog auto_refresh: %s", result.summary().replace("\n", "; "))

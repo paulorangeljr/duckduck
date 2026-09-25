@@ -18,6 +18,7 @@ verbatim, so the catalog must stay admin-maintained (never user input).
 
 import json
 import os
+from datetime import datetime
 from typing import Any, Dict, Iterator, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
@@ -70,6 +71,9 @@ class FieldDef(_Strict):
     #: e.g. ``{"DENY": ["denied", "blocked"]}``. Lets the extractor turn
     #: "denied connections" into ``action = 'DENY'`` deterministically.
     values: Dict[str, List[str]] = Field(default_factory=dict)
+    #: Your observations about this field. Never written by the LLM, kept
+    #: when the source is redrafted, and given to the LLM as context then.
+    notes: str = ""
 
 
 class SourceDef(_Strict):
@@ -82,6 +86,10 @@ class SourceDef(_Strict):
     #: Native DuckDB relation expression — alternative to ``table``.
     relation: Optional[str] = None
     description: str = ""
+    #: Your observations about this source (caveats, owners, gotchas).
+    #: Never written by the LLM, kept when the source is redrafted, and
+    #: given to the LLM as context then.
+    notes: str = ""
     entities: List[str] = Field(default_factory=list)
     activities: List[str] = Field(default_factory=list)
     fields: Dict[Identifier, FieldDef]
@@ -90,6 +98,13 @@ class SourceDef(_Strict):
     #: Security-sensitive source: its relevance must clear the stricter
     #: ``critical`` threshold before it's used automatically.
     critical: bool = False
+    #: When ``generate-catalog`` drafted this source. Set → the generator
+    #: maintains it (redrafts it once older than ``max_age``, or when
+    #: forced). Absent → written by hand: only redrafted when forced by
+    #: name. Delete it to keep your edits to a drafted source.
+    generated_at: Optional[datetime] = None
+    #: The LLM that drafted it (``name (provider model)``).
+    generated_by: Optional[str] = None
 
     @model_validator(mode="after")
     def _check(self) -> "SourceDef":

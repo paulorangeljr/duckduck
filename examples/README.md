@@ -42,7 +42,7 @@ duck.sql("SELECT a.hostname, o.owner FROM assets a JOIN owners o ON a.ip = o.ip 
 | `evaluation.json` | the 6 MVP questions with their expected answers |
 | `demo.py` | answers + scores the 6 questions (fixed clock, so the expected answers always hold) |
 | `duckduck.local.json` | offline: lexical decision engine + rule-based extraction |
-| `duckduck.online.json` | Jev + two Claude models declared under `llms` (`claude_strong` by default and for catalog drafting, `claude_fast` for extraction); drafts a catalog into `generated_catalog.yaml` (git-ignored) |
+| `duckduck.online.json` | everything declared under `ai_providers`: Jev (TypeSafe's API, with a `jev_openrouter` entry to switch to) and two Claude models (`claude_strong` by default and for catalog drafting, `claude_fast` for extraction); drafts into `generated_catalog.yaml` (git-ignored) |
 | `prompts/` | the default system prompts, as files to customize (used by `duckduck.online.json`) |
 
 ### Offline
@@ -68,8 +68,9 @@ result.results
 
 ```bash
 pip install -e ".[semantic,llm]"
-export ANTHROPIC_API_KEY=...        # or an "authentication" block in the LLM's entry under "llms"
-export JEV_API_KEY=...              # or an "authentication" block in "decision_engine"
+export ANTHROPIC_API_KEY=...        # or an "authentication" block in its "ai_providers" entry
+export JEV_API_KEY=...              # same; for Jev on OpenRouter instead: OPENROUTER_API_KEY and
+                                    # "decision_engine": {"ai_provider": "jev_openrouter"}
 ```
 
 ```bash
@@ -95,8 +96,12 @@ Without `catalog_generation.tables`, the draft covers every plain table plus eve
 discovered through connector catalogs (Glue, ADX, SQL databases); `include` / `exclude` /
 `max_tables` narrow it down (see the main README). Here the sample sources are plain tables.
 
-The drafted catalog is written next to — never over — `catalog.yaml`:
-review it, then point `catalog_path` at it once you trust it. The keys
+This config sets `output_path`, so drafts go to their own file instead of
+`catalog.yaml` (the hand-written catalog `demo.py` and the tests rely on).
+Review it, then point `catalog_path` at it once you trust it. Without
+`output_path`, generation maintains `catalog_path` itself: it drafts only
+what's new or expired and keeps your hand-written sources and `notes` (see
+"Keeping the catalog up to date" in the main README). The keys
 never live in the file: without an `authentication` block, the LLM key
 comes from `ANTHROPIC_API_KEY` and the Jev key from `JEV_API_KEY`. In a
 real setup, use `authentication` blocks pointing at AWS Secrets Manager

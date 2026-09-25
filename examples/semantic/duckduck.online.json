@@ -6,7 +6,16 @@
       "table_prefix": ""
     }
   },
-  "llms": {
+  "ai_providers": {
+    "jev": {
+      "provider": "jev",
+      "model": "typesafe-ai/jev"
+    },
+    "jev_openrouter": {
+      "provider": "openrouter",
+      "api": "decisions",
+      "model": "typesafe/jev-1.13"
+    },
     "claude_strong": {
       "provider": "anthropic",
       "model": "claude-opus-5"
@@ -19,8 +28,7 @@
   "semantic": {
     "catalog_path": "catalog.yaml",
     "decision_engine": {
-      "type": "jev",
-      "model": "typesafe-ai/jev"
+      "ai_provider": "jev"
     },
     "default_llm": "claude_strong",
     "extractor": {

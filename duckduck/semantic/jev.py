@@ -66,9 +66,16 @@ class JevClient:
     model : str, optional
         A Jev model identifier (e.g. ``"typesafe-ai/jev"``); omitted →
         the server's default.
+    url : str, optional
+        The full Decisions API endpoint, for any host that serves it —
+        e.g. ``OPENROUTER_DECISIONS_URL`` (Jev on OpenRouter, model
+        ``typesafe/jev-1.13``). Omitted → ``{base_url}/api/v1/decisions``.
+    api_key_env : str
+        The environment variable the key falls back to.
     """
 
     DEFAULT_BASE_URL = "https://www.jevai.org"
+    OPENROUTER_DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions"
 
     def __init__(
         self,
@@ -77,11 +84,13 @@ class JevClient:
         model: Optional[str] = None,
         timeout: float = 15.0,
         session: Optional[requests.Session] = None,
+        url: Optional[str] = None,
+        api_key_env: str = "JEV_API_KEY",
     ):
-        api_key = api_key or os.environ.get("JEV_API_KEY")
+        api_key = api_key or os.environ.get(api_key_env)
         if not api_key:
-            raise ValueError("Jev needs an API key: pass api_key=, or set JEV_API_KEY.")
-        self.url = base_url.rstrip("/") + "/api/v1/decisions"
+            raise ValueError(f"The Decisions API needs an API key: pass api_key=, or set {api_key_env}.")
+        self.url = url or base_url.rstrip("/") + "/api/v1/decisions"
         self.model = model
         self.timeout = timeout
         self.session = session or requests.Session()
@@ -156,11 +165,13 @@ class JevClient:
             envelope = r.json()
         except ValueError as exc:
             raise JevAPIError(f"Jev returned non-JSON: {r.text[:300]}") from exc
-        if envelope.get("code") != 0:
+        # TypeSafe's own API wraps it as {code, message, data: {answers}};
+        # OpenRouter's returns {id, model, answers, usage} at the top level.
+        if "code" in envelope and envelope.get("code") != 0:
             raise JevAPIError(f"Jev error code {envelope.get('code')}: {envelope.get('message')}")
-        answers = (envelope.get("data") or {}).get("answers")
+        answers = envelope.get("answers", (envelope.get("data") or {}).get("answers"))
         if not isinstance(answers, dict):
-            raise JevAPIError(f"Jev response has no data.answers: {str(envelope)[:300]}")
+            raise JevAPIError(f"Decisions API response has no answers: {str(envelope)[:300]}")
         return answers
 
     @staticmethod

@@ -24,6 +24,7 @@ pip install -e ".[database]"  # SQL databases (+ your engine's driver, e.g. pyod
 pip install -e ".[semantic]"  # natural-language search (duckduck.semantic)
 pip install -e ".[llm]"     # Claude (Claude API or Microsoft Foundry), for catalog drafting / LLM extraction
 pip install -e ".[azure-openai]"  # an Azure OpenAI deployment instead
+pip install -e ".[openrouter]"    # any model on OpenRouter (Jev on OpenRouter needs nothing extra)
 pip install -e ".[dev]"     # pytest, for running the test suite
 ```
 
@@ -417,49 +418,103 @@ result.results     # pd.DataFrame
 result.decisions   # every judgment, with its probability
 ```
 
-Everything can be configured in the `semantic` section of
-`duckduck.json` (see `duckduck.example.json`), with API keys pulled from
-the same local/AWS/Azure `authentication` blocks the connectors use:
+Everything can be configured in `duckduck.json` (see
+`duckduck.example.json`), with API keys pulled from the same
+local/AWS/Azure `authentication` blocks the connectors use. Every AI model
+is declared once, by a name you choose, in the top-level `ai_providers`
+section (see [AI providers](#ai-providers-llms-and-the-decision-engine)).
+The `semantic` section only uses those names:
 
-- **Jev** (`decision_engine.type: "jev"`) makes the judgments. The
-  default is an offline lexical baseline.
-- **An LLM** (Claude by default, `pip install -e ".[llm]"`) drafts the
-  semantic catalog from your registered tables and extracts values from
-  questions (`extractor.type: "llm"`). You can replace every system prompt.
-  LLMs are declared by name in the top-level `llms` section and named
-  in `semantic.default_llm`. The key comes from `ANTHROPIC_API_KEY` or from an
-  `authentication` block in the LLM's declaration that yields an `api_key`
+- **The decision engine** makes the judgments: which entity, which
+  activity, which sources are relevant. Set it with
+  `decision_engine.ai_provider`. That can be Jev on TypeSafe's API, Jev on
+  OpenRouter, or any chat model. Without it, an offline lexical baseline
+  decides.
+- **An LLM** (`default_llm`, or one per stage) drafts the semantic catalog
+  from your registered tables and extracts values from questions
+  (`extractor.type: "llm"`). You can replace every system prompt. A
+  Claude key comes from `ANTHROPIC_API_KEY` or from an `authentication`
+  block in the entry that yields an `api_key`
   (`{"type": "aws", "secret_id": "prod/anthropic", "api_key": "$secret.key"}`).
   If it finds neither, it fails at startup and tells you where to put the key.
   In a notebook, the kernel only sees environment variables that existed
   when it started, so either restart the kernel or set
   `os.environ["ANTHROPIC_API_KEY"]` before calling anything.
-  **LLMs on Azure** (or behind a gateway) are set with `provider` in the
-  LLM's declaration. See [LLM providers](#llm-providers-claude-api-azure-gateways) below.
   Without an explicit table list, it drafts every plain table **and every
   table behind your connectors**, found through their catalogs (each Glue
   table via `glue_table(database=…, table_name=…)`, each ADX table, each
-  table/view of a SQL database). Narrow it down and cap the LLM calls in
-  `catalog_generation`:
+  table/view of a SQL database). Narrow it down in `catalog_generation`:
 
   ```json
   "catalog_generation": {"include": ["security.*", "ProxyLogs"], "exclude": ["*_tmp"], "max_tables": 50}
   ```
 
-**Which catalog is used?** `ask` always reads `catalog_path`.
-`generate-catalog` writes to `catalog_generation.output_path` and never
-changes what `ask` reads: a draft only takes effect once you review it and
-point `catalog_path` at it, or copy it over the file `catalog_path` names.
-Setting both to the same file skips the review and makes each generation
-replace the live catalog. That's fine for a first draft, risky afterwards.
+### Keeping the catalog up to date
+
+`generate-catalog` maintains the catalog `ask` reads (`catalog_path`) in
+place. It doesn't rewrite the file from scratch:
+
+- Each source it drafts is stamped with `generated_at` (and
+  `generated_by`, the model that drafted it).
+- **Each run drafts only what needs it.** That means tables not in the
+  catalog yet, generated sources older than `max_age`, and whatever you
+  force. Everything else is kept as it is. With nothing to draft, it
+  makes no LLM call and leaves the file untouched.
+- **Sources without `generated_at` are yours.** Sources you wrote by hand,
+  or drafted ones whose `generated_at` you deleted to keep your edits, are
+  only redrafted when forced by name.
+- **`notes` are yours too.** Write them on a source or on any field in the
+  YAML. The LLM never writes them. They're kept when the source is
+  redrafted and given to the LLM as context then. YAML `#` comments are not
+  kept, because the file is rewritten.
+- Your own `critical` flags, entity and activity definitions, and
+  relationships are kept as well. New ones are added.
+- `max_tables` caps how many sources one run drafts; the rest wait for the
+  next run.
+
+```json
+"catalog_generation": {"max_age": "7d", "auto_refresh": true}
+```
+
+`max_age` takes `"7d"`, `"12h"`, `"30m"`, `"2w"` or a number of seconds.
+Omitted, drafted sources never expire, so only new tables get drafted.
+`auto_refresh` makes `ask` / `SemanticSearch.from_config` draft whatever
+is missing or expired before answering. If that fails, it warns and
+answers with the catalog as it is.
+
+```yaml
+sources:
+  proxy_logs:
+    table: glue_table
+    args: {database: security, table_name: proxy_logs}
+    description: One row per HTTP request through the Zscaler proxy.
+    notes: Only covers the corporate network; VPN traffic is in vpn_logs.   # yours, kept
+    generated_at: 2026-09-25T12:00:00+00:00                              # delete to lock your edits
+    generated_by: claude_strong (anthropic claude-opus-5)
+    fields:
+      url:
+        semantic_type: url
+        notes: Query strings are stripped before logging.                   # yours, kept
+```
+
+Force a redraft from the terminal or from Python:
+
+```bash
+python -m duckduck.semantic generate-catalog --force                     # every generated source
+python -m duckduck.semantic generate-catalog --force proxy_logs "adx_*"  # these, even hand-written
+```
+
+To review drafts before they go live, set `catalog_generation.output_path`
+to another file. Generation then maintains that file, and you copy what
+you approve into `catalog_path`.
 
 Every command works from the terminal **and** from Python — the CLI is a
 thin wrapper over the same functions, so both run identical code:
 
 ```bash
-python -m duckduck.semantic generate-catalog   # draft semantic_catalog.yaml, then review it
+python -m duckduck.semantic generate-catalog   # draft what's new or expired into the catalog
 python -m duckduck.semantic ask "Which users accessed github in the last 24hrs?"
-python -m duckduck.semantic jev-check          # verify the Jev key/network
+python -m duckduck.semantic jev-check          # one real decision call: key, network, parsing
 ```
 
 ```python
@@ -483,6 +538,8 @@ print(jev_check().ranked())                    # raises if the key/network/parsi
 | `ask "..." --json` | `ask("...").to_dict()` |
 | `generate-catalog` | `generate_catalog()` → `GenerationResult` (`.summary()`, `.catalog`, `.warnings`, `.path`) |
 | `generate-catalog --out x.yaml` | `generate_catalog(out="x.yaml")` (`write=False` to keep it in memory) |
+| `generate-catalog --force` | `generate_catalog(force=True)` |
+| `generate-catalog --force proxy_logs "adx_*"` | `generate_catalog(force=["proxy_logs", "adx_*"])` |
 | `jev-check` | `jev_check()` → `Classification` |
 | `--config path` | `config_path="path"` |
 | `-v` / `-v debug` | `verbose="info"` / `verbose="debug"` |
@@ -500,25 +557,88 @@ search = SemanticSearch.from_config(duck)      # or keep the whole pipeline arou
 search.search("Which hosts queried example.com?")
 ```
 
-### LLM providers (Claude API, Azure, gateways)
+### AI providers: LLMs and the decision engine
 
-`provider` in an LLM's declaration chooses where the model runs. Every
-connection setting can be written in the block, stored in the
-`authentication` secret (same `local`/`aws`/`azure` blocks as the
-connectors), or left to the provider's standard environment variables.
-Header values written as `"$secret.<key>"` are also read from the secret.
-
-| `provider` | Settings | Key (if none is found, the Azure providers use Entra ID via `DefaultAzureCredential`) |
-|---|---|---|
-| `anthropic` (default) | `model`, `base_url` (a gateway), `headers` | `ANTHROPIC_API_KEY` |
-| `foundry`: Claude on Microsoft Foundry | `model` (the deployment name), `resource` **or** `endpoint`, `tenant_id` | `ANTHROPIC_FOUNDRY_API_KEY`; endpoint from `ANTHROPIC_FOUNDRY_RESOURCE` / `ANTHROPIC_FOUNDRY_BASE_URL` |
-| `azure_openai` | `deployment`, `endpoint`, `api_version`, `tenant_id`, `headers` | `AZURE_OPENAI_API_KEY`; `AZURE_OPENAI_ENDPOINT`, `OPENAI_API_VERSION` |
-
-Each LLM is declared by name in the top-level `llms` section of
-`duckduck.json` (see below):
+Every AI model is declared once, by a name you choose, in the top-level
+`ai_providers` section of `duckduck.json`, next to `services`. Each entry
+is complete: provider, model, credentials. `semantic` only refers to
+entries by name. Where a name is used decides the entry's role, so one
+entry can serve several stages:
 
 ```json
-"llms": {
+{
+  "services": { ... },
+
+  "ai_providers": {
+    "jev":           {"provider": "openrouter", "api": "decisions", "model": "typesafe/jev-1.13"},
+    "claude_strong": {"provider": "anthropic", "model": "claude-opus-5"},
+    "claude_fast":   {"provider": "anthropic", "model": "claude-haiku-4-5"},
+    "azure_gpt":     {"provider": "azure_openai", "endpoint": "https://my-resource.openai.azure.com",
+                      "deployment": "gpt-mini",
+                      "authentication": {"type": "azure", "vault_url": "https://kv.vault.azure.net/",
+                                         "secret_id": "azure-openai", "api_key": "$secret.key"}}
+  },
+
+  "semantic": {
+    "decision_engine":    {"ai_provider": "jev"},
+    "default_llm":        "claude_strong",
+    "extractor":          {"type": "llm", "llm": "azure_gpt"},
+    "catalog_generation": {"llm": "claude_fast", "link_llm": "claude_strong"}
+  }
+}
+```
+
+| In `semantic` | Role | Calls | If omitted |
+|---|---|---|---|
+| `decision_engine.ai_provider` | the judgments (entity, activity, source/field/join relevance) | a few per question | offline lexical baseline |
+| `default_llm` | the LLM every stage below uses unless it names its own | | no LLM |
+| `extractor.llm` | pulls values out of each question (`extractor.type: "llm"`) | 1 per question | `default_llm` |
+| `catalog_generation.llm` | drafts each table | 1 per table | `default_llm` |
+| `catalog_generation.link_llm` | entities, activities and joins across all tables | 1 per run | `catalog_generation.llm`, then `default_llm` |
+
+**`provider` and `api`.** An entry's `api` is either `chat` (text
+generation) or `decisions` (a typed Decisions API: `noul` / `choice`
+questions, probabilities back).
+
+| `provider` | `api` | Settings | Key (if none is found, the Azure providers use Entra ID via `DefaultAzureCredential`) |
+|---|---|---|---|
+| `anthropic` (default) | `chat` | `model`, `base_url` (a gateway), `headers` | `ANTHROPIC_API_KEY` |
+| `foundry`: Claude on Microsoft Foundry | `chat` | `model` (the deployment name), `resource` **or** `endpoint`, `tenant_id` | `ANTHROPIC_FOUNDRY_API_KEY`; endpoint from `ANTHROPIC_FOUNDRY_RESOURCE` / `ANTHROPIC_FOUNDRY_BASE_URL` |
+| `azure_openai` | `chat` | `deployment`, `endpoint`, `api_version`, `tenant_id`, `headers` | `AZURE_OPENAI_API_KEY`; `AZURE_OPENAI_ENDPOINT`, `OPENAI_API_VERSION` |
+| `openrouter` | `chat` (default) or `decisions` | `model` (required: the `vendor/model` id), `headers`, `require_parameters` | `OPENROUTER_API_KEY` |
+| `jev`: TypeSafe's own API | `decisions` | `model`, `base_url`, `timeout` | `JEV_API_KEY` |
+
+- **Any `decisions` entry** can point at another host serving the same
+  API with `decisions_url`.
+- **A `decisions` entry can only be a decision engine.** A `chat` entry can
+  be an LLM or a decision engine. As a decision engine it's asked for
+  probabilities through structured output; its system prompt is
+  `decision_engine.system_prompt` (or `_file`).
+- **Every connection setting** can be written in the entry, stored in its
+  `authentication` secret (same `local`/`aws`/`azure` blocks as the
+  connectors), or left to the provider's standard environment variables.
+  Header values written as `"$secret.<key>"` are also read from the secret.
+
+**Jev, from TypeSafe or from OpenRouter.** Both serve the same Decisions
+API, so moving between them only changes the entry:
+
+```json
+"ai_providers": {
+  "jev_typesafe":   {"provider": "jev", "model": "typesafe-ai/jev"},
+  "jev_openrouter": {"provider": "openrouter", "api": "decisions", "model": "typesafe/jev-1.13"}
+},
+"semantic": {"decision_engine": {"ai_provider": "jev_openrouter"}}
+```
+
+On OpenRouter it goes to `https://openrouter.ai/api/alpha/decisions` with
+your `OPENROUTER_API_KEY`. Pin `typesafe/jev-1.13` so the thresholds you
+tuned stay valid, or use `~typesafe/jev-latest` to follow new releases.
+`jev-check` makes one real call through whichever entry is configured.
+
+**On Azure:**
+
+```json
+"ai_providers": {
   "azure_gpt": {
     "provider": "azure_openai",
     "endpoint": "https://my-resource.openai.azure.com",
@@ -536,58 +656,31 @@ Each LLM is declared by name in the top-level `llms` section of
 managed identity, or the `AZURE_*` variables. Entra ID needs
 `pip install -e ".[azure]"`.
 
+When the config loads, it's rejected if an entry is written inside
+`semantic`, if a name isn't declared, or if a `decisions` entry is used
+as an LLM. Each error says what to move where, or lists the declared
+names. The old formats (`llms`, `semantic.llm`, an inline Jev
+`decision_engine`) fail with the exact block to write instead. With `-v`,
+each stage logs the entry it got (`llm for extractor: azure_gpt
+(azure_openai gpt-mini)`).
+
 The same thing from Python, building the pieces yourself:
 
 ```python
-from duckduck.semantic import AzureOpenAILLM, Catalog, CatalogGenerator, ClaudeLLM, LLMExtractor, SemanticSearch
+from duckduck.semantic import (AzureOpenAILLM, Catalog, CatalogGenerator, ClaudeLLM, JEVAdapter, JevClient,
+                               LLMExtractor, OpenRouterLLM, SemanticSearch)
 
 llm = AzureOpenAILLM("gpt-prod", endpoint="https://my-resource.openai.azure.com", api_key=...)
 llm = ClaudeLLM.on_foundry(model="claude-opus-5", resource="my-foundry")      # Entra ID
+llm = OpenRouterLLM("vendor/model")                                            # OPENROUTER_API_KEY
 llm = ClaudeLLM(base_url="https://llm-gateway.corp", default_headers={"Authorization": "Bearer ..."})
 
+jev = JEVAdapter(JevClient(url=JevClient.OPENROUTER_DECISIONS_URL, model="typesafe/jev-1.13",
+                           api_key_env="OPENROUTER_API_KEY"))
 draft = CatalogGenerator(llm, duck).generate()                     # catalog drafting
 catalog = Catalog.load("semantic_catalog.yaml")
-search = SemanticSearch(catalog, duck, extractor=LLMExtractor(catalog, llm))  # LLM extraction
+search = SemanticSearch(catalog, duck, engine=jev, extractor=LLMExtractor(catalog, llm))
 ```
-
-**Declaring LLMs and choosing one per stage.** LLMs are declared once, by
-name, in the top-level `llms` section of `duckduck.json`, next to
-`services`. Each declaration is complete: provider, model, credentials.
-`semantic` only refers to them by name:
-
-```json
-{
-  "services": { ... },
-
-  "llms": {
-    "claude_strong": {"provider": "anthropic", "model": "claude-opus-5"},
-    "claude_fast":   {"provider": "anthropic", "model": "claude-haiku-4-5"},
-    "azure_gpt":     {"provider": "azure_openai", "endpoint": "https://my-resource.openai.azure.com",
-                      "deployment": "gpt-mini",
-                      "authentication": {"type": "azure", "vault_url": "https://kv.vault.azure.net/",
-                                         "secret_id": "azure-openai", "api_key": "$secret.key"}}
-  },
-
-  "semantic": {
-    "default_llm": "claude_strong",
-    "extractor":          {"type": "llm", "llm": "azure_gpt"},
-    "catalog_generation": {"llm": "claude_fast", "link_llm": "claude_strong"}
-  }
-}
-```
-
-| In `semantic` | Stage | Calls | If omitted |
-|---|---|---|---|
-| `default_llm` | the LLM every stage below uses unless it names its own | | no LLM |
-| `extractor.llm` | pulls values out of each question (`extractor.type: "llm"`) | 1 per question | `default_llm` |
-| `catalog_generation.llm` | drafts each table | 1 per table | `default_llm` |
-| `catalog_generation.link_llm` | entities, activities and joins across all tables | 1 per run | `catalog_generation.llm`, then `default_llm` |
-
-Even a single LLM is declared in `llms` and named in `semantic.default_llm`.
-When the config loads, it's rejected if an LLM block is written inside
-`semantic` or if a name isn't declared in `llms`. Each error says what to
-move where, or lists the declared names. With `-v`, each stage logs the
-LLM it got (`llm for extractor: azure_gpt (azure_openai gpt-mini)`).
 
 Anything else (another cloud, a local model) plugs in by implementing
 `generate(system, prompt, output_model)`: it must return `output_model`

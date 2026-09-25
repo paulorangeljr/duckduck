@@ -163,10 +163,10 @@ def test_claude_api_gateway_authenticating_by_header_needs_no_api_key():
 
 
 def _semantic(tmp_path, llms=None, **semantic):
-    """A duckduck.json with ``llms`` at the top level (next to services) and ``semantic``."""
+    """A duckduck.json with ``ai_providers`` at the top level (next to services) and ``semantic``."""
     data = {"services": {}, "semantic": {"catalog_path": CATALOG_PATH, **semantic}}
     if llms is not None:
-        data["llms"] = llms
+        data["ai_providers"] = llms
     path = tmp_path / "duckduck.json"
     path.write_text(json.dumps(data))
     return SemanticConfig.load(DuckAPI(), str(path))
@@ -217,7 +217,7 @@ def test_config_foundry(tmp_path):
 
 
 def test_config_rejects_a_setting_of_another_provider(tmp_path):
-    with pytest.raises(ValueError, match="llm.deployment applies to provider 'azure_openai'"):
+    with pytest.raises(ValueError, match="'deployment' applies to provider 'azure_openai'"):
         _config(tmp_path, {"provider": "foundry", "deployment": "x"})
 
 
@@ -268,24 +268,32 @@ def test_unset_stages_fall_back(tmp_path):
     {"catalog_generation": {"link_llm": {"model": "claude-opus-5"}}},
 ])
 def test_a_block_where_a_name_belongs_says_to_declare_it_at_the_top_level(tmp_path, semantic):
-    with pytest.raises(ValueError, match=r"(?s)is the name of an LLM, not a block.*\"llms\": \{\"my_llm\""):
+    with pytest.raises(ValueError, match=r"(?s)is the name of an ai_providers entry, not a block.*\"ai_providers\": \{\"my_llm\""):
         _semantic(tmp_path, **semantic)
 
 
-def test_llms_inside_semantic_is_rejected_pointing_to_the_top_level(tmp_path):
-    data = {"services": {}, "semantic": {"catalog_path": CATALOG_PATH, "llms": LLMS, "default_llm": "strong"}}
-    with pytest.raises(ValueError, match="'llms' goes at the top level of the file"):
+def test_ai_providers_inside_semantic_is_rejected_pointing_to_the_top_level(tmp_path):
+    data = {"services": {}, "semantic": {"catalog_path": CATALOG_PATH, "ai_providers": LLMS, "default_llm": "strong"}}
+    with pytest.raises(ValueError, match="'ai_providers' goes at the top level of the file"):
         SemanticConfig.from_file_data(data)
 
 
-def test_file_level_llms_sit_next_to_services(tmp_path):
-    data = {"services": {}, "llms": LLMS, "semantic": {"catalog_path": CATALOG_PATH, "default_llm": "fast"}}
+@pytest.mark.parametrize("where", ["root", "semantic"])
+def test_the_old_llms_section_says_it_is_now_ai_providers(where):
+    data = {"services": {}, "semantic": {"catalog_path": CATALOG_PATH, "default_llm": "strong"}}
+    (data if where == "root" else data["semantic"])["llms"] = LLMS
+    with pytest.raises(ValueError, match="'llms' is now 'ai_providers'"):
+        SemanticConfig.from_file_data(data)
+
+
+def test_file_level_ai_providers_sit_next_to_services(tmp_path):
+    data = {"services": {}, "ai_providers": LLMS, "semantic": {"catalog_path": CATALOG_PATH, "default_llm": "fast"}}
     cfg = SemanticConfig.from_file_data(data)
-    assert set(cfg.llms) == set(LLMS) and cfg.llm_config()[1].model == "claude-haiku-4-5"
+    assert set(cfg.ai_providers) == set(LLMS) and cfg.llm_config()[1].model == "claude-haiku-4-5"
 
 
 def test_unknown_llm_name_fails_at_load_listing_the_declared_ones(tmp_path):
-    with pytest.raises(ValueError, match=r"semantic.extractor.llm refers to LLM 'fsat'.*top-level 'llms'.*declared: azure, fast, strong"):
+    with pytest.raises(ValueError, match=r"semantic.extractor.llm refers to 'fsat'.*top-level 'ai_providers'.*declared: azure, fast, strong"):
         _semantic(tmp_path, llms=LLMS, extractor={"type": "llm", "llm": "fsat"})
 
 
@@ -296,7 +304,7 @@ def test_invalid_declared_llm_fails_at_load(tmp_path):
 
 def test_no_llm_named_explains_where_to_declare_it(tmp_path):
     cfg = _semantic(tmp_path, llms=LLMS)
-    with pytest.raises(ValueError, match=r"(?s)'extractor.llm'.*top-level \"llms\""):
+    with pytest.raises(ValueError, match=r"(?s)'extractor.llm'.*top-level \"ai_providers\""):
         cfg.build_llm(DuckAPI(), "extractor")
 
 
@@ -340,3 +348,180 @@ def test_generator_uses_the_link_llm_for_the_final_call():
 def test_the_old_semantic_llm_key_says_it_was_renamed(tmp_path):
     with pytest.raises(ValueError, match="'semantic.llm' is now 'semantic.default_llm'"):
         _semantic(tmp_path, llms=LLMS, llm="strong")
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter: chat models, and Jev through its Decisions API
+# ---------------------------------------------------------------------------
+
+
+def test_openrouter_chat_client_defaults():
+    pytest.importorskip("openai")
+    from duckduck.semantic.llm import OpenRouterLLM
+
+    llm = OpenRouterLLM("anthropic/claude-x", api_key="or-key", default_headers={"X-Title": "duckduck"})
+    assert str(llm.client.base_url).rstrip("/") == "https://openrouter.ai/api/v1"
+    assert llm.client.api_key == "or-key" and llm.client._custom_headers["X-Title"] == "duckduck"
+
+
+def test_openrouter_request_shape():
+    from duckduck.semantic.llm import OpenRouterLLM
+
+    client = _azure_client()
+    OpenRouterLLM("vendor/model", client=client, max_tokens=500, reasoning_effort="high").generate("S", "P", GenSource)
+    kwargs = client.chat.completions.parse.call_args.kwargs
+    assert kwargs["model"] == "vendor/model" and kwargs["max_tokens"] == 500 and kwargs["response_format"] is GenSource
+    assert kwargs["extra_body"] == {"provider": {"require_parameters": True}, "reasoning": {"effort": "high"}}
+
+
+def test_openrouter_key_from_env_or_a_clear_error(monkeypatch):
+    pytest.importorskip("openai")
+    from duckduck.semantic.llm import OpenRouterLLM
+
+    with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
+        OpenRouterLLM("vendor/model")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "from-env")
+    assert OpenRouterLLM("vendor/model").client.api_key == "from-env"
+
+
+def test_openrouter_entry_needs_a_model(tmp_path):
+    with pytest.raises(ValueError, match="needs 'model'"):
+        _semantic(tmp_path, llms={"or": {"provider": "openrouter"}})
+
+
+def test_config_builds_an_openrouter_llm(tmp_path):
+    pytest.importorskip("openai")
+    from duckduck.semantic.llm import OpenRouterLLM
+
+    cfg = _config(tmp_path, {"provider": "openrouter", "model": "vendor/model", "require_parameters": False,
+                             "authentication": {"type": "local", "api_key": "k"}})
+    llm = cfg.build_llm(DuckAPI())
+    assert isinstance(llm, OpenRouterLLM) and llm.model_id == "vendor/model" and llm._extra() == {}
+
+
+# The response below is the one OpenRouter's Jev tutorial shows from the live API.
+OPENROUTER_JEV_ANSWER = {
+    "id": "gen-dec-1", "model": "typesafe/jev-1.13-20260917", "provider": "TypeSafe",
+    "answers": {"answer": {"type": "choice", "choice": "user", "confidence": 0.67,
+                           "probabilities": {"user": 0.78, "host": 0.22, "domain": 0}}},
+    "usage": {"input_tokens": 476, "output_tokens": 70, "cost": 0.00002},
+}
+
+
+def test_jev_through_openrouter_decisions_api(tmp_path, monkeypatch):
+    from duckduck.semantic.decisions import DecisionState, JEVAdapter
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    sent = {}
+
+    def fake_post(self, url, data, timeout):
+        sent.update(url=url, auth=self.headers["Authorization"], body=json.loads(data))
+        r = MagicMock(status_code=200, ok=True)
+        r.json.return_value = OPENROUTER_JEV_ANSWER
+        return r
+
+    monkeypatch.setattr("requests.Session.post", fake_post)
+    cfg = _semantic(tmp_path, llms={"jev_or": {"provider": "openrouter", "api": "decisions", "model": "typesafe/jev-1.13"}},
+                    decision_engine={"ai_provider": "jev_or"})
+    engine = cfg.build_engine(DuckAPI())
+    assert isinstance(engine, JEVAdapter)
+    result = engine.classify(DecisionState(query="who?"), "Which entity?", {"user": "a person", "host": "a machine", "domain": "a site"})
+    assert result.choice == "user" and abs(result.probability - 0.78) < 1e-9
+    assert sent["url"] == "https://openrouter.ai/api/alpha/decisions" and sent["auth"] == "Bearer or-key"
+    assert sent["body"]["model"] == "typesafe/jev-1.13" and sent["body"]["questions"]["answer"]["type"] == "choice"
+
+
+def test_decisions_url_points_any_entry_at_another_host(tmp_path, monkeypatch):
+    urls = []
+
+    def fake_post(self, url, data, timeout):
+        urls.append(url)
+        r = MagicMock(status_code=200, ok=True)
+        r.json.return_value = {"answers": {"answer": {"type": "noul", "noul": 0.9}}}
+        return r
+
+    monkeypatch.setattr("requests.Session.post", fake_post)
+    from duckduck.semantic.decisions import DecisionState
+
+    cfg = _semantic(tmp_path, llms={"j": {"provider": "jev", "decisions_url": "https://gw.corp/decisions",
+                                          "authentication": {"type": "local", "api_key": "k"}}},
+                    decision_engine={"ai_provider": "j"})
+    assert cfg.build_engine(DuckAPI()).decide(DecisionState(query="q"), "yes?", "s").probability == 0.9
+    assert urls == ["https://gw.corp/decisions"]
+
+
+@pytest.mark.parametrize("entry, match", [
+    ({"provider": "anthropic", "api": "decisions"}, "has no Decisions API"),
+    ({"provider": "jev", "api": "chat"}, "only serves the Decisions API"),
+    ({"provider": "openrouter", "api": "decisions", "model": "m", "max_tokens": 5}, "only apply to api 'chat'"),
+])
+def test_api_and_provider_must_agree(tmp_path, entry, match):
+    with pytest.raises(ValueError, match=match):
+        _semantic(tmp_path, llms={"x": entry})
+
+
+def test_a_decisions_entry_cannot_be_an_llm(tmp_path):
+    with pytest.raises(ValueError, match="Decisions API entry — that can only be a decision_engine"):
+        _semantic(tmp_path, llms={"jev": {"provider": "jev"}}, default_llm="jev")
+
+
+def test_unknown_decision_engine_provider(tmp_path):
+    with pytest.raises(ValueError, match="decision_engine.ai_provider refers to 'nope'"):
+        _semantic(tmp_path, llms=LLMS, decision_engine={"ai_provider": "nope"})
+
+
+@pytest.mark.parametrize("old", [
+    {"type": "jev", "model": "typesafe-ai/jev"},
+    {"authentication": {"type": "local", "api_key": "k"}},
+])
+def test_the_old_inline_decision_engine_says_how_to_move_it(tmp_path, old):
+    with pytest.raises(ValueError, match=r'(?s)now an .ai_providers. entry.*"provider": "jev"'):
+        _semantic(tmp_path, decision_engine=old)
+
+
+# ---------------------------------------------------------------------------
+# a chat model as the decision engine
+# ---------------------------------------------------------------------------
+
+
+class ScriptedJudge:
+    def __init__(self):
+        self.calls = []
+
+    def generate(self, system, prompt, output_model):
+        from duckduck.semantic.llm_decisions import _Scored, _Scores, _YesNo
+
+        body = json.loads(prompt)
+        self.calls.append((system, body, output_model))
+        if output_model is _YesNo:
+            return _YesNo(probability=0.8)
+        keys = list(body.get("options") or body.get("judgments"))
+        return _Scores(scores=[_Scored(key=k, probability=0.9 if i == 0 else 0.1) for i, k in enumerate(keys)])
+
+
+def test_chat_model_decision_backend():
+    from duckduck.semantic.decisions import DecisionState, JEVAdapter
+    from duckduck.semantic.llm_decisions import DEFAULT_DECISION_PROMPT, LLMDecisionBackend
+
+    judge = ScriptedJudge()
+    engine = JEVAdapter(LLMDecisionBackend(judge))
+    state = DecisionState(query="Which users hit github?", terms=["user"], prior=0.7)
+    assert engine.decide(state, "Is it relevant?", "proxy logs").probability == pytest.approx(0.8)
+    assert engine.classify(state, "Which entity?", {"user": "person", "host": "machine"}).choice == "user"
+    many = engine.decide_many(state, "Relevant?", {"proxy": "web", "dns": "names"})
+    assert many["proxy"].probability == pytest.approx(0.9) and many["dns"].probability == pytest.approx(0.1)
+    assert len(judge.calls) == 3  # the batch is one call
+    system, body, _ = judge.calls[0]
+    assert system == DEFAULT_DECISION_PROMPT
+    assert body["state"]["catalog_prior_probability"] == 0.7 and "terms" not in body["state"]
+
+
+def test_config_builds_a_chat_decision_engine_with_its_own_prompt(tmp_path, monkeypatch):
+    from duckduck.semantic.decisions import JEVAdapter
+    from duckduck.semantic.llm_decisions import LLMDecisionBackend
+
+    monkeypatch.setattr(SemanticConfig, "_build_client", lambda self, name, cfg, duck: f"client:{name}")
+    cfg = _semantic(tmp_path, llms=LLMS, decision_engine={"ai_provider": "fast", "system_prompt": "JUDGE", "timeout": 30})
+    engine = cfg.build_engine(DuckAPI())
+    assert isinstance(engine, JEVAdapter) and isinstance(engine.backend, LLMDecisionBackend)
+    assert engine.backend.llm == "client:fast" and engine.backend.system_prompt == "JUDGE" and engine.timeout == 30

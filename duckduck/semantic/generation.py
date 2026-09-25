@@ -15,9 +15,17 @@ Two passes, so it scales past a handful of tables:
 The draft is then sanitized deterministically against reality (a field
 must be an actual column, a relationship must reference real fields, an
 entity/activity a source claims must be defined...), every drop recorded
-in ``GenerationResult.warnings``, and validated as a ``Catalog``. Output
-is YAML for a person to review and commit — generation is a starting
-point, not a replacement for review.
+in ``GenerationResult.warnings``, and validated as a ``Catalog``.
+
+**Incremental.** Given the ``existing`` catalog, only what needs it is
+drafted: tables not in it yet, generated sources older than ``max_age``,
+and whatever ``force`` names (``True`` → every generated source). Sources
+without ``generated_at`` were written by hand and are kept as they are
+unless forced by name. The result is the existing catalog with those
+sources replaced/added, each stamped ``generated_at``/``generated_by``;
+existing entity/activity definitions win over the LLM's (they may have
+been edited), new ones are added, and relationships are kept while
+their fields still exist. Nothing to draft → no LLM call at all.
 
 Privacy: sample rows are sent to the LLM. ``sample_rows=0`` sends only
 column names and types.
@@ -25,11 +33,12 @@ column names and types.
 
 import datetime as _dt
 import fnmatch
+import re
 import inspect
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 
 from pydantic import BaseModel, Field
 
@@ -161,17 +170,29 @@ class GenerationResult:
     warnings: List[str] = field(default_factory=list)
     #: Where the YAML was written, once it has been.
     path: Optional[str] = None
+    #: Sources drafted in this run → why (``new``, ``forced``, ``older than 7d``).
+    drafted: Dict[str, str] = field(default_factory=dict)
+    #: Sources taken as they were from the existing catalog.
+    kept: List[str] = field(default_factory=list)
+    #: Sources that needed drafting but went over ``max_tables`` — next run.
+    deferred: List[str] = field(default_factory=list)
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.drafted)
 
     def to_yaml(self) -> str:
         import yaml
 
         data = self.catalog.model_dump(by_alias=True, exclude_defaults=True)
         header = (
-            f"# Semantic catalog drafted by an LLM on {_dt.date.today().isoformat()}.\n"
-            "# Review every source, field and relationship before relying on it.\n"
+            "# Semantic catalog. Sources with generated_at are maintained by generate-catalog\n"
+            "# (redrafted when older than max_age, or when forced); sources without it are\n"
+            "# hand-written and left alone. Review drafted sources before relying on them.\n"
+            f"# Last generation run: {_dt.datetime.now(_dt.timezone.utc).isoformat(timespec='seconds')}\n"
         )
         if self.warnings:
-            header += "# Generation notes:\n" + "".join(f"#   - {w}\n" for w in self.warnings)
+            header += "# Notes from that run:\n" + "".join(f"#   - {w}\n" for w in self.warnings)
         return header + yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
 
     def write(self, path: str) -> None:
@@ -181,10 +202,43 @@ class GenerationResult:
 
     def summary(self) -> str:
         """What ``python -m duckduck.semantic generate-catalog`` prints."""
-        where = f"wrote {self.path}: " if self.path else ""
-        lines = [f"{where}{len(self.catalog.sources)} sources, {len(self.catalog.relationships)} relationships"]
+        if not self.drafted:
+            lines = [f"up to date: {len(self.catalog.sources)} sources, nothing to redraft"]
+        else:
+            where = f"wrote {self.path}: " if self.path else ""
+            lines = [f"{where}{len(self.catalog.sources)} sources, {len(self.catalog.relationships)} relationships"]
+            lines += [f"  drafted {name} ({why})" for name, why in self.drafted.items()]
+            if self.kept:
+                lines.append(f"  kept {len(self.kept)} as they were")
+        if self.deferred:
+            lines.append(f"  deferred to the next run (max_tables): {', '.join(self.deferred)}")
         lines += [f"  note: {w}" for w in self.warnings]
         return "\n".join(lines)
+
+
+def parse_age(value: Union[int, float, str, _dt.timedelta, None]) -> Optional[_dt.timedelta]:
+    """``"7d"`` / ``"12h"`` / ``"30m"`` / ``"45s"`` / ``"2w"`` / seconds → ``timedelta``."""
+    if value is None or isinstance(value, _dt.timedelta):
+        return value
+    if isinstance(value, (int, float)):
+        return _dt.timedelta(seconds=value)
+    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([smhdw])\s*", str(value).lower())
+    if not m:
+        raise ValueError(f"max_age {value!r}: use a number of seconds or '<n>s|m|h|d|w' (e.g. '7d', '12h')")
+    unit = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days", "w": "weeks"}[m.group(2)]
+    return _dt.timedelta(**{unit: float(m.group(1))})
+
+
+def _age_text(delta: _dt.timedelta) -> str:
+    seconds = int(delta.total_seconds())
+    for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
+        if seconds >= size:
+            return f"{seconds // size}{unit}"
+    return f"{seconds}s"
+
+
+def _utc(moment: _dt.datetime) -> _dt.datetime:
+    return moment.replace(tzinfo=_dt.timezone.utc) if moment.tzinfo is None else moment
 
 
 class CatalogGenerator:
@@ -200,8 +254,16 @@ class CatalogGenerator:
         exclude: Optional[List[str]] = None,
         max_tables: int = 50,
         link_llm: Optional[LLMClient] = None,
+        max_age: Union[int, str, _dt.timedelta, None] = None,
+        llm_label: Optional[str] = None,
+        clock: Optional[Callable[[], _dt.datetime]] = None,
     ):
         self.llm = llm
+        #: A generated source older than this is redrafted; ``None`` → never expires.
+        self.max_age = parse_age(max_age)
+        #: Stamped as each drafted source's ``generated_by``.
+        self.llm_label = llm_label
+        self.clock = clock or (lambda: _dt.datetime.now(_dt.timezone.utc))
         #: The final vocabulary/joins call (one call, over every table) — ``llm`` when omitted.
         self.link_llm = link_llm or llm
         self.duck = duck
@@ -234,7 +296,8 @@ class CatalogGenerator:
         ``include`` / ``exclude`` (fnmatch patterns, case-insensitive) match
         the registered name for plain tables, or the joined arguments for
         discovered ones (``security.proxy_logs`` for Glue, ``ProxyLogs`` for
-        ADX); ``max_tables`` caps the total — each table is an LLM call.
+        ADX). ``max_tables`` isn't applied here: it caps how many sources
+        one ``generate()`` run drafts.
         """
         notes: List[str] = []
         candidates: List[Tuple[str, TableSpec]] = []  # (pattern label, spec)
@@ -272,12 +335,6 @@ class CatalogGenerator:
                     candidates.append((label, TableSpec(name=table_name_for(label), table=target_name, args=args)))
 
         chosen = [(label, spec) for label, spec in candidates if self._wanted(label)]
-        if len(chosen) > self.max_tables:
-            notes.append(
-                f"{len(chosen)} tables matched; drafting only the first {self.max_tables} "
-                f"(raise max_tables or narrow include/exclude)"
-            )
-            chosen = chosen[: self.max_tables]
         if undiscoverable:
             notes.append(
                 "table functions with no catalog to discover their arguments were skipped: "
@@ -315,8 +372,12 @@ class CatalogGenerator:
                 return name
         return None
 
-    def profile(self, spec: TableSpec) -> Dict[str, Any]:
-        """Columns, dtypes, sample rows and connector description for one table."""
+    def profile(self, spec: TableSpec, previous: Optional[Any] = None) -> Dict[str, Any]:
+        """
+        Columns, dtypes, sample rows and connector description for one
+        table, plus the owner's notes: ``spec.notes`` and, when redrafting,
+        the ``notes`` written on the source and its fields in the catalog.
+        """
         fn = self.duck.functions.get(spec.table.lower())
         if fn is None:
             raise KeyError(f"table '{spec.table}' isn't registered in DuckAPI")
@@ -336,32 +397,62 @@ class CatalogGenerator:
             "connector_description": None if meta is None else meta["description"],
             "columns": {c: str(t) for c, t in df.dtypes.items()},
             "sample_rows": rows,
-            "owner_notes": spec.notes,
+            "owner_notes": "\n".join(n for n in (spec.notes, getattr(previous, "notes", "")) if n),
+            "field_notes": {f: d.notes for f, d in (previous.fields.items() if previous else ()) if d.notes},
         }
 
-    def generate(self, specs: Optional[List[TableSpec]] = None) -> GenerationResult:
+    def generate(
+        self,
+        specs: Optional[List[TableSpec]] = None,
+        existing: Optional[Catalog] = None,
+        force: Union[bool, str, List[str], None] = False,
+    ) -> GenerationResult:
+        """
+        Drafts what needs drafting (see the module docstring) and returns
+        the resulting catalog. ``force``: ``True`` → every generated source;
+        a name or a list of fnmatch patterns (source name, registered
+        table, or joined args like ``security.proxy_*``) → those, even if
+        hand-written.
+        """
         warnings: List[str] = []
         if specs is None:
             specs, notes = self.plan_specs()
             warnings.extend(notes)
-        if not specs:
+        specs = self._align_with(specs, existing)
+        todo, kept = self._select(specs, existing, force, warnings)
+        if not todo and existing is None:
             raise ValueError(
                 "nothing to catalog: no table specs given, no plain tables registered, and no catalog "
                 "discovered any table" + (f" ({'; '.join(warnings)})" if warnings else "")
             )
+        deferred = [spec.name for spec, _ in todo[self.max_tables:]]
+        if deferred:
+            warnings.append(
+                f"{len(todo)} sources needed drafting; drafted {self.max_tables} (max_tables), "
+                f"the rest on the next run"
+            )
+        todo = todo[: self.max_tables]
+        kept_names = [n for n in (existing.sources if existing else {}) if n not in {s.name for s, _ in todo}]
+        if not todo:
+            return GenerationResult(catalog=existing, warnings=warnings, kept=kept_names, deferred=deferred)
+
         drafts: Dict[str, GenSource] = {}
         columns: Dict[str, List[str]] = {}
-        for spec in specs:
+        reasons: Dict[str, str] = {}
+        for spec, reason in todo:
             try:
-                profile = self.profile(spec)
+                profile = self.profile(spec, existing.sources.get(spec.name) if existing else None)
             except Exception as exc:
                 warnings.append(f"skipped '{spec.name}': couldn't profile it ({exc})")
                 continue
             columns[spec.name] = list(profile["columns"])
             prompt = "Table profile:\n" + json.dumps(profile, indent=1, default=str)
             drafts[spec.name] = self.llm.generate(self.source_prompt, prompt, GenSource)
-            logger.info("drafted source %s", spec.name)
+            reasons[spec.name] = reason
+            logger.info("drafted source %s (%s)", spec.name, reason)
         if not drafts:
+            if existing is not None:
+                return GenerationResult(catalog=existing, warnings=warnings, kept=kept_names, deferred=deferred)
             raise ValueError("no source could be drafted:\n  - " + "\n  - ".join(warnings))
 
         overview = {
@@ -373,20 +464,90 @@ class CatalogGenerator:
             }
             for name, d in drafts.items()
         }
-        vocab = self.link_llm.generate(self.link_prompt, "Drafted sources:\n" + json.dumps(overview, indent=1), GenVocabulary)
+        if existing is not None:  # the rest of the catalog, so joins to it can be found too
+            for name, src in existing.sources.items():
+                if name not in drafts:
+                    overview[name] = {
+                        "fields": {f: d.semantic_type for f, d in src.fields.items()},
+                        "roles": {f: d.role for f, d in src.fields.items() if d.role},
+                        "entities": src.entities,
+                        "activities": src.activities,
+                    }
+        prompt = "Drafted sources:\n" + json.dumps(overview, indent=1)
+        if existing is not None and (existing.entities or existing.activities):
+            prompt += "\n\nAlready defined — reuse these names rather than inventing synonyms:\n" + json.dumps(
+                {"entities": sorted(existing.entities), "activities": sorted(existing.activities)}, indent=1
+            )
+        vocab = self.link_llm.generate(self.link_prompt, prompt, GenVocabulary)
 
-        by_name = {s.name: s for s in specs}
-        catalog = self._assemble(drafts, vocab, columns, by_name, warnings)
-        return GenerationResult(catalog=catalog, warnings=warnings)
+        by_name = {s.name: s for s, _ in todo}
+        stamp = {"generated_at": self.clock().replace(microsecond=0), "generated_by": self.llm_label}
+        catalog = self._assemble(drafts, vocab, columns, by_name, warnings, existing, stamp)
+        return GenerationResult(
+            catalog=catalog, warnings=warnings, drafted=reasons,
+            kept=[n for n in catalog.sources if n not in drafts], deferred=deferred,
+        )
+
+    def _align_with(self, specs: List[TableSpec], existing: Optional[Catalog]) -> List[TableSpec]:
+        """A table already in the catalog under another name (hand-written) keeps that name."""
+        if existing is None:
+            return specs
+        known = {(src.table, json.dumps(src.args, sort_keys=True, default=str)): name
+                 for name, src in existing.sources.items() if src.table}
+        aligned = []
+        for spec in specs:
+            name = known.get((spec.table, json.dumps(spec.args, sort_keys=True, default=str)))
+            aligned.append(spec.model_copy(update={"name": name}) if name and name != spec.name else spec)
+        return aligned
+
+    def _select(self, specs, existing, force, warnings) -> Tuple[List[Tuple[TableSpec, str]], List[str]]:
+        """(spec, reason) to draft — forced first, then new, then stale (oldest first) — and the kept names."""
+        force_all = force is True
+        patterns = [] if force in (None, False, True) else ([force] if isinstance(force, str) else list(force))
+        matched = set()
+
+        def forced_by_name(spec: TableSpec) -> bool:
+            labels = [spec.name, spec.table, ".".join(str(v) for v in spec.args.values())]
+            hit = [p for p in patterns if any(fnmatch.fnmatch(l.lower(), p.lower()) for l in labels if l)]
+            matched.update(hit)
+            return bool(hit)
+
+        now = _utc(self.clock())
+        forced, new, stale, kept = [], [], [], []
+        for spec in specs:
+            current = existing.sources.get(spec.name) if existing else None
+            if forced_by_name(spec):
+                forced.append((spec, "forced"))
+            elif current is None:
+                new.append((spec, "new"))
+            elif current.generated_at is None:
+                kept.append(spec.name)  # hand-written
+            elif force_all:
+                forced.append((spec, "forced"))
+            elif self.max_age is not None and now - _utc(current.generated_at) > self.max_age:
+                age = now - _utc(current.generated_at)
+                stale.append((spec, f"{_age_text(age)} old, max_age {_age_text(self.max_age)}", age))
+            else:
+                kept.append(spec.name)
+        for p in patterns:
+            if p not in matched:
+                warnings.append(f"force: '{p}' matched no table")
+        stale.sort(key=lambda item: item[2], reverse=True)
+        return forced + new + [(spec, why) for spec, why, _ in stale], kept
 
     # ------------------------------------------------------------------
 
-    def _assemble(self, drafts, vocab: GenVocabulary, columns, specs, warnings: List[str]) -> Catalog:
+    def _assemble(self, drafts, vocab: GenVocabulary, columns, specs, warnings: List[str],
+                  existing: Optional[Catalog] = None, stamp: Optional[Dict[str, Any]] = None) -> Catalog:
+        base = existing.model_dump(by_alias=True, exclude_defaults=True) if existing else {}
+        old_sources = {n: s for n, s in base.get("sources", {}).items() if n not in drafts}
         entities = {
             e.name: {"description": e.description, "keywords": e.keywords, "row_level": e.row_level}
             for e in vocab.entities if _is_identifier(e.name)
         }
+        entities.update(base.get("entities", {}))  # existing definitions win — they may have been edited
         semantic_types = {f.semantic_type for d in drafts.values() for f in d.fields if f.semantic_type}
+        semantic_types |= {f.get("semantic_type") for s in old_sources.values() for f in s["fields"].values()}
         activities = {}
         for a in vocab.activities:
             if not _is_identifier(a.name):
@@ -399,6 +560,7 @@ class CatalogGenerator:
                 "description": a.description, "keywords": a.keywords, "resource": resource,
                 "resource_role": a.resource_role, "actor_role": a.actor_role,
             }
+        activities.update(base.get("activities", {}))
 
         sources = {}
         for name, draft in drafts.items():
@@ -412,6 +574,9 @@ class CatalogGenerator:
                     "role": f.role, "match": f.match,
                     "values": {v.stored: v.synonyms for v in f.values},
                 }
+                kept_note = base.get("sources", {}).get(name, {}).get("fields", {}).get(f.name, {}).get("notes")
+                if kept_note:
+                    fields[f.name]["notes"] = kept_note
             if not fields:
                 warnings.append(f"{name}: no usable fields — source dropped")
                 continue
@@ -424,14 +589,35 @@ class CatalogGenerator:
                     if item not in known:
                         warnings.append(f"{name}: {kind} '{item}' was never defined — dropped")
             spec = specs[name]
+            previous = base.get("sources", {}).get(name, {})
+            for gone in set(previous.get("fields", {})) - set(fields):
+                if previous["fields"][gone].get("notes"):
+                    warnings.append(f"{name}: field '{gone}' is gone after the redraft, and its notes with it: "
+                                    f"{previous['fields'][gone]['notes']!r}")
             sources[name] = {
                 "table": spec.table, "args": spec.args, "description": draft.description,
                 "entities": [e for e in draft.entities if e in entities],
                 "activities": [a for a in draft.activities if a in activities],
                 "time_field": time_field, "examples": draft.examples, "fields": fields,
+                # what a person wrote survives the redraft
+                **({"notes": previous["notes"]} if previous.get("notes") else {}),
+                **({"critical": previous["critical"]} if previous.get("critical") else {}),
+                **(stamp or {}),
             }
+        # existing order first (redrafted sources in place), then the new ones
+        merged = {n: sources.get(n, old_sources.get(n)) for n in base.get("sources", {}) if n in sources or n in old_sources}
+        merged.update({n: s for n, s in sources.items() if n not in merged})
+        sources = merged
 
-        relationships = []
+        relationships, seen = [], set()
+        for r in base.get("relationships", []):
+            refs = (r["from"], r["to"])
+            if all("." in ref and ref.split(".")[0] in sources and ref.split(".")[1] in sources[ref.split(".")[0]]["fields"]
+                   for ref in refs):
+                relationships.append(r)
+                seen.add(frozenset(refs))
+            else:
+                warnings.append(f"relationship {refs[0]} -> {refs[1]}: a field no longer exists — dropped")
         for r in vocab.relationships:
             ok = all(
                 "." in ref and ref.split(".")[0] in sources and ref.split(".")[1] in sources[ref.split(".")[0]]["fields"]
@@ -440,6 +626,9 @@ class CatalogGenerator:
             if not ok or r.from_field.split(".")[0] == r.to_field.split(".")[0]:
                 warnings.append(f"relationship {r.from_field} -> {r.to_field}: not two real fields of different sources — dropped")
                 continue
+            if frozenset((r.from_field, r.to_field)) in seen:
+                continue  # already in the catalog
+            seen.add(frozenset((r.from_field, r.to_field)))
             relationships.append({
                 "from": r.from_field, "to": r.to_field, "type": r.type,
                 "confidence": min(max(r.confidence, 0.0), 1.0),
@@ -447,7 +636,7 @@ class CatalogGenerator:
 
         # An activity may have lost its resource's only field along with a
         # dropped source; re-check before validating.
-        live_types = {f["semantic_type"] for s in sources.values() for f in s["fields"].values()}
+        live_types = {f.get("semantic_type") for s in sources.values() for f in s["fields"].values()}
         for name, a in activities.items():
             if a["resource"] and a["resource"] not in live_types:
                 warnings.append(f"activity '{name}': resource '{a['resource']}' no longer matches a field — dropped it")
