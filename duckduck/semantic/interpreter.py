@@ -21,7 +21,6 @@ from .decisions import CRITERIA, Ask, DecisionEngine, DecisionState, ask_all
 from .extraction import Extraction, RuleBasedExtractor, ValueExtractor
 from .clarify import ClarificationTexts
 from .intent import (
-    ANSWER_SHAPES,
     ClarificationNeeded,
     DecisionRecord,
     ResourceFilter,
@@ -30,29 +29,8 @@ from .intent import (
     Thresholds,
 )
 from .retrieval import CatalogRetriever, LexicalRetriever
+from .shapes import ACROSS_SHAPES, AnswerShapes
 from .text import vocabulary
-
-#: "How many ...": the answer is a count, not a list (English and Portuguese wording).
-_COUNT_RE = re.compile(
-    r"\b(how many|number of|count of|count the|count all|total number of)\b|^\s*count\b"
-    r"|\bquant[oa]s\b|\bn[uú]mero de\b|\bcontagem\b",
-    re.IGNORECASE,
-)
-
-#: "The different severities": the distinct values of a field (English and Portuguese wording).
-_DISTINCT_RE = re.compile(
-    r"\b(different|distinct|unique|diferentes?|distint[oa]s?|[uú]nic[oa]s)\b"
-    r"|\b(kinds|types|values|sorts) of\b|\b(tipos|valores|categorias) de\b",
-    re.IGNORECASE,
-)
-#: "Per rule", "for each severity", "por cada regra": a count per group.
-_GROUP_RE = re.compile(
-    r"\b(per|for each|for every|grouped by|group by|broken down by|breakdown|split by)\b"
-    r"|\b(por cada|para cada|agrupad[oa]s? por|separad[oa]s? por)\b",
-    re.IGNORECASE,
-)
-#: "By" / "por" / "each" — maybe a group ("alerts by rule"), maybe not ("accessed by bob").
-_MAYBE_GROUP_RE = re.compile(r"\b(by|each|por|cada)\b", re.IGNORECASE)
 
 #: Shape-recognized literal kinds → the semantic type they denote.
 _SHAPE_TYPES = {"ip_address": "ip_address", "domain": "domain", "email": "email"}
@@ -68,8 +46,11 @@ class SemanticInterpreter:
         thresholds: Optional[Thresholds] = None,
         top_k: int = 5,
         texts: Optional[ClarificationTexts] = None,
+        shapes: Optional[AnswerShapes] = None,
     ):
         self.catalog = catalog
+        #: The wording of each answer shape (defaults + ``semantic.answer_shapes``).
+        self.shapes = shapes or AnswerShapes()
         self.engine = engine
         self.retriever = retriever or LexicalRetriever(catalog)
         self.extractor = extractor or RuleBasedExtractor(catalog)
@@ -95,6 +76,7 @@ class SemanticInterpreter:
         """
         pins = dict(pinned or {})
         extraction = self.extractor.extract(question, now)
+        extraction.literals = self._without_shape_words(question, extraction.literals)
         decisions: List[DecisionRecord] = []
         intent = SemanticIntent(
             question=question,
@@ -265,9 +247,9 @@ class SemanticInterpreter:
             alternatives=result.ranked()[1:4],
         )
         decisions.append(record)
-        if not record.passed and intent.answer_shape in ("values", "count_values"):
-            record.subject = "not needed: the answer is the values of a field"
-            return  # "the different severities" — the field decides, not the entity
+        if not record.passed and intent.answer_shape in ("values", "count_values", *ACROSS_SHAPES):
+            record.subject = "not needed for this kind of answer"
+            return  # "the different severities" / "everything about X" — the field or the value decides
         if not record.passed:
             ranked = [label for label, _ in result.ranked()[:4]]
             raise ClarificationNeeded(
@@ -299,41 +281,34 @@ class SemanticInterpreter:
 
     _SHAPE_QUESTION = "What kind of answer does the question ask for?"
 
-    @staticmethod
-    def _shape_candidates(question: str) -> Tuple[List[str], str]:
-        """
-        The answer shapes the wording allows, and the words that say so.
-        One candidate → settled without asking; several → the engine picks.
-
-        - "how many" + "per" → count_by; "how many" + "different" → count_values
-        - "how many" → count (but "how many alerts by rule" might be count_by)
-        - "different" / "types of" → values
-        - "per" / "for each" without "how many" → a list or a count per group
-        - otherwise → list
-        """
-        count, distinct = _COUNT_RE.search(question), _DISTINCT_RE.search(question)
-        group, maybe = _GROUP_RE.search(question), _MAYBE_GROUP_RE.search(question)
-        words = ", ".join(f"'{m.group(0).strip()}'" for m in (count, distinct, group or maybe) if m)
-        if count and group:
-            return ["count_by"], words
-        if count and distinct:
-            return ["count_values"], words
-        if count:
-            return (["count", "count_by"] if maybe else ["count"]), words
-        if distinct:
-            return ["values"], words
-        if group:
-            return ["list", "count_by"], words
-        return ["list"], words
+    def _without_shape_words(self, question: str, literals: list) -> list:
+        """The answer-shape wording ("which tables", "tudo sobre") is never a value to filter on."""
+        shape_tokens = self.shapes.matched_tokens(question)
+        if not shape_tokens:
+            return literals
+        out = []
+        for lit in literals:
+            if lit.kind == "term":
+                words = lit.value.split()
+                while words and words[0].lower() in shape_tokens:
+                    words.pop(0)
+                while words and words[-1].lower() in shape_tokens:
+                    words.pop()
+                if not words:
+                    continue
+                if len(words) != len(lit.value.split()):
+                    lit = lit.model_copy(update={"value": " ".join(words), "text": " ".join(words)})
+            out.append(lit)
+        return out
 
     def _shape_ask(self, intent: SemanticIntent, pins: Dict[str, Any]) -> Optional[Ask]:
-        if pins.get("answer_shape") in ANSWER_SHAPES:
+        if pins.get("answer_shape") in self.shapes.descriptions:
             return None
-        candidates, words = self._shape_candidates(intent.question)
+        candidates, words = self.shapes.candidates(intent.question)
         if len(candidates) == 1:
             return None
         return Ask(key="answer_shape", question=self._SHAPE_QUESTION,
-                   options={c: ANSWER_SHAPES[c] for c in candidates},
+                   options={c: self.shapes.descriptions[c] for c in candidates},
                    state=DecisionState(query=intent.question, facts={"wording": words}))
 
     def _apply_shape(self, intent: SemanticIntent, result: Any, decisions: List[DecisionRecord],
@@ -344,11 +319,11 @@ class SemanticInterpreter:
         Clear wording settles it without a model; ambiguous wording goes to
         the engine (in the same batch); a doubt is asked back.
         """
-        if pins.get("answer_shape") in ANSWER_SHAPES:
+        if pins.get("answer_shape") in self.shapes.descriptions:
             intent.answer_shape = pins["answer_shape"]
             decisions.append(_by_user("answer_shape", self._SHAPE_QUESTION, intent.answer_shape, None))
             return
-        candidates, words = self._shape_candidates(intent.question)
+        candidates, words = self.shapes.candidates(intent.question)
         if len(candidates) == 1:
             intent.answer_shape = candidates[0]
             if candidates[0] != "list":
@@ -495,6 +470,9 @@ class SemanticInterpreter:
             decisions.append(record)
             if record.passed:
                 scored.append(ScoredSource(source=name, confidence=result.probability, retrieval_score=retrieval_score))
+        if not scored and intent.answer_shape in ACROSS_SHAPES:
+            intent.candidate_sources = []  # answered from every table holding the value, not from these
+            return
         if not scored:
             best = max(
                 (d for d in decisions if d.kind == "source_relevance"),

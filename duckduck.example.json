@@ -173,6 +173,10 @@
   "semantic": {
     "catalog_path": "semantic_catalog.yaml",
     "default_limit": 1000,
+    "answer_shapes": {
+      "lookup": {"wording": ["o que rola com", "ficha do"]},
+      "count_by": {"maybe_wording": ["segundo"]}
+    },
     "allowed_sources": null,
     "thresholds": {
       "source": 0.8,

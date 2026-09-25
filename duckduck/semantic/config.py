@@ -304,6 +304,10 @@ class SemanticConfig(_Strict):
     thresholds: Thresholds = Field(default_factory=Thresholds)
     #: Override the questions asked back to the user (``clarify.DEFAULT_TEXTS`` keys) — e.g. in Portuguese.
     clarification_texts: Dict[str, str] = Field(default_factory=dict)
+    #: Wording of each kind of answer, added to the defaults (``shapes.DEFAULT_WORDING``):
+    #: ``{shape: {wording: [...], maybe_wording: [...], description, replace}}``, or the path of a
+    #: JSON/YAML file holding that — e.g. ``"answer_shapes.yaml"``.
+    answer_shapes: Optional[Union[str, Dict[str, Any]]] = None
     #: Check the question's values live in candidate sources and tell the decision engine.
     live_evidence: LiveEvidenceConfig = Field(default_factory=LiveEvidenceConfig)
     allowed_sources: Optional[List[str]] = None
@@ -347,6 +351,9 @@ class SemanticConfig(_Strict):
         from .clarify import ClarificationTexts
 
         ClarificationTexts(self.clarification_texts)  # unknown keys/placeholders fail at load
+        from .shapes import AnswerShapes, load_answer_shapes
+
+        AnswerShapes(load_answer_shapes(self.answer_shapes, self.base_dir))  # unknown shapes / bad regexes too
         cg = self.catalog_generation
         if cg.auto_refresh and cg.output_path and self.path(cg.output_path) != self.path(self.catalog_path):
             raise ValueError(

@@ -15,6 +15,7 @@ the order they were needed.
 """
 
 import re
+from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from .catalog import ActivityDef, Catalog
@@ -22,9 +23,27 @@ from .decisions import CRITERIA, Ask, DecisionEngine, DecisionState, ask_all
 from .graph import Path, RelationshipGraph
 from .clarify import ClarificationTexts
 from .intent import FIELD_SHAPES, Clarification, ClarificationNeeded, DecisionRecord, SemanticIntent, Thresholds
-from .interpreter import _GROUP_RE, _MAYBE_GROUP_RE
+from .shapes import AnswerShapes
 from .plan import Filter, Join, LogicalQueryPlan, TimeRangeFilter
 from .text import content_stems, stem, tokenize
+
+class TrivialAnswer(Exception):
+    """The list asked for would only repeat the value the question gave ("which ips … ip = X")."""
+
+    def __init__(self, value: str, field: str):
+        super().__init__(f"the answer would only repeat {value!r} ({field})")
+        self.value, self.field = value, field
+
+
+@dataclass
+class SourcePlan:
+    """One table's part of a ``lookup`` / ``locate`` answer: one value matched on one of its fields."""
+
+    source: str
+    field: str
+    value: str
+    plan: LogicalQueryPlan
+
 
 #: Prior for "a field whose semantic_type matches exactly is the right one".
 _SEMANTIC_MATCH_PRIOR = 0.95
@@ -43,8 +62,10 @@ class QueryPlanner:
         default_limit: int = 1000,
         max_hops: int = 3,
         texts: Optional[ClarificationTexts] = None,
+        shapes: Optional[AnswerShapes] = None,
     ):
         self.catalog = catalog
+        self.shapes = shapes or AnswerShapes()
         self.engine = engine
         self.graph = graph or RelationshipGraph(catalog)
         self.thresholds = thresholds or Thresholds()
@@ -169,6 +190,11 @@ class QueryPlanner:
             ))
             select = [ref]
             distinct = True
+            if shape == "list" and pins.get("answer_shape") != "list":  # "which ips … 10.0.0.196": only the value
+                same = _equal_to(ref, paths)
+                for res, flt in zip(intent.resources, filters):
+                    if flt.operator == "eq" and flt.field in same:
+                        raise TrivialAnswer(res.value, ref)
         if shape == "count_by":  # per group: how many distinct entities, or how many records
             group_by = [shape_ref]
             if not distinct:
@@ -183,6 +209,44 @@ class QueryPlanner:
             group_by=group_by,
         )
         return plan, decisions
+
+    def plan_across(self, intent: SemanticIntent) -> List[SourcePlan]:
+        """
+        ``lookup`` / ``locate``: one plan per (value, table, field) — every
+        allowed source with a field of the value's type, not just the
+        retrieved ones; each value of the question looked up on its own.
+        ``lookup`` selects every column, ``locate`` counts. The question's
+        enumerated values and time range apply where the table has them; a
+        table without a time field is skipped when the question has a time
+        range.
+        """
+        out: List[SourcePlan] = []
+        for res in intent.resources:
+            for name, src in self.catalog.sources.items():
+                if not self._is_allowed(name) or (intent.time_range and not src.resolved_time_field):
+                    continue
+                for fname in self.catalog.fields_by_semantic_type(name, res.type):
+                    filters = [self._value_filter(name, fname, res)]
+                    filters += [Filter(field=m.field, operator="eq", value=m.value)
+                                for m in intent.value_filters if m.field.split(".")[0] == name]
+                    time_range = None
+                    if intent.time_range:
+                        tr = intent.time_range
+                        time_range = TimeRangeFilter(field=f"{name}.{src.resolved_time_field}", last_hours=tr.last_hours,
+                                                     start=tr.start, end=tr.end)
+                    counting = intent.answer_shape == "locate"
+                    plan = LogicalQueryPlan(
+                        select=[f"{name}.{fname}"] if counting else [f"{name}.{f}" for f in src.fields],
+                        sources=[name], filters=filters, time_range=time_range, limit=self.default_limit,
+                        aggregate="count" if counting else None,
+                    )
+                    out.append(SourcePlan(source=name, field=fname, value=res.value, plan=plan))
+        return out
+
+    def _value_filter(self, source: str, fname: str, res) -> Filter:
+        fdef = self.catalog.sources[source].fields[fname]
+        operator = "eq" if res.literal_kind in ("ip_address", "email") else (fdef.match or "eq")
+        return Filter(field=f"{source}.{fname}", operator=operator, value=res.value)
 
     _FIELD_QUESTIONS = {
         "values": "Which field's different values does the question ask for?",
@@ -215,7 +279,7 @@ class QueryPlanner:
             if tokens and tokens <= words:
                 named.append((tokens, f))
         if shape == "count_by":  # "how many ips per rule": the group is the word after "per"
-            after = _words_after(intent.question)
+            after = _words_after(intent.question, self.shapes)
             grouped = [(t, f) for t, f in named if t & after]
             named = grouped or named
         entity = self.catalog.entities.get(intent.target_entity) if intent.target_entity else None
@@ -474,12 +538,24 @@ class QueryPlanner:
         return self.allowed is None or source in self.allowed
 
 
-def _words_after(question: str) -> Set[str]:
+def _words_after(question: str, shapes: AnswerShapes) -> Set[str]:
     """Stems of the word right after "per" / "by" / "for each" / "por" ... — the group in a count per group."""
     out = set()
-    for regex in (_GROUP_RE, _MAYBE_GROUP_RE):
-        for m in regex.finditer(question):
-            nxt = re.match(r"\s+(?:the |a |an |o |a |os |as )?([\w-]+)", question[m.end():], re.I)
-            if nxt:
-                out |= {stem(t) for t in tokenize(nxt.group(1))}
+    for _, end in shapes.group_words(question):
+        nxt = re.match(r"\s+(?:the |a |an |o |os |as )?([\w-]+)", question[end:], re.I)
+        if nxt:
+            out |= {stem(t) for t in tokenize(nxt.group(1))}
     return out
+
+
+def _equal_to(ref: str, paths: List[Path]) -> Set[str]:
+    """``ref`` and every field an equality join of the plan ties it to (same value on every row)."""
+    same, grew = {ref}, True
+    edges = [(e.left, e.right) for p in paths for e in p.edges]
+    while grew:
+        grew = False
+        for a, b in edges:
+            if (a in same) != (b in same):
+                same |= {a, b}
+                grew = True
+    return same

@@ -11,8 +11,8 @@ pytest.importorskip("pydantic")
 from duckduck import DuckAPI  # noqa: E402
 from duckduck.semantic import Catalog, JEVAdapter, JevClient, SemanticSearch  # noqa: E402
 from duckduck.semantic.extraction import RuleBasedExtractor  # noqa: E402
-from duckduck.semantic.interpreter import SemanticInterpreter  # noqa: E402
 from duckduck.semantic.plan import LogicalQueryPlan  # noqa: E402
+from duckduck.semantic.shapes import AnswerShapes  # noqa: E402
 
 ALERTS = pd.DataFrame({
     "ip": ["10.0.0.1", "10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.3", "10.0.0.3"],
@@ -68,7 +68,7 @@ def _search(**kw):
     ("Show alerts for each rule", ["list", "count_by"]),            # a list, or a count per rule?
 ])
 def test_what_the_wording_allows(question, candidates):
-    assert SemanticInterpreter._shape_candidates(question)[0] == candidates
+    assert AnswerShapes().candidates(question)[0] == candidates
 
 
 def _answer(search, question):

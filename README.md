@@ -865,6 +865,8 @@ among the candidates. Other details:
 | `values` | "Show me the different severities", "quais os tipos de regra" | `SELECT DISTINCT severity` |
 | `count_values` | "How many different severities are there?" | `COUNT(*)` over `SELECT DISTINCT severity` |
 | `count_by` | "How many alerts per rule?", "quantos alertas por cada regra" | `SELECT rule, COUNT(*) … GROUP BY rule` (hosts per rule: distinct hosts per rule) |
+| `lookup` | "What can I find for 10.0.0.196?", "tudo sobre 10.0.0.196" | one `SELECT *` per table that has a field of the value's type |
+| `locate` | "Which tables contain 10.0.0.196?", "em quais tabelas existe o ip …" | one `COUNT(*)` per table; no value → from the catalog alone |
 
 The decision works like a small tree:
 
@@ -897,6 +899,72 @@ so it's answered as the list of users. Pin `answer_shape` (one of the
 five) and `values_field` (`source.field`) to force either decision.
 Words like "per", "different" or "types" are never taken as values to
 filter on.
+
+**Everything about a value (`lookup`) and where it is (`locate`).** Both
+look in **every table that has a field of the value's type**, not only
+in the tables retrieval picked. Each value in the question is looked up
+on its own. `results` is then a summary with one row per table (`source`,
+`found`, `rows`, `matched_on`, `description`), and `sections` holds each
+table's part:
+
+```python
+result = search.search("What can I find for this ip 10.0.0.196")
+result.results                      # which tables had it, and how many rows
+for sec in result.sections:         # lookup: every column of the matching rows
+    print(sec.source, sec.matched_on, sec.rows)
+    sec.results                     # pd.DataFrame (None for locate, which only counts)
+result.to_json()                    # "sections": [{source, matched_on, rows, sql, results}, ...]
+```
+
+- The question's other values (enumerated ones like "critical", a time
+  range) apply in the tables that have those fields. With a time range,
+  tables without a time field are skipped.
+- `locate` without a value ("which tables have hosts?", "which tables
+  exist?") is answered from the catalog, without reading data.
+- `lookup` without a value ("tell me about the critical alerts") is
+  answered as a list.
+- A list that could only repeat the value asked about becomes a
+  `lookup`, recorded as a deterministic `answer_shape` decision. For
+  example, "which hosts are 10.0.0.196" lists the IP field filtered by
+  that same IP, directly or through a join. A different field of the same
+  type is still a real list: "which IPs connected to 10.0.0.5" filters
+  `dst_ip` and lists `src_ip`. Pin `answer_shape: "list"` to keep the
+  list anyway.
+
+**Your own wording.** The phrases for each kind of answer live in
+`duckduck/semantic/shapes.py` (`DEFAULT_WORDING`). Add yours, without
+touching code, in `semantic.answer_shapes`, inline or as the path of a
+JSON/YAML file (relative to `duckduck.json`):
+
+```json
+"semantic": {"answer_shapes": "answer_shapes.yaml"}
+```
+
+```yaml
+# answer_shapes.yaml: added to the defaults, per shape
+lookup:
+  wording: ["o que rola com", "ficha do", "re:\\bdossi[eê]\\b"]
+locate:
+  wording: ["em que sistema"]
+count_by:
+  wording: ["distribuição por"]   # sure: a count per group
+  maybe_wording: ["segundo"]      # maybe: the decision engine chooses
+values:
+  wording: ["quais os possíveis"]
+  description: "the different values of an attribute"   # what the engine reads (optional)
+```
+
+- **Shapes:** `count`, `values`, `count_values`, `count_by`, `lookup` and
+  `locate`. A plain list is what's left when nothing matches.
+- **Phrases** match whole words, case-insensitive. `re:` starts a regex.
+- **`replace: true`** swaps a shape's defaults for yours instead of adding
+  to them.
+- **Validation:** an unknown shape or key, or a bad regex, fails when the
+  config loads.
+- **Never a filter value:** matched words are dropped from the values to
+  filter on.
+- **Labels:** the options shown when the shape is asked back are the
+  `answer_shape.<shape>` keys of `clarification_texts`.
 
 **Asking the user back.** When a decision falls below its threshold,
 the result is `needs_clarification`. It carries a `followup`: a question

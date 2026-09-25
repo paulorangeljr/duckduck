@@ -90,7 +90,13 @@ _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 _DOMAIN_RE = re.compile(r"\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}\b", re.IGNORECASE)
 
 #: Extra words that are never a filter value on their own.
-_NON_VALUE_WORDS = {"many", "much", "most", "least", "some", "who", "whose", "whom"}
+_NON_VALUE_WORDS = {
+    "many", "much", "most", "least", "some", "who", "whose", "whom",
+    # Portuguese function words — never a value on their own
+    "o", "a", "os", "as", "um", "uma", "de", "do", "da", "dos", "das", "em", "no", "na", "nos", "nas", "e",
+    "que", "qual", "quais", "para", "com", "por", "pelo", "pela", "este", "esta", "esse", "essa", "isso",
+    "me", "mostre", "mostra", "liste", "tem", "têm", "há", "foi", "foram", "é", "são",
+}
 #: Words that say what kind of answer is wanted (count, different values, per group) —
 #: never a value to filter on, never the thing asked for.
 _SHAPE_WORDS = {
@@ -99,6 +105,11 @@ _SHAPE_WORDS = {
     "quantos", "quantas", "numero", "número", "contagem", "por", "cada", "diferente", "diferentes", "distinto",
     "distintos", "distinta", "distintas", "unico", "unicos", "único", "únicos", "tipos", "valores", "categorias",
     "agrupado", "agrupados", "agrupada", "agrupadas", "separado", "separados", "existe", "existem",
+    # "which tables contain X", "what can I find for X", "tudo sobre X"
+    "tables", "table", "sources", "datasets", "contain", "contains", "appear", "appears", "mention", "mentions",
+    "find", "found", "know", "tell", "everything", "details", "information", "info", "investigate",
+    "tabelas", "tabela", "fontes", "bases", "contém", "contem", "aparece", "aparecem", "encontro", "encontrar",
+    "tudo", "sobre", "detalhes", "informações", "informacoes", "investigue", "investigar", "onde",
 }
 
 
@@ -205,7 +216,8 @@ class RuleBasedExtractor:
         previous_term: Optional[str] = None
         for tok, st, used in zip(tokens, stems, consumed):
             known = not used and st in self.vocabulary
-            is_value = not used and not known and tok not in _NON_VALUE_WORDS and not tok.isdigit()
+            is_value = (not used and not known and tok not in _NON_VALUE_WORDS and not tok.isdigit()
+                        and len(tok) > 1)
             if not used and not out.focus_terms:
                 out.focus_terms.append(st)
             if known:

@@ -61,16 +61,7 @@ class ResourceFilter(BaseModel):
     literal_kind: str
 
 
-#: The kinds of answer a question can ask for → the SQL each compiles to.
-ANSWER_SHAPES = {
-    "list": "the matching records or things (SELECT / SELECT DISTINCT entity)",
-    "count": "how many there are, one number (COUNT)",
-    "values": "the different values of an attribute (SELECT DISTINCT field)",
-    "count_values": "how many different values an attribute has (COUNT DISTINCT field)",
-    "count_by": "a count for each value of an attribute — a breakdown (GROUP BY field)",
-}
-#: The shapes that need to know which field they're about.
-FIELD_SHAPES = ("values", "count_values", "count_by")
+from .shapes import ACROSS_SHAPES, ANSWER_SHAPES, FIELD_SHAPES  # noqa: E402,F401  (re-exported)
 
 
 class SemanticIntent(BaseModel):
