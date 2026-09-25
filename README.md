@@ -438,7 +438,12 @@ The `semantic` section only uses those names:
   decides.
 - **An LLM** (`default_llm`, or one per stage) drafts the semantic catalog
   from your registered tables and extracts values from questions
-  (`extractor.type: "llm"`). You can replace every system prompt. A
+  (`extractor.type: "llm"`). You can replace every system prompt.
+  **No LLM at question time?** Use `"extractor": {"type": "rules"}`.
+  Values are then pulled out by rules and the catalog: IPs, domains,
+  emails, time ranges ("last 24 hours"), catalog values and their
+  synonyms, quoted terms, "user X". Every judgment stays with the decision
+  engine (Jev), and the LLM only drafts the catalog. A
   Claude key comes from `ANTHROPIC_API_KEY` or from an `authentication`
   block in the entry that yields an `api_key`
   (`{"type": "aws", "secret_id": "prod/anthropic", "api_key": "$secret.key"}`).
@@ -846,6 +851,32 @@ what's still possible:
   `result.to_json()` includes `followup` and `pinned`.
 - **In the terminal:** `python -m duckduck.semantic ask -i "..."` asks at
   the prompt.
+
+**Live evidence (opt-in).** Before deciding, the engine can be told
+whether the question's values actually appear in the data. Each value
+("github") is probed in the candidate sources' fields, and each field's
+result goes to the decision engine as a fact:
+
+- **Source relevance** gets "found in `proxy.domain`, not in `dns.query`".
+- **"What is 'github'?"** gets the types of the fields it was found in.
+- **A field confirmation** gets whether the value is in that field.
+
+```json
+"live_evidence": {"enabled": true, "max_probes": 8, "timeout": 5}
+```
+
+- **Only cheap probes.** A probe is `WHERE field ILIKE '%value%' LIMIT 1`
+  at the source, so it only runs when the connector applies that filter
+  itself (SQL, ADX, Glue/Blob, local files, ServiceNow `where`, `*_ilike`
+  params) and takes a `limit`. Anything else is skipped as "couldn't
+  check"; nothing is ever downloaded in full to check a value.
+- **Bounded.** There's a budget per question (`max_probes`) and a
+  timeout per probe. A failing or slow probe never fails the question.
+- **Visible.** Each probe is logged (`evidence: 'github' in proxy.domain
+  → found (0.08s)`) and listed in `result.evidence`.
+
+It adds one small query per probe to every question, so it's off by
+default. Turn it on when your sources answer such filters quickly.
 
 **Tuning the thresholds.** The defaults (`source` 0.80, `field` 0.85, ...)
 are round numbers. Tune them for your engine version with labeled
