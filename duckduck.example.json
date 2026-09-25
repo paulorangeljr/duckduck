@@ -170,7 +170,7 @@
         "api_key": "$secret.jev_api_key"
       }
     },
-    "llm": "claude",
+    "default_llm": "claude",
     "extractor": {
       "type": "llm",
       "llm": "azure_gpt",

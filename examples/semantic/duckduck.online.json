@@ -22,7 +22,7 @@
       "type": "jev",
       "model": "typesafe-ai/jev"
     },
-    "llm": "claude_strong",
+    "default_llm": "claude_strong",
     "extractor": {
       "type": "llm",
       "llm": "claude_fast",

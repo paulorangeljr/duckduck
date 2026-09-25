@@ -231,7 +231,7 @@ def test_claude_llm_takes_the_key_from_the_environment_or_the_argument(monkeypat
 def test_llm_authentication_block_without_api_key_says_how_to_map_it(tmp_path):
     from duckduck.semantic import SemanticConfig
 
-    path = _write_config(tmp_path, {"catalog_path": CATALOG_PATH, "llm": "main"},
+    path = _write_config(tmp_path, {"catalog_path": CATALOG_PATH, "default_llm": "main"},
                          llms={"main": {"authentication": {"type": "local", "key": "sk-test"}}})
     cfg = SemanticConfig.load(DuckAPI(), path)
     with pytest.raises(ValueError, match=r"\['key'\].*\"\$secret\.<its key>\""):
@@ -459,7 +459,7 @@ def test_from_config_builds_jev_with_key_from_authentication(tmp_path, monkeypat
 def test_from_config_llm_extractor_reads_prompt_file(tmp_path, monkeypatch):
     path = _write_config(tmp_path, {
         "catalog_path": CATALOG_PATH,
-        "llm": "claude",
+        "default_llm": "claude",
         "extractor": {"type": "llm", "system_prompt_file": "prompts/extract.md"},
     }, llms={"claude": {"model": "claude-opus-5", "authentication": {"type": "local", "api_key": "sk-test"}}})
     built = {}

@@ -7,7 +7,7 @@ Jev or LLM key lives in the same secret store as everything else.
 
 LLMs are declared once, by name, in the file's top-level ``"llms"``
 section (next to ``"services"``); ``semantic`` only refers to them by
-name — ``llm`` is the default, and each stage may name its own.
+name — ``default_llm`` for every stage, and each stage may name its own.
 
 ::
 
@@ -24,7 +24,7 @@ name — ``llm`` is the default, and each stage may name its own.
         "model": "typesafe-ai/jev",
         "authentication": {"type": "aws", "secret_id": "prod/jev", "api_key": "$secret.key"}
       },
-      "llm": "claude",
+      "default_llm": "claude",
       "extractor": {"type": "llm", "system_prompt_file": "prompts/extraction.md"},
       "catalog_generation": {
         "output_path": "semantic_catalog.yaml",
@@ -155,7 +155,7 @@ class CatalogGenerationConfig(_Strict):
     #: ``llms``. Omitted → the default ``llm``.
     llm: Optional[LLMRef] = None
     #: LLM for the final call (entities, activities, joins across every
-    #: table). Omitted → this section's ``llm``, then the default.
+    #: table). Omitted → this section's ``llm``, then ``default_llm``.
     link_llm: Optional[LLMRef] = None
 
 
@@ -165,8 +165,8 @@ class SemanticConfig(_Strict):
     #: The named LLMs — filled by ``load``/``from_file_data`` from the file's
     #: top-level ``"llms"`` section, never written inside ``"semantic"``.
     llms: Dict[str, LLMConfig] = Field(default_factory=dict)
-    #: The default LLM for every stage that doesn't name its own (a name from ``llms``).
-    llm: Optional[LLMRef] = None
+    #: The LLM every stage uses unless it names its own (a name from ``llms``).
+    default_llm: Optional[LLMRef] = None
     extractor: ExtractorConfig = Field(default_factory=ExtractorConfig)
     catalog_generation: CatalogGenerationConfig = Field(default_factory=CatalogGenerationConfig)
     thresholds: Thresholds = Field(default_factory=Thresholds)
@@ -178,7 +178,7 @@ class SemanticConfig(_Strict):
     #: The file this was loaded from (for error messages).
     config_file: Optional[str] = None
 
-    #: stage → where to look for its LLM, first match wins (then the default ``llm``).
+    #: stage → where to look for its LLM, first match wins (then ``default_llm``).
     LLM_STAGES: ClassVar[Dict[str, Tuple[str, ...]]] = {
         "extractor": ("extractor.llm",),
         "catalog_generation": ("catalog_generation.llm",),
@@ -187,7 +187,7 @@ class SemanticConfig(_Strict):
 
     @model_validator(mode="after")
     def _llm_references_exist(self) -> "SemanticConfig":
-        refs = {"llm": self.llm, **{path: self._at(path) for paths in self.LLM_STAGES.values() for path in paths}}
+        refs = {"default_llm": self.default_llm, **{path: self._at(path) for paths in self.LLM_STAGES.values() for path in paths}}
         for where, ref in refs.items():
             if isinstance(ref, str) and ref not in self.llms:
                 declared = ", ".join(sorted(self.llms)) or "none"
@@ -205,10 +205,10 @@ class SemanticConfig(_Strict):
         """
         ``(name, settings)`` of the LLM a stage uses: its own ``llm`` (for
         ``catalog_link``: ``link_llm``, then ``catalog_generation.llm``),
-        else the default ``llm``; ``(None, None)`` when none is set.
+        else ``default_llm``; ``(None, None)`` when none is set.
         """
         paths = self.LLM_STAGES.get(stage, ()) if stage else ()
-        for ref in [*(self._at(p) for p in paths), self.llm]:
+        for ref in [*(self._at(p) for p in paths), self.default_llm]:
             if ref is not None:
                 return ref, self.llms[ref]
         return None, None
@@ -239,7 +239,12 @@ class SemanticConfig(_Strict):
                 f"'{section}' — '{section}' only refers to LLMs by name."
             )
         semantic = data[section]
-        for ref_path in ("llm", "extractor.llm", "catalog_generation.llm", "catalog_generation.link_llm"):
+        if "llm" in semantic:
+            raise ValueError(
+                f"{where}: '{section}.llm' is now '{section}.default_llm' (the LLM every stage uses unless "
+                f"it names its own) — rename the key."
+            )
+        for ref_path in ("default_llm", "extractor.llm", "catalog_generation.llm", "catalog_generation.link_llm"):
             *parent, key = ref_path.split(".")
             holder = semantic.get(parent[0], {}) if parent else semantic
             value = holder.get(key) if isinstance(holder, dict) else None
@@ -297,10 +302,10 @@ class SemanticConfig(_Strict):
             own = self.LLM_STAGES.get(stage, ())
             raise ValueError(
                 f"This needs an LLM (catalog generation / extractor type 'llm'), but {where} names none "
-                f"('llm'{f' or {own[0]!r}' if own else ''}). Declare one in the file's top-level \"llms\" "
+                f"('default_llm'{f' or {own[0]!r}' if own else ''}). Declare one in the file's top-level \"llms\" "
                 f"section and name it in \"semantic\", e.g.\n"
                 f'    "llms": {{"claude": {{"model": "claude-opus-5"}}}},\n'
-                f'    "semantic": {{"llm": "claude", ...}}\n'
+                f'    "semantic": {{"default_llm": "claude", ...}}\n'
                 f"(API key from the ANTHROPIC_API_KEY environment variable, or an \"authentication\" "
                 f"block like the connectors'), and `pip install -e \".[llm]\"`. "
                 f"See examples/semantic/duckduck.online.json."
@@ -337,7 +342,7 @@ class SemanticConfig(_Strict):
         gateway_auth = any(h.lower() in ("x-api-key", "authorization") for h in cfg.headers)
         if cfg.authentication and not api_key and not gateway_auth:
             raise ValueError(
-                f"The 'llm' authentication block resolved to keys {sorted(creds)} but no 'api_key'. "
+                f"The LLM's authentication block resolved to keys {sorted(creds)} but no 'api_key'. "
                 f"If the secret stores it under another name, map it: \"api_key\": \"$secret.<its key>\"."
             )
         return ClaudeLLM(

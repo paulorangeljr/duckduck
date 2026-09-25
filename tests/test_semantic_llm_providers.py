@@ -174,7 +174,7 @@ def _semantic(tmp_path, llms=None, **semantic):
 
 def _config(tmp_path, llm):
     """One LLM, declared at the top level as "main" and named as the default."""
-    return _semantic(tmp_path, llms={"main": llm}, llm="main")
+    return _semantic(tmp_path, llms={"main": llm}, default_llm="main")
 
 
 def test_config_azure_openai_settings_and_header_from_the_secret(tmp_path):
@@ -245,7 +245,7 @@ LLMS = {
 
 def test_stages_reference_declared_llms_by_name(tmp_path):
     cfg = _semantic(
-        tmp_path, llms=LLMS, llm="strong",
+        tmp_path, llms=LLMS, default_llm="strong",
         extractor={"type": "llm", "llm": "azure"},
         catalog_generation={"llm": "fast", "link_llm": "strong"},
     )
@@ -257,13 +257,13 @@ def test_stages_reference_declared_llms_by_name(tmp_path):
 
 
 def test_unset_stages_fall_back(tmp_path):
-    cfg = _semantic(tmp_path, llms=LLMS, llm="strong", catalog_generation={"llm": "fast"})
-    assert cfg.llm_config("extractor")[0] == "strong"      # → the default
-    assert cfg.llm_config("catalog_link")[0] == "fast"     # → catalog_generation.llm, then the default
+    cfg = _semantic(tmp_path, llms=LLMS, default_llm="strong", catalog_generation={"llm": "fast"})
+    assert cfg.llm_config("extractor")[0] == "strong"      # → default_llm
+    assert cfg.llm_config("catalog_link")[0] == "fast"     # → catalog_generation.llm, then default_llm
 
 
 @pytest.mark.parametrize("semantic", [
-    {"llm": {"model": "claude-opus-5"}},
+    {"default_llm": {"model": "claude-opus-5"}},
     {"extractor": {"type": "llm", "llm": {"model": "claude-haiku-4-5"}}},
     {"catalog_generation": {"link_llm": {"model": "claude-opus-5"}}},
 ])
@@ -273,13 +273,13 @@ def test_a_block_where_a_name_belongs_says_to_declare_it_at_the_top_level(tmp_pa
 
 
 def test_llms_inside_semantic_is_rejected_pointing_to_the_top_level(tmp_path):
-    data = {"services": {}, "semantic": {"catalog_path": CATALOG_PATH, "llms": LLMS, "llm": "strong"}}
+    data = {"services": {}, "semantic": {"catalog_path": CATALOG_PATH, "llms": LLMS, "default_llm": "strong"}}
     with pytest.raises(ValueError, match="'llms' goes at the top level of the file"):
         SemanticConfig.from_file_data(data)
 
 
 def test_file_level_llms_sit_next_to_services(tmp_path):
-    data = {"services": {}, "llms": LLMS, "semantic": {"catalog_path": CATALOG_PATH, "llm": "fast"}}
+    data = {"services": {}, "llms": LLMS, "semantic": {"catalog_path": CATALOG_PATH, "default_llm": "fast"}}
     cfg = SemanticConfig.from_file_data(data)
     assert set(cfg.llms) == set(LLMS) and cfg.llm_config()[1].model == "claude-haiku-4-5"
 
@@ -302,7 +302,7 @@ def test_no_llm_named_explains_where_to_declare_it(tmp_path):
 
 def test_each_stage_gets_its_own_client(tmp_path, monkeypatch):
     cfg = _semantic(
-        tmp_path, llms=LLMS, llm="strong",
+        tmp_path, llms=LLMS, default_llm="strong",
         extractor={"type": "llm", "llm": "fast"},
         catalog_generation={"llm": "fast", "link_llm": "strong"},
     )
@@ -335,3 +335,8 @@ def test_generator_uses_the_link_llm_for_the_final_call():
     duck.register_api_function("hosts", lambda: pd.DataFrame({"hostname": ["a"]}))
     CatalogGenerator(Fake("cheap"), duck, link_llm=Fake("strong")).generate()
     assert calls == [("cheap", "GenSource"), ("strong", "GenVocabulary")]
+
+
+def test_the_old_semantic_llm_key_says_it_was_renamed(tmp_path):
+    with pytest.raises(ValueError, match="'semantic.llm' is now 'semantic.default_llm'"):
+        _semantic(tmp_path, llms=LLMS, llm="strong")

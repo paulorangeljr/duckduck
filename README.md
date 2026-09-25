@@ -427,7 +427,7 @@ the same local/AWS/Azure `authentication` blocks the connectors use:
   semantic catalog from your registered tables and extracts values from
   questions (`extractor.type: "llm"`). You can replace every system prompt.
   LLMs are declared by name in the top-level `llms` section and named
-  in `semantic.llm`. The key comes from `ANTHROPIC_API_KEY` or from an
+  in `semantic.default_llm`. The key comes from `ANTHROPIC_API_KEY` or from an
   `authentication` block in the LLM's declaration that yields an `api_key`
   (`{"type": "aws", "secret_id": "prod/anthropic", "api_key": "$secret.key"}`).
   If it finds neither, it fails at startup and tells you where to put the key.
@@ -569,7 +569,7 @@ name, in the top-level `llms` section of `duckduck.json`, next to
   },
 
   "semantic": {
-    "llm": "claude_strong",
+    "default_llm": "claude_strong",
     "extractor":          {"type": "llm", "llm": "azure_gpt"},
     "catalog_generation": {"llm": "claude_fast", "link_llm": "claude_strong"}
   }
@@ -578,12 +578,12 @@ name, in the top-level `llms` section of `duckduck.json`, next to
 
 | In `semantic` | Stage | Calls | If omitted |
 |---|---|---|---|
-| `llm` | the default for every stage below | | no LLM |
-| `extractor.llm` | pulls values out of each question (`extractor.type: "llm"`) | 1 per question | `llm` |
-| `catalog_generation.llm` | drafts each table | 1 per table | `llm` |
-| `catalog_generation.link_llm` | entities, activities and joins across all tables | 1 per run | `catalog_generation.llm`, then `llm` |
+| `default_llm` | the LLM every stage below uses unless it names its own | | no LLM |
+| `extractor.llm` | pulls values out of each question (`extractor.type: "llm"`) | 1 per question | `default_llm` |
+| `catalog_generation.llm` | drafts each table | 1 per table | `default_llm` |
+| `catalog_generation.link_llm` | entities, activities and joins across all tables | 1 per run | `catalog_generation.llm`, then `default_llm` |
 
-Even a single LLM is declared in `llms` and named in `semantic.llm`.
+Even a single LLM is declared in `llms` and named in `semantic.default_llm`.
 When the config loads, it's rejected if an LLM block is written inside
 `semantic` or if a name isn't declared in `llms`. Each error says what to
 move where, or lists the declared names. With `-v`, each stage logs the

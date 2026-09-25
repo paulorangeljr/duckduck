@@ -94,7 +94,7 @@ def gen_config(tmp_path, monkeypatch):
     cfg.write_text(json.dumps({
         "services": {"syn": {"connector": "python", "module": "gen.py", "table_prefix": ""}},
         "llms": {"claude": {"authentication": {"type": "local", "api_key": "sk-test"}}},
-        "semantic": {"llm": "claude", "catalog_generation": {"output_path": "drafted.yaml"}},
+        "semantic": {"default_llm": "claude", "catalog_generation": {"output_path": "drafted.yaml"}},
     }))
     from duckduck.semantic.config import SemanticConfig
 
