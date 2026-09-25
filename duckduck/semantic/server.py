@@ -9,7 +9,7 @@ HTML page (``webpage.PAGE``) over a JSON API:
 ``POST /api/preview {question, reader}``    while typing: entity, answer kind, relevant tables by system
 ``POST /api/ask {question, user, reader, only_sources, entity, values_field, blocked_joins, in_scope}``  starts a conversation → its first result
 ``POST /api/answer {conversation_id, reply}`` answers the open clarification → next result
-``POST /api/feedback {search_id, verdict, categories, reason, expected, user}``
+``POST /api/feedback {search_id, verdict, categories, reason, expected, user, feedback_id}``
 ``GET  /api/searches``, ``/api/searches/{id}``  history / one search's decision trail
 ``GET  /api/stats``                          the dashboard numbers
 ``GET  /api/suggestions``                    catalog suggestions (``?all=1``: reviewed too)
@@ -19,7 +19,7 @@ HTML page (``webpage.PAGE``) over a JSON API:
 ``GET  /api/export.md``                      the still-failing questions, as a brief for a developer
 ``GET  /api/meta``                           categories, answer kinds, tables (+ icon kind), entities, values
 ``POST /api/sql {sql}`` · ``GET /api/tables``  the SQL console (``allow_sql``, on by default; read-only, no files/network)
-``POST /api/takeover {conversation_id, name, full}``  "take over from here": the answer's rows as a table for the SQL tab
+``POST /api/takeover {conversation_id, name, full, user}``  "take over from here": the answer's rows as a table (an unrated answer → answered)
 ``POST /api/takeover/proposal {conversation_id}``  what that would give: suggested name, rows, columns, capped
 ``GET  /api/config``                         duckduck.json, secrets masked, + every option documented
 ``POST /api/config/validate {config}``       check an edited config without saving
@@ -208,7 +208,8 @@ def create_app(
         try:
             feedback_id = store.record_feedback(
                 str(body.get("search_id")), str(body.get("verdict")), body.get("categories") or [],
-                str(body.get("reason") or ""), body.get("expected") or None, body.get("user") or None)
+                str(body.get("reason") or ""), body.get("expected") or None, body.get("user") or None,
+                feedback_id=body.get("feedback_id") or None)
         except KeyError as exc:
             raise HTTPException(404, str(exc))
         except ValueError as exc:
@@ -348,7 +349,8 @@ def create_app(
         name = body.get("name")
         try:
             taken = state["search"].take_over(conv.result, name=str(name) if name else None,
-                                              full=body.get("full", True) is not False)
+                                              full=body.get("full", True) is not False,
+                                              user=body.get("user") or None)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         return dump(taken.to_dict())

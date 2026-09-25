@@ -220,6 +220,9 @@ class RouterConfig(_Strict):
     max_runs: int = 30
     #: The mode used when the engine isn't sure (``thresholds.router``) or routing fails.
     fallback: Literal["rules", "llm", "llm_decides"] = "rules"
+    #: Modes this close to the best (engine probability, or success rate for the offline engine) are
+    #: tied — and a tie goes to the cheapest: Paddle, then Dive, then Fly.
+    tie_margin: float = Field(0.05, ge=0, le=1)
 
 
 class ApiDocsConfig(_Strict):

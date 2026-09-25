@@ -163,3 +163,16 @@ def test_the_chip_is_the_mode_that_answers():
     assert search.preview(Q, reader="auto")["route"]["reader"] == "rules"
     search.route_ttl = 300
     assert search.search(Q, reader="auto").reader == "rules"
+
+
+def test_a_tie_goes_to_the_cheaper_mode():
+    router = ModeRouter(threshold=0.3, tie_margin=0.05)
+    modes = ["rules", "llm", "llm_decides"]
+    route = router.route(Engine({"rules": 0.33, "llm": 0.35, "llm_decides": 0.32}), Q, Q, modes)
+    assert route.reader == "rules" and "the cheaper" in route.record.subject and route.record.probability == 0.33
+    route = router.route(Engine({"rules": 0.1, "llm": 0.44, "llm_decides": 0.46}), Q, Q, modes)
+    assert route.reader == "llm"  # Dive and Fly tied: Dive is cheaper
+    route = router.route(Engine({"rules": 0.1, "llm": 0.3, "llm_decides": 0.6}), Q, Q, modes)
+    assert route.reader == "llm_decides"  # clearly better: no tie
+    evidence = {"rules": {"success_rate": 0.5}, "llm": {"success_rate": 0.75}, "llm_decides": {"success_rate": 0.77}}
+    assert router.cheapest_of_tied({m: e["success_rate"] for m, e in evidence.items()}, modes)[0] == "llm"

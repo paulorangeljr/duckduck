@@ -98,3 +98,47 @@ def test_the_dialog_is_told_what_it_would_get():
     assert taken["rows"] == 3  # the whole subset
     again = client.post("/api/takeover/proposal", json={"conversation_id": conv["conversation_id"]}).json()
     assert again["taken"] == ["alerts_critical_severity"] and again["name"] == "alerts_critical_severity_2"
+
+
+def test_taking_over_an_unrated_answer_says_it_answered():
+    from duckduck.semantic.feedback import FeedbackStore
+    from duckduck.semantic.takeover import TAKEOVER_REASON
+
+    store = FeedbackStore()
+    search = SemanticSearch(Catalog.model_validate(CATALOG), _duck(), feedback=store)
+    result = search.search("What are the severities of the events?")
+    taken = search.take_over(result, "sev")
+    assert taken.feedback["verdict"] == "answered" and store.verdict_of(result.search_id) == "answered"
+    assert store.query("SELECT reason FROM feedback")["reason"].tolist() == [TAKEOVER_REASON]
+    again = search.take_over(result, "sev")  # already rated: nothing added
+    assert again.feedback is None and store.query("SELECT count(*) AS n FROM feedback")["n"][0] == 1
+    rated = search.search("Which hosts have critical alerts?")
+    search.feedback(rated, "not_answered")
+    assert search.take_over(rated, "hot").feedback is None  # the user's own rating stays
+    assert store.verdict_of(rated.search_id) == "not_answered"
+
+
+def test_the_page_saves_feedback_as_it_is_given():
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from duckduck.semantic.admin import SQLConsole
+    from duckduck.semantic.feedback import FeedbackStore
+    from duckduck.semantic.server import create_app
+
+    store = FeedbackStore()
+    search = SemanticSearch(Catalog.model_validate(CATALOG), _duck(), feedback=store)
+    client = TestClient(create_app(lambda: search, store=store, console=SQLConsole(search.duck)))
+    answer = client.post("/api/ask", json={"question": "Which hosts have critical alerts?"}).json()
+    sid = answer["result"]["search_id"]
+    first = client.post("/api/feedback", json={"search_id": sid, "verdict": "not_answered"}).json()["id"]
+    same = client.post("/api/feedback", json={"search_id": sid, "verdict": "partial", "categories": ["wrong_filter"],
+                                              "reason": "only some", "feedback_id": first}).json()["id"]
+    assert same == first and store.query("SELECT count(*) AS n FROM feedback")["n"][0] == 1  # one row, replaced
+    assert store.verdict_of(sid) == "partial"
+    assert client.post("/api/feedback", json={"search_id": sid, "verdict": "answered",
+                                              "feedback_id": "nope"}).status_code == 404
+    fresh = client.post("/api/ask", json={"question": "What are the severities of the events?"}).json()
+    taken = client.post("/api/takeover", json={"conversation_id": fresh["conversation_id"], "name": "sev"}).json()
+    assert taken["feedback"]["verdict"] == "answered"
+    assert store.verdict_of(fresh["result"]["search_id"]) == "answered"

@@ -19,9 +19,12 @@ engine choose.
 4. **The decision** is one choice question to the decision engine (Jev —
    never the LLM, even when a mode it could pick is the LLM's), with that
    evidence as facts. The offline engine takes the best smoothed rate,
-   the cheaper mode on a tie. Below ``thresholds.router`` — or with no
-   engine answer — the ``fallback`` mode is used: routing is an internal
-   choice, so a doubt never becomes a question to the user.
+   the cheaper mode on a tie. **A tie goes to the cheaper mode**: every
+   mode within ``tie_margin`` of the engine's top probability is as good
+   a pick, so the cheapest of them is used (Paddle < Dive < Fly). Below
+   ``thresholds.router`` — or with no engine answer — the ``fallback``
+   mode is used: routing is an internal choice, so a doubt never becomes
+   a question to the user.
 
 A mode no similar question ran in has no evidence (not a bad record):
 the engine is told so.
@@ -57,8 +60,10 @@ class Route:
 
 class ModeRouter:
     def __init__(self, store: Any = None, min_similarity: float = 0.5, max_runs: int = 30,
-                 fallback: str = "rules", threshold: float = 0.5):
+                 fallback: str = "rules", threshold: float = 0.5, tie_margin: float = 0.05):
         self.store = store
+        #: Modes whose probability is within this of the top one are tied — the cheapest of them wins.
+        self.tie_margin = tie_margin
         self.min_similarity = min_similarity
         self.max_runs = max_runs
         self.fallback = fallback
@@ -125,7 +130,7 @@ class ModeRouter:
         similar = self.similar(template, question)
         evidence = self.evidence(similar, modes)
         tried = {m: e for m, e in evidence.items() if e["similar_runs"]}
-        best = max(modes, key=lambda m: (evidence[m]["success_rate"], -modes.index(m))) if tried else None
+        best = self.cheapest_of_tied({m: e["success_rate"] for m, e in evidence.items()}, modes)[0] if tried else None
         base = state or DecisionState(query=question)
         ask_state = base.model_copy(update={
             "facts": {**base.facts, "history_by_mode": evidence,
@@ -141,9 +146,23 @@ class ModeRouter:
                 subject=f"routing failed ({exc.__class__.__name__}) — the fallback mode"), evidence, similar)
         summary = "; ".join(f"{m}: {e['weighted_successes']:g}/{e['weighted_runs']:g} similar ok"
                             for m, e in evidence.items() if e["similar_runs"]) or "no similar questions yet"
-        record = DecisionRecord(kind="route", question=QUESTION, answer=result.choice, probability=result.probability,
-                                threshold=self.threshold, alternatives=result.ranked()[1:3], subject=summary)
-        if not record.passed or result.choice not in modes:
-            record.subject = f"{summary} — not sure ({result.choice} {result.probability:.2f}): the fallback mode"
+        choice, probability = self.cheapest_of_tied(result.probabilities, modes)
+        if choice is not None and choice != result.choice:
+            summary += f" — {choice} and {result.choice} tied ({probability:.2f} vs {result.probability:.2f}): the cheaper"
+        choice, probability = (choice, probability) if choice is not None else (result.choice, result.probability)
+        record = DecisionRecord(kind="route", question=QUESTION, answer=choice, probability=probability,
+                                threshold=self.threshold, alternatives=[a for a in result.ranked() if a[0] != choice][:2],
+                                subject=summary)
+        if not record.passed or choice not in modes:
+            record.subject = f"{summary} — not sure ({choice} {probability:.2f}): the fallback mode"
             return Route(fallback, record, evidence, similar)
-        return Route(result.choice, record, evidence, similar)
+        return Route(choice, record, evidence, similar)
+
+    def cheapest_of_tied(self, probabilities: Dict[str, float], modes: List[str]) -> Tuple[Optional[str], float]:
+        """The cheapest mode within ``tie_margin`` of the top probability (``modes`` is cheapest first)."""
+        known = {m: float(probabilities[m]) for m in modes if m in probabilities}
+        if not known:
+            return None, 0.0
+        top = max(known.values())
+        choice = next(m for m in modes if m in known and known[m] >= top - self.tie_margin - 1e-9)
+        return choice, known[choice]

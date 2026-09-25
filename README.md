@@ -808,11 +808,16 @@ python -m duckduck.semantic feedback-export    # what still fails, as a brief fo
 - **Ask.** The follow-up questions show up as buttons, or you can answer
   in your own words. You get the answer, the SQL and "how it was decided"
   (every decision, its probability, and who made it). Under each answer:
-  *"Did this answer your question?"* ✓ / ◐ / ✗. For ◐ and ✗ you pick what
-  went wrong (wrong tables, wrong kind of answer, wrong filter, misread
-  value, missing data, too many questions) and say why. Optionally you say
-  what would have been right: the tables, the kind of answer, what it
-  asks about, or *"word X means field = value"*.
+  *"Did this answer your question?"* 👍 Yes / 🤏 Partly / 👎 No — **one tap
+  saves it**, no send button, and tapping another changes it. After Partly
+  or No, optional chips say what went wrong (wrong tables, wrong kind of
+  answer, wrong filter, misread value, missing data, too many questions),
+  a box takes your words, and *What would have been right?* takes the
+  tables, the kind of answer, what it asks about, or *"word X means field
+  = value"*. Everything saves as you go (one feedback per answer, updated
+  in place). **Take over from here counts as a yes**: an answer nobody
+  rated yet is recorded as answered when you take its rows over; a rating
+  you already gave stays.
 - **Three ways to read a question: 🦆 Paddle, 🤿 Dive or 🪽 Fly — or 🧭 Auto
   to pick one per question.** A switch next to the question picks the reader. Paddle skims the words on the surface: the
   `rules` reader. Dive goes under for what you meant: the `llm` reader. The
@@ -860,7 +865,9 @@ python -m duckduck.semantic feedback-export    # what still fails, as a brief fo
       runs has no evidence, not a bad record), median time, calls, how often
       it asked back, a few of the similar questions.
     - **Jev decides**: one choice question with that evidence as facts
-      (the offline engine takes the best rate, the cheaper mode on a tie).
+      (the offline engine takes the best rate). **A tie goes to the
+      cheaper mode**: modes within `router.tie_margin` (0.05) of the top
+      are tied, and Paddle beats Dive beats Fly.
       Below `thresholds.router` (0.5), or if routing fails, the
       `router.fallback` mode (Paddle) reads it — a doubt here is never
       asked back.

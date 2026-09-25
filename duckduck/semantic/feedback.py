@@ -168,12 +168,15 @@ class FeedbackStore:
         return search_id
 
     def record_feedback(self, search_id: str, verdict: str, categories: Iterable[str] = (), reason: str = "",
-                        expected: Optional[Dict[str, Any]] = None, user: Optional[str] = None) -> str:
+                        expected: Optional[Dict[str, Any]] = None, user: Optional[str] = None,
+                        feedback_id: Optional[str] = None) -> str:
         """
         What the user said about a search. ``expected`` (optional): what was
         right — ``sources`` (list), ``answer_shape``, ``entity``,
         ``activity``, ``synonym`` (``{"field": "src.f", "value": "DENY",
-        "word": "negado"}``).
+        "word": "negado"}``). ``feedback_id``: an earlier feedback on this
+        search to replace — the page saves on every tap and keystroke, so
+        one answer keeps one feedback row, not one per change.
         """
         if verdict not in VERDICTS:
             raise ValueError(f"verdict must be one of {VERDICTS}, not {verdict!r}")
@@ -185,7 +188,13 @@ class FeedbackStore:
         with self._lock:
             if not self._conn.execute("SELECT 1 FROM searches WHERE id = ?", [search_id]).fetchone():
                 raise KeyError(f"no search {search_id!r}")
-            feedback_id = uuid.uuid4().hex[:16]
+            if feedback_id:
+                if not self._conn.execute("SELECT 1 FROM feedback WHERE id = ? AND search_id = ?",
+                                          [feedback_id, search_id]).fetchone():
+                    raise KeyError(f"no feedback {feedback_id!r} on search {search_id!r}")
+                self._conn.execute("DELETE FROM feedback WHERE id = ?", [feedback_id])
+            else:
+                feedback_id = uuid.uuid4().hex[:16]
             self._conn.execute(
                 "INSERT INTO feedback VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 [feedback_id, search_id, _now(), user, verdict, json.dumps(categories), reason or "",
@@ -193,6 +202,13 @@ class FeedbackStore:
             )
             self.version += 1
         return feedback_id
+
+    def verdict_of(self, search_id: str) -> Optional[str]:
+        """The latest verdict on a search, or ``None`` when nobody rated it."""
+        with self._lock:
+            row = self._conn.execute("SELECT arg_max(verdict, created_at) FROM feedback WHERE search_id = ?",
+                                     [search_id]).fetchone()
+        return row[0] if row else None
 
     def record_preview(self, reader: str, usage: Dict[str, Any]) -> None:
         """What a preview while typing called (only when it called something) — the cost of typing, per mode."""

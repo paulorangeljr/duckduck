@@ -47,6 +47,8 @@ class TakenOver:
     #: How the rows were obtained: the answer's own rows, or its plan run again without the row cap.
     how: str
     taken_at: datetime = field(default_factory=datetime.now)
+    #: The *answered* rating the take-over recorded (``{"id", "verdict"}``), or ``None`` (already rated, no store).
+    feedback: Optional[Dict[str, Any]] = None
 
     @property
     def sql(self) -> str:
@@ -59,7 +61,12 @@ class TakenOver:
 
     def to_dict(self) -> Dict[str, Any]:
         return {"name": self.name, "question": self.question, "rows": self.rows, "columns": self.columns,
-                "how": self.how, "taken_at": self.taken_at.isoformat(timespec="seconds"), "sql": self.sql}
+                "how": self.how, "taken_at": self.taken_at.isoformat(timespec="seconds"), "sql": self.sql,
+                "feedback": self.feedback}
+
+
+#: The reason recorded with the *answered* rating a take-over gives an unrated answer.
+TAKEOVER_REASON = "Took the rows over to work on them (Take over from here)"
 
 
 def _check(search: Any, result: Any) -> None:

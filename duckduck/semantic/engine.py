@@ -332,16 +332,30 @@ class SemanticSearch:
         #: Why the ``llm`` reader couldn't be built (``from_config``), when it couldn't.
         self.llm_reader_error: Optional[str] = None
 
-    def take_over(self, result: "SearchResult", name: Optional[str] = None, full: bool = True) -> Any:
+    def take_over(self, result: "SearchResult", name: Optional[str] = None, full: bool = True,
+                  user: Optional[str] = None) -> Any:
         """
         "Take over from here": register ``result``'s rows as a table in the
         DuckAPI this search reads from, to query with ``duck.sql`` (see
         ``takeover``). ``full``: an answer that stopped at its row cap runs
         again without it. Returns a ``TakenOver`` (name, rows, columns, how).
-        """
-        from .takeover import take_over
 
-        return take_over(self, result, name=name, full=full)
+        Taking the rows to work on is a yes: with a feedback store, an
+        answer nobody rated yet is recorded as *answered*
+        (``TakenOver.feedback``) — a rating the user gave stays.
+        """
+        from .takeover import TAKEOVER_REASON, take_over
+
+        taken = take_over(self, result, name=name, full=full)
+        store, search_id = self.feedback_store, getattr(result, "search_id", None)
+        if store is not None and search_id:
+            try:
+                if store.verdict_of(search_id) is None:
+                    taken.feedback = {"id": store.record_feedback(search_id, "answered", reason=TAKEOVER_REASON,
+                                                                  user=user), "verdict": "answered"}
+            except Exception as exc:  # a rating never costs the take-over
+                logger.warning("feedback: couldn't record the take-over as answered (%s)", exc)
+        return taken
 
     @classmethod
     def from_config(
@@ -659,13 +673,15 @@ class SemanticSearch:
         return source_kind(fn) if fn is not None else "api"
 
     def feedback(self, result: Union["SearchResult", str], verdict: str, categories: Iterable[str] = (),
-                 reason: str = "", expected: Optional[Dict[str, Any]] = None, user: Optional[str] = None) -> str:
+                 reason: str = "", expected: Optional[Dict[str, Any]] = None, user: Optional[str] = None,
+                 feedback_id: Optional[str] = None) -> str:
         """
         What the user said about a search (a ``SearchResult`` or its
         ``search_id``): ``verdict`` ``answered`` / ``partial`` /
         ``not_answered``, ``categories`` (``feedback.CATEGORIES``), ``reason``,
         and optionally ``expected`` — what was right (``sources``,
         ``answer_shape``, ``entity``, ``activity``, ``synonym``).
+        ``feedback_id``: replace that earlier feedback instead of adding one.
         """
         if self.feedback_store is None:
             raise RuntimeError("no feedback store: build SemanticSearch(feedback=FeedbackStore(path)) "
@@ -673,7 +689,8 @@ class SemanticSearch:
         search_id = result if isinstance(result, str) else result.search_id
         if not search_id:
             raise ValueError("this result wasn't recorded (no search_id)")
-        return self.feedback_store.record_feedback(search_id, verdict, categories, reason, expected, user)
+        return self.feedback_store.record_feedback(search_id, verdict, categories, reason, expected, user,
+                                                   feedback_id=feedback_id)
 
     def _search(self, question: str, execute: bool, pinned: Optional[Dict[str, Any]],
                 reader: Optional[str] = None) -> SearchResult:
@@ -1071,7 +1088,7 @@ class Conversation:
 
     def take_over(self, name: Optional[str] = None, full: bool = True) -> Any:
         """The latest answer as a table of its own — ``SemanticSearch.take_over``."""
-        return self.search.take_over(self.result, name=name, full=full)
+        return self.search.take_over(self.result, name=name, full=full, user=self.user)
 
     @property
     def done(self) -> bool:
