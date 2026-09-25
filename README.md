@@ -758,6 +758,10 @@ print(jev_check().ranked())                    # raises if the key/network/parsi
 | `generate-catalog --only glue` | `generate_catalog(only="glue")` |
 | `jev-check` | `jev_check()` → `Classification` |
 | `calibrate questions.json` | `calibrate("questions.json")` → `CalibrationReport` (`.summary()`, `.thresholds`) |
+| `serve` | `serve()` — the web app ([Feedback](#feedback-learning-from-what-users-say)); `serve(run=False)` → the FastAPI app |
+| `feedback-report` | `feedback_report()` → `FeedbackReport` (`.summary()`, `.stats`) |
+| `feedback-to-eval` | `feedback_to_eval()` → `FeedbackEvaluation` (`.summary()`, `.dataset`, `.report`, `.calibration`) |
+| `feedback-suggest --accept ID` | `feedback_suggest(accept=["ID"])` → `SuggestionReport` (`.summary()`, `.suggestions`) |
 | `--config path` | `config_path="path"` |
 | `-v` / `-v debug` | `verbose="info"` / `verbose="debug"` |
 
@@ -773,6 +777,106 @@ ask("Which users accessed github in the last 24hrs?", duck=duck)
 search = SemanticSearch.from_config(duck)      # or keep the whole pipeline around
 search.search("Which hosts queried example.com?")
 ```
+
+### Feedback: learning from what users say
+
+Users can say whether each answer answered their question, and why not.
+That feedback is tied to the whole decision trail and turned into better
+decisions, without retraining anything. None of it changes the catalog
+until a person accepts it.
+
+```bash
+pip install -e ".[semantic,server]"
+python -m duckduck.semantic serve              # http://127.0.0.1:8765
+python -m duckduck.semantic feedback-report    # answer rates, what went wrong
+python -m duckduck.semantic feedback-to-eval   # rated questions → evaluation set + suggested thresholds
+python -m duckduck.semantic feedback-suggest   # catalog suggestions; --accept ID / --dismiss ID
+```
+
+```json
+"semantic": {
+  "feedback": {"enabled": true, "path": "feedback.duckdb", "memory": true,
+               "max_cases": 3, "min_similarity": 0.6, "min_support": 2}
+}
+```
+
+**The web page** (`serve()`) has four tabs:
+
+- **Ask.** The follow-up questions show up as buttons, or you can answer
+  in your own words. You get the answer, the SQL and "how it was decided"
+  (every decision, its probability, and who made it). Under each answer:
+  *"Did this answer your question?"* ✓ / ◐ / ✗. For ◐ and ✗ you pick what
+  went wrong (wrong tables, wrong kind of answer, wrong filter, misread
+  value, missing data, too many questions) and say why. Optionally you say
+  what would have been right: the tables, the kind of answer, what it
+  asks about, or *"word X means field = value"*.
+- **History.** Every question, with its result and its rating.
+- **Dashboard.** Answer rate overall, by kind of answer and by table; what
+  went wrong; how often it asked back; searches per day.
+- **Suggestions.** The catalog changes proposed from the feedback, to
+  accept or dismiss, plus *Evaluate and calibrate*.
+
+It has no user accounts, and it answers from your data with your
+credentials, so it listens on this machine only. To open it to others,
+set `DUCKDUCK_SERVER_TOKEN`: every API call then needs that token, and the
+page asks for it once.
+
+**What gets recorded** (`FeedbackStore`, a DuckDB file) for each search,
+including every round of a conversation:
+
+- the question as asked, its English reading, and its *template*, with the
+  values replaced by their kinds ("what can I find for this ip
+  <ip_address>");
+- the answer shape, entity, activity and tables;
+- every decision, and the pins the user set;
+- the SQL and the row count, **never the rows**;
+- the catalog and engine versions.
+
+In Python, `SemanticSearch(..., feedback=FeedbackStore(path))` records
+automatically (`result.search_id`), and
+`search.feedback(result, "not_answered", ["wrong_tables"], "why",
+expected={"sources": ["owners"]})` stores what the user said.
+
+**What's built from it:**
+
+- **An evaluation set.** Answered questions label themselves: tables,
+  entity, activity, kind of answer. A "no" with a correction carries the
+  correction. `feedback_to_eval()` writes it in the `evaluation.json`
+  format, scores the current catalog and engine on it (planning only),
+  and runs the same threshold calibration as `calibrate`, now including
+  `answer_shape`, on real questions.
+- **Case memory** (`feedback.memory`). Questions whose template resembles
+  one users confirmed or corrected before (`min_similarity`, at most
+  `max_cases`) get those cases as evidence, never as a rule:
+  - the decision engine sees them (`similar_confirmed_questions`, and per
+    table `used_in_similar_confirmed_questions`), and still decides;
+  - tables those cases used become candidates even when retrieval missed
+    them, and are still judged;
+  - offline, the lexical engine takes a very similar case's answer only
+    where it had no evidence of its own.
+
+  `result.intent.similar_cases` shows which cases were used. A later
+  "no" on the same template retires an old "yes".
+- **Catalog suggestions** (`CatalogSuggester`), each with the questions
+  behind it:
+
+  | Suggestion | From |
+  |---|---|
+  | synonym for a value | a correction "*word* means *field = value*" |
+  | example question for a table | a correction naming the right tables |
+  | wording for a kind of answer | a correction naming the right kind: the question's opening words ("give me a rundown") |
+  | keyword for an entity/activity, note on a table | a word the catalog doesn't know, in at least `min_support` failed questions, whose corrections point there |
+  | word the catalog doesn't know | the same, with no correction saying where it belongs (shown, nothing to apply) |
+
+  Accepting a suggestion writes it to the catalog file, keeping a `.bak`
+  copy. The file is rewritten, so `#` comments are lost; `notes` are
+  kept. Accepted wording goes to `feedback.learned_answer_shapes`
+  (`answer_shapes.learned.yaml`), which is loaded on top of
+  `answer_shapes`. The web app reloads right away.
+
+Measuring never learns from itself. `evaluate` and `calibrate` switch off
+recording and case memory while they run, since the memory would hand
+the engine the very answers they grade.
 
 ### AI providers: LLMs and the decision engine
 

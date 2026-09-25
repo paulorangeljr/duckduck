@@ -14,3 +14,10 @@ duckduck.json
 
 # Catalogs drafted by `generate-catalog` (review them, then promote by hand)
 generated_catalog.yaml
+
+# feedback from the web app: users' questions (keep out of git)
+feedback.duckdb
+feedback.duckdb.wal
+feedback_evaluation.json
+*.yaml.bak
+*.json.bak

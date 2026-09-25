@@ -9,13 +9,18 @@ commands read ``duckduck.json`` (or ``--config``): connectors from
     python -m duckduck.semantic ask "Which users accessed github in the last 24hrs?"
     python -m duckduck.semantic jev-check
     python -m duckduck.semantic calibrate examples/semantic/evaluation.json
+    python -m duckduck.semantic serve [--host H] [--port P]
+    python -m duckduck.semantic feedback-report
+    python -m duckduck.semantic feedback-to-eval [--out FILE]
+    python -m duckduck.semantic feedback-suggest [--accept ID ...] [--dismiss ID ...]
 """
 
 import argparse
 import json
 import sys
 
-from .commands import ask, calibrate, generate_catalog, jev_check
+from .commands import (ask, calibrate, feedback_report, feedback_suggest, feedback_to_eval, generate_catalog,
+                       jev_check, serve)
 
 
 def cmd_calibrate(args) -> int:
@@ -75,6 +80,27 @@ def cmd_jev_check(args) -> int:
     return 0
 
 
+def cmd_serve(args) -> int:
+    serve(config_path=args.config, host=args.host, port=args.port, verbose=args.verbose)
+    return 0
+
+
+def cmd_feedback_report(args) -> int:
+    print(feedback_report(config_path=args.config, verbose=args.verbose).summary())
+    return 0
+
+
+def cmd_feedback_to_eval(args) -> int:
+    print(feedback_to_eval(config_path=args.config, out=args.out, verbose=args.verbose).summary())
+    return 0
+
+
+def cmd_feedback_suggest(args) -> int:
+    print(feedback_suggest(config_path=args.config, accept=args.accept, dismiss=args.dismiss,
+                           verbose=args.verbose).summary())
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m duckduck.semantic")
     parser.add_argument("--config", help="config file (default: duckduck.json lookup)")
@@ -112,6 +138,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     check = sub.add_parser("jev-check", help="make one Jev call to verify the key/network")
     check.set_defaults(fn=cmd_jev_check, python=jev_check)
+
+    srv = sub.add_parser("serve", help="the web app: ask, answer clarifications, rate answers, review suggestions")
+    srv.add_argument("--host", default="127.0.0.1", help="interface to listen on (default: this machine only)")
+    srv.add_argument("--port", type=int, default=8765)
+    srv.set_defaults(fn=cmd_serve, python=serve)
+
+    rep = sub.add_parser("feedback-report", help="answer rates and what went wrong, from the feedback")
+    rep.set_defaults(fn=cmd_feedback_report, python=feedback_report)
+
+    fev = sub.add_parser("feedback-to-eval", help="rated questions → evaluation set, metrics, suggested thresholds")
+    fev.add_argument("--out", help="where to write the evaluation set (default: feedback_evaluation.json)")
+    fev.set_defaults(fn=cmd_feedback_to_eval, python=feedback_to_eval)
+
+    sug = sub.add_parser("feedback-suggest", help="catalog suggestions from the feedback; accept or dismiss them")
+    sug.add_argument("--accept", nargs="+", metavar="ID", help="apply these suggestions")
+    sug.add_argument("--dismiss", nargs="+", metavar="ID", help="set these aside")
+    sug.set_defaults(fn=cmd_feedback_suggest, python=feedback_suggest)
     return parser
 
 

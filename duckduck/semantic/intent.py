@@ -80,6 +80,9 @@ class SemanticIntent(BaseModel):
     time_range: Optional[TimeRange] = None
     candidate_sources: List[ScoredSource] = Field(default_factory=list)
     literals: List[ExtractedLiteral] = Field(default_factory=list)
+    #: Similar questions users confirmed or corrected before (``CaseMemory``) — evidence the
+    #: decisions were given, never a rule.
+    similar_cases: List[Dict[str, Any]] = Field(default_factory=list)
 
     @property
     def working_question(self) -> str:

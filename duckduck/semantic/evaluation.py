@@ -10,15 +10,20 @@ Dataset: a JSON list of cases::
       "expected_sources": ["proxy_logs"],
       "expected_entity": "user",
       "expected_activity": "web_access",   # optional
+      "expected_answer_shape": "list",     # optional: list / count / values / count_by / lookup ...
       "expected_results": ["alice", "bob"]  # optional: first result column, as a set
     }
+
+``FeedbackStore.to_evaluation()`` builds one from what users said.
 """
 
 import json
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from .engine import SearchResult, SemanticSearch
+from .feedback import answer_sources
 
 
 @dataclass
@@ -32,6 +37,7 @@ class CaseResult:
     latency_ms: float
     error: Optional[str] = None
     detail: Dict[str, Any] = field(default_factory=dict)
+    shape_ok: Optional[bool] = None
 
 
 @dataclass
@@ -49,6 +55,7 @@ class EvaluationReport:
             "source_accuracy": self._rate("source_ok"),
             "entity_accuracy": self._rate("entity_ok"),
             "activity_accuracy": self._rate("activity_ok"),
+            "answer_shape_accuracy": self._rate("shape_ok"),
             "plan_validity": sum(c.status in ("ok", "planned") for c in self.cases) / n,
             "execution_success": sum(c.status == "ok" for c in self.cases) / n,
             "answer_accuracy": self._rate("answer_ok"),
@@ -61,7 +68,27 @@ def load_dataset(path: str) -> List[Dict[str, Any]]:
         return json.load(f)
 
 
+@contextmanager
+def _measuring(search: SemanticSearch):
+    """
+    While measuring: nothing recorded as feedback searches, and no case
+    memory — it would hand the engine the very answers users confirmed,
+    and the numbers would flatter it.
+    """
+    store, memory = search.feedback_store, search.interpreter.memory
+    search.feedback_store, search.interpreter.memory = None, None
+    try:
+        yield
+    finally:
+        search.feedback_store, search.interpreter.memory = store, memory
+
+
 def evaluate(search: SemanticSearch, cases: List[Dict[str, Any]], execute: bool = True) -> EvaluationReport:
+    with _measuring(search):
+        return _evaluate(search, cases, execute)
+
+
+def _evaluate(search: SemanticSearch, cases: List[Dict[str, Any]], execute: bool) -> EvaluationReport:
     out = []
     for case in cases:
         try:
@@ -70,6 +97,7 @@ def evaluate(search: SemanticSearch, cases: List[Dict[str, Any]], execute: bool 
             out.append(CaseResult(case["question"], "error", None, None, None, None, 0.0, error=repr(exc)))
             continue
         plan, intent = res.query_plan, res.intent
+        sources = answer_sources(res)
 
         def check(key: str, actual) -> Optional[bool]:
             return None if key not in case else actual == case[key]
@@ -85,13 +113,14 @@ def evaluate(search: SemanticSearch, cases: List[Dict[str, Any]], execute: bool 
             question=case["question"],
             status=res.status,
             source_ok=None if "expected_sources" not in case
-            else (plan is not None and sorted(plan.sources) == sorted(case["expected_sources"])),
+            else (bool(sources) and sorted(sources) == sorted(case["expected_sources"])),
+            shape_ok=check("expected_answer_shape", intent.answer_shape if intent else None),
             entity_ok=check("expected_entity", intent.target_entity if intent else None),
             activity_ok=check("expected_activity", intent.activity if intent else None),
             answer_ok=answer_ok,
             latency_ms=res.elapsed_ms,
             error=res.clarification if res.status not in ("ok", "planned") else None,
-            detail={"sql": res.sql, "sources": plan.sources if plan else None},
+            detail={"sql": res.sql, "sources": sources or None},
         ))
     return EvaluationReport(out)
 
@@ -165,9 +194,14 @@ def calibrate_thresholds(
     back to the user costs ``cost_ask``. Few labeled questions → an
     overfit suggestion; aim for dozens per kind.
     """
+    with _measuring(search):
+        return _calibrate(search, cases, cost_wrong, cost_ask)
+
+
+def _calibrate(search: SemanticSearch, cases: List[Dict[str, Any]], cost_wrong: float, cost_ask: float) -> CalibrationReport:
     thresholds = search.thresholds
     saved = thresholds.model_dump()
-    samples: Dict[str, List[tuple]] = {"entity": [], "activity": [], "source": []}
+    samples: Dict[str, List[tuple]] = {"entity": [], "activity": [], "source": [], "answer_shape": []}
     try:
         for name in saved:
             setattr(thresholds, name, 0.0)
@@ -183,6 +217,9 @@ def calibrate_thresholds(
                     samples["activity"].append((d.probability, d.answer == case["expected_activity"]))
                 elif d.kind == "source_relevance" and "expected_sources" in case:
                     samples["source"].append((d.probability, d.subject in case["expected_sources"]))
+                elif (d.kind == "answer_shape" and d.decided_by == "engine"
+                      and "expected_answer_shape" in case):
+                    samples["answer_shape"].append((d.probability, d.answer == case["expected_answer_shape"]))
     finally:
         for name, value in saved.items():
             setattr(thresholds, name, value)
@@ -190,7 +227,8 @@ def calibrate_thresholds(
     suggestions, notes = [], []
     for kind, points in samples.items():
         if not points:
-            notes.append(f"no labeled {kind} decisions — add expected_{'sources' if kind == 'source' else kind} to cases")
+            label = {"source": "sources"}.get(kind, kind)
+            notes.append(f"no labeled {kind} decisions — add expected_{label} to cases")
             continue
         current = saved[kind]
         probs = sorted({p for p, _ in points})

@@ -173,6 +173,7 @@
   "semantic": {
     "catalog_path": "semantic_catalog.yaml",
     "default_limit": 1000,
+    "feedback": {"enabled": true, "path": "feedback.duckdb", "memory": true, "max_cases": 3, "min_similarity": 0.6, "min_support": 2},
     "answer_shapes": {
       "lookup": {"wording": ["o que rola com", "ficha do"]},
       "count_by": {"maybe_wording": ["segundo"]}

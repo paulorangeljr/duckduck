@@ -29,6 +29,7 @@ from .intent import (
     Thresholds,
 )
 from .retrieval import CatalogRetriever, LexicalRetriever
+from .memory import as_fact, question_template
 from .shapes import ACROSS_SHAPES, AnswerShapes
 from .text import vocabulary
 
@@ -47,8 +48,11 @@ class SemanticInterpreter:
         top_k: int = 5,
         texts: Optional[ClarificationTexts] = None,
         shapes: Optional[AnswerShapes] = None,
+        memory: Any = None,
     ):
         self.catalog = catalog
+        #: ``CaseMemory`` — similar confirmed questions, as evidence (``None``: off).
+        self.memory = memory
         #: The wording of each answer shape (defaults + ``semantic.answer_shapes``).
         self.shapes = shapes or AnswerShapes()
         self.engine = engine
@@ -86,6 +90,8 @@ class SemanticInterpreter:
             value_filters=extraction.enum_matches,
             literals=extraction.literals,
         )
+        if self.memory is not None:
+            intent.similar_cases = self.memory.similar(question_template(intent.working_question, intent.literals))
         try:
             refused = {k[7:] for k, v in pins.items() if k.startswith("source:") and v is False}
             ranked = self.retriever.search(intent.working_question, self.top_k + len(refused))
@@ -93,6 +99,10 @@ class SemanticInterpreter:
             for key, value in pins.items():  # a source the user picked is a candidate whatever retrieval said
                 if key.startswith("source:") and value and key[7:] in self.catalog.sources:
                     retrieved.setdefault(key[7:], 0.0)
+            for case in intent.similar_cases:  # ... and so is one a similar confirmed question used (still judged)
+                for name in case.get("sources") or []:
+                    if name in self.catalog.sources and name not in refused:
+                        retrieved.setdefault(name, 0.0)
             live = self._live_evidence(extraction, pins, retrieved, evidence) if evidence is not None else {}
             asks = [a for a in (self._entity_ask(intent, extraction, pins), self._activity_ask(intent, extraction, pins),
                                 self._shape_ask(intent, pins)) if a]
@@ -114,6 +124,7 @@ class SemanticInterpreter:
             self._apply_sources(intent, retrieved, answers, decisions, pins)
         except ClarificationNeeded as exc:
             exc.decisions = decisions  # everything decided so far, for the result/audit
+            exc.intent = intent  # ... and what was understood (the feedback store's template needs its values)
             raise
         return intent, decisions
 
@@ -139,7 +150,8 @@ class SemanticInterpreter:
             for name, e in self.catalog.entities.items() if name not in ruled_out
         }
         return Ask(key="entity", question="What entity is the user asking for?", options=options,
-                   state=intent.decision_state(terms=[focus] if focus else ex.terms))
+                   state=intent.decision_state(terms=[focus] if focus else ex.terms,
+                                               **_remembered(intent, "entity", options)))
 
     def _activity_ask(self, intent: SemanticIntent, ex: Extraction, pins: Dict[str, Any]) -> Optional[Ask]:
         if not self.catalog.activities or "activity" in pins:
@@ -149,7 +161,7 @@ class SemanticInterpreter:
             for name, a in self.catalog.activities.items()
         }
         return Ask(key="activity", question="What activity is being investigated?", options=options,
-                   state=intent.decision_state(terms=ex.terms))
+                   state=intent.decision_state(terms=ex.terms, **_remembered(intent, "activity", options)))
 
     def _free_text(self, ex: Extraction, pins: Dict[str, Any]) -> list:
         """Untyped free-text values — just the one the user named, when they were asked to pick."""
@@ -214,6 +226,9 @@ class SemanticInterpreter:
                      live: Optional[Dict[str, Any]] = None) -> List[Ask]:
         def state(name: str) -> DecisionState:
             facts = {"live_check": live[name]} if live and live.get(name) else {}
+            if intent.similar_cases:
+                facts["used_in_similar_confirmed_questions"] = any(
+                    name in (c.get("sources") or []) for c in intent.similar_cases)
             return intent.decision_state(terms=ex.terms, facts=facts)
 
         return [
@@ -309,10 +324,12 @@ class SemanticInterpreter:
         candidates, words = self._candidates(intent)
         if len(candidates) == 1:
             return None
+        memory = _remembered(intent, "answer_shape", candidates)
+        facts = {**({"wording": words} if words else {}), **memory.get("facts", {})}
+        default = memory.get("default") or ("list" if candidates == ["list", "lookup"] else None)
         return Ask(key="answer_shape", question=self._SHAPE_QUESTION,
                    options={c: self.shapes.descriptions[c] for c in candidates},
-                   state=intent.decision_state(facts={"wording": words} if words else {},
-                                               default="list" if candidates == ["list", "lookup"] else None))
+                   state=intent.decision_state(facts=facts, default=default))
 
     def _candidates(self, intent: SemanticIntent) -> Tuple[List[str], str]:
         """
@@ -504,6 +521,21 @@ class SemanticInterpreter:
             )
         scored.sort(key=lambda s: (s.confidence, s.retrieval_score), reverse=True)
         intent.candidate_sources = scored
+
+
+def _remembered(intent: SemanticIntent, key: str, options) -> Dict[str, Any]:
+    """
+    Similar confirmed questions as ``facts`` for the engine, and — for the
+    offline lexical engine, which can't read facts — a very similar case's
+    ``key`` as its no-evidence ``default``.
+    """
+    if not intent.similar_cases:
+        return {}
+    out: Dict[str, Any] = {"facts": {"similar_confirmed_questions": [as_fact(c) for c in intent.similar_cases]}}
+    best = intent.similar_cases[0]
+    if best.get("similarity", 0) >= 0.8 and best.get(key) in options:
+        out["default"] = best[key]
+    return out
 
 
 def _by_user(kind: str, question: str, answer: Any, threshold: Optional[float], subject: str = "",

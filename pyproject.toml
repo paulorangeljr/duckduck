@@ -48,11 +48,19 @@ azure-openai = [
 openrouter = [
     "openai>=1.40",
 ]
+server = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-mock>=3.14",
     "pydantic>=2.0",
     "pyyaml>=6.0",
+    "fastapi>=0.110",
+    "httpx>=0.27",
 ]
 
 [tool.setuptools.packages.find]

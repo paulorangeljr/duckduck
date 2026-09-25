@@ -15,8 +15,12 @@ Requires ``pip install "duckduck[semantic]"`` (pydantic, PyYAML).
 """
 
 from .catalog import Catalog
-from .commands import ask, calibrate, connect, generate_catalog, jev_check
+from .commands import (ask, calibrate, connect, feedback_report, feedback_suggest, feedback_to_eval,
+                       generate_catalog, jev_check, serve)
 from .config import SemanticConfig
+from .feedback import FeedbackStore
+from .memory import CaseMemory
+from .suggest import CatalogSuggester
 from .decisions import (
     Ask,
     ask_all,
@@ -46,6 +50,13 @@ from .validator import PlanValidationError, QueryValidator
 
 __all__ = [
     "Ask",
+    "CaseMemory",
+    "CatalogSuggester",
+    "FeedbackStore",
+    "feedback_report",
+    "feedback_suggest",
+    "feedback_to_eval",
+    "serve",
     "BinaryDecision",
     "Catalog",
     "Clarification",

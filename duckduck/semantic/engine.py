@@ -102,6 +102,10 @@ class SearchResult:
     evidence: List[Any] = field(default_factory=list)
     #: ``lookup`` / ``locate``: one entry per table checked.
     sections: List[Section] = field(default_factory=list)
+    #: The id this search was recorded under (``SemanticSearch(feedback=...)``) — what feedback refers to.
+    search_id: Optional[str] = None
+    #: The conversation this round belongs to (``SemanticSearch.conversation``).
+    conversation_id: Optional[str] = None
     #: ``lookup`` / ``locate``: one row per table checked (source, found, rows, matched_on,
     #: description). For ``locate`` that *is* the answer, so ``results`` holds it too; for
     #: ``lookup``, ``results`` holds the rows found, every table's under one set of columns.
@@ -149,6 +153,8 @@ class SearchResult:
         return {
             "question": self.question,
             "status": self.status,
+            "search_id": self.search_id,
+            "conversation_id": self.conversation_id,
             "intent": self.intent.model_dump(mode="json") if self.intent else None,
             "sources": [s.model_dump() for s in self.sources],
             "query_plan": self.query_plan.model_dump(mode="json") if self.query_plan else None,
@@ -183,6 +189,11 @@ class SearchResult:
 def _json_default(value: Any) -> Any:
     if hasattr(value, "isoformat"):
         return value.isoformat()
+    if hasattr(value, "item") and not isinstance(value, (list, dict)):  # numpy scalars → int / float / bool
+        try:
+            return value.item()
+        except (TypeError, ValueError):
+            pass
     return str(value)
 
 
@@ -221,6 +232,8 @@ class SemanticSearch:
         clarification_texts: Optional[Dict[str, str]] = None,
         live_evidence: Union[bool, Dict[str, Any], None] = None,
         answer_shapes: Union[Dict[str, Any], str, None] = None,
+        feedback: Any = None,
+        memory: Union[bool, Dict[str, Any], Any] = None,
     ):
         if isinstance(catalog, str):
             catalog = Catalog.load(catalog)
@@ -246,6 +259,21 @@ class SemanticSearch:
             allowed_sources=allowed_sources, default_limit=default_limit, texts=self.texts, shapes=self.shapes,
         )
         self.validator = QueryValidator(self.catalog, allowed_sources=allowed_sources)
+        #: ``FeedbackStore`` — every search is recorded (its decision trail, never its rows), and
+        #: ``feedback()`` stores what the user said about it. ``None``: nothing recorded.
+        self.feedback_store = feedback
+        from .feedback import catalog_version
+
+        self.catalog_version = catalog_version(self.catalog)
+        backend = getattr(self.engine, "backend", None)
+        self.engine_label = " ".join(x for x in (type(backend or self.engine).__name__,
+                                                 getattr(backend, "model", None)) if x)
+        if memory and feedback is not None:
+            from .memory import CaseMemory
+
+            memory = memory if isinstance(memory, CaseMemory) else CaseMemory(
+                feedback, **(memory if isinstance(memory, dict) else {}))
+            self.interpreter.memory = memory
         self.executor = PlanExecutor(self.catalog, duck) if duck is not None else None
 
     @classmethod
@@ -274,12 +302,16 @@ class SemanticSearch:
             engine=cfg.build_engine(duck),
             thresholds=cfg.thresholds,
             clarification_texts=cfg.clarification_texts,
-            answer_shapes=load_answer_shapes(cfg.answer_shapes, cfg.base_dir),
+            answer_shapes=cfg.answer_shape_overrides(),
+            memory={"max_cases": cfg.feedback.max_cases, "min_similarity": cfg.feedback.min_similarity}
+            if cfg.feedback.memory else None,
             live_evidence=cfg.live_evidence.model_dump(exclude={"enabled"}) if cfg.live_evidence.enabled else None,
             allowed_sources=cfg.allowed_sources,
             default_limit=cfg.default_limit,
             strict=cfg.strict,
         )
+        if "feedback" not in overrides:  # a caller's own store (or None) wins — never open the file twice
+            kwargs["feedback"] = cfg.build_feedback()
         kwargs.update(overrides)
         search = cls(cfg.path(cfg.catalog_path), duck, **kwargs)
         # built against the *available* catalog subset
@@ -290,24 +322,56 @@ class SemanticSearch:
 
     # ------------------------------------------------------------------
 
-    def conversation(self, question: str, execute: bool = True, max_rounds: int = 5) -> "Conversation":
+    def conversation(self, question: str, execute: bool = True, max_rounds: int = 5,
+                     user: Optional[str] = None) -> "Conversation":
         """
         Asks ``question`` and keeps the thread: while the result needs
         clarification, ``conversation.answer(reply)`` pins the chosen option
         and asks again — each round settles one decision, so it ends.
         """
-        return Conversation(self, question, execute=execute, max_rounds=max_rounds)
+        return Conversation(self, question, execute=execute, max_rounds=max_rounds, user=user)
 
     def plan(self, question: str) -> SearchResult:
         """Interprets and plans ``question`` without executing anything."""
         return self.search(question, execute=False)
 
-    def search(self, question: str, execute: bool = True, pinned: Optional[Dict[str, Any]] = None) -> SearchResult:
+    def search(self, question: str, execute: bool = True, pinned: Optional[Dict[str, Any]] = None,
+               conversation_id: Optional[str] = None, user: Optional[str] = None) -> SearchResult:
         """
         Answers ``question``. ``pinned``: decisions settled by the user's
         answers to earlier clarifications (``ClarificationOption.pins``) —
-        ``conversation()`` keeps track of them for you.
+        ``conversation()`` keeps track of them for you. With a feedback
+        store, the result is recorded (``result.search_id``).
         """
+        result = self._search(question, execute, pinned)
+        result.conversation_id = conversation_id
+        if self.feedback_store is not None:
+            try:
+                result.search_id = self.feedback_store.record_search(
+                    result, conversation_id=conversation_id, user=user,
+                    catalog_version=self.catalog_version, engine=self.engine_label)
+            except Exception as exc:  # recording must never cost the user their answer
+                logger.warning("feedback: couldn't record the search (%s)", exc)
+        return result
+
+    def feedback(self, result: Union["SearchResult", str], verdict: str, categories: Iterable[str] = (),
+                 reason: str = "", expected: Optional[Dict[str, Any]] = None, user: Optional[str] = None) -> str:
+        """
+        What the user said about a search (a ``SearchResult`` or its
+        ``search_id``): ``verdict`` ``answered`` / ``partial`` /
+        ``not_answered``, ``categories`` (``feedback.CATEGORIES``), ``reason``,
+        and optionally ``expected`` — what was right (``sources``,
+        ``answer_shape``, ``entity``, ``activity``, ``synonym``).
+        """
+        if self.feedback_store is None:
+            raise RuntimeError("no feedback store: build SemanticSearch(feedback=FeedbackStore(path)) "
+                               "or set semantic.feedback.enabled")
+        search_id = result if isinstance(result, str) else result.search_id
+        if not search_id:
+            raise ValueError("this result wasn't recorded (no search_id)")
+        return self.feedback_store.record_feedback(search_id, verdict, categories, reason, expected, user)
+
+    def _search(self, question: str, execute: bool, pinned: Optional[Dict[str, Any]]) -> SearchResult:
         started = time.perf_counter()
         now = self.clock()
         result = SearchResult(question=question, status="planned", pinned=dict(pinned or {}))
@@ -346,6 +410,8 @@ class SemanticSearch:
                 if d not in result.decisions:
                     result.decisions.append(d)
             result.status = "needs_clarification"
+            if result.intent is None:
+                result.intent = getattr(exc, "intent", None)  # what was understood before the doubt
             result.clarification = exc.reason
             result.options = exc.options
             result.followup = exc.followup or Clarification(kind="unresolvable", question=exc.reason)
@@ -507,15 +573,21 @@ class Conversation:
     open (``understood`` is ``None`` in ``history``).
     """
 
-    def __init__(self, search: "SemanticSearch", question: str, execute: bool = True, max_rounds: int = 5):
+    def __init__(self, search: "SemanticSearch", question: str, execute: bool = True, max_rounds: int = 5,
+                 user: Optional[str] = None):
+        import uuid
+
         self.search = search
         self.question = question
+        #: Ties every round's recorded search together (``SearchResult.conversation_id``).
+        self.id = uuid.uuid4().hex[:16]
+        self.user = user
         self.execute = execute
         self.max_rounds = max_rounds
         self.pinned: Dict[str, Any] = {}
         #: One entry per reply: what was asked, the reply, the option it picked (or None).
         self.history: List[Dict[str, Any]] = []
-        self.result: SearchResult = search.search(question, execute=execute, pinned=self.pinned)
+        self.result: SearchResult = self._ask()
 
     @property
     def done(self) -> bool:
@@ -547,8 +619,12 @@ class Conversation:
                 followup=Clarification(kind="unresolvable", question="Try rephrasing the question."),
             )
             return self.result
-        self.result = self.search.search(self.question, execute=self.execute, pinned=self.pinned)
+        self.result = self._ask()
         return self.result
+
+    def _ask(self) -> SearchResult:
+        return self.search.search(self.question, execute=self.execute, pinned=self.pinned,
+                                  conversation_id=self.id, user=self.user)
 
     def _interpret(self, reply: str, followup: Clarification) -> Optional[ClarificationOption]:
         """Free text → an option, by the decision engine (a choice question), when it's sure enough."""

@@ -43,6 +43,7 @@ def test_mvp_question_set_scores_perfectly(search):
     assert {k: v for k, v in metrics.items() if k != "mean_latency_ms"} == {
         "source_accuracy": 1.0, "entity_accuracy": 1.0, "activity_accuracy": 1.0,
         "plan_validity": 1.0, "execution_success": 1.0, "answer_accuracy": 1.0,
+        "answer_shape_accuracy": None,  # the MVP set has no expected_answer_shape
     }
 
 

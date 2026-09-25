@@ -159,6 +159,20 @@ def _compile(phrase: str, shape: str) -> re.Pattern:
         raise ValueError(f"answer_shapes[{shape!r}]: bad regex {phrase!r}: {exc}") from exc
 
 
+def merge_answer_shapes(base: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any]:
+    """Two ``answer_shapes`` override dicts as one: wording lists concatenated, ``extra`` wins otherwise."""
+    out = {shape: dict(spec) if isinstance(spec, dict) else {"wording": list(spec)} for shape, spec in base.items()}
+    for shape, spec in extra.items():
+        spec = spec if isinstance(spec, dict) else {"wording": list(spec)}
+        merged = out.setdefault(shape, {})
+        for key, value in spec.items():
+            if key in ("wording", "maybe_wording"):
+                merged[key] = list(merged.get(key, [])) + [v for v in value or [] if v not in merged.get(key, [])]
+            else:
+                merged[key] = value
+    return out
+
+
 def load_answer_shapes(value: Any, base_dir: str = ".") -> Dict[str, Any]:
     """``semantic.answer_shapes``: the overrides inline, or the path of a JSON/YAML file holding them."""
     if value is None or isinstance(value, dict):

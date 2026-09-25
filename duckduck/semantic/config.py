@@ -229,6 +229,24 @@ class ApiDocsConfig(_Strict):
         return self
 
 
+class FeedbackConfig(_Strict):
+    """What users say about answers, and what's learned from it (see ``duckduck.semantic.feedback``)."""
+
+    #: Record every search and accept feedback on it.
+    enabled: bool = False
+    #: The DuckDB file holding searches and feedback (relative to this config file's folder).
+    path: str = "feedback.duckdb"
+    #: Give the decision engine similar questions users confirmed before, as evidence.
+    memory: bool = True
+    #: At most this many similar cases per question, each at least this similar (0–1).
+    max_cases: int = Field(default=3, ge=1, le=10)
+    min_similarity: float = Field(default=0.6, ge=0.0, le=1.0)
+    #: Where accepted answer-wording suggestions are written — loaded on top of ``answer_shapes``.
+    learned_answer_shapes: str = "answer_shapes.learned.yaml"
+    #: A suggestion needs at least this many failed questions behind it (1: every correction counts).
+    min_support: int = Field(default=2, ge=1)
+
+
 class CatalogGenerationConfig(_Strict):
     #: The file generation maintains. Omitted → ``catalog_path`` itself —
     #: the catalog ``ask`` reads, updated in place (drafted sources
@@ -310,6 +328,8 @@ class SemanticConfig(_Strict):
     #: ``{shape: {wording: [...], maybe_wording: [...], description, replace}}``, or the path of a
     #: JSON/YAML file holding that — e.g. ``"answer_shapes.yaml"``.
     answer_shapes: Optional[Union[str, Dict[str, Any]]] = None
+    #: Record searches and feedback; case memory; catalog suggestions.
+    feedback: FeedbackConfig = Field(default_factory=FeedbackConfig)
     #: Check the question's values live in candidate sources and tell the decision engine.
     live_evidence: LiveEvidenceConfig = Field(default_factory=LiveEvidenceConfig)
     allowed_sources: Optional[List[str]] = None
@@ -355,7 +375,7 @@ class SemanticConfig(_Strict):
         ClarificationTexts(self.clarification_texts)  # unknown keys/placeholders fail at load
         from .shapes import AnswerShapes, load_answer_shapes
 
-        AnswerShapes(load_answer_shapes(self.answer_shapes, self.base_dir))  # unknown shapes / bad regexes too
+        AnswerShapes(self.answer_shape_overrides())  # unknown shapes / bad regexes too
         cg = self.catalog_generation
         if cg.auto_refresh and cg.output_path and self.path(cg.output_path) != self.path(self.catalog_path):
             raise ValueError(
@@ -444,6 +464,24 @@ class SemanticConfig(_Strict):
             "base_dir": base,
             "config_file": os.path.abspath(path) if path else None,
         })
+
+    def answer_shape_overrides(self) -> Dict[str, Any]:
+        """``answer_shapes`` plus the wording accepted from feedback suggestions (``feedback.learned_answer_shapes``)."""
+        from .shapes import load_answer_shapes, merge_answer_shapes
+
+        overrides = load_answer_shapes(self.answer_shapes, self.base_dir)
+        learned = self.path(self.feedback.learned_answer_shapes)
+        if os.path.exists(learned):
+            overrides = merge_answer_shapes(overrides, load_answer_shapes(learned, self.base_dir))
+        return overrides
+
+    def build_feedback(self):
+        """The ``FeedbackStore`` (``None`` unless ``feedback.enabled``)."""
+        if not self.feedback.enabled:
+            return None
+        from .feedback import FeedbackStore
+
+        return FeedbackStore(self.path(self.feedback.path))
 
     def path(self, relative: str) -> str:
         return relative if os.path.isabs(relative) else os.path.join(self.base_dir, relative)

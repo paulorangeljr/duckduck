@@ -187,3 +187,187 @@ def jev_check(config_path: Optional[str] = None, verbose: Any = None):
         "What entity is the user asking for?",
         {"user": "A person or account", "host": "A machine", "domain": "A website"},
     )
+
+
+# ---------------------------------------------------------------------------
+# Feedback: the web app, and what's learned from what users said
+# ---------------------------------------------------------------------------
+
+
+def _feedback_setup(config_path: Optional[str], duck: Any, verbose: Any):
+    """(duck, config, store): the feedback file from ``semantic.feedback.path`` — enabled or not."""
+    from .config import SemanticConfig
+    from .feedback import FeedbackStore
+
+    _apply_verbose(verbose)
+    duck = duck if duck is not None else connect(config_path, verbose)
+    cfg = SemanticConfig.load(duck, config_path)
+    return duck, cfg, FeedbackStore(cfg.path(cfg.feedback.path))
+
+
+def serve(
+    config_path: Optional[str] = None,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    duck: Any = None,
+    verbose: Any = None,
+    token: Optional[str] = None,
+    run: bool = True,
+):
+    """
+    The web app: ask questions, answer its clarifications, rate the answers,
+    see the dashboard and review catalog suggestions. Records into
+    ``semantic.feedback.path`` (whether or not ``feedback.enabled``: serving
+    is collecting feedback) and uses the case memory when ``feedback.memory``.
+    ``token`` (default ``DUCKDUCK_SERVER_TOKEN``) is required by every API
+    call when set. ``run=False`` returns the FastAPI app instead of serving it.
+    """
+    from .server import create_app, run as run_app
+
+    duck, cfg, store = _feedback_setup(config_path, duck, verbose)
+    memory = {"max_cases": cfg.feedback.max_cases, "min_similarity": cfg.feedback.min_similarity} \
+        if cfg.feedback.memory else None
+
+    def factory() -> SemanticSearch:
+        return SemanticSearch.from_config(duck, config_path, feedback=store, memory=memory)
+
+    app = create_app(
+        factory, store, catalog_path=cfg.path(cfg.catalog_path),
+        learned_shapes_path=cfg.path(cfg.feedback.learned_answer_shapes), min_support=cfg.feedback.min_support,
+        token=token if token is not None else os.environ.get("DUCKDUCK_SERVER_TOKEN") or None,
+    )
+    if not run:
+        return app
+    print(f"duckduck: http://{host}:{port}  (feedback in {store.path})")
+    run_app(app, host=host, port=port)
+    return app
+
+
+class FeedbackReport:
+    """``feedback_report()``'s result: ``stats`` (the dashboard numbers) and ``summary()``."""
+
+    def __init__(self, stats: dict, path: str):
+        self.stats, self.path = stats, path
+
+    def summary(self) -> str:
+        o = self.stats["overall"]
+        rate = lambda x: "—" if x is None else f"{x:.0%}"  # noqa: E731
+        lines = [
+            f"feedback: {self.path}",
+            f"  {o['searches']} searches in {o['conversations']} conversations · {o['rated']} rated · "
+            f"answered {rate(o['answer_rate'])} of rated · asked back {rate(o['asked_back_rate'])}",
+        ]
+        for title, key in (("by kind of answer", "by_answer_shape"), ("by table", "by_source")):
+            df = self.stats[key]
+            if not df.empty:
+                lines.append(f"  {title}:")
+                lines += [f"    {r['key']:<20} {r['answered']}/{r['rated']} answered ({rate(r['answer_rate'])})"
+                          for r in df.to_dict(orient="records")]
+        df = self.stats["by_category"]
+        if not df.empty:
+            lines.append("  what went wrong:")
+            lines += [f"    {r['count']:>4}  {r['label']}" for r in df.to_dict(orient="records")]
+        return "\n".join(lines)
+
+
+def feedback_report(config_path: Optional[str] = None, duck: Any = None, verbose: Any = None) -> FeedbackReport:
+    """Answer rates overall, per kind of answer, per table, and what went wrong — from ``semantic.feedback.path``."""
+    _, _, store = _feedback_setup(config_path, duck, verbose)
+    return FeedbackReport(store.stats(), store.path)
+
+
+class FeedbackEvaluation:
+    """``feedback_to_eval()``'s result: the dataset written, its metrics, the suggested thresholds."""
+
+    def __init__(self, path: str, dataset: list, report: Any, calibration: Any):
+        self.path, self.dataset, self.report, self.calibration = path, dataset, report, calibration
+
+    def summary(self) -> str:
+        if not self.dataset:
+            return "no rated questions yet — nothing to evaluate"
+        metrics = ", ".join(f"{k.replace('_accuracy', '')} {v:.0%}" for k, v in self.report.metrics.items()
+                            if k.endswith("accuracy") and v is not None)
+        return (f"wrote {len(self.dataset)} rated questions to {self.path}\n"
+                f"  now: {metrics or 'no labels to score'}\n{self.calibration.summary()}")
+
+
+def feedback_to_eval(
+    config_path: Optional[str] = None,
+    out: Optional[str] = None,
+    duck: Any = None,
+    verbose: Any = None,
+    cost_wrong: float = 5.0,
+    cost_ask: float = 1.0,
+) -> FeedbackEvaluation:
+    """
+    Rated questions → an evaluation set (``evaluation.json`` shape, written
+    to ``out``, default ``feedback_evaluation.json`` next to the config),
+    scored against the current catalog and engine (planning only), plus the
+    thresholds ``calibrate`` suggests from it.
+    """
+    import json
+
+    from .evaluation import calibrate_thresholds, evaluate
+
+    duck, cfg, store = _feedback_setup(config_path, duck, verbose)
+    dataset = store.to_evaluation()
+    path = out or cfg.path("feedback_evaluation.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(dataset, f, indent=2, ensure_ascii=False)
+    if not dataset:
+        return FeedbackEvaluation(path, dataset, None, None)
+    search = SemanticSearch.from_config(duck, config_path, feedback=None, memory=None)
+    return FeedbackEvaluation(path, dataset, evaluate(search, dataset, execute=False),
+                              calibrate_thresholds(search, dataset, cost_wrong=cost_wrong, cost_ask=cost_ask))
+
+
+class SuggestionReport:
+    """``feedback_suggest()``'s result: the open suggestions, and what was accepted/dismissed this call."""
+
+    def __init__(self, suggestions: list, applied: List[str], dismissed: List[str]):
+        self.suggestions, self.applied, self.dismissed = suggestions, applied, dismissed
+
+    def summary(self) -> str:
+        lines = [f"accepted: {a}" for a in self.applied] + [f"dismissed: {d}" for d in self.dismissed]
+        if not self.suggestions:
+            lines.append("no open suggestions")
+        for s in self.suggestions:
+            lines.append(f"[{s.id}] {s.kind} {s.target or ''}: {s.change!r} — {s.reason} "
+                         f"({len(s.evidence)} question{'s' if len(s.evidence) != 1 else ''})")
+        return "\n".join(lines)
+
+
+def feedback_suggest(
+    config_path: Optional[str] = None,
+    accept: Optional[List[str]] = None,
+    dismiss: Optional[List[str]] = None,
+    duck: Any = None,
+    verbose: Any = None,
+) -> SuggestionReport:
+    """
+    Catalog suggestions from what users said (``duckduck.semantic.suggest``).
+    ``accept`` / ``dismiss``: suggestion ids — accepted ones are written to
+    the catalog (``.bak`` kept) or to ``feedback.learned_answer_shapes``.
+    """
+    from .suggest import CatalogSuggester, apply_suggestion
+
+    duck, cfg, store = _feedback_setup(config_path, duck, verbose)
+    search = SemanticSearch.from_config(duck, config_path, feedback=None, memory=None)
+    suggester = CatalogSuggester(store, search.catalog, search.shapes, min_support=cfg.feedback.min_support)
+    by_id = {s.id: s for s in suggester.suggest()}
+    applied, dismissed = [], []
+    for sid in accept or []:
+        if sid not in by_id:
+            raise ValueError(f"no open suggestion {sid!r}")
+        what = apply_suggestion(by_id[sid], cfg.path(cfg.catalog_path), cfg.path(cfg.feedback.learned_answer_shapes))
+        store.record_review(sid, "accepted", detail=what)
+        applied.append(what)
+    for sid in dismiss or []:
+        if sid not in by_id:
+            raise ValueError(f"no open suggestion {sid!r}")
+        store.record_review(sid, "dismissed")
+        dismissed.append(sid)
+    if applied or dismissed:
+        search = SemanticSearch.from_config(duck, config_path, feedback=None, memory=None)
+        suggester = CatalogSuggester(store, search.catalog, search.shapes, min_support=cfg.feedback.min_support)
+    return SuggestionReport(suggester.suggest(), applied, dismissed)
