@@ -133,6 +133,9 @@ class SourceDef(_Strict):
     generated_by: Optional[str] = None
     #: Computed from the data at generation time.
     profile: Optional[SourceProfile] = None
+    #: The API documentation the draft was given (``operation (location)``),
+    #: from ``catalog_generation.api_docs``.
+    api_docs: Optional[str] = None
 
     @model_validator(mode="after")
     def _check(self) -> "SourceDef":

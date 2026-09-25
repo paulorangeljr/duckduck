@@ -209,6 +209,24 @@ class ExtractorConfig(_Strict):
     on_error: Literal["fallback", "raise"] = "fallback"
 
 
+class ApiDocsConfig(_Strict):
+    """Where one table's (or service's) API docs are: a file/URL, or the docs inline."""
+
+    #: File path (relative to this config file's folder) or http(s) URL:
+    #: an OpenAPI/Swagger spec (JSON/YAML), field docs (JSON/YAML), or text (Markdown/HTML).
+    location: Optional[str] = None
+    #: The docs inline — a spec or field-docs object, or text.
+    content: Optional[Union[Dict[str, Any], str]] = None
+    #: The spec operation behind the table (``"GET /api/3/assets"``, a path, or an operationId).
+    operation: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _one_of(self) -> "ApiDocsConfig":
+        if (self.location is None) == (self.content is None):
+            raise ValueError("api_docs entries need exactly one of 'location' (file or URL) or 'content' (inline)")
+        return self
+
+
 class CatalogGenerationConfig(_Strict):
     #: The file generation maintains. Omitted → ``catalog_path`` itself —
     #: the catalog ``ask`` reads, updated in place (drafted sources
@@ -252,6 +270,12 @@ class CatalogGenerationConfig(_Strict):
     #: A text column with at most this many distinct (repeating) values
     #: becomes a value list automatically.
     max_enum_values: int = Field(default=20, ge=0)
+    #: API documentation per table: ``{selector: location | {location | content, operation}}``.
+    #: Selectors as in ``force``/``only`` (``"insightvm"``, ``"servicenow:incidents"``,
+    #: ``"myapi:*"``); a ``service:table`` entry beats a whole-service one.
+    api_docs: Dict[str, Union[str, ApiDocsConfig]] = Field(default_factory=dict)
+    #: Budget per table for an excerpt of a text document (Markdown/HTML).
+    api_docs_max_chars: int = Field(default=6000, ge=200)
 
     @model_validator(mode="after")
     def _check(self) -> "CatalogGenerationConfig":
@@ -562,6 +586,10 @@ class SemanticConfig(_Strict):
             sample_values=cfg.sample_values,
             sample_sensitive=cfg.sample_sensitive,
             max_enum_values=cfg.max_enum_values,
+            api_docs={sel: (ref if isinstance(ref, str) else ref.model_dump(exclude_none=True))
+                      for sel, ref in cfg.api_docs.items()},
+            docs_base_dir=self.base_dir,
+            docs_max_chars=cfg.api_docs_max_chars,
         )
 
 

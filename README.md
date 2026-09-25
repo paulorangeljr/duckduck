@@ -598,6 +598,66 @@ So you don't need to add `host`/`hosts` to `ip_address` by hand: run
 `generate_catalog(force=True)` and check `entities` in the file. You can
 still add keywords yourself; the ones you add are kept.
 
+**API documentation.** For a table behind an HTTP API, the API's own docs
+say what the data sample can't: what a field means, every allowed value,
+units and formats. Point tables at their docs with `api_docs`, keyed by
+the same selectors as `--force` / `--only` (a whole service, or
+`service:table`, which wins over the whole service):
+
+```json
+"catalog_generation": {
+  "api_docs": {
+    "insightvm": "docs/insightvm-openapi.json",
+    "servicenow:incidents": {"location": "https://intranet.example.com/docs/incident.md"},
+    "billing": {"location": "docs/billing.yaml", "operation": "GET /v2/invoices"},
+    "helpdesk": {"content": {"tables": {
+      "tickets": {
+        "description": "Help-desk tickets, one per request.",
+        "notes": "Closed tickets are purged after 90 days.",
+        "fields": {
+          "st": {"description": "Ticket state", "values": {"O": ["open"], "C": ["closed", "done"]}},
+          "prio": "Priority, 1 (highest) to 4"
+        }
+      }
+    }}}
+  }
+}
+```
+
+Docs can come from a **file** (a relative path resolves against the
+config file's folder), a **URL**, or **inline** in the config
+(`content`). Inline docs suit internal APIs with no published docs.
+Three formats are understood:
+
+- **OpenAPI / Swagger** (JSON or YAML). The operation behind each table
+  is found by name: the table, the connector method, and its structural
+  args (`assets` → `GET /api/3/assets`, the listing rather than
+  `/assets/{id}`). Set `operation` when the name doesn't match. Only that
+  operation goes to the LLM: its summary, its parameters, and the
+  response fields that match the table's columns. Paged envelopes
+  (`resources`, `value`, `data`...) are unwrapped, and nested objects are
+  flattened with `_` the way DuckAPI does (`os.family` → `os_family`).
+- **Field docs** (JSON or YAML) that you write for an API without a spec:
+  `{"description", "notes", "fields": {column: "text" | {description,
+  enum, values}}}`. For several tables in one file, use
+  `{"tables": {name: {...}}}`; the entry named like the table is used.
+- **Text** (Markdown, HTML, plain). Only the sections that mention the
+  table or its columns are sent, up to `api_docs_max_chars` (default
+  6000). A short document is sent whole.
+
+What the docs settle is applied without the LLM:
+
+- Documented `enum`s, and `values` with their synonyms, are added to the
+  field's value list, even values the sample didn't contain.
+- A field the LLM left without a description gets the documented one.
+
+Each source records its docs as `api_docs: GET /api/3/assets
+(docs/insightvm-openapi.json)`. A file that can't be read, or an
+operation that can't be matched, is a warning, and the table is drafted
+without docs. The docs describe the API as designed. The columns and the
+profile describe what the connector actually returns, and only real
+columns are cataloged.
+
 **Watching it work.** Generation uses the same verbose mode, with the
 same levels, as the virtualization layer: `True` / `"info"` shows
 progress, and `"debug"` also shows what goes to the LLM (each table's

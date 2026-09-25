@@ -193,6 +193,14 @@
     "catalog_generation": {
       "output_path": "generated_catalog.yaml",
       "sample_rows": 5,
+      "api_docs": {
+        "insightvm": "docs/insightvm-openapi.json",
+        "servicenow:incidents": {"location": "docs/servicenow-incident.md"},
+        "axonius": {"content": {"tables": {"devices": {
+          "description": "Devices correlated from every adapter.",
+          "fields": {"os_type": {"description": "Operating system family", "values": {"Windows": ["win"], "Linux": []}}}
+        }}}}
+      },
       "tables": [
         {
           "name": "proxy_logs",

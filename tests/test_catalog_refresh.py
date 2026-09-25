@@ -516,3 +516,14 @@ def test_redrafting_over_a_catalog_with_an_activity_without_resource():
     existing = Catalog.model_validate(data)
     result = _gen(CountingLLM()).generate(existing=existing, force=True)
     assert result.catalog.activities["alerting"].resource is None and set(result.drafted) == {"hosts", "alerts"}
+
+
+def test_service_table_selector_matches_the_name_without_the_service_prefix():
+    duck = DuckAPI()
+    for name in ("insightvm_assets", "insightvm_sites"):
+        duck.register_api_function(name, lambda limit=None: pd.DataFrame({"ip": ["1"]}))
+        duck.service_of[name] = "insightvm"  # auto_register names them "{service}_{table}"
+    existing = CatalogGenerator(CountingLLM(), duck, clock=lambda: NOW).generate().catalog
+    llm = CountingLLM()
+    CatalogGenerator(llm, duck, clock=lambda: NOW).generate(existing=existing, force="insightvm:assets")
+    assert llm.drafted == ["insightvm_assets"]

@@ -47,6 +47,7 @@ from ..logs import human_seconds
 from ..kinds import CATALOG, TABLE, TABLE_FUNCTION, kind_of, lists_of, required_params
 from ..local_files import table_name_for
 from .catalog import Catalog, FieldType
+from .apidocs import ApiDocs, DocsRef
 from .llm import LLMClient
 from .profiling import IDENTIFIER_TYPES, SENSITIVE_TYPES, profile_frame
 
@@ -56,6 +57,11 @@ DEFAULT_SOURCE_PROMPT = """\
 You document one table of a security data platform for a semantic catalog
 that a query planner reasons over. You receive the table's columns with
 their types, a few sample rows, and any notes from its owner.
+When api_docs is present, it is the API's own documentation of the
+endpoint behind the table (its summary, parameters, and the documented
+response fields matched to the columns, or an excerpt of the docs): use
+it for what the table, its fields and their values mean. The columns and
+statistics say what is actually there; describe only real columns.
 
 Describe the table and every column worth querying:
 - description: one or two plain sentences on what a row represents.
@@ -326,8 +332,22 @@ class CatalogGenerator:
         sample_values: int = 0,
         sample_sensitive: bool = False,
         max_enum_values: int = 20,
+        api_docs: Optional[Dict[str, Union[str, Dict[str, Any], DocsRef]]] = None,
+        docs_base_dir: str = ".",
+        docs_max_chars: int = 6000,
     ):
         self.llm = llm
+        #: ``{selector: location | {location, operation}}`` — the API docs
+        #: sent with each matching table (see ``duckduck.semantic.apidocs``).
+        self.api_docs: List[Tuple[str, DocsRef]] = [
+            (sel, ref if isinstance(ref, DocsRef) else DocsRef(**ref) if isinstance(ref, dict) else DocsRef(str(ref)))
+            for sel, ref in (api_docs or {}).items()
+        ]
+        #: Relative doc paths resolve against this (the config file's folder).
+        self.docs_base_dir = docs_base_dir
+        #: Budget for a text document's excerpt, per table.
+        self.docs_max_chars = docs_max_chars
+        self._docs: Dict[str, Any] = {}  # location → ApiDocs, or the exception loading it raised
         #: A generated source older than this is redrafted; ``None`` → never expires.
         self.max_age = parse_age(max_age)
         #: Stamped as each drafted source's ``generated_by``; also shown in verbose output.
@@ -478,6 +498,7 @@ class CatalogGenerator:
         }
         described = self.duck.list_tables().set_index("name")
         meta = described.loc[spec.table.lower()] if spec.table.lower() in described.index else None
+        docs, doc_notes = self._docs_for(spec, fn, [str(c) for c in df.columns])
         return {
             "source_name": spec.name,
             "connector": None if meta is None else meta["source"],
@@ -488,8 +509,45 @@ class CatalogGenerator:
             "column_stats": column_stats,
             "owner_notes": "\n".join(n for n in (spec.notes, getattr(previous, "notes", "")) if n),
             "field_notes": {f: d.notes for f, d in (previous.fields.items() if previous else ()) if d.notes},
-            "_stats": stats,  # kept out of the prompt
+            **({"api_docs": docs} if docs else {}),
+            # kept out of the prompt
+            "_stats": stats,
+            "_doc_notes": doc_notes,
         }
+
+    def _docs_for(self, spec: TableSpec, fn: Any, columns: List[str]) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+        """The API docs context for one table (``api_docs`` selectors), plus notes on what went wrong."""
+        refs = [(sel, ref) for sel, ref in self.api_docs if self._matches(spec, [sel], set())]
+        if not refs:
+            return None, []
+        refs.sort(key=lambda x: ":" not in x[0])  # "service:table" beats "service"; else as written
+        selector, ref = refs[0]
+        key = ref.location or f"inline ({selector})"
+        doc = self._docs.get(key)
+        if doc is None:
+            try:
+                doc = (ApiDocs.load(ref.location, self.docs_base_dir) if ref.location
+                       else ApiDocs.from_content(ref.content, key))
+                logger.info("  api docs: loaded %s (%s)", key, doc.kind)
+            except Exception as exc:
+                doc = exc
+            self._docs[key] = doc
+            if isinstance(doc, Exception):
+                return None, [f"couldn't read api docs '{key}': {doc}"]
+        if isinstance(doc, Exception):
+            return None, []  # already reported
+        service = (self.service_of(spec) or "").lower()
+        names = [getattr(fn, "__name__", "")]
+        for label in (spec.name, spec.table):
+            low = label.lower()
+            names.append(label[len(service) + 1:] if service and low.startswith(service + "_") else label)
+        context, note = doc.for_table(names, columns, spec.args, ref.operation, self.docs_max_chars)
+        if context:
+            where = context.get("operation") or f"{len(context.get('excerpt', ''))} chars of text"
+            documented = ("" if doc.kind == "text"
+                          else f", {len(context.get('fields', {}))} of {len(columns)} columns documented")
+            logger.info("  api docs: %s from %s%s", where, key, documented)
+        return context, [f"{spec.name}: {note}"] if note else []
 
     def generate(
         self,
@@ -547,6 +605,7 @@ class CatalogGenerator:
         drafts: Dict[str, GenSource] = {}
         columns: Dict[str, List[str]] = {}
         stats: Dict[str, tuple] = {}
+        documented: Dict[str, Dict[str, Any]] = {}
         reasons: Dict[str, str] = {}
         started = time.perf_counter()
         for i, (spec, reason) in enumerate(todo, 1):
@@ -560,6 +619,9 @@ class CatalogGenerator:
                 continue
             columns[spec.name] = list(profile["columns"])
             stats[spec.name] = (profile.pop("_stats"), profile["rows_profiled"])
+            warnings.extend(profile.pop("_doc_notes"))
+            if profile.get("api_docs"):
+                documented[spec.name] = profile["api_docs"]
             logger.info(
                 "  %d columns, %d sample rows%s — asking %s", len(profile["columns"]), len(profile["sample_rows"]),
                 ", with your notes" if profile["owner_notes"] or profile["field_notes"] else "", self.llm_label or "the LLM",
@@ -618,7 +680,7 @@ class CatalogGenerator:
         by_name = {s.name: s for s, _ in todo}
         stamp = {"generated_at": self.clock().replace(microsecond=0), "generated_by": self.llm_label}
         noted = len(warnings)
-        catalog = self._assemble(drafts, vocab, columns, by_name, warnings, existing, stamp, stats)
+        catalog = self._assemble(drafts, vocab, columns, by_name, warnings, existing, stamp, stats, documented)
         logger.info(
             "merged: %d sources, %d entities, %d activities, %d relationships · %s total",
             len(catalog.sources), len(catalog.entities), len(catalog.activities), len(catalog.relationships),
@@ -640,6 +702,8 @@ class CatalogGenerator:
         service = (self.service_of(spec) or "").lower()
         values = [str(v) for v in spec.args.values()]
         labels = {x.lower() for x in (spec.name, spec.table, ".".join(values), *values) if x}
+        if service:  # auto_register names tables "{service}_{table}": "insightvm:assets" should match too
+            labels |= {l[len(service) + 1:] for l in labels if l.startswith(service + "_")}
         hit = False
         for p in patterns:
             low = p.lower()
@@ -746,7 +810,9 @@ class CatalogGenerator:
 
     def _assemble(self, drafts, vocab: GenVocabulary, columns, specs, warnings: List[str],
                   existing: Optional[Catalog] = None, stamp: Optional[Dict[str, Any]] = None,
-                  stats: Optional[Dict[str, tuple]] = None) -> Catalog:
+                  stats: Optional[Dict[str, tuple]] = None,
+                  documented: Optional[Dict[str, Dict[str, Any]]] = None) -> Catalog:
+        documented = documented or {}
         base = existing.model_dump(by_alias=True, exclude_defaults=True) if existing else {}
         old_sources = {n: s for n, s in base.get("sources", {}).items() if n not in drafts}
         entities = {
@@ -786,6 +852,7 @@ class CatalogGenerator:
                 if kept_note:
                     fields[f.name]["notes"] = kept_note
                 self._apply_profile(fields[f.name], (stats or {}).get(name, ({}, 0))[0].get(f.name))
+                _apply_docs(fields[f.name], documented.get(name, {}).get("fields", {}).get(f.name))
             if not fields:
                 warnings.append(f"{name}: no usable fields — source dropped")
                 continue
@@ -813,6 +880,7 @@ class CatalogGenerator:
                 **({"notes": previous["notes"]} if previous.get("notes") else {}),
                 **({"critical": previous["critical"]} if previous.get("critical") else {}),
                 **({"profile": source_profile} if source_profile else {}),
+                **({"api_docs": _docs_label(documented[name])} if name in documented else {}),
                 **(stamp or {}),
             }
         # existing order first (redrafted sources in place), then the new ones
@@ -857,6 +925,28 @@ class CatalogGenerator:
         return Catalog.model_validate({
             "sources": sources, "entities": entities, "activities": activities, "relationships": relationships,
         })
+
+
+def _apply_docs(field: Dict[str, Any], doc: Optional[Dict[str, Any]]) -> None:
+    """What the API docs settle without the LLM: the documented values of an enum, a missing description."""
+    if not doc:
+        return
+    if not field.get("description") and doc.get("description"):
+        field["description"] = doc["description"]
+    if ((doc.get("enum") or doc.get("values")) and field.get("type", "string") == "string"
+            and field.get("match") != "contains" and field.get("semantic_type") not in IDENTIFIER_TYPES):
+        values = field.setdefault("values", {})
+        for v in doc.get("enum") or []:
+            values.setdefault(v, [])  # documented values the sample may not have shown
+        for v, synonyms in (doc.get("values") or {}).items():
+            known = values.setdefault(v, [])
+            known.extend(w for w in synonyms if w.lower() not in {k.lower() for k in known})
+
+
+def _docs_label(context: Dict[str, Any]) -> str:
+    """Where a source's docs came from, as written in the catalog: ``GET /assets (docs/api.json)``."""
+    what = context.get("operation") or context.get("table")
+    return f"{what} ({context['from']})" if what else context["from"]
 
 
 _MAX_KEYWORDS = 25
