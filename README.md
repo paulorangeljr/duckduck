@@ -759,7 +759,7 @@ print(jev_check().ranked())                    # raises if the key/network/parsi
 | `jev-check` | `jev_check()` → `Classification` |
 | `calibrate questions.json` | `calibrate("questions.json")` → `CalibrationReport` (`.summary()`, `.thresholds`) |
 | `serve` | `serve()` — the web app ([Feedback](#feedback-learning-from-what-users-say)); `serve(run=False)` → the FastAPI app |
-| `serve --sql --edit-config` | `serve(allow_sql=True, allow_config_edit=True)` — the SQL tab, and saving `duckduck.json` from the Config tab |
+| `serve --edit-config` / `serve --no-sql` | `serve(allow_config_edit=True)` — saving `duckduck.json` from the Config tab; `serve(allow_sql=False)` — turns the SQL tab off |
 | `feedback-report` | `feedback_report()` → `FeedbackReport` (`.summary()`, `.stats`) |
 | `feedback-to-eval` | `feedback_to_eval()` → `FeedbackEvaluation` (`.summary()`, `.dataset`, `.report`, `.calibration`) |
 | `feedback-suggest --accept ID` | `feedback_suggest(accept=["ID"])` → `SuggestionReport` (`.summary()`, `.suggestions`) |
@@ -846,7 +846,8 @@ python -m duckduck.semantic feedback-export    # what still fails, as a brief fo
 - **Suggestions.** The catalog changes proposed from the feedback, to
   accept or dismiss, plus *Evaluate and calibrate*.
 
-- **SQL** (`serve --sql`). `duck.sql` on the registered tables, with
+- **SQL**, right next to Ask and always there (on by default; `serve
+  --no-sql` turns the console off and the tab says so). `duck.sql` on the registered tables, with
   push-down and all. The tables are listed by system with their icons;
   clicking one writes a query. *Open in the SQL tab* on an answer brings
   its SQL over. Each run shows the rows and **what went to each source**:
@@ -861,10 +862,22 @@ python -m duckduck.semantic feedback-export    # what still fails, as a brief fo
     semantic search are untouched.
   - **Limits:** the first 1000 rows are shown, and a query is interrupted
     after 2 minutes.
-- **Config.** `duckduck.json` in an editor, next to **every option there
-  is**, searchable: each connector's parameters (with the tables it
-  registers), the `authentication` block, an `ai_providers` entry, and the
-  whole `semantic` section with defaults and descriptions.
+- **Config.** `duckduck.json` as a **form** or as **JSON** (a toggle; both
+  edit the same config, so a change in one shows in the other), next to
+  **every option there is**, searchable.
+  - **The form** is built from that same options reference: *General*
+    (`on_error`), one card per **service** (name, connector, its options,
+    `table_prefix`, and an `authentication` block that shows the keys its
+    `type` needs, with buttons for the connector's credentials, e.g.
+    `+ client_secret`), one card per **AI provider**, and every
+    **semantic** section. Each option gets the right input: a list of
+    choices, a number, true/false, comma-separated names, or a small JSON
+    box for dicts. An empty field is left out of the file, so the default
+    applies. Keys the form doesn't know are kept as they are.
+  - **The JSON** is what gets saved: the form writes it as you type.
+  - The reference lists each connector's parameters (with the tables it
+    registers), the `authentication` block, an `ai_providers` entry, and
+    the whole `semantic` section with defaults and descriptions.
   - **Masked secrets.** Passwords, secrets, tokens, API keys, private keys
     and connection strings show as `"***"`; `"$secret.<key>"` references
     and `*_id` / `*_env` names aren't secrets. Leave `"***"` to keep the

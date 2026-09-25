@@ -43,7 +43,7 @@ nav button[aria-selected="true"] { background: var(--surface-2); color: var(--in
 .user { margin-left: auto; display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 13px; }
 .user input { width: 140px; }
 main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 60px; }
-section[hidden] { display: none; }
+[hidden] { display: none !important; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
         padding: 16px 18px; margin-bottom: 14px; }
 .ask { display: flex; gap: 8px; }
@@ -117,6 +117,42 @@ textarea.editor { width: 100%; min-height: 180px; resize: vertical; tab-size: 2;
 .optref details details { margin-left: 12px; }
 .badge { font-size: 11px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--ink-2); margin-left: 4px; }
 @media (max-width: 860px) { .sqlgrid, .cfggrid { grid-template-columns: 1fr; } }
+/* Config form */
+.cfghead { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.cfghead h3 { margin: 0; }
+.cfgbar { position: sticky; bottom: 0; background: var(--surface); padding: 10px 0 4px; margin-top: 8px;
+          border-top: 1px solid var(--grid); z-index: 1; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { font: inherit; font-size: 13px; border: 0; background: none; color: var(--ink-2); padding: 5px 12px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--surface-2); color: var(--ink); font-weight: 600; }
+#cfgform h4 { margin: 18px 0 6px; font-size: 14px; display: flex; gap: 8px; align-items: center; }
+#cfgform h4:first-child { margin-top: 4px; }
+#cfgform h4 .muted { font-weight: 400; font-size: 12.5px; }
+.fgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px 12px; }
+.fld { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.fld label { font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+.fld .req { color: var(--bad); }
+.fld input, .fld select, .fld textarea { width: 100%; padding: 6px 8px; font-size: 13.5px; }
+.fld .hint { font-size: 12px; color: var(--muted); line-height: 1.35; }
+.fld.wide { grid-column: 1 / -1; }
+textarea.fjson { min-height: 58px; resize: vertical; }
+.invalid { border-color: var(--bad) !important; outline-color: var(--bad); }
+.entry { border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin: 8px 0; background: var(--surface); }
+.entry .head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+.entry .head .name { font-weight: 600; width: 180px; }
+.entry .head .grow { flex: 1; }
+.entry .sub { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--grid); }
+.entry .sub > .t { font-size: 12.5px; font-weight: 600; color: var(--ink-2); margin-bottom: 6px; }
+.kv { display: grid; grid-template-columns: minmax(120px, 200px) minmax(0, 1fr) auto; gap: 6px; align-items: center; margin: 4px 0; }
+.kv input { padding: 6px 8px; font-size: 13.5px; width: 100%; }
+button.x { background: none; border: 1px solid var(--border); border-radius: 6px; color: var(--ink-2); cursor: pointer;
+           font: inherit; font-size: 12.5px; padding: 3px 8px; }
+button.x:hover { color: var(--bad); border-color: var(--bad); }
+button.add { background: none; border: 1px dashed var(--border); border-radius: 6px; color: var(--accent); cursor: pointer;
+             font: inherit; font-size: 12.5px; padding: 3px 9px; margin: 4px 4px 0 0; }
+#cfgform details.sect { margin: 6px 0; border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; }
+#cfgform details.sect > summary { font-weight: 600; color: var(--ink); }
+#cfgform details.sect > .hint { margin: 4px 0 8px; }
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--ink);
          color: var(--page); padding: 8px 14px; border-radius: 8px; font-size: 14px; opacity: 0;
          transition: opacity .2s; pointer-events: none; }
@@ -158,10 +194,10 @@ textarea.editor { width: 100%; min-height: 180px; resize: vertical; tab-size: 2;
   <h1>Duckduck Ask</h1>
   <nav role="tablist">
     <button role="tab" data-tab="ask" aria-selected="true">Ask</button>
+    <button role="tab" data-tab="sql" aria-selected="false">SQL</button>
     <button role="tab" data-tab="history" aria-selected="false">History</button>
     <button role="tab" data-tab="dashboard" aria-selected="false">Dashboard</button>
     <button role="tab" data-tab="suggestions" aria-selected="false">Suggestions</button>
-    <button role="tab" data-tab="sql" aria-selected="false" hidden>SQL</button>
     <button role="tab" data-tab="config" aria-selected="false" hidden>Config</button>
   </nav>
   <div class="user"><label for="user">You</label><input id="user" placeholder="your name (optional)"></div>
@@ -181,7 +217,11 @@ textarea.editor { width: 100%; min-height: 180px; resize: vertical; tab-size: 2;
   <section id="tab-history" hidden><div class="card"><div id="history"></div></div></section>
   <section id="tab-dashboard" hidden><div id="dashboard"></div></section>
   <section id="tab-sql" hidden>
-    <div class="sqlgrid">
+    <div class="card" id="sqloff" hidden><h3>The SQL console is off</h3>
+      <p class="muted">This server was started with <span class="mono">--no-sql</span>
+        (<span class="mono">serve(allow_sql=False)</span>). Restart it without that flag to query the registered
+        tables here — read queries only, with no file or network access.</p></div>
+    <div class="sqlgrid" id="sqlon">
       <aside class="card"><h3>Tables</h3>
         <input id="tablefilter" placeholder="filter tables" style="width:100%">
         <div class="tlist" id="tablelist"></div></aside>
@@ -197,10 +237,14 @@ textarea.editor { width: 100%; min-height: 180px; resize: vertical; tab-size: 2;
   </section>
   <section id="tab-config" hidden>
     <div class="cfggrid">
-      <div class="card"><h3>duckduck.json <span class="muted small mono" id="cfgpath"></span></h3>
+      <div class="card"><div class="cfghead"><h3>duckduck.json <span class="muted small mono" id="cfgpath"></span></h3>
+          <div class="seg" role="group" aria-label="Edit as">
+            <button type="button" data-view="form" aria-pressed="true">Form</button>
+            <button type="button" data-view="json" aria-pressed="false">JSON</button></div></div>
         <p class="muted small" id="cfgnote"></p>
-        <textarea class="editor mono" id="cfgtext" spellcheck="false" aria-label="duckduck.json"></textarea>
-        <div class="row" style="margin-top:8px"><button class="secondary" id="cfgvalidate">Validate</button>
+        <div id="cfgform"></div>
+        <textarea class="editor mono" id="cfgtext" spellcheck="false" aria-label="duckduck.json" hidden></textarea>
+        <div class="row cfgbar"><button class="secondary" id="cfgvalidate">Validate</button>
           <button class="primary" id="cfgsave">Save and reload</button>
           <button class="secondary" id="cfgreset">Discard changes</button></div>
         <div id="cfgmsgs"></div>
@@ -261,8 +305,9 @@ const user = () => $("#user").value.trim() || null;
 document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => {
   document.querySelectorAll("nav button").forEach(x => x.setAttribute("aria-selected", x === b));
   document.querySelectorAll("main > section").forEach(s => s.hidden = s.id !== "tab-" + b.dataset.tab);
-  ({history: loadHistory, dashboard: loadDashboard, suggestions: loadSuggestions, sql: loadTables,
-    config: loadConfig})[b.dataset.tab]?.();
+  ({history: loadHistory, dashboard: loadDashboard, suggestions: loadSuggestions,
+    sql: () => META?.features?.sql && loadTables(),
+    config: () => CFG || loadConfig()})[b.dataset.tab]?.();  // config: loaded once, so switching tabs keeps edits
 }));
 $("#user").value = store.get("duckduck-user") || "";
 $("#user").addEventListener("change", () => store.set("duckduck-user", $("#user").value));
@@ -686,7 +731,8 @@ async function loadConfig() {
   try {
     CFG = await api("/api/config");
     $("#cfgpath").textContent = CFG.path || "";
-    $("#cfgtext").value = JSON.stringify(CFG.config, null, 2);
+    DRAFT = JSON.parse(JSON.stringify(CFG.config || {}));
+    syncJson(); setView(CFGVIEW === "json" ? "json" : "form");
     $("#cfgnote").textContent = (CFG.editable ? "Secrets show as \"***\" — leave them to keep the saved value, or type a new one. Saving keeps a .bak and reconnects everything."
       : "Read-only here: start the server with --edit-config to save. Secrets show as \"***\".");
     $("#cfgsave").disabled = !CFG.editable;
@@ -695,6 +741,7 @@ async function loadConfig() {
   } catch (err) { $("#cfgmsgs").innerHTML = `<p class="msg bad">${esc(err.message)}</p>`; }
 }
 function parsedConfig() {
+  if (CFGVIEW === "form") return DRAFT;
   try { return JSON.parse($("#cfgtext").value); }
   catch (err) { $("#cfgmsgs").innerHTML = `<p class="msg bad">Not valid JSON: ${esc(err.message)}</p>`; return undefined; }
 }
@@ -723,6 +770,225 @@ $("#cfgtext").addEventListener("keydown", (e) => {
   if (e.key === "Tab") { e.preventDefault(); const t = e.target, s = t.selectionStart;
     t.value = t.value.slice(0, s) + "  " + t.value.slice(t.selectionEnd); t.selectionStart = t.selectionEnd = s + 2; }
 });
+// ---- Config form: edits DRAFT, the JSON view shows it -----------------------------------------
+// Every field comes from the options reference (/api/config → reference): its "input" says how to edit it.
+// Only what's set is written; clearing a field removes the key (the default applies).
+let DRAFT = {}, CFGVIEW = "form", FID = 0;
+const LLM_REFS = new Set(["default_llm", "ai_provider", "llm", "link_llm"]);
+const AUTH_KEYS = {local: [], aws: ["secret_id", "region_name", "profile_name"], azure: ["secret_id", "vault_url", "tenant_id"]};
+function h(tag, attrs = {}, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v === undefined || v === null || v === false) continue;
+    if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (k === "value") el.value = v;
+    else el.setAttribute(k, v === true ? "" : v);
+  }
+  kids.flat(Infinity).forEach(c => { if (c !== null && c !== undefined && c !== false) el.append(c.nodeType ? c : document.createTextNode(c)); });
+  return el;
+}
+const plain = (text) => String(text || "").replace(/``/g, "");  // reST literals in docstrings
+function iconEl(kind) { const s = h("span"); s.innerHTML = icon(kind); return s; }
+function syncJson() { $("#cfgtext").value = JSON.stringify(DRAFT, null, 2); }
+const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
+const ROOT = { obj: () => DRAFT, get: (k) => DRAFT[k],
+  set(k, v) { if (v === undefined) delete DRAFT[k]; else DRAFT[k] = v; syncJson(); } };
+// a nested object of its parent: created when a key is first set, removed when empty (unless keep)
+function scope(parent, key, keep = false) {
+  return {
+    obj() { const o = parent.get(key); return isObj(o) ? o : {}; },
+    get(k) { return this.obj()[k]; },
+    set(k, v) { const o = {...this.obj()}; if (v === undefined) delete o[k]; else o[k] = v; this.replace(o); },
+    replace(o) { parent.set(key, Object.keys(o).length || keep ? o : undefined); },
+    rename(from, to) {
+      if (!to || to === from || to in this.obj()) return false;
+      this.replace(Object.fromEntries(Object.entries(this.obj()).map(([k, v]) => [k === from ? to : k, v]))); return true;
+    },
+  };
+}
+function isSecretKey(key) {
+  const s = CFG?.reference?.secrets; if (!s) return false;
+  return new RegExp(s.pattern, "i").test(key) && !s.not_suffixes.some(x => key.toLowerCase().endsWith(x));
+}
+const shown = (v) => v === undefined || v === null ? "" : typeof v === "string" ? v : JSON.stringify(v);
+function scalarOf(text) {  // a number / true / false / null if it reads as one, else the text
+  if (/^(-?\d+(\.\d+)?([eE][-+]?\d+)?|true|false|null)$/.test(text.trim())) return JSON.parse(text.trim());
+  return text;
+}
+function field(opt, sc, {after, wide} = {}) {
+  const id = "cf" + (++FID), cur = sc.get(opt.name), def = opt.default, kind = opt.input || "text";
+  const set = (v) => { sc.set(opt.name, v); after?.(v); };
+  const defText = def === null || def === undefined || def === "" ? "" : typeof def === "object" ? JSON.stringify(def) : String(def);
+  let input, hint = plain(opt.description);
+  if (kind === "choice" || kind === "bool") {
+    const choices = kind === "bool" ? [true, false] : [...opt.choices];
+    if (cur !== undefined && !choices.some(c => JSON.stringify(c) === JSON.stringify(cur))) choices.push(cur);
+    input = h("select", {id, onchange: (e) => set(e.target.value === "" ? undefined : JSON.parse(e.target.value))},
+      h("option", {value: ""}, defText ? `default (${defText})` : "—"),
+      choices.map(c => h("option", {value: JSON.stringify(c), selected: JSON.stringify(c) === JSON.stringify(cur)}, String(c))));
+  } else if (kind === "int" || kind === "float") {
+    input = h("input", {id, type: "number", step: kind === "int" ? "1" : "any", value: shown(cur), placeholder: defText,
+      oninput: (e) => set(e.target.value === "" ? undefined : Number(e.target.value))});
+  } else if (kind === "list") {
+    input = h("input", {id, value: Array.isArray(cur) ? cur.join(", ") : shown(cur), placeholder: defText || "a, b, c",
+      oninput: (e) => { const v = e.target.value.split(",").map(x => x.trim()).filter(Boolean); set(v.length ? v : undefined); }});
+    hint = (hint ? hint + " " : "") + "Comma-separated.";
+  } else if (kind === "json") {
+    input = h("textarea", {id, class: "mono fjson", spellcheck: "false", placeholder: defText ? "default: " + defText : "JSON",
+      value: cur === undefined ? "" : JSON.stringify(cur, null, 2),
+      oninput: (e) => { const t = e.target.value.trim();
+        if (!t) { e.target.classList.remove("invalid"); return set(undefined); }
+        try { const v = JSON.parse(t); e.target.classList.remove("invalid"); set(v); } catch { e.target.classList.add("invalid"); } }});
+    wide = true;
+  } else {
+    const secret = opt.secret || isSecretKey(opt.name);
+    const list = LLM_REFS.has(opt.name) ? "cf-ai-names" : undefined;
+    input = h("input", {id, type: secret ? "password" : "text", value: shown(cur), placeholder: defText, autocomplete: "off", list,
+      oninput: (e) => { const t = e.target.value; set(t === "" ? undefined : kind === "scalar" ? scalarOf(t) : t); }});
+    if (secret && cur === CFG.reference.secrets.mask) hint = "Saved — leave it to keep, or type a new value. " + hint;
+    if (list) hint = hint || "An ai_providers name.";
+  }
+  return h("div", {class: "fld" + (wide ? " wide" : "")},
+    h("label", {for: id}, opt.name, opt.required ? h("span", {class: "req", title: "required"}, " *") : null),
+    input, hint ? h("div", {class: "hint"}, hint) : null);
+}
+function fields(opts, sc) {  // plain fields in a grid, nested sections below it
+  const grid = h("div", {class: "fgrid"}), sections = [];
+  opts.forEach(o => {
+    if (o.options) {
+      sections.push(h("details", {class: "sect", open: Object.keys(scope(sc, o.name).obj()).length ? true : null},
+        h("summary", {}, o.name), o.description ? h("div", {class: "hint muted small"}, plain(o.description)) : null,
+        fields(o.options, scope(sc, o.name))));
+    } else grid.append(field(o, sc));
+  });
+  return h("div", {}, grid, sections);
+}
+// free keys (an authentication block, a service's keys no option describes): key → value rows
+function keyRows(sc, skip, suggest = [], note = "") {
+  const box = h("div");
+  const draw = () => {
+    box.replaceChildren();
+    Object.keys(sc.obj()).filter(k => !skip.includes(k)).forEach(k => {
+      const v = sc.get(k), secret = isSecretKey(k);
+      const keyIn = h("input", {value: k, "aria-label": "key", class: "mono",
+        onchange: (e) => { if (!sc.rename(k, e.target.value.trim())) e.target.value = k; draw(); }});
+      const valIn = h("input", {value: shown(v), type: secret ? "password" : "text", "aria-label": k, autocomplete: "off",
+        placeholder: secret ? "secret" : "value or \"$secret.<key>\"",
+        oninput: (e) => sc.set(k, typeof v === "string" || v === undefined ? e.target.value : scalarOf(e.target.value))});
+      box.append(h("div", {class: "kv"}, keyIn, valIn, h("button", {type: "button", class: "x", title: "remove " + k,
+        onclick: () => { sc.set(k, undefined); draw(); }}, "remove")));
+    });
+    const missing = suggest.filter(k => !(k in sc.obj()));
+    const addKey = (k) => { if (!k || k in sc.obj()) return; sc.set(k, ""); draw();
+      box.querySelector(`.kv:last-of-type input[aria-label="${CSS.escape(k)}"]`)?.focus(); };
+    box.append(h("div", {}, missing.map(k => h("button", {type: "button", class: "add", onclick: () => addKey(k)}, "+ " + k)),
+      h("button", {type: "button", class: "add", onclick: () => { const k = prompt("Key name:"); if (k) addKey(k.trim()); }}, "+ other key")));
+    if (note) box.append(h("div", {class: "hint muted small"}, note));
+  };
+  draw();
+  return box;
+}
+function authBlock(sc, credentials, optional) {
+  const box = h("div", {class: "sub"});
+  const draw = () => {
+    const type = sc.get("type") || "local";
+    const typeOpt = CFG.reference.authentication.find(o => o.name === "type");
+    const known = AUTH_KEYS[type] || [];
+    box.replaceChildren(
+      h("div", {class: "t"}, "authentication", optional ? h("span", {class: "muted"}, " — optional for this connector") : null),
+      h("div", {class: "fgrid"}, field(typeOpt, sc, {after: draw}),
+        known.map(k => field(CFG.reference.authentication.find(o => o.name === k), sc))),
+      h("div", {class: "t", style: "margin-top:10px"}, type === "local" ? "Credentials" : "On top of the fetched secret"),
+      keyRows(sc, ["type", ...known], credentials, type === "local"
+        ? "Used exactly as written. Prefer aws / azure so no secret sits in this file."
+        : "Optional: a value overrides the secret's key; \"$secret.<key>\" copies another key of the secret."));
+  };
+  draw();
+  return box;
+}
+function connectorSelect(current, onchange) {
+  const names = CFG.reference.connectors.map(c => c.connector);
+  if (current && !names.includes(current)) names.push(current);
+  return h("select", {"aria-label": "connector", onchange: (e) => onchange(e.target.value)},
+    names.map(n => h("option", {value: n, selected: n === current}, n)));
+}
+function serviceEntry(services, name) {
+  const sc = scope(services, name, true);
+  const conn = sc.get("connector") || name;
+  const ref = CFG.reference.connectors.find(c => c.connector === conn);
+  const opts = ref ? ref.options.filter(o => !o.credential) : [];
+  const creds = ref ? ref.options.filter(o => o.credential).map(o => o.name) : [];
+  const common = CFG.reference.service_common.filter(o => o.name === "table_prefix");
+  const known = ["connector", "authentication", ...common.map(o => o.name), ...opts.map(o => o.name)];
+  const el = h("div", {class: "entry"},
+    h("div", {class: "head"}, iconEl(ref?.icon || "api"),
+      h("input", {class: "name mono", value: name, "aria-label": "service name",
+        onchange: (e) => { if (services.rename(name, e.target.value.trim())) renderForm(); else e.target.value = name; }}),
+      connectorSelect(conn, (c) => { sc.set("connector", c); el.replaceWith(serviceEntry(services, name)); }),
+      h("span", {class: "grow muted small"}, ref ? (ref.dynamic_tables ? "tables: one per file / module function"
+        : `tables ${sc.get("table_prefix") ?? name}_…: ${ref.tables.join(", ")}`) : "unknown connector"),
+      h("button", {type: "button", class: "x", onclick: () => { if (confirm(`Remove the service “${name}”?`)) { services.set(name, undefined); renderForm(); } }}, "remove")),
+    h("div", {class: "fgrid"}, [...common, ...opts].map(o => field(o, sc))),
+    authBlock(scope(sc, "authentication"), creds, ref && !ref.requires_authentication));
+  const extra = Object.keys(sc.obj()).filter(k => !known.includes(k));
+  if (extra.length) el.append(h("div", {class: "sub"}, h("div", {class: "t"}, "Other keys"),
+    keyRows(sc, known, [], "Not options of this connector — validation will say if they're ignored.")));
+  return el;
+}
+function providerEntry(providers, name) {
+  const sc = scope(providers, name, true);
+  const opts = CFG.reference.ai_provider.filter(o => o.name !== "authentication");
+  const el = h("div", {class: "entry"},
+    h("div", {class: "head"},
+      h("input", {class: "name mono", value: name, "aria-label": "provider name",
+        onchange: (e) => { if (providers.rename(name, e.target.value.trim())) renderForm(); else e.target.value = name; }}),
+      h("span", {class: "grow muted small"}, "referenced by this name from semantic"),
+      h("button", {type: "button", class: "x", onclick: () => { if (confirm(`Remove “${name}”?`)) { providers.set(name, undefined); renderForm(); } }}, "remove")),
+    fields(opts, sc),
+    authBlock(scope(sc, "authentication"), ["api_key"], true));
+  return el;
+}
+function addRow(label, withConnector, add) {
+  const nameIn = h("input", {placeholder: "name", class: "mono", "aria-label": label + " name"});
+  let conn = CFG.reference.connectors[0]?.connector;
+  const go = () => { const n = nameIn.value.trim(); if (!n) { nameIn.focus(); return; }
+    if (!add(n, conn)) { toast(`“${n}” already exists`); return; } renderForm(); };
+  nameIn.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+  return h("div", {class: "row", style: "margin-top:6px"}, nameIn,
+    withConnector ? connectorSelect(conn, (c) => { conn = c; }) : null,
+    h("button", {type: "button", class: "secondary", onclick: go}, "Add " + label));
+}
+function renderForm() {
+  const ref = CFG?.reference; if (!ref) return;
+  const services = scope(ROOT, "services", true), providers = scope(ROOT, "ai_providers");
+  const form = $("#cfgform"); form.replaceChildren();
+  form.append(h("datalist", {id: "cf-ai-names"}, Object.keys(providers.obj()).map(n => h("option", {value: n}))));
+  form.append(h("h4", {}, "General"), h("div", {class: "fgrid"}, ref.top_level.filter(o => o.input).map(o => field(o, ROOT))));
+  form.append(h("h4", {}, "Services", h("span", {class: "muted"}, "one per connection; its tables are <name>_<table>")));
+  Object.keys(services.obj()).forEach(n => form.append(serviceEntry(services, n)));
+  form.append(addRow("service", true, (n, c) => {
+    if (n in services.obj()) return false;
+    const auth = (CFG.reference.connectors.find(x => x.connector === c) || {}).requires_authentication === false ? {} : {authentication: {type: "local"}};
+    services.set(n, {connector: c, ...auth}); return true; }));
+  form.append(h("h4", {}, "AI providers", h("span", {class: "muted"}, "LLMs and decision engines, named here and used by name in semantic")));
+  Object.keys(providers.obj()).forEach(n => form.append(providerEntry(providers, n)));
+  form.append(addRow("AI provider", false, (n) => {
+    if (n in providers.obj()) return false; providers.set(n, {provider: "anthropic"}); return true; }));
+  form.append(h("h4", {}, "Semantic search"), fields(ref.semantic, scope(ROOT, "semantic")));
+}
+function setView(view) {
+  if (view === "form" && CFGVIEW === "json") {
+    try { DRAFT = JSON.parse($("#cfgtext").value || "{}"); }
+    catch (err) { $("#cfgmsgs").innerHTML = `<p class="msg bad">Fix the JSON first: ${esc(err.message)}</p>`; return; }
+    if (!isObj(DRAFT)) { $("#cfgmsgs").innerHTML = `<p class="msg bad">The config must be a JSON object.</p>`; DRAFT = {}; return; }
+  }
+  CFGVIEW = view;
+  document.querySelectorAll(".seg [data-view]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.view === view)));
+  $("#cfgform").hidden = view !== "form"; $("#cfgtext").hidden = view !== "json";
+  if (view === "form") renderForm(); else syncJson();
+}
+document.querySelectorAll(".seg [data-view]").forEach(b => b.addEventListener("click", () => setView(b.dataset.view)));
+
 function optRows(opts) {
   return opts.map(o => o.options ? `<details data-find="${esc((o.name + " " + (o.description || "")).toLowerCase())}"><summary>${esc(o.name)} <span class="t">${esc(o.type || "")}</span></summary>
       ${o.description ? `<div class="d">${esc(o.description)}</div>` : ""}${optRows(o.options)}</details>`
@@ -755,7 +1021,8 @@ $("#optfilter").addEventListener("input", () => {
 });
 
 function showFeatures() {
-  document.querySelector('nav button[data-tab="sql"]').hidden = !META?.features?.sql;
+  const sql = !!META?.features?.sql;  // the tab is always there; off, it says how to turn it on
+  $("#sqloff").hidden = sql; $("#sqlon").hidden = !sql;
   document.querySelector('nav button[data-tab="config"]').hidden = !META?.features?.config;
 }
 api("/api/meta").then(m => { META = m; showFeatures(); }).catch(err => toast(err.message));

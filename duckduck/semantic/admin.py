@@ -202,14 +202,24 @@ def config_reference() -> Dict[str, Any]:
         doc = _first_paragraph(inspect.getdoc(spec.factory) or inspect.getdoc(cls) or "")
         options = []
         if cls is not None:
+            try:
+                hints = typing.get_type_hints(cls.__init__)  # resolves ``from __future__ import annotations``
+            except Exception:
+                hints = {}
             for p in list(inspect.signature(cls.__init__).parameters.values())[1:]:
                 if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
                     continue
+                if p.name in _INJECTED:
+                    continue  # a Python object for tests / DI — can't come from JSON
+                p = p.replace(annotation=hints.get(p.name, p.annotation))
                 options.append({"name": p.name, "type": _type_name(p.annotation),
                                 "default": None if p.default is p.empty else _jsonable(p.default),
-                                "required": p.default is p.empty, "secret": _is_secret_key(p.name)})
+                                "required": p.default is p.empty, "secret": _is_secret_key(p.name),
+                                "credential": _is_secret_key(p.name) or p.name in _CREDENTIAL_NAMES,
+                                **_input_of(p.annotation)})
         connectors.append({
             "connector": name, "class": cls.__name__ if cls else "", "description": doc, "options": options,
+            "icon": source_kind(cls) if cls is not None else "api",
             "tables": sorted(spec.tables), "dynamic_tables": bool(spec.dynamic_tables),
             "requires_authentication": spec.requires_authentication, "path_options": list(spec.path_options),
         })
@@ -217,7 +227,8 @@ def config_reference() -> Dict[str, Any]:
         "top_level": [
             {"name": "services", "type": "object", "description": "One entry per connection: {name: {connector, "
              "authentication, ...options}}. Its tables are registered as <name>_<table> (or table_prefix)."},
-            {"name": "on_error", "type": "raise | warn", "default": "raise",
+            {"name": "on_error", "type": "raise | warn", "default": "raise", "input": "choice",
+             "choices": ["raise", "warn"],
              "description": "warn: a service that fails to connect is skipped with a warning instead of stopping."},
             {"name": "ai_providers", "type": "object", "description": "Named LLMs and decision engines, "
              "referenced by name from semantic (default_llm, decision_engine.ai_provider, ...)."},
@@ -225,25 +236,28 @@ def config_reference() -> Dict[str, Any]:
              "engine, extractor, catalog generation, feedback, thresholds..."},
         ],
         "service_common": [
-            {"name": "connector", "type": "string", "description": "Which connector (below). Default: the "
+            {"name": "connector", "type": "string", "input": "text", "description": "Which connector (below). Default: the "
              "service's own name."},
-            {"name": "table_prefix", "type": "string", "description": "Tables are registered as <prefix>_<table>; "
+            {"name": "table_prefix", "type": "string", "input": "text", "description": "Tables are registered as <prefix>_<table>; "
              "\"\" for bare table names. Default: the service's name."},
             {"name": "authentication", "type": "object", "description": "Where credentials come from — below."},
         ],
         "authentication": [
-            {"name": "type", "type": "local | aws | azure", "default": "local",
+            {"name": "type", "type": "local | aws | azure", "default": "local", "input": "choice",
+             "choices": ["local", "aws", "azure"],
              "description": "local: the other keys of this block are the credentials. aws: AWS Secrets Manager. "
              "azure: Azure Key Vault."},
-            {"name": "secret_id", "type": "string", "description": "aws / azure: the secret's name or ARN."},
-            {"name": "region_name", "type": "string", "description": "aws: the Secrets Manager region."},
-            {"name": "profile_name", "type": "string", "description": "aws: a named profile from ~/.aws."},
-            {"name": "vault_url", "type": "string", "description": "azure: https://<vault>.vault.azure.net."},
-            {"name": "tenant_id", "type": "string", "description": "azure: pin DefaultAzureCredential to a tenant."},
+            {"name": "secret_id", "type": "string", "input": "text", "description": "aws / azure: the secret's name or ARN."},
+            {"name": "region_name", "type": "string", "input": "text", "description": "aws: the Secrets Manager region."},
+            {"name": "profile_name", "type": "string", "input": "text", "description": "aws: a named profile from ~/.aws."},
+            {"name": "vault_url", "type": "string", "input": "text", "description": "azure: https://<vault>.vault.azure.net."},
+            {"name": "tenant_id", "type": "string", "input": "text", "description": "azure: pin DefaultAzureCredential to a tenant."},
             {"name": "<any key>", "type": "value | \"$secret.<key>\"",
              "description": "Added on top of the fetched secret; \"$secret.<key>\" copies <key> from it."},
         ],
         "connectors": connectors,
+        #: which keys the page treats as secrets (the same rule as ``mask``)
+        "secrets": {"pattern": _SECRETISH.pattern, "not_suffixes": list(_NOT_SECRET_SUFFIX), "mask": MASK},
         "ai_provider": _model_options(AIProviderConfig),
         "semantic": _model_options(SemanticConfig, skip={"ai_providers", "base_dir", "config_file"}),
     }
@@ -261,15 +275,54 @@ def _model_options(model: Any, skip: Tuple[str, ...] = (), depth: int = 0) -> Li
         entry: Dict[str, Any] = {
             "name": key, "type": _type_name(field.annotation), "description": docs.get(name, ""),
             "default": None if field.is_required() else _jsonable(field.get_default(call_default_factory=True)),
-            "required": field.is_required(),
+            "required": field.is_required(), **_input_of(field.annotation),
         }
         nested = _nested_model(field.annotation)
-        if nested is not None and issubclass(nested, BaseModel) and depth < 3:
+        if nested is not None and issubclass(nested, BaseModel) and depth < 3 and entry["input"] == "object":
             entry["options"] = _model_options(nested, depth=depth + 1)
             entry["default"] = None
-            entry["description"] = entry["description"] or _first_paragraph(inspect.getdoc(nested) or "")
+            own_doc = nested.__dict__.get("__doc__")  # not BaseModel's own docstring
+            entry["description"] = entry["description"] or _first_paragraph(inspect.cleandoc(own_doc) if own_doc else "")
         out.append(entry)
     return out
+
+
+#: Constructor parameters that only take Python objects (a client, a session) — not config options.
+_INJECTED = {"client", "kcsb", "session", "credential", "engine"}
+#: Non-secret parameters that are still credentials: the form offers them in the authentication block.
+_CREDENTIAL_NAMES = {"username", "user", "client_id", "tenant_id", "aws_access_key_id"}
+
+
+def _input_of(annotation: Any) -> Dict[str, Any]:
+    """
+    How the Config form edits a value of this type: ``choice`` (+ ``choices``),
+    ``bool``, ``int``, ``float``, ``text``, ``list`` (of strings), ``object``
+    (a nested section, its ``options`` listed), ``scalar`` (a number or text)
+    or ``json`` (anything else — a dict, a list of objects, a union of shapes).
+    """
+    from pydantic import BaseModel
+
+    if annotation is inspect.Parameter.empty or annotation is Any:
+        return {"input": "scalar"}
+    args = [a for a in typing.get_args(annotation) if a is not type(None)]
+    origin = typing.get_origin(annotation)
+    if origin is typing.Union:
+        if len(args) == 1:
+            return _input_of(args[0])
+        if all(a in (int, float, str) for a in args):
+            return {"input": "scalar"}
+        return {"input": "json"}
+    if origin is typing.Literal:
+        return {"input": "choice", "choices": [a for a in typing.get_args(annotation) if a is not None]}
+    if origin in (list, List) and args and args[0] is str:
+        return {"input": "list"}
+    if inspect.isclass(annotation):
+        if issubclass(annotation, BaseModel):
+            return {"input": "object"}
+        for kind, name in ((bool, "bool"), (int, "int"), (float, "float"), (str, "text")):
+            if issubclass(annotation, kind):
+                return {"input": name}
+    return {"input": "json"}
 
 
 def _nested_model(annotation: Any) -> Any:

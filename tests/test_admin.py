@@ -118,6 +118,34 @@ def test_the_reference_documents_every_connector_and_option():
     assert not any(o["name"] in ("base_dir", "config_file") for o in ref["semantic"])
 
 
+def test_the_reference_says_how_the_form_edits_each_option():
+    ref = config_reference()
+    inputs = {o["name"]: o for o in ref["semantic"]}
+    assert inputs["default_limit"]["input"] == "int" and inputs["allowed_sources"]["input"] == "list"
+    assert inputs["clarification_texts"]["input"] == "json" and inputs["thresholds"]["input"] == "object"
+    extractor = {o["name"]: o for o in inputs["extractor"]["options"]}
+    assert extractor["type"] == {**extractor["type"], "input": "choice", "choices": ["rules", "llm"]}
+    assert extractor["translate"]["input"] == "bool" and "abstract" not in inputs["extractor"]["description"]
+    assert next(o for o in inputs["catalog_generation"]["options"] if o["name"] == "max_age")["input"] == "scalar"
+    adx = next(c for c in ref["connectors"] if c["connector"] == "adx")
+    assert adx["icon"] == "adx" and {o["name"] for o in adx["options"]} == {"cluster", "database", "notruncation"}
+    assert all(o["input"] == "text" for o in adx["options"] if o["name"] in ("cluster", "database"))  # future annotations
+    sharepoint = {o["name"]: o for o in next(c for c in ref["connectors"] if c["connector"] == "sharepoint")["options"]}
+    assert sharepoint["client_secret"]["credential"] and sharepoint["client_id"]["credential"]
+    assert not sharepoint["hostname"]["credential"]
+    assert next(o for o in ref["top_level"] if o["name"] == "on_error")["choices"] == ["raise", "warn"]
+    assert ref["secrets"]["mask"] == "***" and "secret" in ref["secrets"]["pattern"]
+
+
+def test_the_page_has_the_sql_tab_next_to_ask_and_a_config_form():
+    from duckduck.semantic.webpage import PAGE
+
+    tabs = [line.split('data-tab="')[1].split('"')[0] for line in PAGE.splitlines() if 'role="tab" data-tab=' in line]
+    assert tabs[:2] == ["ask", "sql"]
+    assert 'data-tab="sql" aria-selected="false" hidden' not in PAGE and 'id="sqloff"' in PAGE
+    assert 'data-view="form"' in PAGE and "function renderForm()" in PAGE
+
+
 def test_secrets_travel_masked_and_come_back_from_the_file():
     saved = {"services": {"db": {"connector": "database", "authentication": {
         "type": "local", "password": "hunter2", "username": "sa", "connection_string": "mssql://sa:x@h/db",
@@ -200,11 +228,14 @@ def _client(path, **kw):
     return client
 
 
-def test_tabs_are_off_unless_asked(served):
+def test_sql_is_on_and_saving_off_by_default(served):
     client = _client(served)
     features = client.get("/api/meta").json()["features"]
-    assert features == {"sql": False, "config": True, "config_edit": False}
-    assert client.post("/api/sql", json={"sql": "SELECT 1"}).status_code == 403
+    assert features == {"sql": True, "config": True, "config_edit": False}
+    assert client.post("/api/sql", json={"sql": "SELECT 1"}).json()["rows"] == [[1]]
+    off = _client(served, allow_sql=False)
+    assert off.get("/api/meta").json()["features"]["sql"] is False
+    assert "--no-sql" in off.post("/api/sql", json={"sql": "SELECT 1"}).json()["detail"]
     assert client.put("/api/config", json={"config": {}}).status_code == 403
     config = client.get("/api/config").json()
     assert config["config"]["ai_providers"]["claude"]["authentication"]["api_key"] == "***" and not config["editable"]

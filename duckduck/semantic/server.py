@@ -18,7 +18,7 @@ HTML page (``webpage.PAGE``) over a JSON API:
 ``GET  /api/evaluation.json``                that evaluation set, to keep
 ``GET  /api/export.md``                      the still-failing questions, as a brief for a developer
 ``GET  /api/meta``                           categories, answer kinds, tables (+ icon kind), entities, values
-``POST /api/sql {sql}`` · ``GET /api/tables``  the SQL console (``allow_sql``; read-only, no files/network)
+``POST /api/sql {sql}`` · ``GET /api/tables``  the SQL console (``allow_sql``, on by default; read-only, no files/network)
 ``GET  /api/config``                         duckduck.json, secrets masked, + every option documented
 ``POST /api/config/validate {config}``       check an edited config without saving
 ``PUT  /api/config {config}``                save it (``allow_config_edit``; ``.bak`` kept) and reload
@@ -299,7 +299,7 @@ def create_app(
 
     def the_console():
         if state["console"] is None:
-            raise HTTPException(403, "the SQL tab is off — start the server with --sql (serve(allow_sql=True))")
+            raise HTTPException(403, "the SQL tab is off — the server was started with --no-sql (serve(allow_sql=False))")
         return state["console"]
 
     @app.post("/api/sql")

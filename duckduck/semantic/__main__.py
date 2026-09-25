@@ -151,8 +151,9 @@ def build_parser() -> argparse.ArgumentParser:
     srv = sub.add_parser("serve", help="the web app: ask, answer clarifications, rate answers, review suggestions")
     srv.add_argument("--host", default="127.0.0.1", help="interface to listen on (default: this machine only)")
     srv.add_argument("--port", type=int, default=8765)
-    srv.add_argument("--sql", action="store_true",
-                     help="SQL tab: duck.sql on the registered tables (read queries only, no files or network)")
+    srv.add_argument("--sql", action=argparse.BooleanOptionalAction, default=True,
+                     help="SQL tab: duck.sql on the registered tables (read queries only, no files or network); "
+                          "on by default, --no-sql turns it off")
     srv.add_argument("--edit-config", action="store_true",
                      help="Config tab may save duckduck.json (secrets stay masked; a .bak is kept) and reconnect")
     srv.set_defaults(fn=cmd_serve, python=serve)

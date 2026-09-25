@@ -213,7 +213,7 @@ def serve(
     verbose: Any = None,
     token: Optional[str] = None,
     run: bool = True,
-    allow_sql: bool = False,
+    allow_sql: bool = True,
     allow_config_edit: bool = False,
 ):
     """
@@ -224,8 +224,9 @@ def serve(
     ``token`` (default ``DUCKDUCK_SERVER_TOKEN``) is required by every API
     call when set. ``run=False`` returns the FastAPI app instead of serving it.
 
-    ``allow_sql``: the SQL tab — ``duck.sql`` on the registered tables, read
-    queries only, on a connection with no file or network access.
+    ``allow_sql`` (default on): the SQL tab — ``duck.sql`` on the registered
+    tables, read queries only, on a connection with no file or network
+    access. ``False`` (CLI ``--no-sql``) leaves the tab saying it's off.
     ``allow_config_edit``: the Config tab may save ``duckduck.json`` (secrets
     stay masked in the page; a ``.bak`` is kept) and reconnect everything.
     Reading the config (masked) and its options reference is always there.
@@ -256,7 +257,7 @@ def serve(
     if not run:
         return app
     print(f"duckduck: http://{host}:{port}  (feedback in {store.path}"
-          f"{'; SQL tab on' if allow_sql else ''}{'; config editing on' if allow_config_edit else ''})")
+          f"{'' if allow_sql else '; SQL tab off'}{'; config editing on' if allow_config_edit else ''})")
     run_app(app, host=host, port=port)
     return app
 
