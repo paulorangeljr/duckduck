@@ -128,6 +128,7 @@ def create_app(
             "features": {"sql": state["console"] is not None, "config": bool(config_path),
                          "config_edit": bool(config_path and allow_config_edit)},
             "source_icons": {n: search.source_icon(n) for n in cat.sources},
+            "texts": {"ask_anyway": search.texts.t("reply.ask_anyway")},
             "verdicts": list(VERDICTS),
             "categories": CATEGORIES,
             "answer_shapes": {s: search.texts.t(f"answer_shape.{s}") if f"answer_shape.{s}" in search.texts.texts
@@ -152,9 +153,12 @@ def create_app(
         if entity is not None and entity not in search.catalog.entities:
             raise HTTPException(400, f"unknown entity {entity!r}")
         try:
+            pins = {"entity": entity} if entity else {}
+            if body.get("in_scope"):  # "it is about the data — try anyway"
+                pins["in_scope"] = True
             conv = search.conversation(question, user=body.get("user") or None,
                                        only_sources=list(only) if only is not None else None,
-                                       pinned={"entity": entity} if entity else None)
+                                       pinned=pins or None)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         with lock:

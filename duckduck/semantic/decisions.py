@@ -57,6 +57,9 @@ class DecisionState(BaseModel):
     #: For a choice: the option to assume when there's no evidence either way — used by the
     #: offline lexical engine only (a real engine reads the question; never sent to it).
     default: Optional[str] = None
+    #: For a yes/no: the probability the offline lexical engine answers with (a deterministic
+    #: rule's reading) — never sent to a real engine, which reads the question itself.
+    offline_prior: Optional[float] = None
 
 
 class BinaryDecision(BaseModel):
@@ -110,6 +113,12 @@ CRITERIA: Dict[str, Dict[str, str]] = {
     "field": {
         "true": "Filtering or returning this field gives exactly what the question means.",
         "false": "What the question means belongs in a different field, or this field means something else.",
+    },
+    "in_scope": {
+        "true": "The question asks for information these tables could hold — even partly, vaguely or in "
+                "another language — or about the data itself.",
+        "false": "Small talk, general knowledge, advice, or a topic none of these tables are about "
+                 "(weather, news, sports, writing code...).",
     },
     "relationship": {
         "true": "Joining these two fields connects records about the same real thing, and the answer "
@@ -404,6 +413,8 @@ class LexicalDecisionEngine:
     def decide(self, state: DecisionState, question: str, subject: str) -> BinaryDecision:
         if state.prior is not None:
             p = state.prior
+        elif state.offline_prior is not None:
+            p = state.offline_prior
         elif not state.terms:
             p = 0.5
         else:

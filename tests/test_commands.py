@@ -69,8 +69,13 @@ def test_ask_reuses_a_given_duck():
     assert ask(QUESTION, config_path=LOCAL_CONFIG, duck=duck).status == "ok"
 
 
+def test_a_direct_reply_exits_zero_and_prints_it(capsys):
+    assert main(["--config", LOCAL_CONFIG, "ask", "How is the weather?"]) == 0
+    assert "I couldn't find anything about that in the data I have" in capsys.readouterr().out
+
+
 def test_clarification_exits_nonzero(capsys):
-    assert main(["--config", LOCAL_CONFIG, "ask", "How is the weather?"]) == 1
+    assert main(["--config", LOCAL_CONFIG, "ask", "What happened with bob?"]) == 1
     assert "needs_clarification" in capsys.readouterr().out
 
 

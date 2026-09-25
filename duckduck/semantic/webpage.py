@@ -375,18 +375,21 @@ function drawPanel() {
 }
 
 // ---- ask ---------------------------------------------------------------
-$("#askform").addEventListener("submit", async (e) => {
+$("#askform").addEventListener("submit", (e) => {
   e.preventDefault();
   const q = $("#question").value.trim(); if (!q) return;
   clearTimeout(pre.timer); pre.ctrl?.abort(); pre.thinking = false; pre.open = null; drawChips();
   if (pre.chosen && pre.chosen.size === 0) { toast("Choose at least one table, or let it choose."); return; }
-  const body = {question: q, user: user()};
+  ask(q);
+});
+async function ask(q, extra = {}) {
+  const body = {question: q, user: user(), ...extra};
   if (pre.chosen) body.only_sources = [...pre.chosen];
   if (pre.entity) body.entity = pre.entity;
   $("#conversation").innerHTML = `<div class="card muted">Thinking…</div>`;
   try { render(await api("/api/ask", body)); }
   catch (err) { $("#conversation").innerHTML = `<div class="card error">${esc(err.message)}</div>`; }
-});
+}
 
 async function reply(convId, text) {
   try { render(await api("/api/answer", {conversation_id: convId, reply: text})); }
@@ -403,7 +406,7 @@ function table(rows, max = 500) {
 
 const SHAPE_WORDS = {list: "a list", count: "a count", values: "the different values", count_values: "a count of values",
                      count_by: "a count per group", lookup: "everything about the value", locate: "where the value is",
-                     catalog: "what data there is"};
+                     catalog: "what data there is", small_talk: "small talk", out_of_scope: "not about the data"};
 
 function render(c) {
   const r = c.result, box = $("#conversation");
@@ -412,7 +415,13 @@ function render(c) {
   if (c.history.length) html += `<div class="thread">${c.history.map(h =>
       `<div class="turn">Q: ${esc(h.asked)}<br>A: ${esc(h.reply)}${h.understood ? "" : " <em>(not understood)</em>"}</div>`).join("")}</div>`;
   html += `</div>`;
-  if (r.status === "needs_clarification" && r.followup && r.followup.options.length) {
+  if (r.reply) {
+    const shape = r.intent?.answer_shape;
+    html += `<div class="card"><p style="margin:0 0 8px">${esc(r.reply)}</p>
+      ${(r.suggestions || []).map(q => `<button class="option" type="button" data-suggest="${esc(q)}">${esc(q)}</button>`).join("")}
+      ${shape === "out_of_scope" ? `<div class="row" style="margin-top:8px"><button class="secondary" type="button" data-anyway>${esc(META?.texts?.ask_anyway || "It is about the data — try anyway")}</button></div>` : ""}
+    </div>`;
+  } else if (r.status === "needs_clarification" && r.followup && r.followup.options.length) {
     const f = r.followup;
     html += `<div class="card"><h3>${esc(f.question)}</h3>${f.context ? `<p class="context">${esc(f.context)}</p>` : ""}
       ${f.options.map((o, i) => `<button class="option" data-reply="${i + 1}">${i + 1}) ${esc(o.label)}${o.detail ? ` <span class="detail">— ${esc(o.detail)}</span>` : ""}</button>`).join("")}
@@ -443,6 +452,9 @@ function render(c) {
   box.innerHTML = html;
   box.querySelectorAll("button.option").forEach(b => b.addEventListener("click", () => reply(c.conversation_id, b.dataset.reply)));
   box.querySelector("[data-runsql]")?.addEventListener("click", () => { $("#sqltext").value = r.sql; openTab("sql"); });
+  box.querySelectorAll("[data-suggest]").forEach(b => b.addEventListener("click", () => {
+    $("#question").value = b.dataset.suggest; $("#askform").requestSubmit(); }));
+  box.querySelector("[data-anyway]")?.addEventListener("click", () => ask(r.question, {in_scope: true}));
   $("#freeform")?.addEventListener("submit", (e) => { e.preventDefault(); const t = $("#freetext").value.trim(); if (t) reply(c.conversation_id, t); });
   wireFeedback(r);
 }

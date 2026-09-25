@@ -32,6 +32,7 @@ from .retrieval import CatalogRetriever, LexicalRetriever
 from .memory import as_fact, question_template
 from .scope import in_scope
 from .shapes import ACROSS_SHAPES, AnswerShapes, catalog_topic
+from .clarify import first_sentence
 from .text import vocabulary
 
 #: Shape-recognized literal kinds → the semantic type they denote.
@@ -96,6 +97,8 @@ class SemanticInterpreter:
             intent.similar_cases = self.memory.similar(question_template(intent.working_question, intent.literals))
         if self._about_the_catalog(intent, decisions, pins):
             return intent, decisions  # nothing to decide about the data — no entity, activity or tables to ask about
+        if self._small_talk(intent, decisions, pins):
+            return intent, decisions  # "hi", "thanks" — nothing to look up
         try:
             refused = {k[7:] for k, v in pins.items() if k.startswith("source:") and v is False}
             refused |= {n for n in self.catalog.sources if not in_scope(n)}  # the user narrowed the tables
@@ -113,7 +116,12 @@ class SemanticInterpreter:
                                 self._shape_ask(intent, pins)) if a]
             asks += self._value_asks(intent, extraction, pins, live)
             asks += self._source_asks(intent, extraction, [n for n in retrieved if f"source:{n}" not in pins], live)
+            scope_ask = self._in_scope_ask(intent, extraction, max((sc for _, sc in ranked), default=0.0), pins)
+            if scope_ask is not None:
+                asks.append(scope_ask)
             answers = ask_all(self.engine, asks)
+            if self._out_of_scope(intent, answers.get("in_scope"), decisions, pins):
+                return intent, decisions  # not about the data: a direct reply, no questions back
 
             self._apply_shape(intent, answers.get("answer_shape"), decisions, pins)
             self._apply_entity(intent, answers.get("entity"), decisions, pins)
@@ -315,6 +323,9 @@ class SemanticInterpreter:
                                 literals=self._without_shape_words([question], ex.literals))
         if self.memory is not None:
             intent.similar_cases = self.memory.similar(question_template(question, intent.literals))
+        if self.shapes.small_talk_kind(question):
+            return {"question": question, "answer_shape": {"choice": "small_talk", "probability": 1.0, "sure": True},
+                    "entity": None, "sources": []}
         candidates, _ = self._candidates(intent)
         if candidates == ["catalog"]:
             return {"question": question, "answer_shape": {"choice": "catalog", "probability": 1.0, "sure": True},
@@ -349,6 +360,61 @@ class SemanticInterpreter:
             },
             "sources": sources,
         }
+
+    _IN_SCOPE_QUESTION = "Is the question about the data these tables hold?"
+
+    def _small_talk(self, intent: SemanticIntent, decisions: List[DecisionRecord], pins: Dict[str, Any]) -> bool:
+        if pins.get("in_scope") is True:
+            return False
+        kind = self.shapes.small_talk_kind(intent.working_question)
+        if kind is None:
+            return False
+        intent.answer_shape, intent.small_talk = "small_talk", kind
+        decisions.append(DecisionRecord(kind="answer_shape", question=self._SHAPE_QUESTION, answer="small_talk",
+                                        probability=0.99, decided_by="deterministic", subject=kind))
+        return True
+
+    def _scope_summary(self) -> str:
+        """What the catalog is about, for the in-scope question — tables, entities, activities."""
+        if getattr(self, "_summary", None) is None:
+            tables = "; ".join(f"{n} — {first_sentence(s.description) or n}"
+                               for n, s in list(self.catalog.sources.items())[:40])
+            entities = ", ".join(n.replace("_", " ") for n, e in self.catalog.entities.items() if not e.row_level)
+            activities = ", ".join(n.replace("_", " ") for n in self.catalog.activities)
+            self._summary = (f"Tables: {tables}." + (f" Things they identify: {entities}." if entities else "")
+                             + (f" Activities: {activities}." if activities else ""))
+        return self._summary
+
+    def _in_scope_ask(self, intent: SemanticIntent, ex: Extraction, best_retrieval: float,
+                      pins: Dict[str, Any]) -> Optional[Ask]:
+        """
+        "Is this about the data at all?" — one yes/no in the same batch. The
+        offline engine reads a deterministic rule instead (``offline_prior``):
+        no catalog word, value shape, known value, time range or retrieval
+        hit means no.
+        """
+        if pins.get("in_scope") is True:
+            return None
+        nothing = (not ex.terms and not ex.enum_matches and ex.time_range is None and best_retrieval <= 0
+                   and not any(lit.kind != "term" for lit in ex.literals))
+        return Ask(key="in_scope", question=self._IN_SCOPE_QUESTION, subject=self._scope_summary(),
+                   criteria=CRITERIA["in_scope"],
+                   state=intent.decision_state(terms=ex.terms, offline_prior=0.05 if nothing else 0.9))
+
+    def _out_of_scope(self, intent: SemanticIntent, result: Any, decisions: List[DecisionRecord],
+                      pins: Dict[str, Any]) -> bool:
+        if pins.get("in_scope") is True:
+            decisions.append(_by_user("in_scope", self._IN_SCOPE_QUESTION, True, None))
+            return False
+        if result is None:
+            return False
+        record = DecisionRecord(kind="in_scope", question=self._IN_SCOPE_QUESTION, answer=result.answer,
+                                probability=result.probability, threshold=self.thresholds.out_of_scope)
+        decisions.append(record)
+        if result.probability >= self.thresholds.out_of_scope:
+            return False  # about the data, or not sure: the normal path
+        intent.answer_shape = "out_of_scope"
+        return True
 
     def _about_the_catalog(self, intent: SemanticIntent, decisions: List[DecisionRecord], pins: Dict[str, Any]) -> bool:
         """"What kind of information do you have?" — answered from the catalog, before any other decision."""

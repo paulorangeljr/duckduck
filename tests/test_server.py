@@ -81,7 +81,7 @@ def test_ask_answer_rate(project):
 
 def test_a_clarification_round_trip(project):
     client, _ = _client(project)
-    asked = client.post("/api/ask", json={"question": "What is the weather like?"}).json()
+    asked = client.post("/api/ask", json={"question": "How many alerts by severity?"}).json()  # count, or per severity?
     assert not asked["done"] and asked["result"]["followup"]["options"]
     answered = client.post("/api/answer", json={"conversation_id": asked["conversation_id"], "reply": "1"}).json()
     assert answered["history"][0]["understood"] is not None

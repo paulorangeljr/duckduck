@@ -232,7 +232,7 @@ def test_a_clarification_keeps_every_decision_made_before_it(monkeypatch):
     search.thresholds.source = 0.999
     result = search.search("Which users accessed github in the last 24hrs?")
     assert result.status == "needs_clarification"
-    kinds = [d.kind for d in result.decisions]
+    kinds = [d.kind for d in result.decisions if d.kind != "in_scope"]  # "about the data?" is checked first
     assert kinds[:2] == ["entity", "activity"] and "source_relevance" in kinds
 
 

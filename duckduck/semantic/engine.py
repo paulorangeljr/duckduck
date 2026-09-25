@@ -110,6 +110,10 @@ class SearchResult:
     conversation_id: Optional[str] = None
     #: The tables the user limited this question to (``search(only_sources=...)``), or ``None``.
     only_sources: Optional[List[str]] = None
+    #: A direct reply instead of data — small talk ("hi", "thanks") or a question that isn't about
+    #: the data (``intent.answer_shape`` says which) — and example questions to try instead.
+    reply: Optional[str] = None
+    suggestions: List[str] = field(default_factory=list)
     #: ``lookup`` / ``locate``: one row per table checked (source, found, rows, matched_on,
     #: description). For ``locate`` that *is* the answer, so ``results`` holds it too; for
     #: ``lookup``, ``results`` holds the rows found, every table's under one set of columns.
@@ -133,6 +137,9 @@ class SearchResult:
         lines = [f"[{self.status}] ({self.elapsed_ms:.0f} ms)"]
         for d in self.decisions:
             lines.append(f"  {d.kind:<24} {str(d.subject)[:40]:<40} {str(d.answer):<20} {d.probability:.2f}")
+        if self.reply:
+            lines += ["", self.reply] + [f"  - {s}" for s in self.suggestions]
+            return "\n".join(lines)
         if self.clarification:
             lines += ["", self.clarification]
             if self.followup and self.followup.options:
@@ -160,6 +167,8 @@ class SearchResult:
             "search_id": self.search_id,
             "conversation_id": self.conversation_id,
             "only_sources": self.only_sources,
+            "reply": self.reply,
+            "suggestions": self.suggestions,
             "intent": self.intent.model_dump(mode="json") if self.intent else None,
             "sources": [s.model_dump() for s in self.sources],
             "query_plan": self.query_plan.model_dump(mode="json") if self.query_plan else None,
@@ -480,6 +489,10 @@ class SemanticSearch:
             intent, decisions = self.interpreter.interpret(question, now, pinned, evidence=prober)
             result.intent = intent
             result.decisions.extend(decisions)
+            if intent.answer_shape in ("small_talk", "out_of_scope"):  # a direct reply, nothing to look up
+                self._reply(result, intent)
+                result.elapsed_ms = (time.perf_counter() - started) * 1000
+                return result
             if intent.answer_shape == "catalog":  # "what kind of information do you have?"
                 result.results = self._catalog_answer(intent)
                 result.status = "ok" if execute else "planned"
@@ -587,6 +600,53 @@ class SemanticSearch:
             )
             result.results = result.summary if intent.answer_shape == "locate" else _rows_found(result.sections)
             result.status = "ok"
+
+    def _reply(self, result: SearchResult, intent: SemanticIntent) -> None:
+        """Small talk, or a question that isn't about the data: a reply, what can be asked, examples."""
+        texts = self.texts
+        result.suggestions = self.example_questions()
+        if intent.answer_shape == "small_talk":
+            result.reply = texts.t(f"reply.{intent.small_talk or 'greeting'}")
+            if intent.small_talk != "greeting":
+                result.suggestions = []
+        else:
+            topics = self.topics()
+            result.reply = " ".join(t for t in (
+                texts.t("reply.out_of_scope"),
+                texts.t("reply.topics", topics=topics) if topics else "",
+            ) if t)
+        if result.suggestions:
+            result.reply += " " + texts.t("reply.examples")
+        result.status = "ok"
+
+    def topics(self, limit: int = 8) -> str:
+        """What can be asked about, in words: the entities and activities of the tables in scope."""
+        allowed = [n for n in self.catalog.sources if self.planner._is_allowed(n)]
+        names: List[str] = []
+        for n in allowed:
+            src = self.catalog.sources[n]
+            for e in src.entities:
+                ent = self.catalog.entities.get(e)
+                if ent is not None and not ent.row_level:
+                    names.append(e)
+            names += list(src.activities)
+        words = [n.replace("_", " ") for n in dict.fromkeys(names)][:limit]
+        if not words:
+            words = allowed[:limit]
+        return ", ".join(words[:-1]) + (" and " if len(words) > 1 else "") + words[-1] if words else ""
+
+    def example_questions(self, limit: int = 5) -> List[str]:
+        """A question each table answers (its catalog ``examples``), one per table first."""
+        per_table = [self.catalog.sources[n].examples for n in self.catalog.sources
+                     if self.planner._is_allowed(n) and self.catalog.sources[n].examples]
+        out: List[str] = []
+        for rank in range(max((len(e) for e in per_table), default=0)):
+            for examples in per_table:
+                if rank < len(examples) and examples[rank] not in out:
+                    out.append(examples[rank])
+                if len(out) >= limit:
+                    return out
+        return out
 
     def _catalog_answer(self, intent: SemanticIntent) -> pd.DataFrame:
         """A question about the catalog itself, by topic — never reads data."""

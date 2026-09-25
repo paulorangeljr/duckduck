@@ -209,13 +209,21 @@ def test_unauthorized_join_source_needs_clarification(duck):
 
 
 @pytest.mark.parametrize("question", [
-    "How is the weather?",
+    "What happened with bob?",
     "Which users accessed github or gitlab?",
 ])
 def test_low_confidence_is_never_executed(search, question):
     result = search.search(question)
     assert result.status == "needs_clarification"
     assert result.clarification and result.results is None and result.fetches == []
+
+
+@pytest.mark.parametrize("question", ["How is the weather?", "Show me the stuff"])
+def test_a_question_not_about_the_data_gets_a_direct_reply(search, question):
+    result = search.search(question)
+    assert result.status == "ok" and result.intent.answer_shape == "out_of_scope"
+    assert result.reply.startswith("I couldn't find anything about that") and result.suggestions
+    assert result.fetches == [] and result.followup is None  # no data read, nothing asked back
 
 
 def test_plan_only_mode_does_not_fetch(search, duck):

@@ -1132,6 +1132,32 @@ your own wording under `answer_shapes.catalog`; the topic is read from
 the words entity/activity/field/column/relationship (and their
 Portuguese forms).
 
+**Small talk and questions that aren't about the data get a direct
+reply.** No plan, no follow-up question:
+
+- **Small talk** ("hi", "thanks a lot", "olá, tudo bem?", "tchau") is
+  recognized by its wording (`answer_shapes.small_talk`), only when
+  nothing else is asked: "hi, which hosts have critical alerts?" is a
+  real question. It never calls the decision engine. A greeting is
+  answered with example questions; thanks and goodbye get just a reply.
+- **Out of scope** ("How is the weather in Lisbon?"): the decision engine
+  gets one more yes/no in the same batch, "Is the question about the data
+  these tables hold?". Below `thresholds.out_of_scope` (0.20) the answer
+  is a reply saying what can be asked (the entities and activities of the
+  tables you may use) plus example questions (each table's catalog
+  `examples`, one per table first). Anything in between takes the normal
+  path: in doubt, it tries the data. The offline lexical engine uses a
+  rule instead: no catalog word, value, time range or retrieval hit means
+  out of scope.
+- **"It is about the data — try anyway"**: pin `in_scope: True`
+  (`search(q, pinned={"in_scope": True})`, or the button in the web app)
+  and neither check runs.
+
+`SearchResult.reply` and `.suggestions` hold the reply, and `status` is
+`"ok"`. The wording is in `clarification_texts` (`reply.greeting`,
+`reply.thanks`, `reply.goodbye`, `reply.out_of_scope`, `reply.topics`
+with `{topics}`, `reply.examples`, `reply.ask_anyway`).
+
 **Everything about a value (`lookup`) and where it is (`locate`).** Both
 look in **every table that has a field of the value's type**, not only
 in the tables retrieval picked. Each value in the question is looked up

@@ -20,6 +20,9 @@ class Thresholds(BaseModel):
     resource_type: float = 0.60
     #: Which kind of answer (list / count / different values / count per group), when the wording is ambiguous.
     answer_shape: float = 0.60
+    #: "Is this about the data at all?" below this probability → a direct out-of-scope reply
+    #: (low on purpose: in doubt, the question goes through the normal path).
+    out_of_scope: float = 0.20
     #: A free-text reply to a clarification must pick one option this surely.
     reply: float = 0.70
 
@@ -73,6 +76,8 @@ class SemanticIntent(BaseModel):
     answer_shape: str = "list"
     #: For ``catalog``: which part of it — tables / entities / activities / fields / relationships.
     catalog_topic: Optional[str] = None
+    #: For ``small_talk``: greeting / thanks / goodbye.
+    small_talk: Optional[str] = None
     target_entity: Optional[str] = None
     target_confidence: float = 0.0
     activity: Optional[str] = None

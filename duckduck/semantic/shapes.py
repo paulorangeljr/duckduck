@@ -22,7 +22,7 @@ settled without a model, several go to the engine, none means a list:
 import re
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-from .text import tokenize
+from .text import stem, tokenize
 
 #: The kinds of answer a question can ask for → what each one returns (also what the engine reads).
 ANSWER_SHAPES: Dict[str, str] = {
@@ -34,6 +34,8 @@ ANSWER_SHAPES: Dict[str, str] = {
     "lookup": "everything the data holds about a given value, from every table that has it",
     "locate": "which tables contain a given value (or hold that kind of thing), not the rows themselves",
     "catalog": "what data there is to ask about — the tables and what they hold, from the catalog (no data read)",
+    "small_talk": "a greeting, thanks or goodbye — nothing to look up",
+    "out_of_scope": "nothing about the data in this catalog — a direct reply saying what can be asked instead",
 }
 #: The shapes that need to know which field they're about.
 FIELD_SHAPES = ("values", "count_values", "count_by")
@@ -41,6 +43,13 @@ FIELD_SHAPES = ("values", "count_values", "count_by")
 ACROSS_SHAPES = ("lookup", "locate")
 
 DEFAULT_WORDING: Dict[str, Dict[str, List[str]]] = {
+    # only when nothing else is asked ("hi, which hosts...?" is a real question) — see small_talk_kind()
+    "small_talk": {"wording": [
+        "hi", "hello", "hey", "good morning", "good afternoon", "good evening", "howdy", "how are you",
+        "thanks", "thank you", "thx", "cheers", "bye", "goodbye", "see you",
+        "oi", "olá", "ola", "bom dia", "boa tarde", "boa noite", "tudo bem", "tudo bom", "e aí", "e ai",
+        "obrigado", "obrigada", "valeu", "brigado", "tchau", "até mais", "ate mais",
+    ]},
     "catalog": {"wording": [
         "re:\\bwhat (kinds?|types?|sorts?) of (information|info|data|tables|sources|datasets)\\b",
         "re:\\bwhat (information|info|data|tables|sources|datasets)( do| can| does)? (you|we|i) (have|access|see|know|hold|cover|query)",
@@ -130,7 +139,7 @@ class AnswerShapes:
 
     def candidates(self, question: str) -> Tuple[List[str], str]:
         """The shapes the wording allows, and the words that say so."""
-        found = {s: self._find(question, s) for s in DEFAULT_WORDING}
+        found = {s: self._find(question, s) for s in DEFAULT_WORDING if s != "small_talk"}
         maybe = self._find(question, "count_by", "maybe_wording")
         words = ", ".join(f"'{m.group(0).strip()}'" for m in [*found.values(), maybe] if m)
         if found["catalog"]:
@@ -151,6 +160,25 @@ class AnswerShapes:
         if group:
             return ["list", "count_by"], words
         return ["list"], words
+
+    def small_talk_kind(self, question: str) -> Optional[str]:
+        """``greeting`` / ``thanks`` / ``goodbye`` when the question is only small talk; else ``None``."""
+        from .text import content_stems
+
+        rest, hit = question, False
+        for regex in self._compiled.get(("small_talk", "wording"), []):
+            if regex.search(rest):
+                hit = True
+                rest = regex.sub(" ", rest)
+        leftover = [w for w in content_stems(re.sub(r"[^\w\s]", " ", rest)) if w not in _SMALL_TALK_FILLER]
+        if not hit or leftover:
+            return None
+        low = question.lower()
+        if re.search(r"\b(thanks?|thank you|thx|cheers|obrigad[oa]|valeu|brigad[oa])\b", low):
+            return "thanks"
+        if re.search(r"\b(bye|goodbye|see you|tchau|at[eé] mais)\b", low):
+            return "goodbye"
+        return "greeting"
 
     def group_words(self, question: str) -> List[Tuple[int, int]]:
         """Where the count_by wording (sure or maybe) sits — the group is the word right after."""
@@ -179,6 +207,12 @@ def _compile(phrase: str, shape: str) -> re.Pattern:
     except re.error as exc:
         raise ValueError(f"answer_shapes[{shape!r}]: bad regex {phrase!r}: {exc}") from exc
 
+
+#: Words that don't turn small talk into a question ("thanks a lot", "valeu pessoal").
+_SMALL_TALK_FILLER = {stem(w) for w in (
+    "lot", "much", "very", "so", "again", "all", "everyone", "guys", "folks", "team", "friend", "mate", "bot",
+    "duckduck", "there", "today", "muito", "mesmo", "pessoal", "gente", "todos", "amigo", "time", "hoje", "ai", "aí",
+)}
 
 #: What a ``catalog`` question is about, by its wording (first match wins; default: the tables).
 CATALOG_TOPICS = [

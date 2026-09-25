@@ -68,6 +68,13 @@ DEFAULT_TEXTS: Dict[str, str] = {
     "answer_shape.lookup": "everything about it, from every table that has it",
     "answer_shape.locate": "which tables have it",
     "answer_shape.catalog": "what data I have access to",
+    "reply.out_of_scope": "I couldn't find anything about that in the data I have.",
+    "reply.topics": "I can answer questions about {topics}.",
+    "reply.examples": "For example:",
+    "reply.ask_anyway": "It is about the data — try anyway",
+    "reply.greeting": "Hi! Ask me anything about the data I have.",
+    "reply.thanks": "You're welcome!",
+    "reply.goodbye": "Bye — come back any time.",
     "values_field.question": "The different values of what?",
     "values_field.context": "“{question}” asks for the different values of something in the {source}, "
                             "but I'm not sure of what.",
@@ -80,7 +87,7 @@ DEFAULT_TEXTS: Dict[str, str] = {
     "join.no": "they're unrelated",
 }
 
-_PLACEHOLDERS = {"question", "value", "term", "field", "field_name", "source", "source_name", "value_label",
+_PLACEHOLDERS = {"topics", "question", "value", "term", "field", "field_name", "source", "source_name", "value_label",
                  "entity", "entity_name", "other_source", "other_field"}
 
 

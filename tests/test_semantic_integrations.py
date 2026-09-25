@@ -166,7 +166,8 @@ class RoutingJev:
                 wanted = "user" if "entity" in q["instructions"] else "authentication"
                 answers[key] = {"probabilities": {c: (0.96 if c == wanted else 0.01) for c in q["criteria"]}}
             else:
-                answers[key] = {"noul": 0.97 if "auth_logs" in q["instructions"] or "catalog_prior_probability" in body["state"] else 0.1}
+                answers[key] = {"noul": 0.97 if "auth_logs" in q["instructions"] or "catalog_prior_probability" in body["state"]
+                                or key == "in_scope" else 0.1}
         r = MagicMock(status_code=200, ok=True)
         r.json.return_value = {"code": 0, "message": "ok", "data": {"answers": answers}}
         return r
