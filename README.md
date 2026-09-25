@@ -1217,9 +1217,12 @@ field's name (`severity`). So the answer is that field's distinct values,
 not every row. When the phrase names an entity instead ("list the
 owners"), it stays a list, which is already one row per owner.
 When the question names such a field, which thing it is *about* doesn't
-matter. So the entity isn't asked (one less engine question), the table
-holding the field is picked first, and the chips show *Answer: the
-different values of department (owners)* instead of an *About* guess.
+matter. So the entity isn't asked (one less engine question) and the table
+holding the field is picked first. The chips show *About: department
+(owners)* and *Answer: the different values*. Clicking *About* lists the
+fields of the relevant tables to pick another (`/api/ask` `values_field`,
+or `pinned={"values_field": "owners.department"}` in Python), just as it
+lists entities for a question about things.
 
 **Everything about a value (`lookup`) and where it is (`locate`).** Both
 look in **every table that has a field of the value's type**, not only

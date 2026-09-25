@@ -356,9 +356,16 @@ class SemanticInterpreter:
             sources.append({"source": name, "probability": round(result.probability, 3),
                             "relevant": result.probability >= threshold})
         field = self._values_of_named_field(intent, {})
+        if field:  # what else it could be about: the fields of the relevant tables, the named one first
+            tables = [field.split(".")[0]] + [s["source"] for s in sources if s["relevant"]]
+            fields = [f"{t}.{f}" for t in dict.fromkeys(tables) for f, d in self.catalog.sources[t].fields.items()
+                      if f != self.catalog.sources[t].resolved_time_field]
+            field_options = [{"field": ref, "description": (self.catalog.field(ref).description or "").strip()}
+                             for ref in [field] + [r for r in fields if r != field]][:25]
         return {
             "question": question,
             "field": field,
+            "field_options": field_options if field else [],
             "answer_shape": ({"choice": candidates[0], "probability": 1.0, "sure": True} if len(candidates) == 1 else
                              {"choice": shape.choice, "probability": round(shape.probability, 3),
                               "sure": shape.probability >= self.thresholds.answer_shape}),

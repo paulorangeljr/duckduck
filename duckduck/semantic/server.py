@@ -7,7 +7,7 @@ HTML page (``webpage.PAGE``) over a JSON API:
 
 ==========================================  ==============================================
 ``POST /api/preview {question}``            while typing: entity, answer kind, relevant tables by system
-``POST /api/ask {question, user, only_sources, entity, blocked_joins, in_scope}``  starts a conversation → its first result
+``POST /api/ask {question, user, only_sources, entity, values_field, blocked_joins, in_scope}``  starts a conversation → its first result
 ``POST /api/answer {conversation_id, reply}`` answers the open clarification → next result
 ``POST /api/feedback {search_id, verdict, categories, reason, expected, user}``
 ``GET  /api/searches``, ``/api/searches/{id}``  history / one search's decision trail
@@ -157,6 +157,12 @@ def create_app(
             pins = {"entity": entity} if entity else {}
             if body.get("in_scope"):  # "it is about the data — try anyway"
                 pins["in_scope"] = True
+            values_field = body.get("values_field")  # "about" a field: the one whose values the answer lists
+            if values_field is not None:
+                if not isinstance(values_field, str) or not search.catalog.has_field(values_field):
+                    raise ValueError(f"values_field: {values_field!r} isn't a source.field name")
+                pins["values_field"] = values_field
+                pins[f"source:{values_field.split('.')[0]}"] = True
             for pair in body.get("blocked_joins") or []:  # joins the user unticked: routed around, never used
                 if (not isinstance(pair, (list, tuple)) or len(pair) != 2
                         or not all(isinstance(r, str) and search.catalog.has_field(r) for r in pair)):

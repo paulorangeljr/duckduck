@@ -318,9 +318,9 @@ $("#user").addEventListener("change", () => store.set("duckduck-user", $("#user"
 // only_sources (nothing else is used, joins included) and entity (pinned, never asked).
 // A choice belongs to the question it was made for (pre.forQ): small edits keep it, a new question starts
 // from the new suggestions.
-const pre = {data: null, chosen: null, entity: null, blocked: new Set(), forQ: null, open: null, seq: 0, timer: null,
+const pre = {data: null, chosen: null, entity: null, field: null, blocked: new Set(), forQ: null, open: null, seq: 0, timer: null,
              ctrl: null, thinking: false, error: null};
-function resetChoices() { Object.assign(pre, {chosen: null, entity: null, blocked: new Set(), forQ: null}); }
+function resetChoices() { Object.assign(pre, {chosen: null, entity: null, field: null, blocked: new Set(), forQ: null}); }
 function chose() { pre.forQ = $("#question").value.trim(); }
 const words = (t) => new Set((t || "").toLowerCase().match(/[\p{L}\p{N}_.:-]+/gu) || []);
 function sameQuestion(a, b) {
@@ -376,15 +376,15 @@ function drawChips() {
       chips.push(`<button class="chip ${pre.chosen || pre.blocked.size ? "mine" : ""}" type="button" data-open="systems" aria-expanded="${pre.open === "systems"}"><span class="dot"></span><span class="k">Systems</span> ${icons.map(icon).join("")}${esc(label)}${joins}</button>`);
     }
     const e = d.entity;
-    if (shape !== "catalog" && e && (pre.entity || e.sure)) {
+    if (d.field) {  // the answer is a field's values: that field is what it's about
+      const [src, fld] = (pre.field || d.field).split(".");
+      chips.push(`<button class="chip ${pre.field ? "mine" : ""}" type="button" data-open="field" aria-expanded="${pre.open === "field"}"><span class="dot"></span><span class="k">About</span> ${esc(fld.replace(/_/g, " "))} <span class="k">(${esc(src)})</span></button>`);
+    } else if (shape !== "catalog" && e && (pre.entity || e.sure)) {
       const name = (pre.entity || e.choice).replace(/_/g, " ");
       chips.push(`<button class="chip ${pre.entity ? "mine" : ""}" type="button" data-open="entity" aria-expanded="${pre.open === "entity"}"><span class="dot"></span><span class="k">About</span> ${esc(name)}</button>`);
     }
     if (shape && !["list", "catalog"].includes(shape) && d.answer_shape.sure) {
-      // "the departments I have": the answer is that field's values — say which field, not an entity
-      const [src, fld] = (d.field || "").split(".");
-      const what = d.field ? `the different values of ${esc(fld.replace(/_/g, " "))} <span class="k">(${esc(src)})</span>` : esc(SHAPE_WORDS[shape] || shape);
-      chips.push(`<button class="chip" type="button" disabled title="${esc(d.field ? "the question names this field, so which thing it is about doesn't matter" : "")}"><span class="dot"></span><span class="k">Answer</span> ${what}</button>`);
+      chips.push(`<button class="chip" type="button" disabled><span class="dot"></span><span class="k">Answer</span> ${esc(SHAPE_WORDS[shape] || shape)}</button>`);
     }
   }
   if (pre.thinking) chips.push(`<span class="chip thinking"><span class="dot"></span>reading your question…</span>`);
@@ -436,6 +436,18 @@ function drawPanel() {
       pre.chosen = set; chose(); drawChips();
     }));
     $("#useall").addEventListener("click", () => { pre.chosen = null; pre.blocked = new Set(); pre.open = null; drawChips(); });
+  } else if (pre.open === "field") {
+    const current = pre.field || d.field;
+    panel.innerHTML = `<p class="muted small" style="margin:0 0 6px">Which field's values should the answer list?</p>` +
+      (d.field_options || []).map(o => { const [src, fld] = o.field.split(".");
+        return `<label class="srcrow"><input type="radio" name="fld" value="${esc(o.field)}" ${o.field === current ? "checked" : ""}>
+        <span>${esc(fld.replace(/_/g, " "))} <span class="muted small">(${esc(src)})</span>${o.field === d.field ? ` <span class="tag">in the question</span>` : ""}</span><span></span>
+        ${o.description ? `<span class="desc">${esc(o.description)}</span>` : ""}</label>`; }).join("") +
+      `<div class="foot"><button class="secondary" type="button" id="useall">Let it decide</button>
+        <button class="primary" type="button" id="paneldone">Done</button></div>`;
+    panel.querySelectorAll("input[name=fld]").forEach(r => r.addEventListener("change", () => {
+      pre.field = r.value === d.field ? null : r.value; chose(); drawChips(); }));
+    $("#useall").addEventListener("click", () => { pre.field = null; pre.open = null; drawChips(); });
   } else {
     const e = d.entity, desc = e.descriptions || {};
     panel.innerHTML = `<p class="muted small" style="margin:0 0 6px">What should the answer be about?</p>` +
@@ -468,6 +480,7 @@ async function ask(q, extra = {}) {
   const body = {question: q, user: user(), ...extra};
   if (pre.chosen) body.only_sources = [...pre.chosen];
   if (pre.entity) body.entity = pre.entity;
+  if (pre.field) body.values_field = pre.field;
   if (pre.blocked.size) body.blocked_joins = [...pre.blocked].map(k => k.split("="));
   $("#conversation").innerHTML = `<div class="card muted">Thinking…</div>`;
   try { render(await api("/api/ask", body)); }

@@ -91,7 +91,9 @@ class QueryPlanner:
         decisions: List[DecisionRecord] = []
         checks: List[tuple] = []  # (Ask, record kind, threshold, message if it fails, options)
         activity = self.catalog.activities.get(intent.activity) if intent.activity else None
-        primary = self._choose_primary(intent, activity, refused)
+        pinned_field = pins.get("values_field") if isinstance(pins.get("values_field"), str) else None
+        primary = self._choose_primary(intent, activity, refused,
+                                       preferred=pinned_field.split(".")[0] if pinned_field else None)
         paths: List[Path] = []
         filters: List[Filter] = []
         resource_fields: Set[str] = set()
@@ -362,7 +364,8 @@ class QueryPlanner:
     def _usable_fields(self, source: str, semantic_type: str, refused: Set[str]) -> List[str]:
         return [f for f in self.catalog.fields_by_semantic_type(source, semantic_type) if f"{source}.{f}" not in refused]
 
-    def _choose_primary(self, intent: SemanticIntent, activity: Optional[ActivityDef], refused: Set[str] = frozenset()) -> str:
+    def _choose_primary(self, intent: SemanticIntent, activity: Optional[ActivityDef], refused: Set[str] = frozenset(),
+                        preferred: Optional[str] = None) -> str:
         eligible = []
         # "the departments I have": for a field's values, the table holding the field the question names comes first
         words = set(content_stems(intent.working_question)) if intent.answer_shape in FIELD_SHAPES else set()
@@ -377,7 +380,8 @@ class QueryPlanner:
             supports = bool(intent.activity) and intent.activity in src.activities
             names_field = bool(words) and any(
                 (tokens := {stem(t) for t in tokenize(f.replace("_", " "))}) and tokens <= words for f in src.fields)
-            eligible.append(((names_field, supports, cand.confidence, cand.retrieval_score), cand.source))
+            eligible.append(((cand.source == preferred, names_field, supports, cand.confidence, cand.retrieval_score),
+                             cand.source))
         if not eligible:
             self._retry_value_type(intent, refused)
             needs = []

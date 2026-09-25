@@ -259,3 +259,27 @@ def test_a_named_field_answer_never_asks_what_it_is_about(monkeypatch):
     assert preview["field"] == "owners.department" and preview["entity"] is None
     # the entity *is* the field: still asked ("the different users" = the users)
     assert search.preview("Show me the different owners")["field"] is None
+
+
+def test_about_a_field_can_be_changed_like_an_entity():
+    search = _search()
+    preview = search.preview("show me the departments I have")
+    options = [o["field"] for o in preview["field_options"]]
+    assert options == ["owners.department", "owners.ip", "owners.owner"]  # the relevant tables' fields, named first
+    picked = search.search("show me the departments I have",
+                           pinned={"values_field": "alerts.severity", "source:alerts": True})
+    assert picked.status == "ok" and picked.results["severity"].tolist() == ["critical", "high", "low"]
+
+
+def test_the_web_app_sends_the_chosen_field():
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from duckduck.semantic.server import create_app
+
+    search = _search()
+    client = TestClient(create_app(lambda: search, store=None))
+    body = {"question": "show me the departments I have", "values_field": "alerts.rule"}
+    result = client.post("/api/ask", json=body).json()["result"]
+    assert [r["rule"] for r in result["results"]] == ["brute_force", "exfil", "malware"]
+    assert client.post("/api/ask", json={**body, "values_field": "alerts.nope"}).status_code == 400
