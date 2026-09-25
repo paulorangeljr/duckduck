@@ -5,13 +5,18 @@ Not a decision tree: every judgment below (entity, activity, each
 source's relevance, each value's type) is asked *independently* against
 the same state, and each one is recorded with its probability. The
 planner combines them afterwards.
+
+They're independent, so they go out together: one batch (``ask_all`` —
+a single Jev request) for all of them. A second, small batch only when
+the chosen entity/activity is declared by sources lexical retrieval
+didn't propose (the question used words the catalog doesn't).
 """
 
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 from .catalog import Catalog
-from .decisions import DecisionEngine, DecisionState
+from .decisions import CRITERIA, Ask, DecisionEngine, DecisionState, ask_all
 from .extraction import Extraction, RuleBasedExtractor, ValueExtractor
 from .intent import (
     ClarificationNeeded,
@@ -61,18 +66,35 @@ class SemanticInterpreter:
             value_filters=extraction.enum_matches,
             literals=extraction.literals,
         )
+        try:
+            retrieved = dict(self.retriever.search(intent.question, self.top_k))
+            asks = [a for a in (self._entity_ask(intent, extraction), self._activity_ask(intent, extraction)) if a]
+            asks += self._value_asks(intent, extraction)
+            asks += self._source_asks(intent, extraction, retrieved)
+            answers = ask_all(self.engine, asks)
 
-        self._decide_entity(intent, extraction, decisions)
-        self._decide_activity(intent, extraction, decisions)
-        self._decide_resources(intent, extraction, decisions)
-        self._decide_sources(intent, extraction, decisions)
+            self._apply_entity(intent, answers.get("entity"), decisions)
+            self._apply_activity(intent, answers.get("activity"), decisions)
+            self._apply_resources(intent, extraction, answers, decisions)
+
+            # sources that declare what was decided, but that lexical retrieval missed
+            extra = self._declaring_sources(intent, exclude=retrieved)
+            if extra:
+                answers.update(ask_all(self.engine, self._source_asks(intent, extraction, extra)))
+                retrieved.update(extra)
+            self._apply_sources(intent, retrieved, answers, decisions)
+        except ClarificationNeeded as exc:
+            exc.decisions = decisions  # everything decided so far, for the result/audit
+            raise
         return intent, decisions
 
     # ------------------------------------------------------------------
+    # the questions
+    # ------------------------------------------------------------------
 
-    def _decide_entity(self, intent: SemanticIntent, ex: Extraction, decisions: List[DecisionRecord]) -> None:
+    def _entity_ask(self, intent: SemanticIntent, ex: Extraction) -> Optional[Ask]:
         if not self.catalog.entities:
-            return
+            return None
         # The head noun is the strongest evidence: the first word the catalog
         # knows as an entity ("show me failed authentication *attempts*
         # from user bob"); fall back to every term.
@@ -80,13 +102,69 @@ class SemanticInterpreter:
             (t for t in [*ex.focus_terms, *ex.terms] if any(t in v for v in self._entity_vocab.values())),
             None,
         )
-        terms = [focus] if focus else ex.terms
         options = {
             name: f"{e.description} Keywords: {', '.join(e.keywords)}"
             for name, e in self.catalog.entities.items()
         }
+        return Ask(key="entity", question="What entity is the user asking for?", options=options,
+                   state=DecisionState(query=intent.question, terms=[focus] if focus else ex.terms))
+
+    def _activity_ask(self, intent: SemanticIntent, ex: Extraction) -> Optional[Ask]:
+        if not self.catalog.activities:
+            return None
+        options = {
+            name: f"{a.description} Keywords: {', '.join(a.keywords)}"
+            for name, a in self.catalog.activities.items()
+        }
+        return Ask(key="activity", question="What activity is being investigated?", options=options,
+                   state=DecisionState(query=intent.question, terms=ex.terms))
+
+    def _value_asks(self, intent: SemanticIntent, ex: Extraction) -> List[Ask]:
+        """"What kind of value is X?" for a free-text value nothing else types (answer used only if needed)."""
+        free_text = [lit for lit in ex.literals if lit.kind == "term" and not self._known_type(lit)]
+        if len(free_text) != 1:
+            return []  # none to type, or ambiguous (asked back to the user, not to the engine)
+        sem_types = self._value_types()
+        if not sem_types:
+            return []
+        lit = free_text[0]
+        return [Ask(
+            key=f"value:{lit.value}", question=f"What kind of value is {lit.value!r} in this question?",
+            options={t: t.replace("_", " ") for t in sem_types},
+            state=DecisionState(query=intent.question, terms=ex.terms, facts={"value": lit.value}),
+        )]
+
+    def _value_types(self) -> List[str]:
+        return sorted({
+            f.semantic_type for s in self.catalog.sources.values() for f in s.fields.values()
+            if f.semantic_type and f.semantic_type != "event_time"
+        })
+
+    def _source_asks(self, intent: SemanticIntent, ex: Extraction, names) -> List[Ask]:
+        state = DecisionState(query=intent.question, terms=ex.terms)
+        return [
+            Ask(key=f"source:{name}", question="Is this source relevant to answering the question?",
+                subject=self.catalog.describe_source(name), criteria=CRITERIA["source"], state=state)
+            for name in names
+        ]
+
+    def _declaring_sources(self, intent: SemanticIntent, exclude) -> Dict[str, float]:
+        """Sources declaring the decided entity/activity that aren't candidates yet (up to ``top_k``)."""
+        wanted = [x for x in (intent.target_entity, intent.activity) if x]
+        extra = [
+            name for name, src in self.catalog.sources.items()
+            if name not in exclude and any(w in src.entities or w in src.activities for w in wanted)
+        ]
+        return {name: 0.0 for name in extra[: self.top_k]}
+
+    # ------------------------------------------------------------------
+    # the answers, in the order a person would check them
+    # ------------------------------------------------------------------
+
+    def _apply_entity(self, intent: SemanticIntent, result, decisions: List[DecisionRecord]) -> None:
+        if result is None:
+            return
         question = "What entity is the user asking for?"
-        result = self.engine.classify(DecisionState(query=intent.question, terms=terms), question, options)
         record = DecisionRecord(
             kind="entity", question=question, answer=result.choice,
             probability=result.probability, threshold=self.thresholds.entity,
@@ -101,17 +179,11 @@ class SemanticInterpreter:
             )
         intent.target_entity, intent.target_confidence = result.choice, result.probability
 
-    def _decide_activity(self, intent: SemanticIntent, ex: Extraction, decisions: List[DecisionRecord]) -> None:
-        if not self.catalog.activities:
+    def _apply_activity(self, intent: SemanticIntent, result, decisions: List[DecisionRecord]) -> None:
+        if result is None:
             return
-        options = {
-            name: f"{a.description} Keywords: {', '.join(a.keywords)}"
-            for name, a in self.catalog.activities.items()
-        }
-        question = "What activity is being investigated?"
-        result = self.engine.classify(DecisionState(query=intent.question, terms=ex.terms), question, options)
         record = DecisionRecord(
-            kind="activity", question=question, answer=result.choice,
+            kind="activity", question="What activity is being investigated?", answer=result.choice,
             probability=result.probability, threshold=self.thresholds.activity,
             alternatives=result.ranked()[1:4],
         )
@@ -121,7 +193,7 @@ class SemanticInterpreter:
         if record.passed:
             intent.activity, intent.activity_confidence = result.choice, result.probability
 
-    def _decide_resources(self, intent: SemanticIntent, ex: Extraction, decisions: List[DecisionRecord]) -> None:
+    def _apply_resources(self, intent: SemanticIntent, ex: Extraction, answers, decisions: List[DecisionRecord]) -> None:
         activity = self.catalog.activities.get(intent.activity) if intent.activity else None
         free_text = [lit for lit in ex.literals if lit.kind == "term" and not self._known_type(lit)]
 
@@ -163,19 +235,11 @@ class SemanticInterpreter:
                 ))
                 continue
 
-            sem_types = sorted({
-                f.semantic_type for s in self.catalog.sources.values() for f in s.fields.values()
-                if f.semantic_type and f.semantic_type != "event_time"
-            })
-            if not sem_types:
+            result = answers.get(f"value:{lit.value}")
+            if result is None:
                 continue
-            question = f"What kind of value is {lit.value!r} in this question?"
-            result = self.engine.classify(
-                DecisionState(query=intent.question, terms=ex.terms, facts={"value": lit.value}),
-                question, {t: t.replace("_", " ") for t in sem_types},
-            )
             record = DecisionRecord(
-                kind="resource_type", question=question, answer=result.choice,
+                kind="resource_type", question=result.question, answer=result.choice,
                 probability=result.probability, threshold=self.thresholds.resource_type,
                 alternatives=result.ranked()[1:4],
             )
@@ -219,19 +283,12 @@ class SemanticInterpreter:
             return "user"  # no dedicated email fields: an address identifies a user
         return sem_type
 
-    def _decide_sources(self, intent: SemanticIntent, ex: Extraction, decisions: List[DecisionRecord]) -> None:
-        retrieved: Dict[str, float] = dict(self.retriever.search(intent.question, self.top_k))
+    def _apply_sources(self, intent: SemanticIntent, retrieved: Dict[str, float], answers,
+                       decisions: List[DecisionRecord]) -> None:
         scored: List[ScoredSource] = []
         question = "Is this source relevant to answering the question?"
-        state = DecisionState(query=intent.question, terms=ex.terms)
-        subjects = {name: self.catalog.describe_source(name) for name in retrieved}
-        decide_many = getattr(self.engine, "decide_many", None)
-        if decide_many is not None:  # one round trip for every candidate
-            results = decide_many(state, question, subjects)
-        else:
-            results = {name: self.engine.decide(state, question, subj) for name, subj in subjects.items()}
         for name, retrieval_score in retrieved.items():
-            result = results[name]
+            result = answers[f"source:{name}"]
             threshold = self.thresholds.critical if self.catalog.sources[name].critical else self.thresholds.source
             record = DecisionRecord(
                 kind="source_relevance", question=question, subject=name,

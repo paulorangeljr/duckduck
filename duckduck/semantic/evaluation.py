@@ -94,3 +94,121 @@ def evaluate(search: SemanticSearch, cases: List[Dict[str, Any]], execute: bool 
             detail={"sql": res.sql, "sources": plan.sources if plan else None},
         ))
     return EvaluationReport(out)
+
+
+# ---------------------------------------------------------------------------
+# Threshold calibration
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ThresholdSuggestion:
+    kind: str                 #: entity / activity / source
+    samples: int              #: labeled decisions it's based on
+    current: float
+    suggested: float
+    cost_current: float
+    cost_suggested: float
+    #: At the suggested threshold: right answers accepted / wrong ones accepted / right ones sent back.
+    accepted_right: int = 0
+    accepted_wrong: int = 0
+    rejected_right: int = 0
+
+
+@dataclass
+class CalibrationReport:
+    suggestions: List[ThresholdSuggestion]
+    cost_wrong: float
+    cost_ask: float
+    cases: int
+    notes: List[str] = field(default_factory=list)
+
+    @property
+    def thresholds(self) -> Dict[str, float]:
+        """The suggested values, shaped like the config's ``semantic.thresholds``."""
+        return {s.kind: s.suggested for s in self.suggestions}
+
+    def summary(self) -> str:
+        lines = [
+            f"calibrated on {self.cases} labeled questions (a wrong answer costs {self.cost_wrong:g}, "
+            f"asking back costs {self.cost_ask:g}):"
+        ]
+        for s in self.suggestions:
+            change = "keep" if abs(s.suggested - s.current) < 1e-9 else f"{s.current:.2f} → {s.suggested:.2f}"
+            lines.append(
+                f"  {s.kind:<10} {change:<14} cost {s.cost_current:g} → {s.cost_suggested:g} · "
+                f"{s.samples} decisions: {s.accepted_right} right accepted, {s.accepted_wrong} wrong accepted, "
+                f"{s.rejected_right} right sent back"
+            )
+        lines += [f"  note: {n}" for n in self.notes]
+        lines.append('  → "thresholds": ' + json.dumps(self.thresholds))
+        return "\n".join(lines)
+
+
+def calibrate_thresholds(
+    search: SemanticSearch,
+    cases: List[Dict[str, Any]],
+    cost_wrong: float = 5.0,
+    cost_ask: float = 1.0,
+) -> CalibrationReport:
+    """
+    Suggests ``entity`` / ``activity`` / ``source`` thresholds from labeled
+    questions (``expected_entity`` / ``expected_activity`` /
+    ``expected_sources``, as in ``evaluation.json``) for the configured
+    decision engine — thresholds tuned on one engine version don't carry
+    over to another, so re-run after changing it.
+
+    Every question is planned (not executed) with all thresholds at 0, so
+    each decision's probability is recorded whether or not it would have
+    passed; each kind's threshold is then the one minimizing total cost:
+    accepting a wrong decision costs ``cost_wrong``, sending a right one
+    back to the user costs ``cost_ask``. Few labeled questions → an
+    overfit suggestion; aim for dozens per kind.
+    """
+    thresholds = search.thresholds
+    saved = thresholds.model_dump()
+    samples: Dict[str, List[tuple]] = {"entity": [], "activity": [], "source": []}
+    try:
+        for name in saved:
+            setattr(thresholds, name, 0.0)
+        for case in cases:
+            try:
+                res = search.search(case["question"], execute=False)
+            except Exception:  # a broken case mustn't stop calibration
+                continue
+            for d in res.decisions:
+                if d.kind == "entity" and "expected_entity" in case:
+                    samples["entity"].append((d.probability, d.answer == case["expected_entity"]))
+                elif d.kind == "activity" and "expected_activity" in case:
+                    samples["activity"].append((d.probability, d.answer == case["expected_activity"]))
+                elif d.kind == "source_relevance" and "expected_sources" in case:
+                    samples["source"].append((d.probability, d.subject in case["expected_sources"]))
+    finally:
+        for name, value in saved.items():
+            setattr(thresholds, name, value)
+
+    suggestions, notes = [], []
+    for kind, points in samples.items():
+        if not points:
+            notes.append(f"no labeled {kind} decisions — add expected_{'sources' if kind == 'source' else kind} to cases")
+            continue
+        current = saved[kind]
+        probs = sorted({p for p, _ in points})
+        midpoints = [(a + b) / 2 for a, b in zip(probs, probs[1:])]
+        # ... and just above the highest seen: "never decide this kind automatically"
+        candidates = sorted({round(t, 3) for t in (current, *probs, *midpoints)} | {round(probs[-1] + 0.001, 3)})
+
+        def cost(t: float) -> float:
+            return sum((cost_wrong if not right else 0.0) if p >= t else (cost_ask if right else 0.0) for p, right in points)
+
+        best = min(candidates, key=lambda t: (cost(t), abs(t - current)))  # ties: stay close to the current one
+        suggestions.append(ThresholdSuggestion(
+            kind=kind, samples=len(points), current=current, suggested=best,
+            cost_current=cost(current), cost_suggested=cost(best),
+            accepted_right=sum(1 for p, r in points if p >= best and r),
+            accepted_wrong=sum(1 for p, r in points if p >= best and not r),
+            rejected_right=sum(1 for p, r in points if p < best and r),
+        ))
+        if len(points) < 20:
+            notes.append(f"{kind}: only {len(points)} labeled decisions — treat the suggestion as a hint")
+    return CalibrationReport(suggestions, cost_wrong, cost_ask, len(cases), notes)

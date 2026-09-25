@@ -136,6 +136,32 @@ def refresh_catalog(cfg: Any, duck: Any, out: Optional[str] = None, write: bool 
     return result
 
 
+def calibrate(
+    dataset: str,
+    config_path: Optional[str] = None,
+    duck: Any = None,
+    verbose: Any = None,
+    cost_wrong: float = 5.0,
+    cost_ask: float = 1.0,
+):
+    """
+    Suggests ``semantic.thresholds`` (entity / activity / source) for the
+    configured decision engine from labeled questions — a JSON list like
+    ``examples/semantic/evaluation.json`` (``question`` +
+    ``expected_entity`` / ``expected_activity`` / ``expected_sources``).
+    Plans every question (no data fetched) and picks, per kind, the
+    threshold with the lowest cost: ``cost_wrong`` per wrong decision
+    accepted, ``cost_ask`` per right one sent back to the user. Returns a
+    ``CalibrationReport`` (``.summary()``, ``.thresholds``).
+    """
+    from .evaluation import calibrate_thresholds, load_dataset
+
+    _apply_verbose(verbose)
+    duck = duck if duck is not None else connect(config_path, verbose)
+    search = SemanticSearch.from_config(duck, config_path)
+    return calibrate_thresholds(search, load_dataset(dataset), cost_wrong=cost_wrong, cost_ask=cost_ask)
+
+
 def jev_check(config_path: Optional[str] = None, verbose: Any = None):
     """
     One real decision call (key, network access, response parsing) through

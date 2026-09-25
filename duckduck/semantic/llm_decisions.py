@@ -11,7 +11,7 @@ a structured output — never free text, never SQL.
 """
 
 import json
-from typing import Any, Dict, List, Mapping
+from typing import Any, Dict, List, Mapping, Optional
 
 from pydantic import BaseModel, Field
 
@@ -49,6 +49,18 @@ class _Scores(BaseModel):
     scores: List[_Scored]
 
 
+class _Answer(BaseModel):
+    key: str
+    #: yes/no questions: P(yes).
+    yes_probability: Optional[float] = None
+    #: choice questions: one score per option.
+    option_probabilities: List[_Scored] = Field(default_factory=list)
+
+
+class _Answers(BaseModel):
+    answers: List[_Answer]
+
+
 class LLMDecisionBackend:
     """``JEVBackend`` over an ``LLMClient`` with structured output."""
 
@@ -73,6 +85,27 @@ class LLMDecisionBackend:
         answer = self.llm.generate(self.system_prompt, prompt, _Scores)
         got = {s.key: min(max(float(s.probability), 0.0), 1.0) for s in answer.scores}
         return {key: got.get(key, 0.5) for key in questions}
+
+    def ask(self, state: Dict[str, Any], questions: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+        """A mixed batch in one call — same contract as ``JevClient.ask``."""
+        judgments = {
+            key: {"type": "yes_no" if q["type"] == "noul" else "choice", "instructions": q["instructions"],
+                  **({"options" if q["type"] == "choice" else "criteria": q["criteria"]} if q.get("criteria") else {})}
+            for key, q in questions.items()
+        }
+        prompt = self._prompt(state, "Answer every judgment below: yes_probability for yes_no ones, "
+                                     "option_probabilities (every option) for choice ones.", judgments=judgments)
+        answer = self.llm.generate(self.system_prompt, prompt, _Answers)
+        got = {a.key: a for a in answer.answers}
+        out: Dict[str, Any] = {}
+        for key, q in questions.items():
+            a = got.get(key)
+            if q["type"] == "choice":
+                out[key] = {s.key: s.probability for s in (a.option_probabilities if a else [])}
+            else:
+                p = a.yes_probability if a and a.yes_probability is not None else 0.5
+                out[key] = min(max(float(p), 0.0), 1.0)
+        return out
 
     @staticmethod
     def _prompt(state: Dict[str, Any], question: str, **extra: Any) -> str:

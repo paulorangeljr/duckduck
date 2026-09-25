@@ -268,6 +268,12 @@ class Catalog(_Strict):
                 found[rel.from_] = max(found.get(rel.from_, 0.0), rel.confidence)
         return found
 
+    def describe_field(self, ref: str) -> str:
+        """``source.field (type): description`` + the owner's notes (fed to the decision engine)."""
+        f = self.field(ref)
+        text = f"{ref} ({f.semantic_type or f.type}): {f.description}"
+        return text + (f" Owner's notes: {f.notes.strip()}" if f.notes.strip() else "")
+
     def describe_source(self, name: str) -> str:
         """One-paragraph natural-language description of a source (fed to the decision engine)."""
         src = self.sources[name]
@@ -276,6 +282,8 @@ class Catalog(_Strict):
             for fname, f in src.fields.items()
         )
         parts = [f"{name}: {src.description.strip()}", f"Fields: {fields}."]
+        if src.notes.strip():
+            parts.append(f"Owner's notes: {src.notes.strip()}")
         if src.entities:
             parts.append("Entities: " + "; ".join(
                 self._with_keywords(e, self.entities.get(e)) for e in src.entities
@@ -294,9 +302,9 @@ class Catalog(_Strict):
     def source_texts(self, name: str) -> List[str]:
         """All catalog text attached to a source (for lexical matching/indexing)."""
         src = self.sources[name]
-        texts = [name, src.description, *src.examples]
+        texts = [name, src.description, src.notes, *src.examples]
         for fname, f in src.fields.items():
-            texts += [fname, f.description, f.semantic_type or ""]
+            texts += [fname, f.description, f.semantic_type or "", f.notes]
         for entity in src.entities:
             texts.append(entity)
             if entity in self.entities:

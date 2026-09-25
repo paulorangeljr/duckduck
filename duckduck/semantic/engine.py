@@ -226,8 +226,10 @@ class SemanticSearch:
             result.query_plan = self.validator.validate(plan)
             result.sql = display_sql(plan, self.catalog, now)
         except ClarificationNeeded as exc:
-            if exc.decision is not None and exc.decision not in result.decisions:
-                result.decisions.append(exc.decision)
+            # everything decided before it stopped, then the decision that stopped it
+            for d in [*getattr(exc, "decisions", []), *([exc.decision] if exc.decision is not None else [])]:
+                if d not in result.decisions:
+                    result.decisions.append(d)
             result.status = "needs_clarification"
             result.clarification = exc.reason
             result.options = exc.options

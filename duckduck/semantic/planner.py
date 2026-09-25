@@ -9,12 +9,15 @@ entity, an enumerated filter living elsewhere — finds the best join path
 through the relationship graph. Every field and join it commits to is
 confirmed with the decision engine (field/relationship relevance), with
 the catalog's own confidence as the prior, and must clear its threshold.
+Those confirmations don't depend on each other, so the whole plan's go
+out as one batch once it's laid out (``ask_all``), and are checked in
+the order they were needed.
 """
 
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from .catalog import ActivityDef, Catalog
-from .decisions import DecisionEngine, DecisionState
+from .decisions import CRITERIA, Ask, DecisionEngine, DecisionState, ask_all
 from .graph import Path, RelationshipGraph
 from .intent import ClarificationNeeded, DecisionRecord, SemanticIntent, Thresholds
 from .plan import Filter, Join, LogicalQueryPlan, TimeRangeFilter
@@ -46,6 +49,7 @@ class QueryPlanner:
 
     def plan(self, intent: SemanticIntent) -> Tuple[LogicalQueryPlan, List[DecisionRecord]]:
         decisions: List[DecisionRecord] = []
+        checks: List[tuple] = []  # (Ask, record kind, threshold, message if it fails, options)
         activity = self.catalog.activities.get(intent.activity) if intent.activity else None
         primary = self._choose_primary(intent, activity)
         paths: List[Path] = []
@@ -56,7 +60,7 @@ class QueryPlanner:
         for res in intent.resources:
             fname = self._pick_field(primary, res.type, activity.resource_role if activity else None)
             ref = f"{primary}.{fname}"
-            self._confirm_field(intent, ref, f"filtering on {res.value!r} ({res.type})", _SEMANTIC_MATCH_PRIOR, decisions)
+            checks.append(self._field_check(intent, ref, f"filtering on {res.value!r} ({res.type})", _SEMANTIC_MATCH_PRIOR, len(checks)))
             fdef = self.catalog.field(ref)
             operator = "eq" if res.literal_kind in ("ip_address", "email") else (fdef.match or "eq")
             filters.append(Filter(field=ref, operator=operator, value=res.value))
@@ -71,7 +75,7 @@ class QueryPlanner:
             match, path = self._locate_enum(primary, term, matches)
             if path.edges:
                 paths.append(path)
-            self._confirm_field(intent, match.field, f"the value {term!r}", _ENUM_MATCH_PRIOR, decisions)
+            checks.append(self._field_check(intent, match.field, f"the value {term!r}", _ENUM_MATCH_PRIOR, len(checks)))
             filters.append(Filter(field=match.field, operator="eq", value=match.value))
 
         # 3. time range, always on the primary source's event time
@@ -93,11 +97,12 @@ class QueryPlanner:
             if path.edges:
                 paths.append(path)
             prior = min(self.catalog.entity_fields(intent.target_entity).get(ref, _SEMANTIC_MATCH_PRIOR), _SEMANTIC_MATCH_PRIOR)
-            self._confirm_field(intent, ref, f"identifying the requested {intent.target_entity}", prior, decisions)
+            checks.append(self._field_check(intent, ref, f"identifying the requested {intent.target_entity}", prior, len(checks)))
             select = [ref]
             distinct = True
 
-        sources, joins = self._merge_paths(intent, primary, paths, decisions)
+        sources, joins = self._merge_paths(intent, primary, paths, checks)
+        self._run_checks(checks, decisions)
         plan = LogicalQueryPlan(
             select=select, sources=sources, joins=joins, filters=filters,
             time_range=time_range, distinct=distinct, limit=self.default_limit,
@@ -198,44 +203,49 @@ class QueryPlanner:
     # Confirmation decisions + join assembly
     # ------------------------------------------------------------------
 
-    def _confirm_field(self, intent: SemanticIntent, ref: str, purpose: str, prior: float, decisions: List[DecisionRecord]) -> None:
-        fdef = self.catalog.field(ref)
-        question = f"Is {ref} relevant for {purpose}?"
-        subject = f"{ref} ({fdef.semantic_type or fdef.type}): {fdef.description}"
-        result = self.engine.decide(DecisionState(query=intent.question, prior=prior, facts={"field": ref}), question, subject)
-        record = DecisionRecord(
-            kind="field_relevance", question=question, subject=ref,
-            answer=result.answer, probability=result.probability, threshold=self.thresholds.field,
+    def _field_check(self, intent: SemanticIntent, ref: str, purpose: str, prior: float, n: int) -> tuple:
+        ask = Ask(
+            key=f"field:{n}", question=f"Is {ref} relevant for {purpose}?",
+            subject=self.catalog.describe_field(ref), criteria=CRITERIA["field"],
+            state=DecisionState(query=intent.question, prior=prior, facts={"field": ref}),
         )
-        decisions.append(record)
-        if not record.passed:
-            raise ClarificationNeeded(f"Not confident that {ref} is the right field for {purpose}.", record, [ref])
+        return ask, "field_relevance", ref, self.thresholds.field, \
+            f"Not confident that {ref} is the right field for {purpose}.", [ref]
 
-    def _merge_paths(self, intent: SemanticIntent, primary: str, paths: List[Path], decisions: List[DecisionRecord]):
+    def _merge_paths(self, intent: SemanticIntent, primary: str, paths: List[Path], checks: List[tuple]):
         sources, joins = [primary], []
         for path in paths:
             for edge in path.edges:
                 if edge.right_source in sources:
                     continue  # already joined in (one alias per source)
-                question = f"Is {edge.right_source} relevant for resolving {edge.left} via {edge.right}?"
-                result = self.engine.decide(
-                    DecisionState(query=intent.question, prior=edge.confidence, facts={"relationship": edge.type}),
-                    question, f"{edge.left} {edge.type} {edge.right}",
+                ask = Ask(
+                    key=f"join:{len(checks)}",
+                    question=f"Is {edge.right_source} relevant for resolving {edge.left} via {edge.right}?",
+                    subject=f"{edge.left} {edge.type} {edge.right}", criteria=CRITERIA["relationship"],
+                    state=DecisionState(query=intent.question, prior=edge.confidence, facts={"relationship": edge.type}),
                 )
-                record = DecisionRecord(
-                    kind="relationship_relevance", question=question,
-                    subject=f"{edge.left} = {edge.right}", answer=result.answer,
-                    probability=result.probability, threshold=self.thresholds.relationship,
-                )
-                decisions.append(record)
-                if not record.passed:
-                    raise ClarificationNeeded(
-                        f"Not confident enough in joining {edge.left} = {edge.right} "
-                        f"({result.probability:.2f}).", record,
-                    )
+                checks.append((ask, "relationship_relevance", f"{edge.left} = {edge.right}", self.thresholds.relationship,
+                               f"Not confident enough in joining {edge.left} = {edge.right}", None))
                 sources.append(edge.right_source)
                 joins.append(Join(left=edge.left, right=edge.right))
         return sources, joins
+
+    def _run_checks(self, checks: List[tuple], decisions: List[DecisionRecord]) -> None:
+        """Every confirmation in one batch; the first to miss its threshold (in plan order) stops the plan."""
+        answers = ask_all(self.engine, [c[0] for c in checks])
+        for ask, kind, subject, threshold, message, options in checks:
+            result = answers[ask.key]
+            record = DecisionRecord(
+                kind=kind, question=ask.question, subject=subject,
+                answer=result.answer, probability=result.probability, threshold=threshold,
+            )
+            decisions.append(record)
+            if not record.passed:
+                if kind == "relationship_relevance":
+                    message = f"{message} ({result.probability:.2f})."
+                exc = ClarificationNeeded(message, record, options)
+                exc.decisions = list(decisions)  # the confirmations that did pass, for the audit
+                raise exc
 
     def _is_allowed(self, source: str) -> bool:
         return self.allowed is None or source in self.allowed

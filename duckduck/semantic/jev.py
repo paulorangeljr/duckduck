@@ -25,13 +25,17 @@ than guessing.
 """
 
 import json
+import logging
 import os
+import time
 from typing import Any, Dict, List, Mapping, Optional
 
 import requests
 
 #: Jev caps request bodies at 32 KiB.
 MAX_BODY_BYTES = 32 * 1024
+
+logger = logging.getLogger("duckduck.semantic.jev")
 #: Long catalog descriptions are trimmed to keep requests well under the cap.
 _MAX_TEXT = 1500
 
@@ -123,6 +127,36 @@ class JevClient:
         })
         return self._parse_choice(answers, "answer", options)
 
+    def ask(self, state: Dict[str, Any], questions: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Mixed ``noul``/``choice`` questions on one state → key → P(yes) or
+        ``{option: probability}``. One request — split in as many as it takes
+        when the body would go over the API's 32 KiB cap.
+        """
+        spec = {
+            key: {**q, **({"criteria": {c: _trim(v) for c, v in q["criteria"].items()}} if q.get("criteria") else {})}
+            for key, q in questions.items()
+        }
+        answers = self._post_fitting(self._state(state), spec)
+        return {
+            key: self._parse_choice(answers, key, list(q["criteria"])) if q["type"] == "choice"
+            else self._parse_noul(answers, key)
+            for key, q in spec.items()
+        }
+
+    def _post_fitting(self, state: Dict[str, Any], questions: Dict[str, Any]) -> Dict[str, Any]:
+        body = {"state": state, "questions": questions, **({"model": self.model} if self.model else {})}
+        if len(questions) > 1 and len(json.dumps(body, default=str).encode("utf-8")) > MAX_BODY_BYTES:
+            keys = list(questions)
+            answers: Dict[str, Any] = {}
+            for half in (keys[: len(keys) // 2], keys[len(keys) // 2:]):
+                part_state = dict(state)
+                if "items" in state:
+                    part_state["items"] = {k: v for k, v in state["items"].items() if k in half}
+                answers.update(self._post_fitting(part_state, {k: questions[k] for k in half}))
+            return answers
+        return self._post(state, questions)
+
     def decide_batch(self, state: Dict[str, Any], questions: Mapping[str, str]) -> Dict[str, float]:
         """Several yes/no questions on one state, one request → ``{key: P(yes)}``."""
         answers = self._post(self._state(state), {
@@ -144,6 +178,11 @@ class JevClient:
             out["facts"] = state["facts"]
         if state.get("prior") is not None:
             out["catalog_prior_probability"] = state["prior"]
+        if state.get("items"):
+            out["items"] = {
+                key: {k: (_trim(v) if k == "subject" else v) for k, v in item.items()}
+                for key, item in state["items"].items()
+            }
         return out
 
     def _post(self, state: Dict[str, Any], questions: Dict[str, Any]) -> Dict[str, Any]:
@@ -153,6 +192,7 @@ class JevClient:
         payload = json.dumps(body, default=str)
         if len(payload.encode("utf-8")) > MAX_BODY_BYTES:
             raise JevAPIError(f"request body is {len(payload)} bytes, over Jev's 32 KiB cap")
+        started = time.perf_counter()
         try:
             r = self.session.post(self.url, data=payload, timeout=self.timeout)
         except requests.RequestException as exc:
@@ -172,7 +212,26 @@ class JevClient:
         answers = envelope.get("answers", (envelope.get("data") or {}).get("answers"))
         if not isinstance(answers, dict):
             raise JevAPIError(f"Decisions API response has no answers: {str(envelope)[:300]}")
+        self._log_usage(envelope, len(questions), time.perf_counter() - started)
         return answers
+
+    #: Running total of what the API reported as cost (USD) — OpenRouter reports it per call.
+    total_cost: float = 0.0
+
+    def _log_usage(self, envelope: Dict[str, Any], n_questions: int, seconds: float) -> None:
+        try:
+            usage = envelope.get("usage") or {}
+            cost = usage.get("cost")
+            if isinstance(cost, (int, float)):
+                self.total_cost += cost
+            logger.info(
+                "  decisions %s: %d question%s · %.2fs%s%s", envelope.get("model") or self.model or "",
+                n_questions, "" if n_questions == 1 else "s", seconds,
+                f" · {usage['input_tokens']:,} tokens in" if isinstance(usage.get("input_tokens"), int) else "",
+                f" · ${cost:.6f} (session ${self.total_cost:.6f})" if isinstance(cost, (int, float)) else "",
+            )
+        except Exception as exc:  # diagnostics must never break the call
+            logger.debug("could not log decisions usage: %r", exc)
 
     @staticmethod
     def _parse_noul(answers: Dict[str, Any], key: str) -> float:

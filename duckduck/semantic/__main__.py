@@ -8,13 +8,21 @@ commands read ``duckduck.json`` (or ``--config``): connectors from
     python -m duckduck.semantic generate-catalog [--force [NAME ...]] [--only NAME ...] [--out FILE]
     python -m duckduck.semantic ask "Which users accessed github in the last 24hrs?"
     python -m duckduck.semantic jev-check
+    python -m duckduck.semantic calibrate examples/semantic/evaluation.json
 """
 
 import argparse
 import json
 import sys
 
-from .commands import ask, generate_catalog, jev_check
+from .commands import ask, calibrate, generate_catalog, jev_check
+
+
+def cmd_calibrate(args) -> int:
+    report = calibrate(args.dataset, config_path=args.config, verbose=args.verbose,
+                       cost_wrong=args.cost_wrong, cost_ask=args.cost_ask)
+    print(report.summary())
+    return 0
 
 
 def cmd_generate(args) -> int:
@@ -64,6 +72,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="only look at these tables this run (same selectors as --force): new/expired among them",
     )
     gen.set_defaults(fn=cmd_generate, python=generate_catalog)
+
+    cal = sub.add_parser("calibrate", help="suggest decision thresholds from labeled questions")
+    cal.add_argument("dataset", help="JSON list of {question, expected_entity/activity/sources} (like evaluation.json)")
+    cal.add_argument("--cost-wrong", type=float, default=5.0, help="cost of accepting a wrong decision (default 5)")
+    cal.add_argument("--cost-ask", type=float, default=1.0, help="cost of sending a right one back to the user (default 1)")
+    cal.set_defaults(fn=cmd_calibrate, python=calibrate)
 
     q = sub.add_parser("ask", help="answer a question")
     q.add_argument("question")

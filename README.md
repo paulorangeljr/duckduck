@@ -579,6 +579,7 @@ print(jev_check().ranked())                    # raises if the key/network/parsi
 | `generate-catalog --force glue:security.proxy_logs adx` | `generate_catalog(force=["glue:security.proxy_logs", "adx"])` |
 | `generate-catalog --only glue` | `generate_catalog(only="glue")` |
 | `jev-check` | `jev_check()` → `Classification` |
+| `calibrate questions.json` | `calibrate("questions.json")` → `CalibrationReport` (`.summary()`, `.thresholds`) |
 | `--config path` | `config_path="path"` |
 | `-v` / `-v debug` | `verbose="info"` / `verbose="debug"` |
 
@@ -672,6 +673,52 @@ On OpenRouter it goes to `https://openrouter.ai/api/alpha/decisions` with
 your `OPENROUTER_API_KEY`. Pin `typesafe/jev-1.13` so the thresholds you
 tuned stay valid, or use `~typesafe/jev-latest` to follow new releases.
 `jev-check` makes one real call through whichever entry is configured.
+
+**How the decision engine is asked.** Each question takes **two
+requests**:
+
+- **One while interpreting it:** entity, activity, the type of a value
+  nothing else could type, and the relevance of every candidate source,
+  all independent, so they go together.
+- **One after planning:** every field and JOIN the plan relies on.
+
+If the question used words the catalog doesn't, a small third request
+looks at the sources that declare the chosen entity/activity but weren't
+among the candidates. Other details:
+
+- **Criteria.** Yes/no questions carry explicit criteria. Source relevance,
+  for example, counts "needed to connect the answer to what the question
+  asks for" as relevant, so a lookup table like `owners` isn't judged
+  irrelevant.
+- **Notes.** Your `notes` (source and field) are part of what the engine
+  reads, and also feed the lexical search that proposes the candidates.
+- **Size and cost.** A request over the API's 32 KiB is split
+  automatically. Repeated questions in a session come from a cache, and
+  the cost the API reports is logged per call, with a session total.
+
+**Tuning the thresholds.** The defaults (`source` 0.80, `field` 0.85, ...)
+are round numbers. Tune them for your engine version with labeled
+questions (a JSON list like `examples/semantic/evaluation.json`):
+
+```bash
+python -m duckduck.semantic calibrate my_questions.json                 # a wrong answer costs 5×, asking back 1×
+python -m duckduck.semantic calibrate my_questions.json --cost-wrong 20 # being wrong is much worse
+```
+
+```python
+from duckduck.semantic import calibrate
+
+report = calibrate("my_questions.json", cost_wrong=5, cost_ask=1)
+print(report.summary())
+report.thresholds          # {"entity": ..., "activity": ..., "source": ...} → semantic.thresholds
+```
+
+It plans every question without fetching data, records every
+probability, and picks per decision type the threshold with the lowest
+total cost. It needs dozens of labeled questions per type to be
+meaningful. Re-run it when you change the Jev version or the catalog.
+`field` and `relationship` have no labels in that format, so set those by
+hand if needed, e.g. `"thresholds": {"field": 0.8}`.
 
 **On Azure:**
 

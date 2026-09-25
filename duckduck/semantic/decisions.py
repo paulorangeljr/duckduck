@@ -16,13 +16,23 @@ Everything downstream talks to the ``DecisionEngine`` protocol:
   demos, and before JEV is wired in. For structural questions the
   planner already has a deterministic ``prior`` for (field/relationship
   relevance), it just returns that prior.
+
+**Batches.** Independent questions about one user question go out
+together: ``ask_all(engine, [Ask, ...])`` uses the engine's
+``ask_batch`` when it has one (``JEVAdapter``: one Decisions API request
+for every question — Jev answers them in parallel, each unaware of the
+others) and falls back to one ``decide``/``classify`` per question
+otherwise. Yes/no questions can carry ``criteria`` (what counts as
+``true`` and as ``false``) — ``CRITERIA`` has the pipeline's.
 """
 
+import json
 import logging
 import time
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
-from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, runtime_checkable
+from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Union, runtime_checkable
 
 from pydantic import BaseModel, Field
 
@@ -84,6 +94,59 @@ class DecisionEngineError(RuntimeError):
     """The decision engine failed (after retries) or returned nothing usable."""
 
 
+#: What counts as yes / no for the pipeline's yes/no questions — sent as a
+#: noul question's ``criteria`` (a definition beats a bare "relevant?").
+CRITERIA: Dict[str, Dict[str, str]] = {
+    "source": {
+        "true": "This source holds records that answer the question, or it is needed to connect those "
+                "records to something the question asks for (such as who owns a host found elsewhere).",
+        "false": "Nothing the question asks about, filters on, or needs to connect is in this source.",
+    },
+    "field": {
+        "true": "Filtering or returning this field gives exactly what the question means.",
+        "false": "What the question means belongs in a different field, or this field means something else.",
+    },
+    "relationship": {
+        "true": "Joining these two fields connects records about the same real thing, and the answer "
+                "needs that connection.",
+        "false": "The join would connect unrelated records, or the answer doesn't need it.",
+    },
+}
+
+
+class Ask(BaseModel):
+    """One question in a batch: yes/no (``subject``) or pick-one (``options``)."""
+
+    key: str
+    question: str
+    state: DecisionState
+    subject: Optional[str] = None
+    options: Optional[Dict[str, str]] = None
+    #: Yes/no only: ``{"true": ..., "false": ...}``.
+    criteria: Optional[Dict[str, str]] = None
+
+    @property
+    def is_choice(self) -> bool:
+        return self.options is not None
+
+
+Answer = Union[BinaryDecision, Classification]
+
+
+def ask_all(engine: Any, asks: List[Ask]) -> Dict[str, Answer]:
+    """Every question answered — in one batch when the engine supports it."""
+    if not asks:
+        return {}
+    batch = getattr(engine, "ask_batch", None)
+    if batch is not None:
+        return batch(asks)
+    return {
+        a.key: engine.classify(a.state, a.question, a.options) if a.is_choice
+        else engine.decide(a.state, a.question, a.subject or "")
+        for a in asks
+    }
+
+
 # ---------------------------------------------------------------------------
 # Probability normalization
 # ---------------------------------------------------------------------------
@@ -127,6 +190,12 @@ class JEVBackend(Protocol):
     def classify(self, state: Dict[str, Any], question: str, options: List[str]) -> Mapping[str, float]:
         ...
 
+    # Optional — mixed batches in one request (``JEVAdapter.ask_batch`` uses it when present):
+    # def ask(self, state: Dict[str, Any], questions: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    #     questions: key → {"type": "noul" | "choice", "instructions", "criteria"}; the state's
+    #     ``items[key]`` holds each question's subject/facts/prior. Returns key → P(yes) (noul) or
+    #     {option: score} (choice).
+
 
 class JEVAdapter:
     """
@@ -145,12 +214,77 @@ class JEVAdapter:
         retries: int = 2,
         timeout: float = 10.0,
         backoff: float = 0.5,
+        cache_size: int = 512,
     ):
         self.backend = backend
         self.retries = retries
         self.timeout = timeout
         self.backoff = backoff
+        #: Answers to questions already asked (same question, subject/options, criteria and
+        #: state) — asking twice in a session doesn't cost a second call. 0 disables it.
+        self.cache_size = cache_size
+        self._cache: "OrderedDict[str, Answer]" = OrderedDict()
         self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="jev")
+
+    def ask_batch(self, asks: List[Ask]) -> Dict[str, Answer]:
+        """
+        Every question in one backend request (``backend.ask``), answers
+        from the cache first. Backends without ``ask`` get one
+        ``decide``/``classify`` per question.
+        """
+        backend_ask = getattr(self.backend, "ask", None)
+        out: Dict[str, Answer] = {}
+        pending: List[Ask] = []
+        for a in asks:
+            hit = self._cache.get(self._cache_key(a)) if self.cache_size else None
+            if hit is not None:
+                out[a.key] = hit.model_copy(update={"question": a.question})
+                logger.info("jev.cached %r → %s", a.question, _brief(hit))
+            else:
+                pending.append(a)
+        if pending and backend_ask is None:
+            for a in pending:
+                out[a.key] = self.classify(a.state, a.question, a.options) if a.is_choice \
+                    else self.decide(a.state, a.question, a.subject or "")
+        elif pending:
+            payload = {"query": pending[0].state.query, "items": {a.key: _item(a) for a in pending}}
+            spec = {a.key: _question_spec(a) for a in pending}
+            started = time.perf_counter()
+            raw = self._call(lambda p, q, labels: backend_ask(p, spec), payload,
+                             f"{len(pending)} questions", [])
+            logger.info("jev.batch: %d questions in one request (%.2fs)", len(pending), time.perf_counter() - started)
+            for a in pending:
+                answer = self._answer(a, raw.get(a.key))
+                out[a.key] = answer
+                logger.info("jev.%s %r%s → %s", "classify" if a.is_choice else "decide", a.question,
+                            f" on {a.subject[:60]!r}" if a.subject else "", _brief(answer))
+                self._remember(a, answer)
+        return {a.key: out[a.key] for a in asks}
+
+    def _answer(self, a: Ask, raw: Any) -> Answer:
+        if a.is_choice:
+            labels = list(a.options)
+            return Classification(question=a.question, probabilities=normalize_probabilities(raw or {}, labels))
+        try:
+            p = min(max(float(raw), 0.0), 1.0)
+        except (TypeError, ValueError):
+            raise DecisionEngineError(f"no yes/no probability for {a.question!r} in the batch answer: {raw!r}")
+        return BinaryDecision(question=a.question, subject=a.subject or "", answer=p >= 0.5, probability=p)
+
+    @staticmethod
+    def _cache_key(a: Ask) -> str:
+        return json.dumps(
+            {"q": a.question, "s": a.subject, "o": a.options, "c": a.criteria,
+             "state": a.state.model_dump(exclude={"terms"})},
+            sort_keys=True, default=str,
+        )
+
+    def _remember(self, a: Ask, answer: Answer) -> None:
+        if not self.cache_size:
+            return
+        self._cache[self._cache_key(a)] = answer
+        while len(self._cache) > self.cache_size:
+            self._cache.popitem(last=False)
 
     def decide(self, state: DecisionState, question: str, subject: str) -> BinaryDecision:
         payload = {**state.model_dump(), "subject": subject}
@@ -209,6 +343,34 @@ class JEVAdapter:
         raise DecisionEngineError(
             f"JEV failed after {attempt + 1} attempt(s) on {question!r}: {last_error!r}"
         ) from last_error
+
+
+def _item(a: Ask) -> Dict[str, Any]:
+    """What the state carries for one batched question (under ``items[key]``)."""
+    item: Dict[str, Any] = {}
+    if a.subject:
+        item["subject"] = a.subject
+    if a.state.facts:
+        item["facts"] = a.state.facts
+    if a.state.prior is not None:
+        item["catalog_prior_probability"] = a.state.prior
+    return item
+
+
+def _question_spec(a: Ask) -> Dict[str, Any]:
+    if a.is_choice:
+        text = a.question + (f" (context: items.{a.key})" if _item(a) else "")
+        return {"type": "choice", "instructions": text, "criteria": dict(a.options)}
+    spec: Dict[str, Any] = {"type": "noul", "instructions": f"{a.question} Judge items.{a.key}."}
+    if a.criteria:
+        spec["criteria"] = dict(a.criteria)
+    return spec
+
+
+def _brief(answer: Answer) -> str:
+    if isinstance(answer, Classification):
+        return f"{answer.choice} ({answer.probability:.3f})"
+    return f"P(yes)={answer.probability:.3f}"
 
 
 # ---------------------------------------------------------------------------

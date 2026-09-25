@@ -15,9 +15,11 @@ Requires ``pip install "duckduck[semantic]"`` (pydantic, PyYAML).
 """
 
 from .catalog import Catalog
-from .commands import ask, connect, generate_catalog, jev_check
+from .commands import ask, calibrate, connect, generate_catalog, jev_check
 from .config import SemanticConfig
 from .decisions import (
+    Ask,
+    ask_all,
     BinaryDecision,
     Classification,
     DecisionEngine,
@@ -28,7 +30,7 @@ from .decisions import (
     LexicalDecisionEngine,
 )
 from .engine import SearchResult, SemanticSearch
-from .evaluation import evaluate, load_dataset
+from .evaluation import CalibrationReport, calibrate_thresholds, evaluate, load_dataset
 from .extraction import RuleBasedExtractor
 from .generation import CatalogGenerator, GenerationResult, TableSpec
 from .graph import RelationshipGraph
@@ -43,6 +45,7 @@ from .retrieval import LexicalRetriever
 from .validator import PlanValidationError, QueryValidator
 
 __all__ = [
+    "Ask",
     "BinaryDecision",
     "Catalog",
     "CatalogGenerator",
@@ -82,6 +85,10 @@ __all__ = [
     "Thresholds",
     "TimeRangeFilter",
     "ask",
+    "ask_all",
+    "calibrate",
+    "calibrate_thresholds",
+    "CalibrationReport",
     "connect",
     "evaluate",
     "generate_catalog",
