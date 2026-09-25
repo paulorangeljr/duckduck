@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from .catalog import Catalog
 from .text import STOPWORDS, stem, tokenize, vocabulary
+from .timeparse import find_window
 
 
 class TimeRange(BaseModel):
@@ -183,23 +184,13 @@ class RuleBasedExtractor:
         def consume(match: "re.Match") -> str:
             return " " * (match.end() - match.start())
 
-        # 1. time range
-        m = _RELATIVE_RE.search(text)
-        if m:
-            amount = float(m.group(1)) if m.group(1) else 1.0
-            out.time_range = TimeRange(
-                last_hours=amount * _UNIT_HOURS[m.group(2).lower()], text=m.group(0).strip()
-            )
-            text = text[: m.start()] + consume(m) + text[m.end():]
-        else:
-            m = _DAY_RE.search(text)
-            if m:
-                midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-                if m.group(1).lower() == "today":
-                    out.time_range = TimeRange(start=midnight, text=m.group(0))
-                else:
-                    out.time_range = TimeRange(start=midnight - timedelta(days=1), end=midnight, text=m.group(0))
-                text = text[: m.start()] + consume(m) + text[m.end():]
+        # 1. time range ("last 24 hours", "between today and tomorrow", "desde segunda", "em setembro"...)
+        found = find_window(text, now)
+        if found is not None:
+            window, start, end = found
+            out.time_range = TimeRange(last_hours=window.last_hours, start=window.start, end=window.end,
+                                       text=window.text)
+            text = text[:start] + " " * (end - start) + text[end:]
 
         # 2. literals, most specific shape first
         def take(pattern: "re.Pattern", kind_of) -> None:

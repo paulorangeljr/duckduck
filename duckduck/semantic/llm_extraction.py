@@ -69,7 +69,9 @@ Return:
   catalog summary.
 - time_range: the time window, as last_hours for relative windows ("last
   24hrs" -> 24) or start/end as ISO-8601 UTC timestamps for absolute ones;
-  null if the question gives none.
+  null if the question gives none. start is inclusive, end exclusive, and a
+  range's last day counts whole: "between today and tomorrow" ends at the
+  start of the day after tomorrow; "since monday" has no end.
 
 Only use semantic types, fields and stored values that appear in the
 catalog summary. When unsure, leave a value out rather than guessing.

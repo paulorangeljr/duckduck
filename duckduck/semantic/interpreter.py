@@ -191,9 +191,31 @@ class SemanticInterpreter:
             name: f"{e.description} Keywords: {', '.join(e.keywords)}"
             for name, e in self.catalog.entities.items() if name not in ruled_out
         }
+        remembered = _remembered(intent, "entity", options)
+        records = self._records_of_activity(ex, focus, options)
+        if records is not None:  # "show me the logins": the head noun is an activity — its records are asked for
+            remembered["facts"] = {**remembered.get("facts", {}), "head_noun_is_an_activity": records[1]}
+            remembered.setdefault("default", records[0])
         return Ask(key="entity", question="What entity is the user asking for?", options=options,
-                   state=intent.decision_state(terms=[focus] if focus else ex.terms,
-                                               **_remembered(intent, "entity", options)))
+                   state=intent.decision_state(terms=[focus] if focus else ex.terms, **remembered))
+
+    def _records_of_activity(self, ex: Extraction, focus: Optional[str],
+                             options: Dict[str, str]) -> Optional[Tuple[str, str]]:
+        """
+        ``(row-level entity, the word)`` when the question's head noun names an
+        activity and no entity ("the logins", "as conexões"): what it lists are
+        that activity's records. ``None`` otherwise.
+        """
+        if focus is not None:
+            return None
+        rows = [n for n, e in self.catalog.entities.items() if e.row_level and n in options]
+        if len(rows) != 1:
+            return None
+        if getattr(self, "_activity_vocab", None) is None:
+            self._activity_vocab = vocabulary([w for n, a in self.catalog.activities.items()
+                                               for w in [n.replace("_", " "), *a.keywords]])
+        head = next((t for t in [*ex.focus_terms, *ex.terms] if t in self._activity_vocab), None)
+        return (rows[0], head) if head else None
 
     def _activity_ask(self, intent: SemanticIntent, ex: Extraction, pins: Dict[str, Any]) -> Optional[Ask]:
         if not self.catalog.activities or "activity" in pins:

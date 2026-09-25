@@ -1264,6 +1264,34 @@ reply.** No plan, no follow-up question:
 `reply.thanks`, `reply.goodbye`, `reply.out_of_scope`, `reply.topics`
 with `{topics}`, `reply.examples`, `reply.ask_anyway`).
 
+**Dates and time windows.** A table's time field (its catalog
+`time_field`, or the field typed `event_time`) takes the question's time
+window as a filter: `>= start AND < end`, newest first. Questions in both
+languages are understood by the rules (Paddle) as well as the LLM:
+
+| Question | Window |
+|---|---|
+| "between today and tomorrow", "entre hoje e amanhã" | today 00:00 → the day after tomorrow 00:00 (the last day counts whole) |
+| "from 2026-09-20 to 2026-09-22", "de 20/09/2026 até 22/09/2026" | Sept 20 00:00 → Sept 23 00:00 |
+| "from 2026-09-20 10:00 to 2026-09-20 18:00" | exactly those times |
+| "yesterday", "ontem", "anteontem" | that whole day |
+| "today", "this week", "este mês" | from its start, no end (so far) |
+| "last week" (rolling 7 days), "semana passada", "mês passado" (calendar) | as said |
+| "in september", "em setembro de 2025" | that month (no year: this year, or last year if it's still to come) |
+| "since monday", "desde segunda", "after yesterday" | from then on |
+| "before 2026-09-21", "antes de ontem", "até ontem" | until then (*until/até* includes that day) |
+| "in the last 24 hours", "nas últimas 24 horas", "últimos 7 dias" | ending now |
+
+- Slash dates are day-first (20/09/2026). Month-first applies only when
+  day-first can't be a date (09/25/2026).
+- Weeks start on Monday.
+- Times are in the search's clock, UTC by default, so "today" is the UTC day.
+- A table without a time field isn't used for a question with a time
+  window.
+- "Show me the logins …" lists the login *records*: when the head noun
+  names an activity (logins, connections, conexões) and no entity, the
+  engine is told that the records of that activity are what's wanted.
+
 **Naming a table shows it.** "show me table owners", "the alerts
 table", "mostre a tabela owners", "preview owners" or "abra a tabela de
 owners" answers with **that table's rows, every column**, without asking
