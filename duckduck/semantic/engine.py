@@ -291,6 +291,19 @@ class SemanticSearch:
                 feedback, **(memory if isinstance(memory, dict) else {}))
             self.interpreter.memory = memory
         self.executor = PlanExecutor(self.catalog, duck) if duck is not None else None
+        #: Answers registered as tables of their own (``take_over``), by name.
+        self.taken_over: Dict[str, Any] = {}
+
+    def take_over(self, result: "SearchResult", name: Optional[str] = None, full: bool = True) -> Any:
+        """
+        "Take over from here": register ``result``'s rows as a table in the
+        DuckAPI this search reads from, to query with ``duck.sql`` (see
+        ``takeover``). ``full``: an answer that stopped at its row cap runs
+        again without it. Returns a ``TakenOver`` (name, rows, columns, how).
+        """
+        from .takeover import take_over
+
+        return take_over(self, result, name=name, full=full)
 
     @classmethod
     def from_config(
@@ -854,6 +867,10 @@ class Conversation:
         #: One entry per reply: what was asked, the reply, the option it picked (or None).
         self.history: List[Dict[str, Any]] = []
         self.result: SearchResult = self._ask()
+
+    def take_over(self, name: Optional[str] = None, full: bool = True) -> Any:
+        """The latest answer as a table of its own — ``SemanticSearch.take_over``."""
+        return self.search.take_over(self.result, name=name, full=full)
 
     @property
     def done(self) -> bool:

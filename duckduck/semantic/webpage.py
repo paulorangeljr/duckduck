@@ -476,6 +476,18 @@ function askFresh() {
   $("#askform").requestSubmit();
 }
 
+// "Take over from here": the answer's rows become a table (in memory, on the server), then the SQL tab opens on it
+async function takeOver(convId) {
+  const name = prompt("Name for the new table (letters, digits and _) — leave empty to let it choose:", "");
+  if (name === null) return;
+  try {
+    const t = await api("/api/takeover", {conversation_id: convId, name: name.trim() || null});
+    toast(`${t.name}: ${t.rows} row${t.rows === 1 ? "" : "s"} — ${t.how}`);
+    $("#sqltext").value = `SELECT * FROM ${t.name} LIMIT 100`;
+    openTab("sql"); await loadTables(); runSql();
+  } catch (err) { toast(err.message); }
+}
+
 async function reply(convId, text) {
   try { render(await api("/api/answer", {conversation_id: convId, reply: text})); }
   catch (err) { toast(err.message); }
@@ -521,7 +533,9 @@ function render(c) {
     html += `<div class="card"><div class="row"><span class="pill">${esc(SHAPE_WORDS[shape] || shape)}</span>
       ${r.only_sources ? `<span class="pill" title="you chose these tables">only: ${esc(r.only_sources.join(", "))}</span>` : ""}
       ${tables.map(s => `<span class="pill">${icon(META?.source_icons?.[s])}${esc(s)}</span>`).join("")}
-      <span class="muted small">${n} row${n === 1 ? "" : "s"}${c.truncated ? " (first 500 shown)" : ""}</span></div>
+      <span class="muted small">${n} row${n === 1 ? "" : "s"}${c.truncated ? " (first 500 shown)" : ""}</span>
+      ${META?.features?.sql && n ? `<button class="secondary" type="button" data-takeover style="margin-left:auto;padding:4px 10px;font-size:13px"
+        title="Register these rows as a table and continue in the SQL tab">Take over from here</button>` : ""}</div>
       ${table(r.results)}
       ${r.summary ? `<details><summary>Where it was looked for</summary>${table(r.summary)}</details>` : ""}
       ${(r.sections || []).filter(s => s.results && s.results.length).map(s =>
@@ -537,6 +551,7 @@ function render(c) {
   box.innerHTML = html;
   box.querySelectorAll("button.option").forEach(b => b.addEventListener("click", () => reply(c.conversation_id, b.dataset.reply)));
   box.querySelector("[data-runsql]")?.addEventListener("click", () => { $("#sqltext").value = r.sql; openTab("sql"); });
+  box.querySelector("[data-takeover]")?.addEventListener("click", () => takeOver(c.conversation_id));
   box.querySelectorAll("[data-suggest]").forEach(b => b.addEventListener("click", () => {
     $("#question").value = b.dataset.suggest; askFresh(); }));
   box.querySelector("[data-anyway]")?.addEventListener("click", () => ask(r.question, {in_scope: true}));
@@ -704,6 +719,7 @@ $("#evaljson").addEventListener("click", async (e) => {
 
 // ---- icons: one per kind of source (generic shapes, no brand logos) ------------------------
 const ICONS = {
+  dataset: '<rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M2 6h12M6 6v7.5"/><path d="M9.5 9.5l1.5 1.5 2.5-3" />',
   database: '<ellipse cx="8" cy="3.5" rx="5" ry="2"/><path d="M3 3.5v9c0 1.1 2.2 2 5 2s5-.9 5-2v-9"/><path d="M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>',
   sharepoint: '<rect x="2.5" y="4.5" width="8" height="9.5" rx="1"/><path d="M5.5 4.5V2.5a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1V11a1 1 0 0 1-1 1h-2"/><path d="M4.5 8h4M4.5 10.5h4"/>',
   servicenow: '<path d="M2 4.5h12v2.2a1.6 1.6 0 0 0 0 3.1v2.2H2V9.8a1.6 1.6 0 0 0 0-3.1z"/><path d="M9.5 4.5v7.5" stroke-dasharray="1.4 1.4"/>',
@@ -719,7 +735,7 @@ const ICONS = {
 };
 const ICON_NAMES = {database: "SQL database", sharepoint: "SharePoint", servicenow: "ServiceNow", insightvm: "InsightVM",
   axonius: "Axonius", glue: "S3 / Glue", blob_storage: "Azure Blob Storage", adx: "Azure Data Explorer",
-  files: "local files", python: "Python module", duckdb: "DuckDB", api: "API"};
+  files: "local files", python: "Python module", duckdb: "DuckDB", dataset: "taken-over answer", api: "API"};
 function icon(kind) {
   if (!kind) return "";
   const k = ICONS[kind] ? kind : "api";

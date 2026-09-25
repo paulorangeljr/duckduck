@@ -873,6 +873,20 @@ python -m duckduck.semantic feedback-export    # what still fails, as a brief fo
     semantic search are untouched.
   - **Limits:** the first 1000 rows are shown, and a query is interrupted
     after 2 minutes.
+- **Take over from here.** On an answer, *Take over from here*
+  registers its rows as a table (you name it, or it's named after the
+  question) and opens the SQL tab on it. From there it's SQL: filter,
+  aggregate, join it with the source tables.
+  - **The whole subset.** When the answer stopped at its row cap
+    (`default_limit`, 1000), its plan runs again without it, so the table
+    holds every matching row. `full=False` keeps just the rows shown.
+  - **A snapshot in memory.** Querying it never calls the sources again.
+    Take over again (same name) for fresh rows. It lasts until the server
+    restarts or the config is saved; nothing is written to disk.
+  - **In Python:** `taken = search.take_over(result, "machines_seen")` (or
+    `conversation.take_over(...)`), then
+    `duck.sql("SELECT ... FROM machines_seen")`. `list_tables()` shows these
+    tables as *Taken over*, with the question they came from.
 - **Config.** `duckduck.json` as a **form** or as **JSON** (a toggle; both
   edit the same config, so a change in one shows in the other), next to
   **every option there is**, searchable.
@@ -1181,6 +1195,14 @@ reply.** No plan, no follow-up question:
 `"ok"`. The wording is in `clarification_texts` (`reply.greeting`,
 `reply.thanks`, `reply.goodbye`, `reply.out_of_scope`, `reply.topics`
 with `{topics}`, `reply.examples`, `reply.ask_anyway`).
+
+**A question that names a field asks for its values.** "What are the
+severities of the events?" / "Quais são as severidades…?" / "List the
+severities" has none of the *different/distinct* wording, but what it asks
+for, the phrase after *what are the / list the / quais são as*, is a
+field's name (`severity`). So the answer is that field's distinct values,
+not every row. When the phrase names an entity instead ("list the
+owners"), it stays a list, which is already one row per owner.
 
 **Everything about a value (`lookup`) and where it is (`locate`).** Both
 look in **every table that has a field of the value's type**, not only

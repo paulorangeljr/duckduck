@@ -21,6 +21,7 @@ from .config import SemanticConfig
 from .feedback import FeedbackStore
 from .memory import CaseMemory
 from .suggest import CatalogSuggester
+from .takeover import TakenOver
 from .decisions import (
     Ask,
     ask_all,
@@ -58,6 +59,7 @@ __all__ = [
     "feedback_suggest",
     "feedback_to_eval",
     "serve",
+    "TakenOver",
     "BinaryDecision",
     "Catalog",
     "Clarification",

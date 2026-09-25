@@ -193,3 +193,23 @@ def test_a_doubt_about_the_field_is_asked_back_and_none_means_a_plain_list(monke
     conversation = search.conversation("Show me the different detections")
     assert conversation.answer("none of these").status == "ok"  # answered as a list of alerts
     assert len(conversation.result.results) == len(ALERTS)
+
+
+@pytest.mark.parametrize("question, shape, column", [
+    ("What are the severities of the events?", "values", "severity"),   # names a field: its values
+    ("Which are the rules for host 10.0.0.1?", "values", "rule"),
+    ("List the severities", "values", "severity"),
+    ("List the owners", "list", "owner"),                                # an entity: a list (already distinct)
+    ("Show me the alerts with critical severity", "list", "ip"),         # the head is "alerts", not a field
+])
+def test_a_question_that_names_a_field_asks_for_its_values(question, shape, column):
+    result = _answer(_search(), question)
+    assert result.intent.answer_shape == shape and result.results.columns[0] == column
+
+
+def test_named_head():
+    head = AnswerShapes.named_head
+    assert head("What are the severities of the events?") == "severities"
+    assert head("Quais são as severidades dos eventos?") == "severidades"
+    assert head("me mostre as regras de 10.0.0.1") == "regras"
+    assert head("Which hosts have critical alerts?") is None

@@ -19,6 +19,7 @@ HTML page (``webpage.PAGE``) over a JSON API:
 ``GET  /api/export.md``                      the still-failing questions, as a brief for a developer
 ``GET  /api/meta``                           categories, answer kinds, tables (+ icon kind), entities, values
 ``POST /api/sql {sql}`` · ``GET /api/tables``  the SQL console (``allow_sql``, on by default; read-only, no files/network)
+``POST /api/takeover {conversation_id, name, full}``  "take over from here": the answer's rows as a table for the SQL tab
 ``GET  /api/config``                         duckduck.json, secrets masked, + every option documented
 ``POST /api/config/validate {config}``       check an edited config without saving
 ``PUT  /api/config {config}``                save it (``allow_config_edit``; ``.bak`` kept) and reload
@@ -314,6 +315,18 @@ def create_app(
     @app.get("/api/tables")
     def tables():
         return dump(the_console().tables())
+
+    @app.post("/api/takeover")
+    def takeover(body: Dict[str, Any] = Body(...)):
+        the_console()  # the rows are for the SQL tab: no console, nothing to query them with
+        conv = conversation(str(body.get("conversation_id")))
+        name = body.get("name")
+        try:
+            taken = state["search"].take_over(conv.result, name=str(name) if name else None,
+                                              full=body.get("full", True) is not False)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        return dump(taken.to_dict())
 
     # -- duckduck.json -----------------------------------------------------------------------
 

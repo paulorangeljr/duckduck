@@ -1145,6 +1145,7 @@ class DuckAPI:
         "duckduck.adx": "Azure Data Explorer (KQL)",
         "duckduck.local_files": "Local files",
         "duckduck.python_source": "Python module",
+        "duckduck.semantic.takeover": "Taken over (answer rows, in memory)",
     }
 
     @classmethod

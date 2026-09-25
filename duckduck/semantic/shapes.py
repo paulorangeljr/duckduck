@@ -180,6 +180,16 @@ class AnswerShapes:
             return "goodbye"
         return "greeting"
 
+    @staticmethod
+    def named_head(question: str) -> Optional[str]:
+        """The phrase a "what are the …" / "list the …" / "quais são as …" question asks for, or ``None``."""
+        for opener in _HEAD_OPENERS:
+            m = opener.match(question)
+            if m:
+                phrase = _HEAD_END.split(m.group("p"), maxsplit=1)[0].strip()
+                return phrase or None
+        return None
+
     def group_words(self, question: str) -> List[Tuple[int, int]]:
         """Where the count_by wording (sure or maybe) sits — the group is the word right after."""
         spans = []
@@ -206,6 +216,19 @@ def _compile(phrase: str, shape: str) -> re.Pattern:
         return re.compile(r"(?<!\w)" + r"\s+".join(words) + r"(?!\w)", re.IGNORECASE)
     except re.error as exc:
         raise ValueError(f"answer_shapes[{shape!r}]: bad regex {phrase!r}: {exc}") from exc
+
+
+#: "What are the <X> of …", "list the <X>", "quais são as <X>": when <X> names a field (and not an entity),
+#: the question asks for that field's values — see ``AnswerShapes.named_head``.
+_HEAD_OPENERS = [re.compile(p, re.I) for p in (
+    r"^\s*(?:and\s+)?(?:what|which)\s+(?:are|were|is|was)\s+(?:all\s+)?(?:the\s+)?(?P<p>.+)",
+    r"^\s*(?:please\s+)?(?:list|show|give|get|display)(?:\s+me)?(?:\s+all)?(?:\s+the)?\s+(?P<p>.+)",
+    r"^\s*(?:quais|qual)(?:\s+s[aã]o|\s+[eé])?(?:\s+(?:os|as|o|a))?\s+(?P<p>.+)",
+    r"^\s*(?:me\s+)?(?:liste|listar|mostre|mostrar|traga|trazer)(?:\s+me)?(?:\s+(?:todos|todas))?(?:\s+(?:os|as))?\s+(?P<p>.+)",
+)]
+#: Where the head phrase ends ("the severities | of the events").
+_HEAD_END = re.compile(r"\b(of|for|from|in|on|with|that|which|where|who|by|per|de|do|da|dos|das|em|no|na|nos|nas|"
+                       r"para|que|com|por)\b|[?,.;:!]", re.I)
 
 
 #: Words that don't turn small talk into a question ("thanks a lot", "valeu pessoal").

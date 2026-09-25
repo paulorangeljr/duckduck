@@ -33,7 +33,7 @@ from .memory import as_fact, question_template
 from .scope import in_scope
 from .shapes import ACROSS_SHAPES, AnswerShapes, catalog_topic
 from .clarify import first_sentence
-from .text import vocabulary
+from .text import content_stems, stem, tokenize, vocabulary
 
 #: Shape-recognized literal kinds → the semantic type they denote.
 _SHAPE_TYPES = {"ip_address": "ip_address", "domain": "domain", "email": "email"}
@@ -473,9 +473,37 @@ class SemanticInterpreter:
         (``lookup``) as an alternative to a list: the engine reads which.
         """
         candidates, words = self.shapes.candidates(intent.working_question)
+        if candidates == ["list"]:
+            field = self._named_field(intent.working_question)
+            if field is not None:  # "what are the severities of the events?" → severity's values
+                return ["values"], f"'{field}' names a field, not a thing to list"
         if candidates == ["list"] and any(lit.kind != "term" or lit.semantic_type for lit in intent.literals):
             return ["list", "lookup"], words
         return candidates, words
+
+    def _named_field(self, question: str) -> Optional[str]:
+        """
+        The field a "what are the <X> …" question asks for: <X> names a field
+        of a table in scope, and none of its words is a thing the catalog
+        lists (an entity or its keywords — "which are the users…" stays a list).
+        """
+        head = self.shapes.named_head(question)
+        if not head:
+            return None
+        said = set(content_stems(head))
+        if not said:
+            return None
+        if getattr(self, "_entity_stems", None) is None:
+            self._entity_stems = {st for name, ent in self.catalog.entities.items()
+                                  for w in [name.replace("_", " "), *ent.keywords] for st in content_stems(w)}
+        for name, src in self.catalog.sources.items():
+            if not in_scope(name):
+                continue
+            for field in src.fields:
+                tokens = {stem(t) for t in tokenize(field.replace("_", " "))}
+                if tokens and tokens <= said and not tokens & self._entity_stems:
+                    return field
+        return None
 
     def _apply_shape(self, intent: SemanticIntent, result: Any, decisions: List[DecisionRecord],
                      pins: Dict[str, Any]) -> None:
