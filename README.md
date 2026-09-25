@@ -414,8 +414,14 @@ search = SemanticSearch("catalog.yaml", duck)      # table: names = registered t
 result = search.search("Which users accessed github in the last 24hrs?")
 result.status      # "ok" | "needs_clarification" | "invalid_plan"
 result.sql         # the SQL that ran
-result.results     # pd.DataFrame
+result.results     # pd.DataFrame (None unless status == "ok")
 result.decisions   # every judgment, with its probability
+
+# showing it to someone
+result.report()                      # text: status, decisions, the answer or why not
+result.to_json(results_only=True)    # just the rows, as JSON (dates in ISO)
+result.to_json(indent=2)             # everything: status, SQL, decisions, rows, clarification
+result.clarification, result.options # when status == "needs_clarification": why, and what to pick from
 ```
 
 Everything can be configured in `duckduck.json` (see
@@ -566,7 +572,7 @@ print(jev_check().ranked())                    # raises if the key/network/parsi
 |---|---|
 | `ask "..."` | `ask("...")` → `SearchResult` (`.report()`, `.results`, `.sql`, `.decisions`) |
 | `ask "..." --plan-only` | `ask("...", execute=False)` |
-| `ask "..." --json` | `ask("...").to_dict()` |
+| `ask "..." --json` | `ask("...").to_dict()` (or `.to_json()`) |
 | `generate-catalog` | `generate_catalog()` → `GenerationResult` (`.summary()`, `.catalog`, `.warnings`, `.path`) |
 | `generate-catalog --out x.yaml` | `generate_catalog(out="x.yaml")` (`write=False` to keep it in memory) |
 | `generate-catalog --force` | `generate_catalog(force=True)` |

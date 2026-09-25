@@ -289,3 +289,20 @@ def test_contains_and_time_range_push_down_through_the_same_convention(duck, sea
         "proxy_logs.destination_domain", "proxy_logs.timestamp"
     ]
     assert sorted(result.results["username"]) == ["alice", "bob"]  # DuckDB still re-applies both
+
+
+def test_to_json_handles_dates_and_results_only(search):
+    import json
+
+    import pandas as pd
+
+    result = search.search("Which users accessed github in the last 24hrs?")
+    assert result.status == "ok"
+    result.results["seen_at"] = pd.Timestamp("2026-09-24T10:00:00")  # a date in the answer
+    with pytest.raises(TypeError):
+        json.dumps(result.to_dict())  # what to_json exists for
+    full = json.loads(result.to_json())
+    assert full["status"] == "ok" and full["results"]
+    assert full["results"][0]["seen_at"] == "2026-09-24T10:00:00"
+    rows = json.loads(result.to_json(results_only=True))
+    assert rows == full["results"] and all(isinstance(r, dict) for r in rows)

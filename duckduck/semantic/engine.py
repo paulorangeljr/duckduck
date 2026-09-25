@@ -101,6 +101,23 @@ class SearchResult:
             "options": self.options,
         }
 
+    def to_json(self, results_only: bool = False, **dumps_kwargs: Any) -> str:
+        """
+        ``to_dict()`` as a JSON string — dates and other non-JSON values
+        become ISO/strings. ``results_only=True`` → just the answer rows
+        (``[]`` when the search didn't get as far as running).
+        """
+        import json
+
+        payload = self.to_dict()["results"] if results_only else self.to_dict()
+        return json.dumps(payload, default=_json_default, **dumps_kwargs)
+
+
+def _json_default(value: Any) -> Any:
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
 
 class SemanticSearch:
     """
