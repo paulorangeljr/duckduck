@@ -505,3 +505,14 @@ def test_debug_shows_what_goes_to_the_llm_and_what_comes_back(caplog):
     _gen(CountingLLM()).generate()
     assert "sent to the LLM:" in caplog.text and '"sample_rows"' in caplog.text
     assert "draft:" in caplog.text and "vocabulary:" in caplog.text
+
+
+def test_redrafting_over_a_catalog_with_an_activity_without_resource():
+    """Regression: kept activities come from a dump without defaults — no 'resource' key when it was None."""
+    first = _gen(CountingLLM()).generate().catalog
+    data = first.model_dump(by_alias=True)
+    data["activities"]["alerting"] = {"description": "Alerts raised", "keywords": ["alerts"]}  # no resource
+    data["sources"]["alerts"]["activities"] = ["alerting"]
+    existing = Catalog.model_validate(data)
+    result = _gen(CountingLLM()).generate(existing=existing, force=True)
+    assert result.catalog.activities["alerting"].resource is None and set(result.drafted) == {"hosts", "alerts"}

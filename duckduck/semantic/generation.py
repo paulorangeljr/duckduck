@@ -840,7 +840,7 @@ class CatalogGenerator:
         # dropped source; re-check before validating.
         live_types = {f.get("semantic_type") for s in sources.values() for f in s["fields"].values()}
         for name, a in activities.items():
-            if a["resource"] and a["resource"] not in live_types:
+            if a.get("resource") and a["resource"] not in live_types:  # kept ones may omit it (defaults aren't dumped)
                 warnings.append(f"activity '{name}': resource '{a['resource']}' no longer matches a field — dropped it")
                 a["resource"] = None
 
