@@ -57,7 +57,8 @@ button.help { flex: none; align-self: center; width: 26px; height: 26px; border-
               border: 1px solid var(--border); background: var(--surface-2); color: var(--ink-2); cursor: pointer;
               font: inherit; font-size: 13px; font-weight: 600; }
 button.help[aria-expanded="true"] { outline: 2px solid var(--accent); }
-.readerhelp .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.readerhelp .modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+@media (max-width: 1000px) { .readerhelp .modes { grid-template-columns: 1fr 1fr; } }
 .readerhelp p { margin: 6px 0 0; font-size: 13.5px; color: var(--ink-2); line-height: 1.45; }
 .readerhelp p b { color: var(--ink); }
 @media (max-width: 700px) { .readerhelp .modes { grid-template-columns: 1fr; } }
@@ -222,6 +223,8 @@ button.add { background: none; border: 1px dashed var(--border); border-radius: 
             title="Paddle: fast, predictable, no LLM — reads the wording (click ? for more)">🦆 Paddle</button>
           <button type="button" data-reader="llm" aria-pressed="false"
             title="Dive: an LLM reads what you meant first — better with free phrasing, slower (click ? for more)">🤿 Dive</button>
+          <button type="button" data-reader="llm_decides" aria-pressed="false"
+            title="Fly: the LLM reads the question and makes every decision — no Jev (click ? for more)">🪽 Fly</button>
         </div>
         <button type="button" class="help" id="readerhelpbtn" aria-expanded="false" aria-controls="readerhelp"
           title="What do Paddle and Dive do?">?</button>
@@ -254,16 +257,34 @@ button.add { background: none; border: 1px dashed var(--border); border-radius: 
               Needs an LLM configured. It can still misread: the catalog and Jev check it, and <i>How it was
               decided</i> shows what it read.</p>
           </section>
+          <section>
+            <h4>🪽 Fly <span class="label">the LLM reads and decides</span></h4>
+            <p><b>How it reads.</b> Flies the whole route alone: the LLM reads the question as in Dive, then makes
+              every decision Jev would — what it's about, which tables, which fields, the joins, the kind of answer —
+              each with a probability. The same safety rails: a doubt is asked back, and SQL is only ever written by
+              the compiler from a checked plan.</p>
+            <p><b>Good at.</b> Questions that need judgment and context more than calibrated yes/no answers; trying
+              whether the LLM alone decides better than Jev on your data.</p>
+            <p><b>Limits.</b> The slowest and priciest: the reading plus one LLM call per batch of decisions (usually
+              two or three per question, and a batch per pause while typing). Its probabilities are less calibrated
+              than Jev's, so thresholds tuned for Jev may ask back more or less often. Needs an LLM configured.</p>
+          </section>
         </div>
         <p class="muted small" style="margin:10px 0 0">Tip: Paddle for everyday questions, Dive when Paddle misreads
-          one. Your choice is remembered in this browser.</p>
+          one, Fly to see if the LLM alone does better. Every search records its mode, time and calls — compare them
+          on the Dashboard, filter the History by mode, or evaluate every mode on your rated questions (Suggestions).
+          Your choice is remembered in this browser.</p>
       </div>
       <div class="chips" id="chips" aria-live="polite"></div>
       <div class="panel" id="chippanel" hidden></div>
     </div>
     <div id="conversation"></div>
   </section>
-  <section id="tab-history" hidden><div class="card"><div id="history"></div></div></section>
+  <section id="tab-history" hidden><div class="card">
+    <div class="row" style="margin-bottom:8px"><label class="small muted" for="historymode">Mode</label>
+      <select id="historymode"><option value="">all</option><option value="rules">🦆 Paddle</option>
+        <option value="llm">🤿 Dive</option><option value="llm_decides">🪽 Fly</option></select></div>
+    <div id="history"></div></div></section>
   <section id="tab-dashboard" hidden><div id="dashboard"></div></section>
   <section id="tab-sql" hidden>
     <div class="card" id="sqloff" hidden><h3>The SQL console is off</h3>
@@ -308,7 +329,9 @@ button.add { background: none; border: 1px dashed var(--border); border-radius: 
       <h3>Evaluation</h3>
       <p class="muted small">Replays every rated question (planning only, no data read) and suggests decision
         thresholds from what users said. <a href="#" id="evaljson">Download the evaluation set</a>.</p>
-      <button class="secondary" id="evalbtn">Evaluate and calibrate</button>
+      <div class="row"><button class="secondary" id="evalbtn">Evaluate and calibrate</button>
+        <label class="check"><input type="checkbox" id="evalmodes"> also compare the modes (Paddle, Dive, Fly) on the
+          same questions — Dive and Fly call the LLM for every question</label></div>
       <div id="evaluation"></div>
     </div>
     <div class="card">
@@ -370,7 +393,10 @@ $("#user").addEventListener("change", () => store.set("duckduck-user", $("#user"
 const pre = {data: null, chosen: null, entity: null, field: null, blocked: new Set(), forQ: null, open: null, seq: 0, timer: null,
              ctrl: null, thinking: false, error: null, pendingSubmit: false};
 // How the question is read: "rules" = Paddle (the wording + Jev) or "llm" = Dive (an LLM reads it, then Jev) — remembered.
-const READER_NAMES = {rules: "Paddle", llm: "Dive"};
+const READER_NAMES = {rules: "Paddle", llm: "Dive", llm_decides: "Fly"};
+const READER_ICONS = {rules: "🦆", llm: "🤿", llm_decides: "🪽"};
+const READER_BUSY = {rules: "Paddling…", llm: "Diving…", llm_decides: "Flying…"};
+const LLM_READERS = ["llm", "llm_decides"];
 // What the duck says while it reads — Dive's rotate every couple of seconds (an LLM takes a moment).
 const QUIPS = {
   rules: ["paddling through your words…"],
@@ -378,6 +404,10 @@ const QUIPS = {
         "rubber-duck debugging your question…", "asking the fish what you meant…",
         "untangling it one feather at a time…", "quack… thinking… quack…",
         "looking for meaning under the surface…", "almost there — duck still underwater…"],
+  llm_decides: ["flying solo today — Jev has the day off…", "the LLM has the controls…",
+                "checking the map from up here…", "circling the catalog…", "deciding everything, one flap at a time…",
+                "cruising altitude, weighing the options…", "wind in the feathers, tables in sight…",
+                "almost there — preparing to land…"],
 };
 let quipAt = 0, quipTimer = null;
 function quip() { const q = QUIPS[READER] || QUIPS.rules; return q[quipAt % q.length]; }
@@ -395,7 +425,7 @@ const previewable = (q) => q.length >= 8 && q.split(/\s+/).length >= 2;
 // Ask waits for the question to be read: disabled while the preview is pending or running (Enter queues the ask).
 const busy = () => !!pre.timer || pre.thinking;
 function updateAsk() {
-  const b = $("#askbtn"); b.disabled = busy(); b.textContent = busy() ? (READER === "llm" ? "Diving…" : "Paddling…") : "Ask";
+  const b = $("#askbtn"); b.disabled = busy(); b.textContent = busy() ? (READER_BUSY[READER] || "Reading…") : "Ask";
   b.title = busy() ? "Reading the question — press Enter and it's asked as soon as the duck surfaces" : "";
 }
 function setReader(r, rerun = true) {
@@ -411,9 +441,9 @@ $("#readerhelpbtn").addEventListener("click", () => {
   $("#readerhelpbtn").setAttribute("aria-expanded", String(open));
 });
 function showReaders() {
-  const llm = document.querySelector('[data-reader="llm"]'), why = META?.readers?.llm_unavailable;
-  llm.disabled = !!why;
-  if (why) llm.title = "Dive is unavailable: " + why;
+  const why = META?.readers?.llm_unavailable;
+  LLM_READERS.forEach(r => { const b = document.querySelector(`[data-reader="${r}"]`);
+    b.disabled = !!why; if (why) b.title = `${READER_NAMES[r]} is unavailable: ${why}`; });
   setReader(READER, false);
 }
 function resetChoices() { Object.assign(pre, {chosen: null, entity: null, field: null, blocked: new Set(), forQ: null}); }
@@ -497,11 +527,11 @@ function drawChips() {
       chips.push(`<button class="chip" type="button" disabled><span class="dot"></span><span class="k">Answer</span> ${esc(SHAPE_WORDS[shape] || shape)}</button>`);
     }
   }
-  if (d && d.reading && READER === "llm") {  // only what survived the catalog check; nothing left → no chip
+  if (d && d.reading && LLM_READERS.includes(READER)) {  // only what survived the catalog check; nothing left → no chip
     const r = d.reading;
     const parts = [r.answer ? esc(SHAPE_WORDS[r.answer] || r.answer) : "",
                    r.about ? `about ${esc(r.about_kind)} ${esc(r.about)}` : "", r.group_by ? `per ${esc(r.group_by)}` : ""].filter(Boolean);
-    if (parts.length) chips.push(`<span class="chip" title="${esc(d.english_question ? "read as: " + d.english_question : "")}"><span class="dot"></span><span class="k">Dive found</span> ${parts.join(" · ")}</span>`);
+    if (parts.length) chips.push(`<span class="chip" title="${esc(d.english_question ? "read as: " + d.english_question : "")}"><span class="dot"></span><span class="k">${READER_NAMES[READER]} found</span> ${parts.join(" · ")}</span>`);
   }
   if (pre.thinking) chips.push(`<span class="chip thinking"><span class="dot"></span><span class="txt">${esc(quip())}</span></span>`);
   else if (pre.error) chips.push(`<span class="chip thinking" title="${esc(pre.error)}"><span class="dot"></span>couldn't read the question yet — it will still be answered</span>`);
@@ -669,6 +699,7 @@ function render(c) {
       ${r.only_sources ? `<span class="pill" title="you chose these tables">only: ${esc(r.only_sources.join(", "))}</span>` : ""}
       ${tables.map(s => `<span class="pill">${icon(META?.source_icons?.[s])}${esc(s)}</span>`).join("")}
       <span class="muted small">${n} row${n === 1 ? "" : "s"}${c.truncated ? " (first 500 shown)" : ""}</span>
+      ${runPill(r)}
       ${META?.features?.sql && n ? `<button class="secondary" type="button" data-takeover style="margin-left:auto;padding:4px 10px;font-size:13px"
         title="Register these rows as a table and continue in the SQL tab">Take over from here</button>` : ""}</div>
       ${table(r.results)}
@@ -764,15 +795,55 @@ function verdictBadge(v) {
 }
 async function loadHistory() {
   try {
-    const rows = await api("/api/searches?limit=200");
-    $("#history").innerHTML = rows.length ? `<div class="tablewrap"><table><thead><tr><th>When</th><th>Question</th><th>Result</th><th>Answer</th><th>Tables</th><th>Feedback</th></tr></thead><tbody>${
+    const mode = $("#historymode").value;
+    const rows = await api("/api/searches?limit=200" + (mode ? "&reader=" + encodeURIComponent(mode) : ""));
+    $("#history").innerHTML = rows.length ? `<div class="tablewrap"><table><thead><tr><th>When</th><th>Question</th><th>Mode</th><th>Result</th><th>Answer</th><th>Tables</th><th class="num">Time</th><th class="num">Calls</th><th>Feedback</th></tr></thead><tbody>${
       rows.map(r => `<tr><td class="small muted">${esc((r.created_at || "").replace("T", " ").slice(0, 16))}</td>
         <td>${esc(r.question)}${r.user_name ? `<div class="muted small">${esc(r.user_name)}</div>` : ""}</td>
+        <td class="small" title="${esc(r.engine || "")}">${modeName(r.reader)}</td>
         <td class="small">${esc(r.status)}</td><td class="small">${esc(r.answer_shape || "")}</td>
         <td class="small">${esc((JSON.parse(r.sources || "[]")).join(", "))}</td>
+        <td class="num small">${ms(r.elapsed_ms)}</td>
+        <td class="num small" title="decision-engine calls · LLM calls${r.llm_tokens ? " · " + r.llm_tokens + " LLM tokens" : ""}${r.cost !== null && r.cost !== undefined ? " · $" + r.cost.toFixed(6) : ""}">${r.engine_calls ?? 0} · ${r.llm_calls ?? 0}</td>
         <td>${verdictBadge(r.verdict)}${r.reason ? `<div class="muted small">${esc(r.reason)}</div>` : ""}</td></tr>`).join("")}</tbody></table></div>`
-      : `<p class="muted">No questions asked yet.</p>`;
+      : `<p class="muted">No questions asked yet${mode ? " in this mode" : ""}.</p>`;
   } catch (err) { $("#history").innerHTML = `<p class="error">${esc(err.message)}</p>`; }
+}
+
+// ---- modes: names, what one search cost, the comparison table ------------------------------
+const modeName = (r) => `${READER_ICONS[r || "rules"] || ""} ${esc(READER_NAMES[r || "rules"] || r || "")}`;
+const ms = (x) => x === null || x === undefined ? "—" : x >= 1000 ? (x / 1000).toFixed(1) + " s" : Math.round(x) + " ms";
+function runPill(r) {
+  const u = r.usage || {}, parts = [modeName(r.reader)];
+  if (u.engine_calls) parts.push(`${u.engine_calls} decision call${u.engine_calls === 1 ? "" : "s"}`);
+  if (u.llm_calls) parts.push(`${u.llm_calls} LLM call${u.llm_calls === 1 ? "" : "s"}`);
+  if (u.reused) parts.push("reading from the preview");
+  parts.push(ms(r.elapsed_ms ?? r.execution?.elapsed_ms));
+  const tip = [u.llm_tokens_in || u.llm_tokens_out ? `${(u.llm_tokens_in || 0) + (u.llm_tokens_out || 0)} LLM tokens` : "",
+               u.cost !== null && u.cost !== undefined ? `$${u.cost.toFixed(6)} reported` : ""].filter(Boolean).join(" · ");
+  return `<span class="pill" title="${esc(tip)}">${parts.join(" · ")}</span>`;
+}
+function modesTable(byMode, fromStats = false) {  // {reader: metrics} — from /api/stats (usage) or /api/evaluate
+  const order = ["rules", "llm", "llm_decides"];
+  const modes = Object.keys(byMode).sort((a, b) => (order.indexOf(a) + 1 || 9) - (order.indexOf(b) + 1 || 9));
+  if (!modes.length) return `<p class="muted">Nothing yet.</p>`;
+  const rows = fromStats ? [
+    ["searches", m => m.searches], ["rated", m => m.rated], ["answered (of rated)", m => pct(m.answer_rate)],
+    ["asked back", m => pct(m.asked_back_rate)], ["median time", m => ms(m.median_ms)],
+    ["decision calls / search", m => m.avg_engine_calls], ["LLM calls / search", m => m.avg_llm_calls],
+    ["LLM tokens / search", m => m.avg_llm_tokens], ["reported cost", m => m.searches_with_cost ? "$" + (m.reported_cost || 0).toFixed(4) : "—"],
+    ["previews while typing", m => m.previews ?? 0], ["decision calls while typing", m => m.typing_engine_calls ?? 0],
+    ["LLM calls while typing", m => m.typing_llm_calls ?? 0], ["LLM tokens while typing", m => m.typing_llm_tokens ?? 0],
+    ["cost while typing (reported)", m => m.typing_cost === null || m.typing_cost === undefined ? "—" : "$" + m.typing_cost.toFixed(4)],
+  ] : [
+    ["tables right", m => pct(m.source_accuracy)], ["about right (entity)", m => pct(m.entity_accuracy)],
+    ["kind of answer right", m => pct(m.answer_shape_accuracy)], ["planned", m => pct(m.plan_validity)],
+    ["asked back", m => pct(m.asked_back_rate)], ["mean time", m => ms(m.mean_latency_ms)],
+    ["decision calls / question", m => (m.mean_engine_calls ?? 0).toFixed(1)], ["LLM calls / question", m => (m.mean_llm_calls ?? 0).toFixed(1)],
+    ["reported cost", m => m.reported_cost === null || m.reported_cost === undefined ? "—" : "$" + m.reported_cost.toFixed(4)],
+  ];
+  return `<div class="tablewrap"><table><thead><tr><th></th>${modes.map(r => `<th class="num">${modeName(r)}</th>`).join("")}</tr></thead>
+    <tbody>${rows.map(([label, f]) => `<tr><td>${esc(label)}</td>${modes.map(r => `<td class="num">${f(byMode[r]) ?? "—"}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
 }
 
 // ---- dashboard ---------------------------------------------------------
@@ -796,6 +867,11 @@ async function loadDashboard() {
       <div class="kpi"><div class="v">${pct(o.answer_rate)}</div><div class="l">answered (of rated)</div></div>
       <div class="kpi"><div class="v">${pct(o.asked_back_rate)}</div><div class="l">asked a question back</div></div>
     </div><div style="height:14px"></div>
+    <div class="card"><h3>Modes compared</h3>
+      <p class="muted small" style="margin:0 0 6px">Every search, by how it was read and decided. Answer rate counts
+        rated searches only; calls and tokens are per search. Typing costs too: the preview while you type calls Jev
+        (and, in Dive and Fly, the LLM) — counted separately, never twice. Cost is what the providers reported.</p>
+      ${modesTable(Object.fromEntries((s.by_reader || []).map(r => [r.reader, r])), true)}</div>
     ${barTable("Answer rate by kind of answer", s.by_answer_shape, "answer_rate", "kind of answer", pct)}
     ${barTable("Answer rate by table", s.by_source, "answer_rate", "table", pct)}
     ${barTable("What went wrong", s.by_category, "count", "problem", (x) => x, null)}
@@ -827,14 +903,16 @@ async function loadSuggestions() {
   } catch (err) { $("#suggestions").innerHTML = `<p class="error">${esc(err.message)}</p>`; }
 }
 $("#showall").addEventListener("change", loadSuggestions);
+$("#historymode").addEventListener("change", loadHistory);
 $("#evalbtn").addEventListener("click", async () => {
   $("#evaluation").innerHTML = `<p class="muted">Evaluating…</p>`;
   try {
-    const e = await api("/api/evaluate", {});
+    const e = await api("/api/evaluate", $("#evalmodes").checked ? {readers: META?.readers?.available || []} : {});
     if (!e.size) { $("#evaluation").innerHTML = `<p class="muted">${esc(e.note)}</p>`; return; }
     $("#evaluation").innerHTML = `<p class="small muted">${e.size} rated questions.</p>
       ${table(Object.entries(e.metrics).filter(([k]) => k.endsWith("accuracy") && k !== "answer_accuracy").map(([k, v]) => ({metric: k.replace(/_/g, " "), value: v === null ? null : Math.round(v * 1000) / 1000})))}
       ${e.misses.length ? `<details><summary>${e.misses.length} question(s) it still gets wrong</summary>${table(e.misses)}</details>` : ""}
+      ${Object.keys(e.readers || {}).length ? `<h3 style="margin-top:14px">Modes compared (same questions)</h3>${modesTable(e.readers)}` : ""}
       <details open><summary>Suggested thresholds</summary><pre>${esc(e.calibration)}</pre></details>`;
   } catch (err) { $("#evaluation").innerHTML = `<p class="error">${esc(err.message)}</p>`; }
 });

@@ -324,8 +324,9 @@ class SemanticConfig(_Strict):
     #: How questions are read by default: ``rules`` — the wording decides the kind of answer and
     #: what it's about, the decision engine settles ambiguity — or ``llm`` — an LLM reads the
     #: question first (``extractor.llm`` → ``default_llm``) and the engine decides between its
-    #: reading and the rules'. The web app lets the user switch per question.
-    reader: Literal["rules", "llm"] = "rules"
+    #: reading and the rules' — or ``llm_decides`` — the LLM reads the question *and* makes every decision
+    #: the engine would (no Jev). The web app lets the user switch per question.
+    reader: Literal["rules", "llm", "llm_decides"] = "rules"
     catalog_generation: CatalogGenerationConfig = Field(default_factory=CatalogGenerationConfig)
     thresholds: Thresholds = Field(default_factory=Thresholds)
     #: Override the questions asked back to the user (``clarify.DEFAULT_TEXTS`` keys) — e.g. in Portuguese.

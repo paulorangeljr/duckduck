@@ -145,9 +145,10 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--json", action="store_true", help="print the full result as JSON")
     q.add_argument("-i", "--interactive", action="store_true",
                    help="when it needs clarification, ask you at the prompt and continue with your answer")
-    q.add_argument("--reader", choices=["rules", "llm"], default=None,
-                   help="how the question is read: rules (+ the decision engine for doubts) or llm (an LLM reads it "
-                        "first, the decision engine decides); default: semantic.reader")
+    q.add_argument("--reader", choices=["rules", "llm", "llm_decides"], default=None,
+                   help="how the question is read: rules (+ the decision engine for doubts), llm (an LLM reads it "
+                        "first, the decision engine decides) or llm_decides (the LLM reads it and makes every "
+                        "decision); default: semantic.reader")
     q.set_defaults(fn=cmd_ask, python=ask)
 
     check = sub.add_parser("jev-check", help="make one Jev call to verify the key/network")

@@ -17,7 +17,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from .catalog import Catalog
-from .decisions import CRITERIA, Ask, DecisionEngine, DecisionState, ask_all
+from .decisions import CRITERIA, Ask, DecisionEngine, DecisionState, ask_all, engine_in_use
 from .extraction import Extraction, RuleBasedExtractor, ValueExtractor
 from .clarify import ClarificationTexts
 from .intent import (
@@ -57,7 +57,7 @@ class SemanticInterpreter:
         self.memory = memory
         #: The wording of each answer shape (defaults + ``semantic.answer_shapes``).
         self.shapes = shapes or AnswerShapes()
-        self.engine = engine
+        self._engine = engine
         self.retriever = retriever or LexicalRetriever(catalog)
         self.extractor = extractor or RuleBasedExtractor(catalog)
         self._preview_rules = RuleBasedExtractor(catalog)  # preview() with the rules reader: no LLM while typing
@@ -77,6 +77,15 @@ class SemanticInterpreter:
             f.semantic_type for s in catalog.sources.values() for f in s.fields.values() if f.semantic_type
         }
 
+    @property
+    def engine(self) -> DecisionEngine:
+        """The decision engine: the default one, or the search's own (``decisions.using_engine``)."""
+        return engine_in_use(self._engine)
+
+    @engine.setter
+    def engine(self, engine: DecisionEngine) -> None:
+        self._engine = engine
+
     def interpret(self, question: str, now: datetime, pinned: Optional[Dict[str, Any]] = None,
                   evidence: Any = None, reader: Optional[str] = None) -> Tuple[SemanticIntent, List[DecisionRecord]]:
         """
@@ -87,7 +96,7 @@ class SemanticInterpreter:
         """
         pins = dict(pinned or {})
         reader = self._check_reader(reader)
-        extraction = (self.llm_reader.extract(question, now, reading=True) if reader == "llm"
+        extraction = (self.llm_reader.extract(question, now, reading=True) if reader in self.LLM_READERS
                       else self.extractor.extract(question, now))
         english = getattr(extraction, "english_question", None)
         extraction.literals = self._without_shape_words([question, english], extraction.literals)
@@ -101,7 +110,7 @@ class SemanticInterpreter:
             reader=reader,
             reading=getattr(extraction, "reading", None),
         )
-        if reader == "llm":
+        if reader in self.LLM_READERS:
             decisions.append(self._reading_record(intent))
         if self.memory is not None:
             intent.similar_cases = self.memory.similar(question_template(intent.working_question, intent.literals))
@@ -341,7 +350,7 @@ class SemanticInterpreter:
         ``interpret``.
         """
         reader = self._check_reader(reader)
-        ex = self.llm_reader.extract(question, now, reading=True) if reader == "llm" else \
+        ex = self.llm_reader.extract(question, now, reading=True) if reader in self.LLM_READERS else \
             self._preview_rules.extract(question, now)
         english = getattr(ex, "english_question", None)
         intent = SemanticIntent(question=question, english_question=english, time_range=ex.time_range,
@@ -620,14 +629,16 @@ class SemanticInterpreter:
     # the llm reader
     # ------------------------------------------------------------------
 
-    READERS = ("rules", "llm")
+    READERS = ("rules", "llm", "llm_decides")
+    #: The readers that start with the LLM's reading of the question.
+    LLM_READERS = ("llm", "llm_decides")
 
     def _check_reader(self, reader: Optional[str]) -> str:
         reader = reader or self.reader
         if reader not in self.READERS:
             raise ValueError(f"unknown reader {reader!r}; use one of {', '.join(self.READERS)}")
-        if reader == "llm" and self.llm_reader is None:
-            raise ValueError("the llm reader needs an LLM: set semantic.default_llm (or extractor.llm) to an "
+        if reader in self.LLM_READERS and self.llm_reader is None:
+            raise ValueError(f"the {reader} reader needs an LLM: set semantic.default_llm (or extractor.llm) to an "
                              "ai_providers entry, or use the rules reader")
         return reader
 

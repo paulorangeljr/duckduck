@@ -70,7 +70,9 @@ CREATE TABLE IF NOT EXISTS searches (
     clarification VARCHAR,
     elapsed_ms DOUBLE,
     catalog_version VARCHAR,
-    engine VARCHAR
+    engine VARCHAR,
+    reader VARCHAR,
+    usage VARCHAR
 );
 CREATE TABLE IF NOT EXISTS feedback (
     id VARCHAR PRIMARY KEY,
@@ -81,6 +83,11 @@ CREATE TABLE IF NOT EXISTS feedback (
     categories VARCHAR,
     reason VARCHAR,
     expected VARCHAR
+);
+CREATE TABLE IF NOT EXISTS previews (
+    created_at TIMESTAMP,
+    reader VARCHAR,
+    usage VARCHAR
 );
 CREATE TABLE IF NOT EXISTS reviews (
     suggestion_id VARCHAR,
@@ -124,6 +131,8 @@ class FeedbackStore:
         self._lock = threading.Lock()
         self._conn = duckdb.connect(path)
         self._conn.execute(_SCHEMA)
+        for column in ("reader VARCHAR", "usage VARCHAR"):  # files written before the modes were recorded
+            self._conn.execute(f"ALTER TABLE searches ADD COLUMN IF NOT EXISTS {column}")
         #: Bumped on every write — lets readers (``CaseMemory``) cache until something changes.
         self.version = 0
 
@@ -148,9 +157,11 @@ class FeedbackStore:
             json.dumps([d.model_dump(mode="json") for d in result.decisions], default=str),
             json.dumps(result.pinned, default=str), result.sql, rows, result.clarification,
             float(result.elapsed_ms or 0.0), catalog_version, engine,
+            getattr(result, "reader", None), json.dumps(getattr(result, "usage", None) or {}),
         ]
         with self._lock:
-            self._conn.execute(f"INSERT INTO searches VALUES ({', '.join('?' * len(values))})", values)
+            self._conn.execute(f"INSERT INTO searches ({', '.join(_SEARCH_COLUMNS)}) "
+                               f"VALUES ({', '.join('?' * len(values))})", values)
             self.version += 1
         return search_id
 
@@ -181,6 +192,11 @@ class FeedbackStore:
             self.version += 1
         return feedback_id
 
+    def record_preview(self, reader: str, usage: Dict[str, Any]) -> None:
+        """What a preview while typing called (only when it called something) — the cost of typing, per mode."""
+        with self._lock:
+            self._conn.execute("INSERT INTO previews VALUES (?, ?, ?)", [_now(), reader, json.dumps(usage)])
+
     def record_review(self, suggestion_id: str, status: str, user: Optional[str] = None, detail: str = "") -> None:
         if status not in ("accepted", "dismissed"):
             raise ValueError("status must be 'accepted' or 'dismissed'")
@@ -195,13 +211,19 @@ class FeedbackStore:
         with self._lock:
             return self._conn.execute(sql, params or []).df()
 
-    def searches(self, limit: int = 100) -> pd.DataFrame:
-        """The latest searches, each with its latest feedback (if any). SQL NULLs are ``None``."""
+    def searches(self, limit: int = 100, reader: Optional[str] = None) -> pd.DataFrame:
+        """
+        The latest searches, each with its latest feedback (if any) and how it
+        ran: ``reader`` (the mode), ``engine``, time and usage. ``reader``
+        filters to one mode. SQL NULLs are ``None``.
+        """
+        where = "WHERE coalesce(s.reader, 'rules') = ?" if reader else ""
         return _nulls(self.query(f"""
             SELECT s.id, s.created_at, s.conversation_id, s.user_name, s.question, s.english_question,
-                   s.status, s.answer_shape, s.entity, s.sources, s.rows, f.verdict, f.categories, f.reason
-            FROM searches s LEFT JOIN ({_LATEST_FEEDBACK}) f ON f.search_id = s.id
-            ORDER BY s.created_at DESC, s.rowid DESC LIMIT {int(limit)}"""))
+                   s.status, s.answer_shape, s.entity, s.sources, s.rows, f.verdict, f.categories, f.reason,
+                   coalesce(s.reader, 'rules') AS reader, s.engine, s.elapsed_ms, {_USAGE_COLUMNS}
+            FROM searches s LEFT JOIN ({_LATEST_FEEDBACK}) f ON f.search_id = s.id {where}
+            ORDER BY s.created_at DESC, s.rowid DESC LIMIT {int(limit)}""", [reader] if reader else None))
 
     def search(self, search_id: str) -> Optional[Dict[str, Any]]:
         df = _nulls(self.query("SELECT * FROM searches WHERE id = ?", [search_id]))
@@ -253,8 +275,33 @@ class FeedbackStore:
                 WHERE verdict IS NOT NULL AND verdict <> 'answered')
             GROUP BY 1 ORDER BY count DESC, 1""")
         by_category["label"] = by_category["key"].map(CATEGORIES)
+        by_reader = self.query(f"""
+            SELECT coalesce(s.reader, 'rules') AS reader, count(*) AS searches, count(verdict) AS rated,
+                   count(*) FILTER (WHERE verdict = 'answered') AS answered,
+                   count(*) FILTER (WHERE verdict = 'partial') AS partial,
+                   count(*) FILTER (WHERE verdict = 'not_answered') AS not_answered,
+                   round(count(*) FILTER (WHERE verdict = 'answered') / nullif(count(verdict), 0), 3) AS answer_rate,
+                   round(count(*) FILTER (WHERE status = 'needs_clarification') / count(*), 3) AS asked_back_rate,
+                   round(median(elapsed_ms)) AS median_ms,
+                   round(avg({_usage('engine_calls')}), 2) AS avg_engine_calls,
+                   round(avg({_usage('llm_calls')}), 2) AS avg_llm_calls,
+                   round(avg({_usage('llm_tokens_in')} + {_usage('llm_tokens_out')})) AS avg_llm_tokens,
+                   sum(TRY_CAST(json_extract(usage, '$.cost') AS DOUBLE)) AS reported_cost,
+                   count(TRY_CAST(json_extract(usage, '$.cost') AS DOUBLE)) AS searches_with_cost
+            FROM ({base}) s GROUP BY 1 ORDER BY searches DESC, 1""")
+        typing = self.query(f"""
+            SELECT reader, count(*) AS previews, sum({_usage('engine_calls')}) AS typing_engine_calls,
+                   sum({_usage('llm_calls')}) AS typing_llm_calls,
+                   sum({_usage('llm_tokens_in')} + {_usage('llm_tokens_out')}) AS typing_llm_tokens,
+                   sum(TRY_CAST(json_extract(usage, '$.cost') AS DOUBLE)) AS typing_cost
+            FROM previews GROUP BY 1""")
+        by_reader = by_reader.merge(typing, on="reader", how="outer")
+        for col in ("searches", "rated", "answered", "partial", "not_answered", "previews",
+                    "typing_engine_calls", "typing_llm_calls", "typing_llm_tokens"):
+            by_reader[col] = by_reader[col].fillna(0).astype(int)
         return {
             "overall": overall,
+            "by_reader": by_reader,
             "by_answer_shape": breakdown("coalesce(answer_shape, '—')", f"({base})"),
             "by_source": breakdown("source", by_source),
             "by_category": by_category,
@@ -315,13 +362,31 @@ _LATEST_FEEDBACK = """
     FROM feedback GROUP BY search_id"""
 
 
+_SEARCH_COLUMNS = ("id", "created_at", "conversation_id", "user_name", "question", "english_question", "template",
+                   "status", "answer_shape", "entity", "activity", "sources", "decisions", "pinned", "sql", "rows",
+                   "clarification", "elapsed_ms", "catalog_version", "engine", "reader", "usage")
+
+
+def _usage(key: str) -> str:
+    """A number from a search's ``usage`` JSON (0 when absent — searches recorded before usage was)."""
+    return f"coalesce(TRY_CAST(json_extract(usage, '$.{key}') AS DOUBLE), 0)"
+
+
+_USAGE_COLUMNS = ", ".join([
+    f"CAST({_usage('engine_calls')} AS INTEGER) AS engine_calls",
+    f"CAST({_usage('llm_calls')} AS INTEGER) AS llm_calls",
+    f"CAST({_usage('llm_tokens_in')} + {_usage('llm_tokens_out')} AS INTEGER) AS llm_tokens",
+    "TRY_CAST(json_extract(s.usage, '$.cost') AS DOUBLE) AS cost",
+])
+
+
 def _nulls(df: pd.DataFrame) -> pd.DataFrame:
     """SQL NULL as ``None`` (not NaN)."""
     return df.astype(object).where(df.notna(), None)
 
 
 def _decode(row: Dict[str, Any]) -> Dict[str, Any]:
-    for key in ("sources", "decisions", "pinned", "categories", "expected"):
+    for key in ("sources", "decisions", "pinned", "categories", "expected", "usage"):
         if key in row and isinstance(row[key], str):
             try:
                 row[key] = json.loads(row[key])

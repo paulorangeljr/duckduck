@@ -595,16 +595,16 @@ Any decision under its threshold asks back instead of executing.
 | field | `values_field` | `values_field` + `source:<t>` |
 | unticked join | `blocked_joins` | `join:<a>=<b>` False |
 
-A new decision the user should see or override belongs in one of the three chips, with its own pin. Both readers (below) feed these same three decisions — the `llm` reader only adds evidence and candidates, the engine still decides. Keep the preview's and the search's rules shared (same helpers) so the chips predict the answer. They can still differ: the real search may use LLM extraction/translation and the preview doesn't, and the user's pinned choices win.
+A new decision the user should see or override belongs in one of the three chips, with its own pin. All readers (below) feed these same three decisions — the `llm` reader only adds evidence and candidates and the engine still decides; `llm_decides` makes the LLM the engine. Keep the preview's and the search's rules shared (same helpers) so the chips predict the answer. They can still differ: the real search may use LLM extraction/translation and the preview doesn't, and the user's pinned choices win.
 
 **Decided but not shown as chips:**
 - filters: enum values, typed literals (IP, email), time range. They appear in the SQL and in "How it was decided".
 - the activity.
 - **About is empty** for `lookup`/`locate` (the subject is the value, e.g. `10.0.0.196`) and `browse` (the subject is the table). Filling it there ("About: 10.0.0.196 (ip address)", "About: table owners") was proposed to the user and isn't built yet.
 
-### Two readers: `rules` and `llm`
+### Three readers: `rules`, `llm`, `llm_decides`
 
-Both readers produce the same three decisions. What differs is who proposes them.
+All three readers produce the same three decisions. What differs is who proposes them — and, for `llm_decides`, who decides.
 
 - **`rules`** (`SemanticSearch(reader="rules")`, the default, `semantic.reader`): the configured `extractor`; wording rules propose; Jev settles ambiguity.
 - **`llm`**: `interpreter.llm_reader` is an `LLMExtractor`, called with `extract(..., reading=True)`.
@@ -619,6 +619,9 @@ Both readers produce the same three decisions. What differs is who proposes them
     - `_values_of_named_field` accepts its non-entity field (entity not asked);
     - planner `_reading_field`: preferred primary for `FIELD_SHAPES`, `default` for the `values_field` classify, and it keeps "the different users" from short-circuiting when a field was read;
     - an `llm_reading` DecisionRecord (`decided_by="llm"`) goes first in the trail ("no reading" when the LLM failed; the extraction then falls back to rules with a warning).
+- **`llm_decides`** (page: 🪽 Fly): the `llm` reading **and** the LLM as the decision engine. `SemanticSearch.llm_engine` = `JEVAdapter(LLMDecisionBackend(llm_reader.llm))` (or `llm_engine=`); `engine_for(reader)` picks it, and `search`/`preview` run inside `decisions.using_engine(...)`, a `ContextVar` read by the `engine` properties of the interpreter and planner (`engine_in_use`), so concurrent web requests never share an override; `Conversation._interpret` classifies replies with `engine_for(self.reader)`. `interpreter.LLM_READERS` = both LLM readers. Same invariants: thresholds, asking back, compiler-only SQL.
+- **Metering** (`metering.py`): `search()` and `preview()` run in `metered()` (a `ContextVar` `Usage`); `JEVAdapter._call` → `record_engine` (calls, questions, seconds), `JevClient._log_usage` → `record_cost` (`usage.cost`), `llm._log_call` → `record_llm` (tokens, seconds) — every real client; fakes in tests call `record_llm` themselves. Thread pools submit with `submit_in_context` (engine calls, evidence probes). A cached LLM reading → `record_reuse` (`usage.reused`), never a second call: the preview that made it counted it. `SearchResult.reader` / `.usage` (in `to_dict`).
+- **Stored and compared**: `searches.reader` / `searches.usage` (JSON; `ALTER TABLE … ADD COLUMN IF NOT EXISTS` migrates older files, old rows read as `rules`), `engine` = `engine_label_for(reader)`; `previews` table (`record_preview`, only when a preview called something). `store.searches(reader=)` adds reader/engine/elapsed + `engine_calls`/`llm_calls`/`llm_tokens`/`cost` (`_USAGE_COLUMNS`); `stats()["by_reader"]` = per mode: searches, rated, answer rate, asked-back rate, median ms, average calls/tokens, reported cost, plus `previews`/`typing_*` from the previews table. `evaluation.evaluate(reader=)`, `compare_readers(search, cases, readers)`; `EvaluationReport.metrics` adds asked_back_rate / mean calls / tokens / reported_cost. Server: `/api/searches?reader=`, `/api/stats.by_reader`, `/api/evaluate {readers}` → `readers: {mode: metrics}`. Page: 🪽 Fly in the switch (+ help column), `runPill` on answers, History Mode column + filter, Dashboard "Modes compared" (`modesTable`, fixed order Paddle/Dive/Fly), Evaluate "also compare the modes". Export: mode + engine per gap, `--reader` in the reproduce command. Tests: `tests/test_modes.py`, `tests/test_readers.py`.
 - **Plumbing.** `from_config` builds the llm reader with `cfg.build_llm_reader`:
   - it reuses an `llm` extractor, else builds one on the extractor stage's LLM, else `None`;
   - a build failure only disables the reader (`search.llm_reader_error`) unless `reader: llm`.

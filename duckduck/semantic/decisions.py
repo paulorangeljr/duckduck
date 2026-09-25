@@ -30,9 +30,13 @@ import json
 import logging
 import time
 from collections import OrderedDict
+import contextvars
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+
+from .metering import record_engine, submit_in_context
 from concurrent.futures import TimeoutError as FutureTimeout
-from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Union, runtime_checkable
+from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Protocol, Union, runtime_checkable
 
 from pydantic import BaseModel, Field
 
@@ -346,7 +350,10 @@ class JEVAdapter:
         last_error: Optional[BaseException] = None
         for attempt in range(self.retries + 1):
             try:
-                return self._pool.submit(fn, payload, question, labels).result(timeout=self.timeout)
+                started = time.perf_counter()
+                answer = submit_in_context(self._pool, fn, payload, question, labels).result(timeout=self.timeout)
+                record_engine(len(labels) if labels else 1, time.perf_counter() - started)
+                return answer
             except FutureTimeout as exc:
                 last_error = exc
                 logger.warning("jev call timed out after %.1fs (attempt %d)", self.timeout, attempt + 1)
@@ -360,6 +367,25 @@ class JEVAdapter:
         raise DecisionEngineError(
             f"JEV failed after {attempt + 1} attempt(s) on {question!r}: {last_error!r}"
         ) from last_error
+
+
+#: The decision engine for the search in progress, when it isn't the default (the ``llm_decides`` reader:
+#: the LLM decides instead of Jev). A ``ContextVar``: concurrent searches in the web app never mix.
+_ENGINE: "contextvars.ContextVar[Optional[DecisionEngine]]" = contextvars.ContextVar("duckduck_engine", default=None)
+
+
+@contextmanager
+def using_engine(engine: Optional["DecisionEngine"]) -> Iterator[None]:
+    """Every decision inside is asked of ``engine`` (``None``: the default one)."""
+    token = _ENGINE.set(engine)
+    try:
+        yield
+    finally:
+        _ENGINE.reset(token)
+
+
+def engine_in_use(default: "DecisionEngine") -> "DecisionEngine":
+    return _ENGINE.get() or default
 
 
 def _item(a: Ask) -> Dict[str, Any]:

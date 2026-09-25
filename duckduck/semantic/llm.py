@@ -31,8 +31,11 @@ logger = logging.getLogger("duckduck.semantic.llm")
 
 def _log_call(model: Any, output_model: Type[BaseModel], started: float, prompt: str,
               tokens_in: Any = None, tokens_out: Any = None) -> None:
-    """One INFO line per LLM call: model, what was asked for, time, tokens. Never raises."""
+    """One INFO line per LLM call: model, what was asked for, time, tokens — and the search's usage. Never raises."""
     try:
+        from .metering import record_llm
+
+        record_llm(tokens_in, tokens_out, time.perf_counter() - started)
         if not logger.isEnabledFor(logging.INFO):
             return
         count = lambda n: f"{n:,}" if isinstance(n, int) else "?"  # noqa: E731

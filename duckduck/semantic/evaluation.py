@@ -38,6 +38,8 @@ class CaseResult:
     error: Optional[str] = None
     detail: Dict[str, Any] = field(default_factory=dict)
     shape_ok: Optional[bool] = None
+    #: What the case cost (``SearchResult.usage``): engine/LLM calls, tokens, reported money.
+    usage: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -60,6 +62,13 @@ class EvaluationReport:
             "execution_success": sum(c.status == "ok" for c in self.cases) / n,
             "answer_accuracy": self._rate("answer_ok"),
             "mean_latency_ms": sum(c.latency_ms for c in self.cases) / n,
+            "asked_back_rate": sum(c.status == "needs_clarification" for c in self.cases) / n,
+            "mean_engine_calls": sum(c.usage.get("engine_calls", 0) for c in self.cases) / n,
+            "mean_llm_calls": sum(c.usage.get("llm_calls", 0) for c in self.cases) / n,
+            "mean_llm_tokens": sum(c.usage.get("llm_tokens_in", 0) + c.usage.get("llm_tokens_out", 0)
+                                   for c in self.cases) / n,
+            "reported_cost": (sum(c.usage["cost"] for c in self.cases if c.usage.get("cost") is not None)
+                              if any(c.usage.get("cost") is not None for c in self.cases) else None),
         }
 
 
@@ -83,16 +92,29 @@ def _measuring(search: SemanticSearch):
         search.feedback_store, search.interpreter.memory = store, memory
 
 
-def evaluate(search: SemanticSearch, cases: List[Dict[str, Any]], execute: bool = True) -> EvaluationReport:
+def evaluate(search: SemanticSearch, cases: List[Dict[str, Any]], execute: bool = True,
+             reader: Optional[str] = None) -> EvaluationReport:
+    """Every case through ``search`` (``reader``: which mode reads it — default: the search's)."""
     with _measuring(search):
-        return _evaluate(search, cases, execute)
+        return _evaluate(search, cases, execute, reader)
 
 
-def _evaluate(search: SemanticSearch, cases: List[Dict[str, Any]], execute: bool) -> EvaluationReport:
+def compare_readers(search: SemanticSearch, cases: List[Dict[str, Any]], readers: Optional[List[str]] = None,
+                    execute: bool = False) -> Dict[str, EvaluationReport]:
+    """
+    The same cases through each mode (default: every mode this search has) —
+    which one reads the questions best, how often it asks back, how fast and
+    at what cost. ``llm`` / ``llm_decides`` make LLM calls per case.
+    """
+    return {reader: evaluate(search, cases, execute=execute, reader=reader) for reader in (readers or search.readers)}
+
+
+def _evaluate(search: SemanticSearch, cases: List[Dict[str, Any]], execute: bool,
+              reader: Optional[str] = None) -> EvaluationReport:
     out = []
     for case in cases:
         try:
-            res: SearchResult = search.search(case["question"], execute=execute)
+            res: SearchResult = search.search(case["question"], execute=execute, reader=reader)
         except Exception as exc:  # an evaluation run must survive a broken case
             out.append(CaseResult(case["question"], "error", None, None, None, None, 0.0, error=repr(exc)))
             continue
@@ -121,6 +143,7 @@ def _evaluate(search: SemanticSearch, cases: List[Dict[str, Any]], execute: bool
             latency_ms=res.elapsed_ms,
             error=res.clarification if res.status not in ("ok", "planned") else None,
             detail={"sql": res.sql, "sources": sources or None},
+            usage=dict(res.usage or {}),
         ))
     return EvaluationReport(out)
 

@@ -35,6 +35,8 @@ import requests
 #: Jev caps request bodies at 32 KiB.
 MAX_BODY_BYTES = 32 * 1024
 
+from .metering import record_cost
+
 logger = logging.getLogger("duckduck.semantic.jev")
 #: Long catalog descriptions are trimmed to keep requests well under the cap.
 _MAX_TEXT = 1500
@@ -224,6 +226,7 @@ class JevClient:
         try:
             usage = envelope.get("usage") or {}
             cost = usage.get("cost")
+            record_cost(cost)  # the search in progress (metering)
             if isinstance(cost, (int, float)):
                 self.total_cost += cost
             logger.info(

@@ -40,7 +40,10 @@ def test_mvp_question_set_scores_perfectly(search):
     )]
     assert not failures, failures
     metrics = report.metrics
-    assert {k: v for k, v in metrics.items() if k != "mean_latency_ms"} == {
+    cost = ("mean_latency_ms", "asked_back_rate", "mean_engine_calls", "mean_llm_calls", "mean_llm_tokens",
+            "reported_cost")  # how it ran, not how right it was
+    assert metrics["asked_back_rate"] == 0.0 and metrics["mean_llm_calls"] == 0.0 and metrics["reported_cost"] is None
+    assert {k: v for k, v in metrics.items() if k not in cost} == {
         "source_accuracy": 1.0, "entity_accuracy": 1.0, "activity_accuracy": 1.0,
         "plan_validity": 1.0, "execution_success": 1.0, "answer_accuracy": 1.0,
         "answer_shape_accuracy": None,  # the MVP set has no expected_answer_shape

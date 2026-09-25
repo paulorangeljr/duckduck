@@ -215,8 +215,8 @@ def create_app(
         return dump({"id": feedback_id})
 
     @app.get("/api/searches")
-    def searches(limit: int = 100):
-        return dump(store.searches(limit=min(max(limit, 1), 1000)).to_dict(orient="records"))
+    def searches(limit: int = 100, reader: str = ""):
+        return dump(store.searches(limit=min(max(limit, 1), 1000), reader=reader or None).to_dict(orient="records"))
 
     @app.get("/api/searches/{search_id}")
     def one_search(search_id: str):
@@ -273,17 +273,21 @@ def create_app(
         return dump({"dismissed": s.id})
 
     @app.post("/api/evaluate")
-    def evaluate_feedback():
-        from .evaluation import calibrate_thresholds, evaluate
+    def evaluate_feedback(body: Optional[Dict[str, Any]] = Body(None)):
+        from .evaluation import calibrate_thresholds, compare_readers, evaluate
 
         dataset = store.to_evaluation()
         if not dataset:
             return dump({"size": 0, "note": "no rated questions yet"})
         search = state["factory"]()  # its own instance: calibration sets thresholds to 0 for a while
+        readers = [r for r in ((body or {}).get("readers") or []) if r in search.readers]
         report = evaluate(search, dataset, execute=False)
         calibration = calibrate_thresholds(search, dataset)
+        # the same rated questions through each mode chosen: which reads them best, asks back least, costs least
+        compared = {r: rep.metrics for r, rep in compare_readers(search, dataset, readers).items()} if readers else {}
         return dump({
             "size": len(dataset),
+            "readers": compared,
             "metrics": report.metrics,
             "misses": [{"question": c.question, "status": c.status, "error": c.error}
                        for c in report.cases

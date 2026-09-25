@@ -15,6 +15,8 @@ import inspect
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
+
+from .metering import submit_in_context
 from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -88,7 +90,7 @@ class EvidenceProber:
         self._runs += 1
         started = time.perf_counter()
         try:
-            df = _POOL.submit(self.duck.fetch, src.table, **kwargs).result(timeout=self.timeout)
+            df = submit_in_context(_POOL, lambda: self.duck.fetch(src.table, **kwargs)).result(timeout=self.timeout)
         except FutureTimeout:
             return self._record(ref, value, None, time.perf_counter() - started, f"timed out after {self.timeout:g}s")
         except Exception as exc:  # evidence is optional: a failing probe must not fail the question

@@ -21,6 +21,9 @@ class Reader:
         self.readings, self.calls, self.systems = readings, [], []
 
     def generate(self, system, prompt, output_model):
+        from duckduck.semantic.metering import record_llm
+
+        record_llm(100, 20, 0.01)  # what a real client does (llm._log_call)
         question = prompt.rsplit("Question: ", 1)[1]
         self.calls.append(question)
         self.systems.append(system)
@@ -43,7 +46,7 @@ DEPARTMENTS = {"quantos departamentos existem?": (
 
 def test_the_rules_reader_is_the_default_and_never_calls_the_llm():
     search, llm = _search(DEPARTMENTS)
-    assert search.readers == ["rules", "llm"] and search.reader == "rules"
+    assert search.readers == ["rules", "llm", "llm_decides"] and search.reader == "rules"
     search.search("How many alerts per rule?")
     assert not llm.calls
 
@@ -148,7 +151,7 @@ def test_the_web_app(tmp_path):
     search, llm = _search(DEPARTMENTS)
     client = TestClient(create_app(lambda: search, store=None))
     meta = client.get("/api/meta").json()["readers"]
-    assert meta == {"available": ["rules", "llm"], "default": "rules", "llm_unavailable": None}
+    assert meta == {"available": ["rules", "llm", "llm_decides"], "default": "rules", "llm_unavailable": None}
     preview = client.post("/api/preview", json={"question": "quantos departamentos existem?", "reader": "llm"}).json()
     assert preview["reading"]["answer"] == "count_values"
     answer = client.post("/api/ask", json={"question": "quantos departamentos existem?", "reader": "llm"}).json()
@@ -170,3 +173,92 @@ def test_the_reading_never_says_not_about_the_data():
     assert "out_of_scope" not in llm.systems[0] and "small_talk" not in llm.systems[0]
     assert '"my", "our", "I have"' in llm.systems[0]
     assert search.preview("what are my departments", reader="llm")["reading"] is None
+
+
+# ---------------------------------------------------------------------------
+# llm_decides: the LLM reads the question and makes every decision — no Jev
+
+
+class Decider(Reader):
+    """Fake LLM for both roles: the reading (extraction) and the decisions (as LLMDecisionBackend asks them)."""
+
+    def __init__(self, readings, choices=None):
+        super().__init__(readings)
+        self.choices, self.judgments = choices or {}, []
+
+    def generate(self, system, prompt, output_model):
+        from duckduck.semantic.llm_decisions import _Answer, _Answers, _Scored, _Scores, _YesNo
+
+        if output_model in (LLMExtractionWithReading,) or "Question: " in prompt:
+            return super().generate(system, prompt, output_model)
+        from duckduck.semantic.metering import record_llm
+
+        record_llm(200, 30, 0.01)
+        body = json.loads(prompt)
+        self.judgments.append(body)
+        if output_model is _Answers:
+            answers = []
+            for key, j in body["judgments"].items():
+                if j["type"] == "choice":
+                    opts = list(j.get("options") or {})
+                    want = self.choices.get(key)
+                    answers.append(_Answer(key=key, option_probabilities=[
+                        _Scored(key=o, probability=0.9 if o == want else 0.1 / max(len(opts) - 1, 1)) for o in opts]))
+                else:
+                    answers.append(_Answer(key=key, yes_probability=0.95))
+            return _Answers(answers=answers)
+        if output_model is _YesNo:
+            return _YesNo(probability=0.95)
+        return _Scores(scores=[])
+
+
+def test_llm_decides_never_asks_jev(monkeypatch):
+    jev = Jev()
+    monkeypatch.setattr("requests.Session.post", lambda self, url, data, timeout: jev(url, data, timeout))
+    llm = Decider({"how many departments are there?": (None, LLMReading(
+        answer="count_values", about_kind="field", about="owners.department"))},
+        choices={"activity": "security_alert"})
+    catalog = Catalog.model_validate(CATALOG)
+    search = SemanticSearch(catalog, _duck(), engine=JEVAdapter(JevClient(api_key="k"), cache_size=0),
+                            llm_reader=LLMExtractor(catalog, llm))
+    result = search.search("how many departments are there?", reader="llm_decides")
+    assert result.status == "ok" and result.results.to_dict("records") == [{"count": 2}]
+    assert not jev.bodies and llm.judgments  # decided by the LLM, never by Jev
+    assert result.reader == "llm_decides" and search.engine_label_for("llm_decides").startswith("LLMDecisionBackend")
+    assert result.usage["llm_calls"] == 1 + len(llm.judgments) and result.usage["engine_calls"] == len(llm.judgments)
+    # the same question with the llm reader: Jev decides
+    jev_result = search.search("how many departments are there?", reader="llm")
+    assert jev.bodies and jev_result.usage["engine_calls"] >= 1 and jev_result.usage["llm_calls"] == 0  # cached reading
+
+
+def test_usage_counts_jev_cost_and_is_per_search(monkeypatch):
+    class Costly(Jev):
+        def __call__(self, url, data, timeout):
+            r = super().__call__(url, data, timeout)
+            r.json.return_value["usage"] = {"cost": 0.0002, "input_tokens": 300}
+            return r
+
+    jev = Costly()
+    monkeypatch.setattr("requests.Session.post", lambda self, url, data, timeout: jev(url, data, timeout))
+    search = SemanticSearch(Catalog.model_validate(CATALOG), _duck(),
+                            engine=JEVAdapter(JevClient(api_key="k"), cache_size=0))
+    first = search.search("Which hosts have critical alerts?")
+    assert first.usage["engine_calls"] == len(jev.bodies) >= 1
+    assert first.usage["cost"] == pytest.approx(0.0002 * len(jev.bodies))
+    assert first.to_dict()["usage"] == first.usage and first.to_dict()["reader"] == "rules"
+    calls = len(jev.bodies)
+    second = search.search("How many alerts per rule?")
+    assert second.usage["engine_calls"] == len(jev.bodies) - calls  # its own, not the first search's
+
+
+def test_real_llm_clients_count_themselves():
+    import time
+
+    from duckduck.semantic.llm import _log_call
+    from duckduck.semantic.metering import metered
+
+    with metered() as usage:
+        _log_call("m", LLMReading, time.perf_counter() - 0.2, "prompt", 1200, 80)
+    _log_call("m", LLMReading, time.perf_counter(), "prompt", 5, 5)  # outside a search: not counted anywhere
+    assert (usage.llm_calls, usage.llm_tokens_in, usage.llm_tokens_out) == (1, 1200, 80)
+    assert usage.llm_seconds >= 0.2

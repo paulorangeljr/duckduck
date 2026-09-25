@@ -129,7 +129,8 @@ def _gap(i: int, gap: Dict[str, Any], fixes: Dict[str, List[Any]], redact: bool,
     if len({r['question'] for r in failures}) > 1 and not redact:
         others = sorted({r["question"] for r in failures} - {latest["question"]})[:4]
         lines.append("- **Also asked as:** " + "; ".join(f"“{q}”" for q in others))
-    what = [f"status `{latest['status']}`", f"answer `{latest.get('answer_shape') or '—'}`"]
+    what = [f"status `{latest['status']}`", f"answer `{latest.get('answer_shape') or '—'}`",
+            f"mode `{latest.get('reader') or 'rules'}`" + (f" ({latest['engine']})" if latest.get("engine") else "")]
     if latest.get("sources"):
         what.append("tables " + ", ".join(f"`{s}`" for s in latest["sources"]))
     if latest.get("rows") is not None:
@@ -167,7 +168,8 @@ def _gap(i: int, gap: Dict[str, Any], fixes: Dict[str, List[Any]], redact: bool,
         lines += ["", "```sql", latest["sql"], "```"]
     if not redact:
         lines += ["", "Reproduce:", "", "```bash",
-                  f"{command} -v debug ask {_shell(latest['question'])}", "```"]
+                  f"{command} -v debug ask {_shell(latest['question'])}"
+                  + (f" --reader {latest['reader']}" if latest.get("reader") not in (None, "rules") else ""), "```"]
     lines += ["", f"Search ids: {', '.join('`' + r['id'] + '`' for r in failures[-5:])}", ""]
     return lines
 

@@ -48,6 +48,7 @@ from pydantic import BaseModel, Field
 from .catalog import Catalog
 from .extraction import EnumMatch, ExtractedLiteral, Extraction, Reading, RuleBasedExtractor, TimeRange
 from .llm import LLMClient
+from .metering import record_reuse
 
 logger = logging.getLogger("duckduck.semantic.llm")
 
@@ -210,6 +211,7 @@ class LLMExtractor:
                 hit = self._cache.get(key)
                 if hit is not None and time.monotonic() - hit[0] < self.cache_ttl:
                     self._cache.move_to_end(key)
+                    record_reuse()  # counted where it was made, not again here
                     logger.info("llm extraction: %r read %.0fs ago — reusing it", question, time.monotonic() - hit[0])
                     return hit[1].model_copy(deep=True)
         result = self._extract(question, now, reading)

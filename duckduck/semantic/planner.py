@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from .catalog import ActivityDef, Catalog
-from .decisions import CRITERIA, Ask, DecisionEngine, DecisionState, ask_all
+from .decisions import CRITERIA, Ask, DecisionEngine, DecisionState, ask_all, engine_in_use
 from .graph import Path, RelationshipGraph
 from .clarify import ClarificationTexts
 from .intent import FIELD_SHAPES, Clarification, ClarificationNeeded, DecisionRecord, SemanticIntent, Thresholds
@@ -67,7 +67,7 @@ class QueryPlanner:
     ):
         self.catalog = catalog
         self.shapes = shapes or AnswerShapes()
-        self.engine = engine
+        self._engine = engine
         self.graph = graph or RelationshipGraph(catalog)
         self.thresholds = thresholds or Thresholds()
         self.allowed: Optional[Set[str]] = set(allowed_sources) if allowed_sources is not None else None
@@ -212,6 +212,15 @@ class QueryPlanner:
             group_by=group_by,
         )
         return plan, decisions
+
+    @property
+    def engine(self) -> DecisionEngine:
+        """The decision engine: the default one, or the search's own (``decisions.using_engine``)."""
+        return engine_in_use(self._engine)
+
+    @engine.setter
+    def engine(self, engine: DecisionEngine) -> None:
+        self._engine = engine
 
     def plan_across(self, intent: SemanticIntent) -> List[SourcePlan]:
         """

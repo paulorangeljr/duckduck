@@ -24,7 +24,8 @@ import pandas as pd
 from .catalog import Catalog
 from .clarify import ClarificationTexts
 from .compiler import display_sql
-from .decisions import DecisionEngine, LexicalDecisionEngine
+from .decisions import DecisionEngine, JEVAdapter, LexicalDecisionEngine, using_engine
+from .metering import metered
 from .executor import PlanExecutor, SourceFetch
 from .extraction import ValueExtractor
 from .graph import RelationshipGraph
@@ -112,6 +113,10 @@ class SearchResult:
     only_sources: Optional[List[str]] = None
     #: A direct reply instead of data — small talk ("hi", "thanks") or a question that isn't about
     #: the data (``intent.answer_shape`` says which) — and example questions to try instead.
+    #: How it was read and decided: ``rules`` / ``llm`` / ``llm_decides`` (see ``SemanticInterpreter``).
+    reader: Optional[str] = None
+    #: What it cost: decision-engine and LLM calls, tokens, seconds, reported money (``metering.Usage``).
+    usage: Dict[str, Any] = field(default_factory=dict)
     reply: Optional[str] = None
     suggestions: List[str] = field(default_factory=list)
     #: ``lookup`` / ``locate``: one row per table checked (source, found, rows, matched_on,
@@ -167,6 +172,8 @@ class SearchResult:
             "search_id": self.search_id,
             "conversation_id": self.conversation_id,
             "only_sources": self.only_sources,
+            "reader": self.reader,
+            "usage": self.usage,
             "reply": self.reply,
             "suggestions": self.suggestions,
             "intent": self.intent.model_dump(mode="json") if self.intent else None,
@@ -250,6 +257,7 @@ class SemanticSearch:
         memory: Union[bool, Dict[str, Any], Any] = None,
         reader: str = "rules",
         llm_reader: Any = None,
+        llm_engine: Optional[DecisionEngine] = None,
     ):
         if isinstance(catalog, str):
             catalog = Catalog.load(catalog)
@@ -275,6 +283,9 @@ class SemanticSearch:
         #: rules'). ``llm_reader``: the ``LLMExtractor`` that reads (default: ``extractor``, if an LLM one).
         if llm_reader is not None:
             self.interpreter.llm_reader = llm_reader
+        #: The ``llm_decides`` reader's decision engine: the LLM answers every decision Jev would
+        #: (``LLMDecisionBackend``). Default: one over the llm reader's own LLM.
+        self._llm_engine = llm_engine
         self.interpreter.reader = self.interpreter._check_reader(reader)
         self.planner = QueryPlanner(
             self.catalog, self.engine, graph=self.graph, thresholds=self.thresholds,
@@ -388,8 +399,28 @@ class SemanticSearch:
 
     @property
     def readers(self) -> List[str]:
-        """The readers this search can use: ``rules``, plus ``llm`` when it has an LLM."""
-        return ["rules"] + (["llm"] if self.interpreter.llm_reader is not None else [])
+        """The readers this search can use: ``rules``, plus ``llm`` and ``llm_decides`` when it has an LLM."""
+        return ["rules"] + (["llm", "llm_decides"] if self.interpreter.llm_reader is not None else [])
+
+    @property
+    def llm_engine(self) -> Optional[DecisionEngine]:
+        """The decision engine of the ``llm_decides`` reader (``None`` without an LLM)."""
+        if self._llm_engine is None and self.interpreter.llm_reader is not None:
+            from .llm_decisions import LLMDecisionBackend
+
+            self._llm_engine = JEVAdapter(LLMDecisionBackend(self.interpreter.llm_reader.llm), timeout=60.0)
+        return self._llm_engine
+
+    def engine_for(self, reader: Optional[str]) -> DecisionEngine:
+        """Who decides for ``reader``: the LLM for ``llm_decides``, else the configured engine (Jev / offline)."""
+        return self.llm_engine if (reader or self.reader) == "llm_decides" else self.engine
+
+    def engine_label_for(self, reader: Optional[str]) -> str:
+        engine = self.engine_for(reader)
+        backend = getattr(engine, "backend", None)
+        llm = getattr(backend, "llm", None)
+        model = getattr(backend, "model", None) or getattr(llm, "model", None) or getattr(llm, "model_id", None)
+        return " ".join(str(x) for x in (type(backend or engine).__name__, model) if x)
 
     @property
     def reader(self) -> str:
@@ -408,8 +439,10 @@ class SemanticSearch:
         """
         only = self._check_scope(only_sources)
         reader = self.interpreter._check_reader(reader)
-        with scope.only_sources(only):
+        with scope.only_sources(only), using_engine(self.engine_for(reader)), metered() as usage:
             result = self._search(question, execute, pinned, reader)
+        result.reader = reader
+        result.usage = usage.to_dict()
         result.conversation_id = conversation_id
         if only is not None:
             result.only_sources = sorted(only)
@@ -420,7 +453,7 @@ class SemanticSearch:
             try:
                 result.search_id = self.feedback_store.record_search(
                     result, conversation_id=conversation_id, user=user,
-                    catalog_version=self.catalog_version, engine=self.engine_label)
+                    catalog_version=self.catalog_version, engine=self.engine_label_for(reader))
             except Exception as exc:  # recording must never cost the user their answer
                 logger.warning("feedback: couldn't record the search (%s)", exc)
         return result
@@ -453,7 +486,14 @@ class SemanticSearch:
         if cached is not None:
             self._previews.move_to_end(key)
             return cached
-        seen = self.interpreter.preview(question, self.clock(), reader=reader)
+        with using_engine(self.engine_for(reader)), metered() as usage:
+            seen = self.interpreter.preview(question, self.clock(), reader=reader)
+        seen["usage"] = usage.to_dict()
+        if self.feedback_store is not None and usage.spent:  # the cost of typing, per mode
+            try:
+                self.feedback_store.record_preview(reader, usage.to_dict())
+            except Exception as exc:
+                logger.warning("feedback: couldn't record the preview's usage (%s)", exc)
         seen["joins"] = self._preview_joins(seen)
         seen["systems"] = self._systems({s["source"]: s for s in seen["sources"]})
         self._previews[key] = seen
@@ -996,7 +1036,7 @@ class Conversation:
         from .text import content_stems
 
         options = {o.value: o.label for o in followup.options}
-        result = self.search.engine.classify(
+        result = self.search.engine_for(self.reader).classify(
             DecisionState(query=reply, terms=content_stems(reply), facts={"we_asked": followup.question}),
             "Which of the options does the user's reply choose?", options,
         )

@@ -813,8 +813,8 @@ python -m duckduck.semantic feedback-export    # what still fails, as a brief fo
   value, missing data, too many questions) and say why. Optionally you say
   what would have been right: the tables, the kind of answer, what it
   asks about, or *"word X means field = value"*.
-- **Two ways to read a question: 🦆 Paddle or 🤿 Dive.** A switch next to
-  the question picks the reader. Paddle skims the words on the surface: the
+- **Three ways to read a question: 🦆 Paddle, 🤿 Dive or 🪽 Fly.** A switch
+  next to the question picks the reader. Paddle skims the words on the surface: the
   `rules` reader. Dive goes under for what you meant: the `llm` reader. The
   API, CLI and config call them `rules` and `llm`. The **?** next to the
   switch explains both: how each reads, what it's good at, its limits, and
@@ -839,6 +839,30 @@ python -m duckduck.semantic feedback-export    # what still fails, as a brief fo
     Needs an LLM (`extractor.llm` or `default_llm`). Without one the switch
     is disabled and says why. If the LLM call fails, the search falls back
     to the rules.
+  - **Fly — `llm_decides`.** The LLM reads the question as in Dive *and*
+    makes every decision Jev would: what it's about, which tables, fields
+    and joins, the kind of answer. No Jev at all. It uses the same decision
+    contract (`LLMDecisionBackend`, one LLM call per batch of decisions), so
+    the guarantees stay: a doubt is asked back, and SQL is written only by
+    the compiler from a checked plan. It's the slowest and costs the most;
+    thresholds calibrated for Jev may fit it less well.
+  - **Every search records how it ran:** its mode, the engine that decided,
+    its time, decision-engine calls, LLM calls and tokens, and the cost
+    where the provider reports it (the Decisions API does, per call).
+    - Previews while typing are metered too and kept apart per mode, so the
+      cost of typing shows and nothing is counted twice. A reading reused
+      from the preview shows as *reading from the preview* on the answer.
+    - **Dashboard → Modes compared:** searches, answer rate, how often it
+      asked back, median time, calls, tokens and cost per mode, plus the
+      cost of typing.
+    - **History:** a Mode column (hover for the engine), time and calls,
+      and a filter by mode.
+    - **Suggestions → Evaluate:** *also compare the modes* replays your
+      rated questions through each mode and shows accuracy, asked-back
+      rate, time and calls side by side
+      (`evaluation.compare_readers(search, cases)` in Python).
+    - The developer brief says which mode each failing question ran in,
+      and its reproduce command includes `--reader`.
   - **Ask waits for the reading.** While the question is being read
     (either way), the Ask button is disabled and reads *Paddling…* or
     *Diving…*, while the duck says what it's up to ("rubber-duck debugging
