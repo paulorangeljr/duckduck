@@ -164,7 +164,7 @@ def test_the_api(tmp_path):
     assert client.post("/api/ask", json={"question": "x y z", "blocked_joins": [["alerts.nope", "owners.ip"]]}
                        ).status_code == 400
 
-    def broken(question):
+    def broken(question, reader=None):
         raise RuntimeError("Jev is down")
 
     search.preview = broken

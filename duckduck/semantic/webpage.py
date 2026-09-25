@@ -50,6 +50,9 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 60px; }
 input, textarea, select { font: inherit; color: var(--ink); background: var(--surface);
   border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
 .ask input { flex: 1; font-size: 16px; padding: 10px 12px; }
+.ask .reader { align-self: center; flex: none; }
+.ask .reader button[disabled] { opacity: .45; cursor: not-allowed; }
+#askbtn { min-width: 92px; }
 button.primary, button.secondary, button.option, button.verdict {
   font: inherit; border-radius: 8px; padding: 8px 14px; cursor: pointer; border: 1px solid var(--border); }
 button.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
@@ -206,8 +209,14 @@ button.add { background: none; border: 1px dashed var(--border); border-radius: 
   <section id="tab-ask">
     <div class="card">
       <form class="ask" id="askform">
+        <div class="seg reader" role="group" aria-label="How the question is read">
+          <button type="button" data-reader="rules" aria-pressed="true"
+            title="Rules read the wording; the decision engine (Jev) settles what's unclear">Rules</button>
+          <button type="button" data-reader="llm" aria-pressed="false"
+            title="An LLM reads the question first; the decision engine (Jev) decides on that reading">LLM</button>
+        </div>
         <input id="question" placeholder="Ask about your data — e.g. Which hosts have critical alerts?" autocomplete="off">
-        <button class="primary" type="submit">Ask</button>
+        <button class="primary" type="submit" id="askbtn">Ask</button>
       </form>
       <div class="chips" id="chips" aria-live="polite"></div>
       <div class="panel" id="chippanel" hidden></div>
@@ -319,7 +328,30 @@ $("#user").addEventListener("change", () => store.set("duckduck-user", $("#user"
 // A choice belongs to the question it was made for (pre.forQ): small edits keep it, a new question starts
 // from the new suggestions.
 const pre = {data: null, chosen: null, entity: null, field: null, blocked: new Set(), forQ: null, open: null, seq: 0, timer: null,
-             ctrl: null, thinking: false, error: null};
+             ctrl: null, thinking: false, error: null, pendingSubmit: false};
+// How the question is read: "rules" (the wording + Jev) or "llm" (an LLM reads it, then Jev) — per question, remembered.
+let READER = store.get("duckduck-reader") || "rules";
+const previewable = (q) => q.length >= 8 && q.split(/\s+/).length >= 2;
+// Ask waits for the question to be read: disabled while the preview is pending or running (Enter queues the ask).
+const busy = () => !!pre.timer || pre.thinking;
+function updateAsk() {
+  const b = $("#askbtn"); b.disabled = busy(); b.textContent = busy() ? "Reading…" : "Ask";
+  b.title = busy() ? "Reading the question — it's asked as soon as that's done if you press Enter" : "";
+}
+function setReader(r, rerun = true) {
+  const available = META?.readers?.available || ["rules"];
+  READER = available.includes(r) ? r : (META?.readers?.default || "rules");
+  store.set("duckduck-reader", READER);
+  document.querySelectorAll("[data-reader]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.reader === READER)));
+  if (rerun && previewable($("#question").value.trim())) { pre.data = null; clearTimeout(pre.timer); pre.timer = null; runPreview(); }
+}
+document.querySelectorAll("[data-reader]").forEach(b => b.addEventListener("click", () => setReader(b.dataset.reader)));
+function showReaders() {
+  const llm = document.querySelector('[data-reader="llm"]'), why = META?.readers?.llm_unavailable;
+  llm.disabled = !!why;
+  if (why) llm.title = "Unavailable: " + why;
+  setReader(READER, false);
+}
 function resetChoices() { Object.assign(pre, {chosen: null, entity: null, field: null, blocked: new Set(), forQ: null}); }
 function chose() { pre.forQ = $("#question").value.trim(); }
 const words = (t) => new Set((t || "").toLowerCase().match(/[\p{L}\p{N}_.:-]+/gu) || []);
@@ -329,26 +361,40 @@ function sameQuestion(a, b) {
   return both / Math.max(A.size, B.size) >= 0.5;
 }
 $("#question").addEventListener("input", () => {
-  clearTimeout(pre.timer);
-  if (!$("#question").value.trim()) { Object.assign(pre, {data: null, open: null, error: null}); resetChoices(); drawChips(); return; }
-  pre.timer = setTimeout(runPreview, 600);
+  clearTimeout(pre.timer); pre.timer = null;
+  const q = $("#question").value.trim();
+  if (!q) { Object.assign(pre, {data: null, open: null, error: null}); resetChoices(); drawChips(); return; }
+  if (previewable(q)) pre.timer = setTimeout(runPreview, 600);
+  else { pre.ctrl?.abort(); pre.seq++; pre.thinking = false; }
+  updateAsk();
+});
+$("#question").addEventListener("keydown", (e) => {  // Enter while the question is being read: ask once it's read
+  if (e.key !== "Enter" || !busy()) return;
+  e.preventDefault(); pre.pendingSubmit = true;
+  if (pre.timer) { clearTimeout(pre.timer); pre.timer = null; runPreview(); }
+  toast("Reading the question — it's asked as soon as that's done");
 });
 async function runPreview() {
+  pre.timer = null;
   const q = $("#question").value.trim();
-  if (q.length < 8 || q.split(/\s+/).length < 2) return;
+  if (!previewable(q)) { updateAsk(); return; }
   pre.ctrl?.abort(); pre.ctrl = new AbortController();
-  const mine = ++pre.seq; pre.thinking = true; drawChips();
+  const ctrl = pre.ctrl, mine = ++pre.seq; pre.thinking = true; drawChips();
+  const giveUp = setTimeout(() => ctrl.abort("timeout"), 60000);  // never keep Ask disabled forever
   try {
-    const d = await api("/api/preview", {question: q}, pre.ctrl.signal);
+    const d = await api("/api/preview", {question: q, reader: READER}, ctrl.signal);
     if (mine !== pre.seq) return;
     pre.error = d.error || null;
     pre.data = d.error ? null : d;
     if (pre.forQ !== null && !sameQuestion(pre.forQ, q)) resetChoices();  // a new question: fresh suggestions
   } catch (err) {
-    if (err.name === "AbortError") return;
-    if (mine === pre.seq) { pre.error = err.message; pre.data = null; }
+    if (mine !== pre.seq) return;
+    pre.error = ctrl.signal.reason === "timeout" ? "reading the question took too long" : err.message; pre.data = null;
+  } finally { clearTimeout(giveUp); }
+  if (mine === pre.seq) {
+    pre.thinking = false; drawChips();
+    if (pre.pendingSubmit) { pre.pendingSubmit = false; $("#askform").requestSubmit(); }
   }
-  if (mine === pre.seq) { pre.thinking = false; drawChips(); }
 }
 const joinKey = (j) => `${j.left}=${j.right}`;
 const allSources = () => (pre.data?.systems || []).flatMap(g => g.sources.map(s => s.source));
@@ -387,9 +433,14 @@ function drawChips() {
       chips.push(`<button class="chip" type="button" disabled><span class="dot"></span><span class="k">Answer</span> ${esc(SHAPE_WORDS[shape] || shape)}</button>`);
     }
   }
-  if (pre.thinking) chips.push(`<span class="chip thinking"><span class="dot"></span>reading your question…</span>`);
+  if (d && d.reading && READER === "llm") {
+    const r = d.reading, about = r.about ? ` · about ${esc(r.about_kind)} ${esc(r.about)}` : "", grp = r.group_by ? ` · per ${esc(r.group_by)}` : "";
+    chips.push(`<span class="chip" title="${esc(d.english_question ? "read as: " + d.english_question : "")}"><span class="dot"></span><span class="k">LLM read</span> ${esc(SHAPE_WORDS[r.answer] || r.answer || "—")}${about}${grp}</span>`);
+  }
+  if (pre.thinking) chips.push(`<span class="chip thinking"><span class="dot"></span>${READER === "llm" ? "the LLM is reading your question…" : "reading your question…"}</span>`);
   else if (pre.error) chips.push(`<span class="chip thinking" title="${esc(pre.error)}"><span class="dot"></span>couldn't read the question yet — it will still be answered</span>`);
   box.innerHTML = chips.join("");
+  updateAsk();
   box.querySelectorAll("[data-open]").forEach(b => b.addEventListener("click", () => {
     pre.open = pre.open === b.dataset.open ? null : b.dataset.open; drawChips();
   }));
@@ -477,7 +528,7 @@ $("#askform").addEventListener("submit", (e) => {
   if (stale) runPreview();  // asked before the pause: the box catches up with this question
 });
 async function ask(q, extra = {}) {
-  const body = {question: q, user: user(), ...extra};
+  const body = {question: q, user: user(), reader: READER, ...extra};
   if (pre.chosen) body.only_sources = [...pre.chosen];
   if (pre.entity) body.entity = pre.entity;
   if (pre.field) body.values_field = pre.field;
@@ -1095,6 +1146,7 @@ $("#optfilter").addEventListener("input", () => {
 });
 
 function showFeatures() {
+  showReaders();
   const sql = !!META?.features?.sql;  // the tab is always there; off, it says how to turn it on
   $("#sqloff").hidden = sql; $("#sqlon").hidden = !sql;
   document.querySelector('nav button[data-tab="config"]').hidden = !META?.features?.config;

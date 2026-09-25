@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from .extraction import EnumMatch, ExtractedLiteral, TimeRange
+from .extraction import EnumMatch, ExtractedLiteral, Reading, TimeRange
 
 
 class Thresholds(BaseModel):
@@ -39,8 +39,9 @@ class DecisionRecord(BaseModel):
     probability: float
     threshold: Optional[float] = None
     #: ``engine`` (asked the decision engine), ``deterministic`` (decided
-    #: by the extractor/catalog without asking) or ``user`` (pinned by an
-    #: answer to a clarification).
+    #: by the extractor/catalog without asking), ``user`` (pinned by an
+    #: answer to a clarification) or ``llm`` (the ``llm_reading`` record:
+    #: how the LLM read the question — evidence, not a decision).
     decided_by: str = "engine"
     alternatives: List[tuple] = Field(default_factory=list)
 
@@ -94,6 +95,11 @@ class SemanticIntent(BaseModel):
     #: Similar questions users confirmed or corrected before (``CaseMemory``) — evidence the
     #: decisions were given, never a rule.
     similar_cases: List[Dict[str, Any]] = Field(default_factory=list)
+    #: ``rules`` (the wording decides the answer kind and what it's about; the engine settles
+    #: ambiguity) or ``llm`` (an LLM reads the question first — ``reading`` — and the engine
+    #: decides between that reading and the rules').
+    reader: str = "rules"
+    reading: Optional[Reading] = None
 
     @property
     def working_question(self) -> str:
@@ -104,6 +110,8 @@ class SemanticIntent(BaseModel):
         """A ``DecisionState`` over this question — the English reading, plus the original when translated."""
         from .decisions import DecisionState
 
+        if self.reading is not None:  # every question to the engine sees how the LLM read the question
+            kwargs["facts"] = {**(kwargs.get("facts") or {}), "llm_reading": self.reading.as_fact()}
         return DecisionState(query=self.working_question,
                              original_query=self.question if self.english_question else None, **kwargs)
 

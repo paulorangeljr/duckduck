@@ -58,17 +58,19 @@ def ask(
     duck: Any = None,
     verbose: Any = None,
     execute: bool = True,
+    reader: Optional[str] = None,
 ) -> SearchResult:
     """
     Answers ``question`` with the config's catalog, decision engine and
     extractor. ``execute=False`` plans without fetching anything.
+    ``reader``: ``rules`` or ``llm`` (default: ``semantic.reader``).
     ``result.report()`` is the CLI's printed output; ``result.to_dict()``
     its ``--json``.
     """
     _apply_verbose(verbose)
     duck = duck if duck is not None else connect(config_path, verbose)
     search = SemanticSearch.from_config(duck, config_path)
-    return search.search(question, execute=execute)
+    return search.search(question, execute=execute, reader=reader)
 
 
 def generate_catalog(

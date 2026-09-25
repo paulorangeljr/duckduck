@@ -248,6 +248,8 @@ class SemanticSearch:
         answer_shapes: Union[Dict[str, Any], str, None] = None,
         feedback: Any = None,
         memory: Union[bool, Dict[str, Any], Any] = None,
+        reader: str = "rules",
+        llm_reader: Any = None,
     ):
         if isinstance(catalog, str):
             catalog = Catalog.load(catalog)
@@ -268,6 +270,12 @@ class SemanticSearch:
             self.catalog, self.engine, retriever=retriever, extractor=extractor, thresholds=self.thresholds,
             texts=self.texts, shapes=self.shapes,
         )
+        #: How questions are read: ``rules`` (the wording, the engine settles ambiguity) or ``llm``
+        #: (an LLM reads the question first; the engine decides between its reading and the
+        #: rules'). ``llm_reader``: the ``LLMExtractor`` that reads (default: ``extractor``, if an LLM one).
+        if llm_reader is not None:
+            self.interpreter.llm_reader = llm_reader
+        self.interpreter.reader = self.interpreter._check_reader(reader)
         self.planner = QueryPlanner(
             self.catalog, self.engine, graph=self.graph, thresholds=self.thresholds,
             allowed_sources=allowed_sources, default_limit=default_limit, texts=self.texts, shapes=self.shapes,
@@ -293,6 +301,8 @@ class SemanticSearch:
         self.executor = PlanExecutor(self.catalog, duck) if duck is not None else None
         #: Answers registered as tables of their own (``take_over``), by name.
         self.taken_over: Dict[str, Any] = {}
+        #: Why the ``llm`` reader couldn't be built (``from_config``), when it couldn't.
+        self.llm_reader_error: Optional[str] = None
 
     def take_over(self, result: "SearchResult", name: Optional[str] = None, full: bool = True) -> Any:
         """
@@ -342,33 +352,52 @@ class SemanticSearch:
         if "feedback" not in overrides:  # a caller's own store (or None) wins — never open the file twice
             kwargs["feedback"] = cfg.build_feedback()
         kwargs.update(overrides)
+        reader = kwargs.pop("reader", cfg.reader)
         search = cls(cfg.path(cfg.catalog_path), duck, **kwargs)
         # built against the *available* catalog subset
         extractor = cfg.build_extractor(search.catalog, duck)
         if extractor is not None and "extractor" not in overrides:
             search.interpreter.extractor = extractor
+        if "llm_reader" not in overrides:
+            try:
+                search.interpreter.llm_reader = cfg.build_llm_reader(search.catalog, duck, search.interpreter.extractor)
+            except Exception as exc:
+                if reader == "llm":
+                    raise
+                search.llm_reader_error = f"{exc.__class__.__name__}: {exc}"  # the llm reader just isn't offered
+                logger.warning("semantic: the llm reader is unavailable (%s)", search.llm_reader_error)
+        search.interpreter.reader = search.interpreter._check_reader(reader)
         return search
 
     # ------------------------------------------------------------------
 
     def conversation(self, question: str, execute: bool = True, max_rounds: int = 5,
                      user: Optional[str] = None, only_sources: Optional[Iterable[str]] = None,
-                     pinned: Optional[Dict[str, Any]] = None) -> "Conversation":
+                     pinned: Optional[Dict[str, Any]] = None, reader: Optional[str] = None) -> "Conversation":
         """
         Asks ``question`` and keeps the thread: while the result needs
         clarification, ``conversation.answer(reply)`` pins the chosen option
         and asks again — each round settles one decision, so it ends.
         """
         return Conversation(self, question, execute=execute, max_rounds=max_rounds, user=user,
-                            only_sources=only_sources, pinned=pinned)
+                            only_sources=only_sources, pinned=pinned, reader=reader)
 
     def plan(self, question: str) -> SearchResult:
         """Interprets and plans ``question`` without executing anything."""
         return self.search(question, execute=False)
 
+    @property
+    def readers(self) -> List[str]:
+        """The readers this search can use: ``rules``, plus ``llm`` when it has an LLM."""
+        return ["rules"] + (["llm"] if self.interpreter.llm_reader is not None else [])
+
+    @property
+    def reader(self) -> str:
+        return self.interpreter.reader
+
     def search(self, question: str, execute: bool = True, pinned: Optional[Dict[str, Any]] = None,
                conversation_id: Optional[str] = None, user: Optional[str] = None,
-               only_sources: Optional[Iterable[str]] = None) -> SearchResult:
+               only_sources: Optional[Iterable[str]] = None, reader: Optional[str] = None) -> SearchResult:
         """
         Answers ``question``. ``pinned``: decisions settled by the user's
         answers to earlier clarifications (``ClarificationOption.pins``) —
@@ -378,8 +407,9 @@ class SemanticSearch:
         result is recorded (``result.search_id``).
         """
         only = self._check_scope(only_sources)
+        reader = self.interpreter._check_reader(reader)
         with scope.only_sources(only):
-            result = self._search(question, execute, pinned)
+            result = self._search(question, execute, pinned, reader)
         result.conversation_id = conversation_id
         if only is not None:
             result.only_sources = sorted(only)
@@ -406,21 +436,24 @@ class SemanticSearch:
             raise ValueError("only_sources: choose at least one table")
         return only
 
-    def preview(self, question: str) -> Dict[str, Any]:
+    def preview(self, question: str, reader: Optional[str] = None) -> Dict[str, Any]:
         """
         What the question seems to be about, while it's being typed — one
         decision-engine batch (entity, answer kind, relevance of the
-        candidate tables), rule-based extraction (no LLM), nothing executed
-        or recorded. ``systems``: every table the user may choose, grouped by
-        the system it lives in (the ``auto_register`` service), those judged
-        relevant marked — what the web app's "Systems" chip lists.
+        candidate tables), nothing executed or recorded. ``reader``: ``rules``
+        (rule-based extraction, no LLM) or ``llm`` (the LLM reads it first —
+        cached, so the search that follows reuses the reading). ``systems``:
+        every table the user may choose, grouped by the system it lives in
+        (the ``auto_register`` service), those judged relevant marked — what
+        the web app's "Systems" chip lists.
         """
-        key = " ".join(question.lower().split())
+        reader = self.interpreter._check_reader(reader)
+        key = reader + ":" + " ".join(question.lower().split())
         cached = self._previews.get(key)
         if cached is not None:
             self._previews.move_to_end(key)
             return cached
-        seen = self.interpreter.preview(question, self.clock())
+        seen = self.interpreter.preview(question, self.clock(), reader=reader)
         seen["joins"] = self._preview_joins(seen)
         seen["systems"] = self._systems({s["source"]: s for s in seen["sources"]})
         self._previews[key] = seen
@@ -523,7 +556,8 @@ class SemanticSearch:
             raise ValueError("this result wasn't recorded (no search_id)")
         return self.feedback_store.record_feedback(search_id, verdict, categories, reason, expected, user)
 
-    def _search(self, question: str, execute: bool, pinned: Optional[Dict[str, Any]]) -> SearchResult:
+    def _search(self, question: str, execute: bool, pinned: Optional[Dict[str, Any]],
+                reader: Optional[str] = None) -> SearchResult:
         started = time.perf_counter()
         now = self.clock()
         result = SearchResult(question=question, status="planned", pinned=dict(pinned or {}))
@@ -534,7 +568,7 @@ class SemanticSearch:
             prober = EvidenceProber(self.catalog, self.duck, **self.live_evidence)
             result.evidence = prober.probes  # filled in as the probes run
         try:
-            intent, decisions = self.interpreter.interpret(question, now, pinned, evidence=prober)
+            intent, decisions = self.interpreter.interpret(question, now, pinned, evidence=prober, reader=reader)
             result.intent = intent
             result.decisions.extend(decisions)
             if intent.answer_shape in ("small_talk", "out_of_scope"):  # a direct reply, nothing to look up
@@ -853,10 +887,12 @@ class Conversation:
 
     def __init__(self, search: "SemanticSearch", question: str, execute: bool = True, max_rounds: int = 5,
                  user: Optional[str] = None, only_sources: Optional[Iterable[str]] = None,
-                 pinned: Optional[Dict[str, Any]] = None):
+                 pinned: Optional[Dict[str, Any]] = None, reader: Optional[str] = None):
         import uuid
 
         self.search = search
+        #: How the question is read, every round (``rules`` / ``llm``; default: the search's).
+        self.reader = search.interpreter._check_reader(reader)
         self.question = question
         #: Ties every round's recorded search together (``SearchResult.conversation_id``).
         self.id = uuid.uuid4().hex[:16]
@@ -909,7 +945,8 @@ class Conversation:
 
     def _ask(self) -> SearchResult:
         return self.search.search(self.question, execute=self.execute, pinned=self.pinned,
-                                  conversation_id=self.id, user=self.user, only_sources=self.only_sources)
+                                  conversation_id=self.id, user=self.user, only_sources=self.only_sources,
+                                  reader=self.reader)
 
     def _interpret(self, reply: str, followup: Clarification) -> Optional[ClarificationOption]:
         """Free text → an option, by the decision engine (a choice question), when it's sure enough."""

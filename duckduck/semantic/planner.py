@@ -92,8 +92,8 @@ class QueryPlanner:
         checks: List[tuple] = []  # (Ask, record kind, threshold, message if it fails, options)
         activity = self.catalog.activities.get(intent.activity) if intent.activity else None
         pinned_field = pins.get("values_field") if isinstance(pins.get("values_field"), str) else None
-        primary = self._choose_primary(intent, activity, refused,
-                                       preferred=pinned_field.split(".")[0] if pinned_field else None)
+        hinted = pinned_field or (_reading_field(intent) if intent.answer_shape in FIELD_SHAPES else None)
+        primary = self._choose_primary(intent, activity, refused, preferred=hinted.split(".")[0] if hinted else None)
         paths: List[Path] = []
         filters: List[Filter] = []
         resource_fields: Set[str] = set()
@@ -331,14 +331,17 @@ class QueryPlanner:
                                                 decided_by="deterministic"))
                 return ref
         else:
-            if entity is not None and not entity.row_level and shape != "count_by":
+            read = _reading_field(intent, group=shape == "count_by")  # the llm reader's field, if any
+            read = read if read and read.split(".")[0] == primary and read.split(".", 1)[1] in fields else None
+            if entity is not None and not entity.row_level and shape != "count_by" and read is None:
                 return None  # "the different users": listing the entity is already distinct
             candidates = [f for f in fields if f != src.resolved_time_field]
         if not candidates:
             return None
         options = {f"{primary}.{f}": self.catalog.describe_field(f"{primary}.{f}") for f in candidates}
-        result = self.engine.classify(
-            intent.decision_state(terms=sorted(words), facts={"source": primary, "answer": shape}),
+        result = self.engine.classify(  # the engine decides — the LLM's field is a fact (llm_reading), not the answer
+            intent.decision_state(terms=sorted(words), facts={"source": primary, "answer": shape},
+                                  default=_reading_field(intent, group=shape == "count_by")),
             question, options,
         )
         record = DecisionRecord(kind="values_field", question=question, subject=primary, answer=result.choice,
@@ -579,6 +582,16 @@ class QueryPlanner:
     def _is_allowed(self, source: str) -> bool:
         """Authorized (``allowed_sources``) and chosen for this question (``scope.only_sources``)."""
         return (self.allowed is None or source in self.allowed) and in_scope(source)
+
+
+def _reading_field(intent: SemanticIntent, group: bool = False) -> Optional[str]:
+    """The field the ``llm`` reader's reading names (its ``group_by`` for a count per group)."""
+    r = intent.reading
+    if r is None:
+        return None
+    if group and r.group_by:
+        return r.group_by
+    return r.about if r.about_kind == "field" else None
 
 
 def _words_after(question: str, shapes: AnswerShapes) -> Set[str]:

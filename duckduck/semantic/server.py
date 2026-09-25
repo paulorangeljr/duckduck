@@ -6,8 +6,8 @@ runs it with FastAPI + uvicorn (``pip install "duckduck[server]"``). One
 HTML page (``webpage.PAGE``) over a JSON API:
 
 ==========================================  ==============================================
-``POST /api/preview {question}``            while typing: entity, answer kind, relevant tables by system
-``POST /api/ask {question, user, only_sources, entity, values_field, blocked_joins, in_scope}``  starts a conversation → its first result
+``POST /api/preview {question, reader}``    while typing: entity, answer kind, relevant tables by system
+``POST /api/ask {question, user, reader, only_sources, entity, values_field, blocked_joins, in_scope}``  starts a conversation → its first result
 ``POST /api/answer {conversation_id, reply}`` answers the open clarification → next result
 ``POST /api/feedback {search_id, verdict, categories, reason, expected, user}``
 ``GET  /api/searches``, ``/api/searches/{id}``  history / one search's decision trail
@@ -130,6 +130,9 @@ def create_app(
                          "config_edit": bool(config_path and allow_config_edit)},
             "source_icons": {n: search.source_icon(n) for n in cat.sources},
             "texts": {"ask_anyway": search.texts.t("reply.ask_anyway")},
+            "readers": {"available": search.readers, "default": search.reader,
+                        "llm_unavailable": None if "llm" in search.readers else (
+                            search.llm_reader_error or "no LLM configured (semantic.default_llm or extractor.llm)")},
             "verdicts": list(VERDICTS),
             "categories": CATEGORIES,
             "answer_shapes": {s: search.texts.t(f"answer_shape.{s}") if f"answer_shape.{s}" in search.texts.texts
@@ -170,7 +173,7 @@ def create_app(
                 pins[f"join:{pair[0]}={pair[1]}"] = False
             conv = search.conversation(question, user=body.get("user") or None,
                                        only_sources=list(only) if only is not None else None,
-                                       pinned=pins or None)
+                                       pinned=pins or None, reader=body.get("reader") or None)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         with lock:
@@ -186,7 +189,7 @@ def create_app(
         if len(question) < 3:
             return dump({"question": question, "systems": [], "sources": [], "entity": None})
         try:
-            return dump(state["search"].preview(question))
+            return dump(state["search"].preview(question, reader=body.get("reader") or None))
         except Exception as exc:  # a preview is a hint: never an error on screen while typing
             logger.info("preview failed: %s", exc)
             return dump({"question": question, "error": str(exc), "systems": [], "sources": [], "entity": None})

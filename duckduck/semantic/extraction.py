@@ -13,7 +13,7 @@ sees ``Extraction``.
 import ipaddress
 import re
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Protocol, Set, Tuple
+from typing import Any, Dict, List, Optional, Protocol, Set, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -54,6 +54,27 @@ class EnumMatch(BaseModel):
     value: str
 
 
+class Reading(BaseModel):
+    """
+    How an LLM read the question (``reader="llm"``): the kind of answer, what
+    it is about, the grouping — every name checked against the catalog (one
+    it doesn't have is dropped). Evidence for the decisions, never a decision
+    on its own: where it disagrees with the rules, the decision engine picks.
+    """
+
+    #: One of ``shapes.ANSWER_SHAPES``.
+    answer: Optional[str] = None
+    #: ``entity`` / ``field`` / ``table`` / ``value``.
+    about_kind: Optional[str] = None
+    #: An entity name, ``source.field``, a source name, or the value as written.
+    about: Optional[str] = None
+    #: ``source.field`` a count per group is grouped by.
+    group_by: Optional[str] = None
+
+    def as_fact(self) -> Dict[str, Any]:
+        return {k: v for k, v in self.model_dump().items() if v}
+
+
 class Extraction(BaseModel):
     time_range: Optional[TimeRange] = None
     literals: List[ExtractedLiteral] = Field(default_factory=list)
@@ -66,6 +87,8 @@ class Extraction(BaseModel):
     focus_terms: List[str] = Field(default_factory=list)
     #: The question read in English, when an LLM extractor translated it (``None``: as asked).
     english_question: Optional[str] = None
+    #: How the LLM read the question, when asked for (``LLMExtractor.extract(..., reading=True)``).
+    reading: Optional[Reading] = None
 
 
 class ValueExtractor(Protocol):

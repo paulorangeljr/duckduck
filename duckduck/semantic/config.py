@@ -321,6 +321,11 @@ class SemanticConfig(_Strict):
     #: The LLM every stage uses unless it names its own (an ``ai_providers`` name).
     default_llm: Optional[LLMRef] = None
     extractor: ExtractorConfig = Field(default_factory=ExtractorConfig)
+    #: How questions are read by default: ``rules`` — the wording decides the kind of answer and
+    #: what it's about, the decision engine settles ambiguity — or ``llm`` — an LLM reads the
+    #: question first (``extractor.llm`` → ``default_llm``) and the engine decides between its
+    #: reading and the rules'. The web app lets the user switch per question.
+    reader: Literal["rules", "llm"] = "rules"
     catalog_generation: CatalogGenerationConfig = Field(default_factory=CatalogGenerationConfig)
     thresholds: Thresholds = Field(default_factory=Thresholds)
     #: Override the questions asked back to the user (``clarify.DEFAULT_TEXTS`` keys) — e.g. in Portuguese.
@@ -608,6 +613,23 @@ class SemanticConfig(_Strict):
         cfg = self.extractor
         if cfg.type == "rules":
             return None  # SemanticSearch's default
+        prompt = self.prompt(cfg.system_prompt, cfg.system_prompt_file, DEFAULT_EXTRACTION_PROMPT)
+        return LLMExtractor(catalog, self.build_llm(duck, "extractor"), system_prompt=prompt, on_error=cfg.on_error,
+                            translate=cfg.translate)
+
+    def build_llm_reader(self, catalog, duck: Any, extractor: Any = None):
+        """
+        The ``llm`` reader: the LLM extractor itself when ``extractor.type`` is
+        ``llm``; else one built on the extractor stage's LLM (``extractor.llm``
+        → ``default_llm``); ``None`` when no LLM is configured.
+        """
+        from .llm_extraction import DEFAULT_EXTRACTION_PROMPT, LLMExtractor
+
+        if hasattr(extractor, "_reading"):
+            return extractor
+        if self.llm_config("extractor")[1] is None:
+            return None
+        cfg = self.extractor
         prompt = self.prompt(cfg.system_prompt, cfg.system_prompt_file, DEFAULT_EXTRACTION_PROMPT)
         return LLMExtractor(catalog, self.build_llm(duck, "extractor"), system_prompt=prompt, on_error=cfg.on_error,
                             translate=cfg.translate)

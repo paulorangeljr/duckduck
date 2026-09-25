@@ -42,7 +42,8 @@ def cmd_generate(args) -> int:
 def cmd_ask(args) -> int:
     if args.interactive:
         return _converse(args)
-    result = ask(args.question, config_path=args.config, verbose=args.verbose, execute=not args.plan_only)
+    result = ask(args.question, config_path=args.config, verbose=args.verbose, execute=not args.plan_only,
+                 reader=args.reader)
     if args.json:
         print(json.dumps(result.to_dict(), indent=2, default=str))
     else:
@@ -58,7 +59,8 @@ def _converse(args, read=None) -> int:
     from .engine import SemanticSearch
 
     duck = connect(args.config, args.verbose)
-    conversation = SemanticSearch.from_config(duck, args.config).conversation(args.question, execute=not args.plan_only)
+    conversation = SemanticSearch.from_config(duck, args.config).conversation(
+        args.question, execute=not args.plan_only, reader=args.reader)
     while not conversation.done:
         print(conversation.result.report())
         reply = read("> ").strip()
@@ -143,6 +145,9 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--json", action="store_true", help="print the full result as JSON")
     q.add_argument("-i", "--interactive", action="store_true",
                    help="when it needs clarification, ask you at the prompt and continue with your answer")
+    q.add_argument("--reader", choices=["rules", "llm"], default=None,
+                   help="how the question is read: rules (+ the decision engine for doubts) or llm (an LLM reads it "
+                        "first, the decision engine decides); default: semantic.reader")
     q.set_defaults(fn=cmd_ask, python=ask)
 
     check = sub.add_parser("jev-check", help="make one Jev call to verify the key/network")

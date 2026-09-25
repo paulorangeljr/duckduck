@@ -595,12 +595,39 @@ Any decision under its threshold asks back instead of executing.
 | field | `values_field` | `values_field` + `source:<t>` |
 | unticked join | `blocked_joins` | `join:<a>=<b>` False |
 
-A new decision the user should see or override belongs in one of the three chips, with its own pin. Keep the preview's and the search's rules shared (same helpers) so the chips predict the answer. They can still differ: the real search may use LLM extraction/translation and the preview doesn't, and the user's pinned choices win.
+A new decision the user should see or override belongs in one of the three chips, with its own pin. Both readers (below) feed these same three decisions — the `llm` reader only adds evidence and candidates, the engine still decides. Keep the preview's and the search's rules shared (same helpers) so the chips predict the answer. They can still differ: the real search may use LLM extraction/translation and the preview doesn't, and the user's pinned choices win.
 
 **Decided but not shown as chips:**
 - filters: enum values, typed literals (IP, email), time range. They appear in the SQL and in "How it was decided".
 - the activity.
 - **About is empty** for `lookup`/`locate` (the subject is the value, e.g. `10.0.0.196`) and `browse` (the subject is the table). Filling it there ("About: 10.0.0.196 (ip address)", "About: table owners") was proposed to the user and isn't built yet.
+
+### Two readers: `rules` and `llm`
+
+Both readers produce the same three decisions. What differs is who proposes them.
+
+- **`rules`** (`SemanticSearch(reader="rules")`, the default, `semantic.reader`): the configured `extractor`; wording rules propose; Jev settles ambiguity.
+- **`llm`**: `interpreter.llm_reader` is an `LLMExtractor`, called with `extract(..., reading=True)`.
+  - **The call.** One LLM call returns `LLMExtractionWithReading.reading` (`READING_INSTRUCTIONS`, prompt adds "Tables and their fields"). `LLMExtractor._reading` checks every name against the catalog (answer ∈ `ANSWER_SHAPES`; entity / `source.field` via `_field_ref`, which resolves a unique bare field name / table / a value present in the question) → `extraction.Reading`.
+  - **The cache.** `extract` caches per (normalized question, reading) for `cache_ttl` (300s), fallbacks excluded, so the preview and the search share one call.
+  - **How the reading is used.** Evidence, never a decision:
+    - `intent.reading`; `intent.decision_state()` adds `facts.llm_reading` to every engine question;
+    - `_with_reading` appends the reading's answer to the rules' candidates when they differ, so the engine chooses and a doubt asks back (the rules' `catalog` stays final; `browse` only with a table);
+    - `_apply_shape` handles an engine-chosen catalog/browse (`interpret` returns early);
+    - `_reading_defaults` gives the offline lexical engine the reading as its default;
+    - `_reading_sources` adds its tables to retrieval;
+    - `_values_of_named_field` accepts its non-entity field (entity not asked);
+    - planner `_reading_field`: preferred primary for `FIELD_SHAPES`, `default` for the `values_field` classify, and it keeps "the different users" from short-circuiting when a field was read;
+    - an `llm_reading` DecisionRecord (`decided_by="llm"`) goes first in the trail ("no reading" when the LLM failed; the extraction then falls back to rules with a warning).
+- **Plumbing.** `from_config` builds the llm reader with `cfg.build_llm_reader`:
+  - it reuses an `llm` extractor, else builds one on the extractor stage's LLM, else `None`;
+  - a build failure only disables the reader (`search.llm_reader_error`) unless `reader: llm`.
+- **Where to pick it.**
+  - `SemanticSearch.readers`; `_check_reader` refuses unknown / unavailable readers;
+  - `search`/`conversation`/`preview(reader=)` (the preview cache is keyed per reader); `Conversation.reader` holds every round;
+  - server: `/api/preview` and `/api/ask` take `reader`; `/api/meta.readers` = {available, default, llm_unavailable};
+  - CLI: `ask --reader`.
+- **The page.** A Rules | LLM switch (`READER`, localStorage). Ask is disabled while the preview is pending or running (`busy`, `updateAsk`); Enter while busy sets `pendingSubmit`, which submits once the preview lands; a 60s abort keeps Ask from staying disabled. Tests: `tests/test_readers.py`.
 
 ### Invariants — don't break these
 

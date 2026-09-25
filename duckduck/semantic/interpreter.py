@@ -60,7 +60,11 @@ class SemanticInterpreter:
         self.engine = engine
         self.retriever = retriever or LexicalRetriever(catalog)
         self.extractor = extractor or RuleBasedExtractor(catalog)
-        self._preview_rules = RuleBasedExtractor(catalog)  # preview(): no LLM while typing
+        self._preview_rules = RuleBasedExtractor(catalog)  # preview() with the rules reader: no LLM while typing
+        #: The ``llm`` reader: an ``LLMExtractor`` asked for its reading of the question (``None``: unavailable).
+        self.llm_reader: Any = extractor if hasattr(extractor, "_reading") else None
+        #: ``rules`` or ``llm`` — see ``interpret``.
+        self.reader = "rules"
         self.thresholds = thresholds or Thresholds()
         self.top_k = top_k
         #: The questions asked back to the user.
@@ -74,7 +78,7 @@ class SemanticInterpreter:
         }
 
     def interpret(self, question: str, now: datetime, pinned: Optional[Dict[str, Any]] = None,
-                  evidence: Any = None) -> Tuple[SemanticIntent, List[DecisionRecord]]:
+                  evidence: Any = None, reader: Optional[str] = None) -> Tuple[SemanticIntent, List[DecisionRecord]]:
         """
         ``pinned``: decisions the user settled by answering clarifications
         (see ``Clarification``) — taken as given, never asked again.
@@ -82,7 +86,9 @@ class SemanticInterpreter:
         were (not) found in the candidate sources goes to the engine as facts.
         """
         pins = dict(pinned or {})
-        extraction = self.extractor.extract(question, now)
+        reader = self._check_reader(reader)
+        extraction = (self.llm_reader.extract(question, now, reading=True) if reader == "llm"
+                      else self.extractor.extract(question, now))
         english = getattr(extraction, "english_question", None)
         extraction.literals = self._without_shape_words([question, english], extraction.literals)
         decisions: List[DecisionRecord] = []
@@ -92,7 +98,11 @@ class SemanticInterpreter:
             time_range=extraction.time_range,
             value_filters=extraction.enum_matches,
             literals=extraction.literals,
+            reader=reader,
+            reading=getattr(extraction, "reading", None),
         )
+        if reader == "llm":
+            decisions.append(self._reading_record(intent))
         if self.memory is not None:
             intent.similar_cases = self.memory.similar(question_template(intent.working_question, intent.literals))
         if self._about_the_catalog(intent, decisions, pins):
@@ -109,6 +119,9 @@ class SemanticInterpreter:
             for key, value in pins.items():  # a source the user picked is a candidate whatever retrieval said
                 if key.startswith("source:") and value and key[7:] in self.catalog.sources and in_scope(key[7:]):
                     retrieved.setdefault(key[7:], 0.0)
+            for name in self._reading_sources(intent):  # ... and one the LLM's reading names (still judged)
+                if name not in refused:
+                    retrieved.setdefault(name, 0.0)
             for case in intent.similar_cases:  # ... and so is one a similar confirmed question used (still judged)
                 for name in case.get("sources") or []:
                     if name in self.catalog.sources and name not in refused:
@@ -121,11 +134,14 @@ class SemanticInterpreter:
             scope_ask = self._in_scope_ask(intent, extraction, max((sc for _, sc in ranked), default=0.0), pins)
             if scope_ask is not None:
                 asks.append(scope_ask)
+            self._reading_defaults(intent, asks)
             answers = ask_all(self.engine, asks)
             if self._out_of_scope(intent, answers.get("in_scope"), decisions, pins):
                 return intent, decisions  # not about the data: a direct reply, no questions back
 
             self._apply_shape(intent, answers.get("answer_shape"), decisions, pins)
+            if intent.answer_shape in ("catalog", "browse"):  # chosen over the rules' reading: nothing else to decide
+                return intent, decisions
             self._apply_entity(intent, answers.get("entity"), decisions, pins)
             self._apply_activity(intent, answers.get("activity"), decisions, pins)
             self._apply_resources(intent, extraction, answers, decisions, pins)
@@ -315,35 +331,46 @@ class SemanticInterpreter:
 
     _SHAPE_QUESTION = "What kind of answer does the question ask for?"
 
-    def preview(self, question: str, now: datetime) -> Dict[str, Any]:
+    def preview(self, question: str, now: datetime, reader: Optional[str] = None) -> Dict[str, Any]:
         """
         While the question is typed: the entity, the answer kind and the
         relevance of the candidate tables, from one engine batch — never
-        raising, nothing recorded. Rule-based extraction only (an LLM on
-        every pause would be slow and costly).
+        raising, nothing recorded. ``rules`` reader: rule-based extraction,
+        no LLM. ``llm`` reader: the LLM reads it (cached, so the search that
+        follows reuses the same reading), and the engine decides as in
+        ``interpret``.
         """
-        ex = self._preview_rules.extract(question, now)
-        intent = SemanticIntent(question=question, time_range=ex.time_range, value_filters=ex.enum_matches,
-                                literals=self._without_shape_words([question], ex.literals))
+        reader = self._check_reader(reader)
+        ex = self.llm_reader.extract(question, now, reading=True) if reader == "llm" else \
+            self._preview_rules.extract(question, now)
+        english = getattr(ex, "english_question", None)
+        intent = SemanticIntent(question=question, english_question=english, time_range=ex.time_range,
+                                value_filters=ex.enum_matches, reader=reader, reading=getattr(ex, "reading", None),
+                                literals=self._without_shape_words([question, english], ex.literals))
+        wq = intent.working_question
+        base = {"question": question, "reader": reader, "english_question": english,
+                "reading": intent.reading.as_fact() if intent.reading else None, "field": None, "field_options": []}
         if self.memory is not None:
-            intent.similar_cases = self.memory.similar(question_template(question, intent.literals))
-        if self.shapes.small_talk_kind(question):
-            return {"question": question, "answer_shape": {"choice": "small_talk", "probability": 1.0, "sure": True},
+            intent.similar_cases = self.memory.similar(question_template(wq, intent.literals))
+        if self.shapes.small_talk_kind(wq):
+            return {**base, "answer_shape": {"choice": "small_talk", "probability": 1.0, "sure": True},
                     "entity": None, "sources": []}
         candidates, _ = self._candidates(intent)
         if candidates == ["catalog"]:
-            return {"question": question, "answer_shape": {"choice": "catalog", "probability": 1.0, "sure": True},
-                    "catalog_topic": catalog_topic(question), "entity": None, "sources": []}
-        browse = browse_target(question, self._table_names())
+            return {**base, "answer_shape": {"choice": "catalog", "probability": 1.0, "sure": True},
+                    "catalog_topic": catalog_topic(wq), "entity": None, "sources": []}
+        browse = next((b for b in (browse_target(t, self._table_names()) for t in (question, english) if t) if b), None)
         if browse:  # "show me table owners": that table, nothing to ask
-            return {"question": question, "answer_shape": {"choice": "browse", "probability": 1.0, "sure": True},
+            return {**base, "answer_shape": {"choice": "browse", "probability": 1.0, "sure": True},
                     "entity": None, "sources": [{"source": browse[0], "probability": 1.0, "relevant": True}]}
-        ranked = self.retriever.search(question, self.top_k)
+        ranked = self.retriever.search(wq, self.top_k)
         names = [n for n, _ in ranked][: self.top_k]
         for case in intent.similar_cases:
             names += [n for n in case.get("sources") or [] if n in self.catalog.sources and n not in names]
+        names += [n for n in self._reading_sources(intent) if n not in names]
         asks = [a for a in (self._entity_ask(intent, ex, {}), self._shape_ask(intent, {})) if a]
         asks += self._source_asks(intent, ex, names)
+        self._reading_defaults(intent, asks)
         answers = ask_all(self.engine, asks)
         entity = answers.get("entity")
         shape = answers.get("answer_shape")
@@ -360,12 +387,11 @@ class SemanticInterpreter:
             tables = [field.split(".")[0]] + [s["source"] for s in sources if s["relevant"]]
             fields = [f"{t}.{f}" for t in dict.fromkeys(tables) for f, d in self.catalog.sources[t].fields.items()
                       if f != self.catalog.sources[t].resolved_time_field]
-            field_options = [{"field": ref, "description": (self.catalog.field(ref).description or "").strip()}
-                             for ref in [field] + [r for r in fields if r != field]][:25]
+            base["field"] = field
+            base["field_options"] = [{"field": ref, "description": (self.catalog.field(ref).description or "").strip()}
+                                     for ref in [field] + [r for r in fields if r != field]][:25]
         return {
-            "question": question,
-            "field": field,
-            "field_options": field_options if field else [],
+            **base,
             "answer_shape": ({"choice": candidates[0], "probability": 1.0, "sure": True} if len(candidates) == 1 else
                              {"choice": shape.choice, "probability": round(shape.probability, 3),
                               "sure": shape.probability >= self.thresholds.answer_shape}),
@@ -535,8 +561,25 @@ class SemanticInterpreter:
             if ref is not None:  # "how many departments do we have?" → how many different departments
                 return ["count_values"], f"'{ref.split('.', 1)[1]}' names a field, not a thing to count"
         if candidates == ["list"] and any(lit.kind != "term" or lit.semantic_type for lit in intent.literals):
-            return ["list", "lookup"], words
-        return candidates, words
+            candidates = ["list", "lookup"]
+        return self._with_reading(intent, candidates, words)
+
+    def _with_reading(self, intent: SemanticIntent, candidates: List[str], words: str) -> Tuple[List[str], str]:
+        """
+        The ``llm`` reader: the LLM's answer kind joins the rules' — when they
+        agree nothing changes; when they don't, both go to the engine (it sees
+        the reading as a fact) and a doubt is asked back. The rules' catalog
+        reading stays final (it answers before anything is asked).
+        """
+        r = intent.reading
+        if r is None or not r.answer or r.answer in ("small_talk", "out_of_scope") or candidates == ["catalog"]:
+            return candidates, words
+        if r.answer == "browse" and not (r.about_kind == "table" and r.about):
+            return candidates, words  # a table to show, but which? the rules' reading stands
+        if r.answer in candidates:
+            return candidates, words
+        note = f"the LLM read it as {r.answer}"
+        return candidates + [r.answer], f"{words}; {note}" if words else note
 
     def _named_field(self, question: str) -> Optional[str]:
         """
@@ -570,6 +613,54 @@ class SemanticInterpreter:
                     named.append((len(tokens), f"{name}.{field}"))
         return max(named, key=lambda n: n[0])[1] if named else None
 
+    # ------------------------------------------------------------------
+    # the llm reader
+    # ------------------------------------------------------------------
+
+    READERS = ("rules", "llm")
+
+    def _check_reader(self, reader: Optional[str]) -> str:
+        reader = reader or self.reader
+        if reader not in self.READERS:
+            raise ValueError(f"unknown reader {reader!r}; use one of {', '.join(self.READERS)}")
+        if reader == "llm" and self.llm_reader is None:
+            raise ValueError("the llm reader needs an LLM: set semantic.default_llm (or extractor.llm) to an "
+                             "ai_providers entry, or use the rules reader")
+        return reader
+
+    _READING_QUESTION = "How did the LLM read the question?"
+
+    def _reading_record(self, intent: SemanticIntent) -> DecisionRecord:
+        r = intent.reading
+        if r is None:
+            return DecisionRecord(kind="llm_reading", question=self._READING_QUESTION, answer=None, probability=0.0,
+                                  decided_by="llm", subject="no reading (the LLM failed or gave nothing usable)")
+        about = f"{r.about_kind} {r.about}" if r.about else ""
+        subject = "; ".join(x for x in (about, f"grouped by {r.group_by}" if r.group_by else "") if x)
+        return DecisionRecord(kind="llm_reading", question=self._READING_QUESTION, answer=r.answer,
+                              probability=1.0, decided_by="llm", subject=subject)
+
+    def _reading_sources(self, intent: SemanticIntent) -> List[str]:
+        r = intent.reading
+        if r is None:
+            return []
+        refs = [r.about if r.about_kind in ("field", "table") else None, r.group_by]
+        return [x.split(".")[0] for x in refs if x and x.split(".")[0] in self.catalog.sources
+                and in_scope(x.split(".")[0])]
+
+    def _reading_defaults(self, intent: SemanticIntent, asks: List[Ask]) -> None:
+        """The offline lexical engine's no-evidence answer follows the reading (a real engine reads the facts)."""
+        r = intent.reading
+        if r is None:
+            return
+        for ask in asks:
+            if ask.state.default is not None or ask.options is None:
+                continue
+            if ask.key == "answer_shape" and r.answer in ask.options:
+                ask.state.default = r.answer
+            elif ask.key == "entity" and r.about_kind == "entity" and r.about in ask.options:
+                ask.state.default = r.about
+
     def _field_at_head(self, phrase: str) -> Optional[str]:
         """
         Like ``_field_named_in``, but the field must be what the phrase starts
@@ -595,7 +686,12 @@ class SemanticInterpreter:
             shape = candidates[0] if len(candidates) == 1 else None
         if shape not in ("values", "count_values"):
             return None
-        return self._field_named_in(intent.working_question)
+        named = self._field_named_in(intent.working_question)
+        r = intent.reading
+        if named is None and r is not None and r.about_kind == "field" and r.about and in_scope(r.about.split(".")[0]):
+            if self.catalog.field(r.about).semantic_type not in self.catalog.entities:
+                return r.about  # the LLM read which field — not an entity's
+        return named
 
     def _apply_shape(self, intent: SemanticIntent, result: Any, decisions: List[DecisionRecord],
                      pins: Dict[str, Any]) -> None:
@@ -621,6 +717,10 @@ class SemanticInterpreter:
             probability=result.probability, threshold=self.thresholds.answer_shape, alternatives=result.ranked()[1:4],
         )
         decisions.append(record)
+        if record.passed and result.choice == "catalog":
+            intent.catalog_topic = catalog_topic(intent.working_question)
+        if record.passed and result.choice == "browse" and intent.reading is not None:
+            intent.browse_source = intent.reading.about
         if not record.passed:
             ranked = [c for c, _ in result.ranked()]
             raise ClarificationNeeded(
