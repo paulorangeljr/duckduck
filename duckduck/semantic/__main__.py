@@ -82,7 +82,8 @@ def cmd_jev_check(args) -> int:
 
 
 def cmd_serve(args) -> int:
-    serve(config_path=args.config, host=args.host, port=args.port, verbose=args.verbose)
+    serve(config_path=args.config, host=args.host, port=args.port, verbose=args.verbose,
+          allow_sql=args.sql, allow_config_edit=args.edit_config)
     return 0
 
 
@@ -150,6 +151,10 @@ def build_parser() -> argparse.ArgumentParser:
     srv = sub.add_parser("serve", help="the web app: ask, answer clarifications, rate answers, review suggestions")
     srv.add_argument("--host", default="127.0.0.1", help="interface to listen on (default: this machine only)")
     srv.add_argument("--port", type=int, default=8765)
+    srv.add_argument("--sql", action="store_true",
+                     help="SQL tab: duck.sql on the registered tables (read queries only, no files or network)")
+    srv.add_argument("--edit-config", action="store_true",
+                     help="Config tab may save duckduck.json (secrets stay masked; a .bak is kept) and reconnect")
     srv.set_defaults(fn=cmd_serve, python=serve)
 
     rep = sub.add_parser("feedback-report", help="answer rates and what went wrong, from the feedback")

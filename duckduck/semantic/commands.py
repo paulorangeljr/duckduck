@@ -213,6 +213,8 @@ def serve(
     verbose: Any = None,
     token: Optional[str] = None,
     run: bool = True,
+    allow_sql: bool = False,
+    allow_config_edit: bool = False,
 ):
     """
     The web app: ask questions, answer its clarifications, rate the answers,
@@ -221,24 +223,40 @@ def serve(
     is collecting feedback) and uses the case memory when ``feedback.memory``.
     ``token`` (default ``DUCKDUCK_SERVER_TOKEN``) is required by every API
     call when set. ``run=False`` returns the FastAPI app instead of serving it.
+
+    ``allow_sql``: the SQL tab — ``duck.sql`` on the registered tables, read
+    queries only, on a connection with no file or network access.
+    ``allow_config_edit``: the Config tab may save ``duckduck.json`` (secrets
+    stay masked in the page; a ``.bak`` is kept) and reconnect everything.
+    Reading the config (masked) and its options reference is always there.
     """
+    from .admin import SQLConsole
     from .server import create_app, run as run_app
 
     duck, cfg, store = _feedback_setup(config_path, duck, verbose)
-    memory = {"max_cases": cfg.feedback.max_cases, "min_similarity": cfg.feedback.min_similarity} \
-        if cfg.feedback.memory else None
 
-    def factory() -> SemanticSearch:
-        return SemanticSearch.from_config(duck, config_path, feedback=store, memory=memory)
+    def factory_for(d: Any, c: Any):
+        memory = {"max_cases": c.feedback.max_cases, "min_similarity": c.feedback.min_similarity} \
+            if c.feedback.memory else None
+        return lambda: SemanticSearch.from_config(d, config_path, feedback=store, memory=memory)
+
+    def rebuild():
+        from .config import SemanticConfig
+
+        d = connect(config_path, verbose)
+        return factory_for(d, SemanticConfig.load(d, config_path)), (SQLConsole(d) if allow_sql else None)
 
     app = create_app(
-        factory, store, catalog_path=cfg.path(cfg.catalog_path),
+        factory_for(duck, cfg), store, catalog_path=cfg.path(cfg.catalog_path),
         learned_shapes_path=cfg.path(cfg.feedback.learned_answer_shapes), min_support=cfg.feedback.min_support,
         token=token if token is not None else os.environ.get("DUCKDUCK_SERVER_TOKEN") or None,
+        console=SQLConsole(duck) if allow_sql else None, config_path=cfg.config_file,
+        allow_config_edit=allow_config_edit, rebuild=rebuild,
     )
     if not run:
         return app
-    print(f"duckduck: http://{host}:{port}  (feedback in {store.path})")
+    print(f"duckduck: http://{host}:{port}  (feedback in {store.path}"
+          f"{'; SQL tab on' if allow_sql else ''}{'; config editing on' if allow_config_edit else ''})")
     run_app(app, host=host, port=port)
     return app
 

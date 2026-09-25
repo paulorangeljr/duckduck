@@ -428,13 +428,26 @@ class SemanticSearch:
             group["sources"].append({
                 "source": name, "description": src.description.strip().split(". ")[0].rstrip("."),
                 "probability": j.get("probability"), "relevant": bool(j.get("relevant")),
+                "icon": self.source_icon(name),
             })
         out = list(groups.values())
         for g in out:
+            icons = [s["icon"] for s in g["sources"]]
+            g["icon"] = max(set(icons), key=icons.count) if icons else "api"
             g["sources"].sort(key=lambda s: (not s["relevant"], -(s["probability"] or 0), s["source"]))
             g["relevant"] = any(s["relevant"] for s in g["sources"])
         out.sort(key=lambda g: (not g["relevant"], g["system"]))
         return out
+
+    def source_icon(self, name: str) -> str:
+        """The kind of source behind a catalog source — sharepoint, database, servicenow, files, … (``admin.SOURCE_KINDS``)."""
+        from .admin import source_kind
+
+        src = self.catalog.sources.get(name)
+        if src is None or src.relation:
+            return "duckdb"
+        fn = getattr(self.duck, "functions", {}).get((src.table or "").lower()) if self.duck is not None else None
+        return source_kind(fn) if fn is not None else "api"
 
     def feedback(self, result: Union["SearchResult", str], verdict: str, categories: Iterable[str] = (),
                  reason: str = "", expected: Optional[Dict[str, Any]] = None, user: Optional[str] = None) -> str:

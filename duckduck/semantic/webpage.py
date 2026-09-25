@@ -89,6 +89,34 @@ textarea { width: 100%; min-height: 60px; }
 .bar span { position: absolute; left: 0; top: 0; bottom: 0; background: var(--bar); border-radius: 0 4px 4px 0; }
 .sugg .kind { font-size: 12px; color: var(--ink-2); text-transform: uppercase; letter-spacing: .04em; }
 .sugg .change { font-weight: 600; margin: 2px 0; }
+/* source icons */
+.ico { width: 16px; height: 16px; flex: none; vertical-align: -3px; fill: none; stroke: currentColor;
+       stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; color: var(--ink-2); }
+.pill .ico, .chip .ico { width: 13px; height: 13px; vertical-align: -2px; margin-right: 3px; }
+.srcrow > span:first-of-type .ico { margin-right: 4px; }
+/* SQL and Config tabs */
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+.sqlgrid { display: grid; grid-template-columns: 270px minmax(0, 1fr); gap: 14px; align-items: start; }
+.cfggrid { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 14px; align-items: start; }
+textarea.editor { width: 100%; min-height: 180px; resize: vertical; tab-size: 2; line-height: 1.45; }
+#cfgtext { min-height: 520px; }
+.tlist { max-height: 70vh; overflow: auto; margin-top: 8px; }
+.tlist h4 { margin: 10px 0 4px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.titem { display: flex; gap: 6px; align-items: center; width: 100%; background: none; border: 0; padding: 4px 6px;
+         border-radius: 6px; color: var(--ink); font: inherit; font-size: 13.5px; text-align: left; cursor: pointer; }
+.titem:hover { background: var(--surface-2); }
+.titem .kind { margin-left: auto; font-size: 11px; color: var(--muted); }
+.log { max-height: 240px; overflow: auto; white-space: pre-wrap; }
+.msg { font-size: 13.5px; margin: 6px 0 0; } .msg.bad { color: var(--bad); } .msg.good { color: var(--good-ink); }
+.msg.warn { color: var(--ink-2); }
+.opt { border-bottom: 1px solid var(--grid); padding: 6px 0; font-size: 13.5px; }
+.opt .n { font-weight: 600; } .opt .t { color: var(--muted); font-size: 12px; margin-left: 6px; }
+.opt .d { color: var(--ink-2); font-size: 13px; }
+.opt .def { color: var(--muted); font-size: 12px; }
+.optref details > summary { font-weight: 600; color: var(--ink); padding: 4px 0; }
+.optref details details { margin-left: 12px; }
+.badge { font-size: 11px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--ink-2); margin-left: 4px; }
+@media (max-width: 860px) { .sqlgrid, .cfggrid { grid-template-columns: 1fr; } }
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--ink);
          color: var(--page); padding: 8px 14px; border-radius: 8px; font-size: 14px; opacity: 0;
          transition: opacity .2s; pointer-events: none; }
@@ -133,6 +161,8 @@ textarea { width: 100%; min-height: 60px; }
     <button role="tab" data-tab="history" aria-selected="false">History</button>
     <button role="tab" data-tab="dashboard" aria-selected="false">Dashboard</button>
     <button role="tab" data-tab="suggestions" aria-selected="false">Suggestions</button>
+    <button role="tab" data-tab="sql" aria-selected="false" hidden>SQL</button>
+    <button role="tab" data-tab="config" aria-selected="false" hidden>Config</button>
   </nav>
   <div class="user"><label for="user">You</label><input id="user" placeholder="your name (optional)"></div>
 </header>
@@ -150,6 +180,36 @@ textarea { width: 100%; min-height: 60px; }
   </section>
   <section id="tab-history" hidden><div class="card"><div id="history"></div></div></section>
   <section id="tab-dashboard" hidden><div id="dashboard"></div></section>
+  <section id="tab-sql" hidden>
+    <div class="sqlgrid">
+      <aside class="card"><h3>Tables</h3>
+        <input id="tablefilter" placeholder="filter tables" style="width:100%">
+        <div class="tlist" id="tablelist"></div></aside>
+      <div>
+        <div class="card">
+          <textarea class="editor mono" id="sqltext" spellcheck="false" aria-label="SQL">SHOW TABLES</textarea>
+          <div class="row" style="margin-top:8px"><button class="primary" id="sqlrun">Run</button>
+            <span class="muted small">Ctrl+Enter · read queries only (SELECT, WITH, SHOW, DESCRIBE…) · no file or network access</span></div>
+        </div>
+        <div id="sqlresult"></div>
+      </div>
+    </div>
+  </section>
+  <section id="tab-config" hidden>
+    <div class="cfggrid">
+      <div class="card"><h3>duckduck.json <span class="muted small mono" id="cfgpath"></span></h3>
+        <p class="muted small" id="cfgnote"></p>
+        <textarea class="editor mono" id="cfgtext" spellcheck="false" aria-label="duckduck.json"></textarea>
+        <div class="row" style="margin-top:8px"><button class="secondary" id="cfgvalidate">Validate</button>
+          <button class="primary" id="cfgsave">Save and reload</button>
+          <button class="secondary" id="cfgreset">Discard changes</button></div>
+        <div id="cfgmsgs"></div>
+      </div>
+      <aside class="card optref"><h3>Every option</h3>
+        <input id="optfilter" placeholder="search options" style="width:100%">
+        <div id="optref" style="margin-top:8px"></div></aside>
+    </div>
+  </section>
   <section id="tab-suggestions" hidden>
     <div class="card">
       <h3>Evaluation</h3>
@@ -201,7 +261,8 @@ const user = () => $("#user").value.trim() || null;
 document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => {
   document.querySelectorAll("nav button").forEach(x => x.setAttribute("aria-selected", x === b));
   document.querySelectorAll("main > section").forEach(s => s.hidden = s.id !== "tab-" + b.dataset.tab);
-  ({history: loadHistory, dashboard: loadDashboard, suggestions: loadSuggestions})[b.dataset.tab]?.();
+  ({history: loadHistory, dashboard: loadDashboard, suggestions: loadSuggestions, sql: loadTables,
+    config: loadConfig})[b.dataset.tab]?.();
 }));
 $("#user").value = store.get("duckduck-user") || "";
 $("#user").addEventListener("change", () => store.set("duckduck-user", $("#user").value));
@@ -247,7 +308,8 @@ function drawChips() {
         const sys = d.systems.filter(g => g.relevant).map(g => g.system);
         label = sys.length ? sys.join(", ") : "any";
       }
-      chips.push(`<button class="chip ${pre.chosen ? "mine" : ""}" type="button" data-open="systems" aria-expanded="${pre.open === "systems"}"><span class="dot"></span><span class="k">Systems</span> ${esc(label)}</button>`);
+      const icons = [...new Set(d.systems.filter(g => pre.chosen ? g.sources.some(s => pre.chosen.has(s.source)) : g.relevant).map(g => g.icon))];
+      chips.push(`<button class="chip ${pre.chosen ? "mine" : ""}" type="button" data-open="systems" aria-expanded="${pre.open === "systems"}"><span class="dot"></span><span class="k">Systems</span> ${icons.map(icon).join("")}${esc(label)}</button>`);
     }
     const e = d.entity;
     if (shape !== "catalog" && e && (pre.entity || e.sure)) {
@@ -273,11 +335,11 @@ function drawPanel() {
     panel.innerHTML = `<p class="muted small" style="margin:0 0 6px">Which systems and tables should answer this? ${pre.chosen ? "" : "Suggested ones are ticked."}</p>` +
       d.systems.map(g => `<h4><label class="check"><input type="checkbox" data-system="${esc(g.system)}"
           ${g.sources.every(s => picked.has(s.source)) ? "checked" : ""}
-          data-some="${g.sources.some(s => picked.has(s.source)) && !g.sources.every(s => picked.has(s.source)) ? 1 : 0}"> ${esc(g.system)}</label>
+          data-some="${g.sources.some(s => picked.has(s.source)) && !g.sources.every(s => picked.has(s.source)) ? 1 : 0}"> ${icon(g.icon)} ${esc(g.system)}</label>
           ${g.label ? `<span class="label">${esc(g.label)}</span>` : ""}
           <button class="secondary small" type="button" data-only="${esc(g.system)}" style="padding:2px 8px;margin-left:auto;font-size:12px;white-space:nowrap">only this</button></h4>` +
         g.sources.map(s => `<label class="srcrow"><input type="checkbox" data-source="${esc(s.source)}" ${picked.has(s.source) ? "checked" : ""}>
-          <span>${esc(s.source)} ${s.relevant ? `<span class="tag">suggested</span>` : ""}</span>
+          <span>${icon(s.icon)}${esc(s.source)} ${s.relevant ? `<span class="tag">suggested</span>` : ""}</span>
           ${s.probability === null || s.probability === undefined ? "<span></span>" : `<span class="rel" title="relevance ${Math.round(s.probability * 100)}%"><span style="width:${Math.round(s.probability * 100)}%"></span></span>`}
           ${s.description ? `<span class="desc">${esc(s.description)}</span>` : ""}</label>`).join("")).join("") +
       `<div class="foot"><button class="secondary" type="button" id="useall">Let it choose</button>
@@ -364,13 +426,13 @@ function render(c) {
     const n = (r.results || []).length;
     html += `<div class="card"><div class="row"><span class="pill">${esc(SHAPE_WORDS[shape] || shape)}</span>
       ${r.only_sources ? `<span class="pill" title="you chose these tables">only: ${esc(r.only_sources.join(", "))}</span>` : ""}
-      ${tables.map(s => `<span class="pill">${esc(s)}</span>`).join("")}
+      ${tables.map(s => `<span class="pill">${icon(META?.source_icons?.[s])}${esc(s)}</span>`).join("")}
       <span class="muted small">${n} row${n === 1 ? "" : "s"}${c.truncated ? " (first 500 shown)" : ""}</span></div>
       ${table(r.results)}
       ${r.summary ? `<details><summary>Where it was looked for</summary>${table(r.summary)}</details>` : ""}
       ${(r.sections || []).filter(s => s.results && s.results.length).map(s =>
           `<details><summary>${esc(s.source)} — ${s.rows} row${s.rows === 1 ? "" : "s"}</summary>${table(s.results)}</details>`).join("")}
-      ${r.sql ? `<details><summary>SQL</summary><pre>${esc(r.sql)}</pre></details>` : ""}
+      ${r.sql ? `<details><summary>SQL</summary><pre>${esc(r.sql)}</pre>${META?.features?.sql && r.query_plan ? `<button class="secondary" type="button" data-runsql>Open in the SQL tab</button>` : ""}</details>` : ""}
       <details><summary>How it was decided</summary>${table((r.decisions || []).map(d => ({
           decision: d.kind, about: d.subject, answer: typeof d.answer === "object" ? JSON.stringify(d.answer) : d.answer,
           probability: Math.round(d.probability * 100) / 100, by: d.decided_by})))}</details>
@@ -380,6 +442,7 @@ function render(c) {
   if (c.done && r.search_id) html += feedbackForm(r);
   box.innerHTML = html;
   box.querySelectorAll("button.option").forEach(b => b.addEventListener("click", () => reply(c.conversation_id, b.dataset.reply)));
+  box.querySelector("[data-runsql]")?.addEventListener("click", () => { $("#sqltext").value = r.sql; openTab("sql"); });
   $("#freeform")?.addEventListener("submit", (e) => { e.preventDefault(); const t = $("#freetext").value.trim(); if (t) reply(c.conversation_id, t); });
   wireFeedback(r);
 }
@@ -542,7 +605,148 @@ $("#evaljson").addEventListener("click", async (e) => {
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "feedback_evaluation.json"; a.click();
 });
 
-api("/api/meta").then(m => { META = m; }).catch(err => toast(err.message));
+// ---- icons: one per kind of source (generic shapes, no brand logos) ------------------------
+const ICONS = {
+  database: '<ellipse cx="8" cy="3.5" rx="5" ry="2"/><path d="M3 3.5v9c0 1.1 2.2 2 5 2s5-.9 5-2v-9"/><path d="M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>',
+  sharepoint: '<rect x="2.5" y="4.5" width="8" height="9.5" rx="1"/><path d="M5.5 4.5V2.5a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1V11a1 1 0 0 1-1 1h-2"/><path d="M4.5 8h4M4.5 10.5h4"/>',
+  servicenow: '<path d="M2 4.5h12v2.2a1.6 1.6 0 0 0 0 3.1v2.2H2V9.8a1.6 1.6 0 0 0 0-3.1z"/><path d="M9.5 4.5v7.5" stroke-dasharray="1.4 1.4"/>',
+  insightvm: '<path d="M8 1.5l5 2v4c0 3.2-2.2 5.6-5 7-2.8-1.4-5-3.8-5-7v-4z"/><path d="M5.8 8l1.6 1.6L10.4 6.5"/>',
+  axonius: '<rect x="1.5" y="3" width="10" height="7" rx="1"/><path d="M4.5 13h4M6.5 10v3"/><rect x="11.5" y="6" width="3" height="7" rx=".8"/>',
+  glue: '<path d="M2.5 4.2h11l-1.3 9a1 1 0 0 1-1 .8H4.8a1 1 0 0 1-1-.8z"/><ellipse cx="8" cy="4.2" rx="5.5" ry="1.7"/>',
+  blob_storage: '<path d="M4.5 12.5h7a3 3 0 0 0 .4-6A4 4 0 0 0 4.3 7a2.8 2.8 0 0 0 .2 5.5z"/>',
+  adx: '<path d="M2 13.5h12"/><path d="M4 11V8M7 11V4.5M10 11V6.5M13 11V9"/>',
+  files: '<path d="M4 1.5h5l3.5 3.5v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-11.5a1 1 0 0 1 1-1z"/><path d="M9 1.5V5h3.5"/>',
+  python: '<path d="M5.5 4.5L2 8l3.5 3.5M10.5 4.5L14 8l-3.5 3.5"/>',
+  duckdb: '<rect x="2" y="2.5" width="12" height="11" rx="1"/><path d="M2 6h12M6 6v7.5"/>',
+  api: '<path d="M6 1.5v3M10 1.5v3M4 4.5h8v3a4 4 0 0 1-8 0zM8 11.5v3"/>',
+};
+const ICON_NAMES = {database: "SQL database", sharepoint: "SharePoint", servicenow: "ServiceNow", insightvm: "InsightVM",
+  axonius: "Axonius", glue: "S3 / Glue", blob_storage: "Azure Blob Storage", adx: "Azure Data Explorer",
+  files: "local files", python: "Python module", duckdb: "DuckDB", api: "API"};
+function icon(kind) {
+  if (!kind) return "";
+  const k = ICONS[kind] ? kind : "api";
+  return `<svg class="ico" viewBox="0 0 16 16" role="img" aria-label="${esc(ICON_NAMES[k])}"><title>${esc(ICON_NAMES[k])}</title>${ICONS[k]}</svg>`;
+}
+function openTab(name) { document.querySelector(`nav button[data-tab="${name}"]`)?.click(); }
+
+// ---- SQL tab -----------------------------------------------------------------------------
+let TABLES = [];
+async function loadTables() {
+  try { TABLES = await api("/api/tables"); drawTables(); }
+  catch (err) { $("#tablelist").innerHTML = `<p class="error small">${esc(err.message)}</p>`; }
+}
+function drawTables() {
+  const f = $("#tablefilter").value.trim().toLowerCase();
+  const rows = TABLES.filter(t => !f || (t.name + " " + (t.description || "") + " " + (t.service || "")).toLowerCase().includes(f));
+  const groups = {};
+  rows.forEach(t => (groups[t.service || "other"] ||= []).push(t));
+  $("#tablelist").innerHTML = Object.entries(groups).map(([svc, ts]) => `<h4>${esc(svc)}</h4>` + ts.map(t =>
+    `<button class="titem" type="button" data-usage="${esc(t.usage || ("SELECT * FROM " + t.name + " LIMIT 100"))}"
+      title="${esc([t.description, t.pushdown ? "push-down: " + t.pushdown : ""].filter(Boolean).join("\n"))}">
+      ${icon(t.icon)}<span>${esc(t.name)}</span><span class="kind">${esc(t.kind || "")}</span></button>`).join("")).join("")
+    || `<p class="muted small">No tables.</p>`;
+  $("#tablelist").querySelectorAll("[data-usage]").forEach(b => b.addEventListener("click", () => {
+    let u = b.dataset.usage;
+    if (!/^\s*(select|with|from|show|describe)/i.test(u)) u = `SELECT * FROM ${u}`;
+    if (!/\blimit\b/i.test(u)) u += " LIMIT 100";
+    $("#sqltext").value = u; $("#sqltext").focus();
+  }));
+}
+$("#tablefilter").addEventListener("input", drawTables);
+async function runSql() {
+  const sql = $("#sqltext").value.trim(); if (!sql) return;
+  $("#sqlresult").innerHTML = `<div class="card muted">Running…</div>`;
+  try {
+    const r = await api("/api/sql", {sql});
+    const rows = (r.rows || []).map(row => Object.fromEntries(r.columns.map((c, i) => [c, row[i]])));
+    $("#sqlresult").innerHTML = `<div class="card">` + (r.error ? `<p class="error">${esc(r.error)}</p>` :
+      `<div class="muted small">${r.row_count} row${r.row_count === 1 ? "" : "s"} · ${r.elapsed_ms} ms${r.truncated ? " · first " + rows.length + " shown" : ""}</div>${table(rows)}`) +
+      ((r.log || []).length ? `<details${r.error ? " open" : ""}><summary>What went to each source (push-down)</summary><pre class="log mono">${esc(r.log.join("\n"))}</pre></details>` : "") + `</div>`;
+  } catch (err) { $("#sqlresult").innerHTML = `<div class="card error">${esc(err.message)}</div>`; }
+}
+$("#sqlrun").addEventListener("click", runSql);
+$("#sqltext").addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); runSql(); } });
+
+// ---- Config tab --------------------------------------------------------------------------
+let CFG = null;
+async function loadConfig() {
+  try {
+    CFG = await api("/api/config");
+    $("#cfgpath").textContent = CFG.path || "";
+    $("#cfgtext").value = JSON.stringify(CFG.config, null, 2);
+    $("#cfgnote").textContent = (CFG.editable ? "Secrets show as \"***\" — leave them to keep the saved value, or type a new one. Saving keeps a .bak and reconnects everything."
+      : "Read-only here: start the server with --edit-config to save. Secrets show as \"***\".");
+    $("#cfgsave").disabled = !CFG.editable;
+    $("#cfgmsgs").innerHTML = "";
+    drawReference();
+  } catch (err) { $("#cfgmsgs").innerHTML = `<p class="msg bad">${esc(err.message)}</p>`; }
+}
+function parsedConfig() {
+  try { return JSON.parse($("#cfgtext").value); }
+  catch (err) { $("#cfgmsgs").innerHTML = `<p class="msg bad">Not valid JSON: ${esc(err.message)}</p>`; return undefined; }
+}
+function showReport(rep, okText) {
+  $("#cfgmsgs").innerHTML = (rep.errors || []).map(e => `<p class="msg bad">✗ ${esc(e)}</p>`).join("") +
+    (rep.warnings || []).map(w => `<p class="msg warn">! ${esc(w)}</p>`).join("") +
+    (!(rep.errors || []).length ? `<p class="msg good">✓ ${esc(okText)}</p>` : "");
+}
+$("#cfgvalidate").addEventListener("click", async () => {
+  const cfg = parsedConfig(); if (cfg === undefined) return;
+  try { showReport(await api("/api/config/validate", {config: cfg}), "Valid — nothing saved yet."); }
+  catch (err) { $("#cfgmsgs").innerHTML = `<p class="msg bad">${esc(err.message)}</p>`; }
+});
+$("#cfgsave").addEventListener("click", async () => {
+  const cfg = parsedConfig(); if (cfg === undefined) return;
+  const headers = {"Content-Type": "application/json"}; const t = store.get("duckduck-token"); if (t) headers["X-Duckduck-Token"] = t;
+  const r = await fetch("/api/config", {method: "PUT", headers, body: JSON.stringify({config: cfg})});
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { $("#cfgmsgs").innerHTML = `<p class="msg bad">✗ ${esc(d.detail || r.statusText)}</p>`; return; }
+  showReport({warnings: [...(d.warnings || []), ...(d.reload_error ? ["saved, but reconnecting failed: " + d.reload_error] : [])]},
+    d.reloaded ? `Saved (${d.saved}) and reconnected.` : `Saved (${d.saved}).`);
+  META = await api("/api/meta").catch(() => META); showFeatures();
+});
+$("#cfgreset").addEventListener("click", loadConfig);
+$("#cfgtext").addEventListener("keydown", (e) => {
+  if (e.key === "Tab") { e.preventDefault(); const t = e.target, s = t.selectionStart;
+    t.value = t.value.slice(0, s) + "  " + t.value.slice(t.selectionEnd); t.selectionStart = t.selectionEnd = s + 2; }
+});
+function optRows(opts) {
+  return opts.map(o => o.options ? `<details data-find="${esc((o.name + " " + (o.description || "")).toLowerCase())}"><summary>${esc(o.name)} <span class="t">${esc(o.type || "")}</span></summary>
+      ${o.description ? `<div class="d">${esc(o.description)}</div>` : ""}${optRows(o.options)}</details>`
+    : `<div class="opt" data-find="${esc((o.name + " " + (o.description || "")).toLowerCase())}"><span class="n">${esc(o.name)}</span><span class="t">${esc(o.type || "")}</span>
+      ${o.required ? `<span class="badge">required</span>` : ""}${o.secret ? `<span class="badge">secret</span>` : ""}
+      ${o.description ? `<div class="d">${esc(o.description)}</div>` : ""}
+      ${o.default !== null && o.default !== undefined && o.default !== "" ? `<div class="def">default: <span class="mono">${esc(JSON.stringify(o.default))}</span></div>` : ""}</div>`).join("");
+}
+function drawReference() {
+  const ref = CFG.reference;
+  $("#optref").innerHTML =
+    `<details open data-find="top level"><summary>Top level</summary>${optRows(ref.top_level)}</details>` +
+    `<details data-find="services service"><summary>Every service</summary>${optRows(ref.service_common)}</details>` +
+    `<details data-find="authentication"><summary>authentication</summary>${optRows(ref.authentication)}</details>` +
+    `<details data-find="connectors"><summary>Connectors</summary>` + ref.connectors.map(c =>
+      `<details data-find="${esc((c.connector + " " + c.description).toLowerCase())}"><summary>${icon({insightvm: "insightvm", blob_storage: "blob_storage", files: "files", python: "python"}[c.connector] || c.connector)} ${esc(c.connector)} <span class="t">${esc(c.class)}</span></summary>
+        ${c.description ? `<div class="d">${esc(c.description)}</div>` : ""}
+        <div class="def">tables: ${c.dynamic_tables ? "one per file / module function" : esc(c.tables.join(", "))}${c.requires_authentication ? "" : " · authentication optional"}</div>
+        ${optRows(c.options)}</details>`).join("") + `</details>` +
+    `<details data-find="ai_providers ai providers llm"><summary>An ai_providers entry</summary>${optRows(ref.ai_provider)}</details>` +
+    `<details data-find="semantic"><summary>semantic</summary>${optRows(ref.semantic)}</details>`;
+}
+$("#optfilter").addEventListener("input", () => {
+  const f = $("#optfilter").value.trim().toLowerCase();
+  $("#optref").querySelectorAll(".opt").forEach(el => { el.hidden = !!f && !el.dataset.find.includes(f); });
+  $("#optref").querySelectorAll("details").forEach(d => {
+    const hit = !f || d.dataset.find.includes(f) || [...d.querySelectorAll(".opt")].some(o => !o.hidden);
+    d.hidden = !hit; if (f && hit) d.open = true;
+  });
+});
+
+function showFeatures() {
+  document.querySelector('nav button[data-tab="sql"]').hidden = !META?.features?.sql;
+  document.querySelector('nav button[data-tab="config"]').hidden = !META?.features?.config;
+}
+api("/api/meta").then(m => { META = m; showFeatures(); }).catch(err => toast(err.message));
 </script>
 </body>
 </html>

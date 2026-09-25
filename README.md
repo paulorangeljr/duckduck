@@ -759,6 +759,7 @@ print(jev_check().ranked())                    # raises if the key/network/parsi
 | `jev-check` | `jev_check()` → `Classification` |
 | `calibrate questions.json` | `calibrate("questions.json")` → `CalibrationReport` (`.summary()`, `.thresholds`) |
 | `serve` | `serve()` — the web app ([Feedback](#feedback-learning-from-what-users-say)); `serve(run=False)` → the FastAPI app |
+| `serve --sql --edit-config` | `serve(allow_sql=True, allow_config_edit=True)` — the SQL tab, and saving `duckduck.json` from the Config tab |
 | `feedback-report` | `feedback_report()` → `FeedbackReport` (`.summary()`, `.stats`) |
 | `feedback-to-eval` | `feedback_to_eval()` → `FeedbackEvaluation` (`.summary()`, `.dataset`, `.report`, `.calibration`) |
 | `feedback-suggest --accept ID` | `feedback_suggest(accept=["ID"])` → `SuggestionReport` (`.summary()`, `.suggestions`) |
@@ -834,11 +835,45 @@ python -m duckduck.semantic feedback-export    # what still fails, as a brief fo
   can't answer, the question back only offers what they can: "which
   machines…" limited to the firewall offers its IPs, since the hostnames
   live in the inventory.
+- **Icons.** Every table shows the kind of source it comes from:
+  SharePoint, SQL database, ServiceNow, InsightVM, Axonius, S3/Glue,
+  Azure Blob, Azure Data Explorer, local files, Python module, DuckDB, or
+  another API. These are generic shapes, not brand logos, drawn from the
+  connector behind each table (`SemanticSearch.source_icon`).
 - **History.** Every question, with its result and its rating.
 - **Dashboard.** Answer rate overall, by kind of answer and by table; what
   went wrong; how often it asked back; searches per day.
 - **Suggestions.** The catalog changes proposed from the feedback, to
   accept or dismiss, plus *Evaluate and calibrate*.
+
+- **SQL** (`serve --sql`). `duck.sql` on the registered tables, with
+  push-down and all. The tables are listed by system with their icons;
+  clicking one writes a query. *Open in the SQL tab* on an answer brings
+  its SQL over. Each run shows the rows and **what went to each source**:
+  which WHERE / LIMIT reached the API.
+  - **Read queries only:** `SELECT`, `WITH`, `FROM`, `SHOW`, `DESCRIBE`,
+    `SUMMARIZE`, `EXPLAIN`, `VALUES`, one at a time.
+  - **Isolated connection.** They run on their own DuckDB connection,
+    sharing your registered tables, with `enable_external_access = false`
+    and `lock_configuration = true`: no files (`read_csv('/etc/passwd')`,
+    `FROM 'x.csv'`), no `COPY` / `ATTACH` / `INSTALL`, no stored secrets,
+    and the SQL can't turn that back on. Your own `DuckAPI` and the
+    semantic search are untouched.
+  - **Limits:** the first 1000 rows are shown, and a query is interrupted
+    after 2 minutes.
+- **Config.** `duckduck.json` in an editor, next to **every option there
+  is**, searchable: each connector's parameters (with the tables it
+  registers), the `authentication` block, an `ai_providers` entry, and the
+  whole `semantic` section with defaults and descriptions.
+  - **Masked secrets.** Passwords, secrets, tokens, API keys, private keys
+    and connection strings show as `"***"`; `"$secret.<key>"` references
+    and `*_id` / `*_env` names aren't secrets. Leave `"***"` to keep the
+    saved value.
+  - **Validate** checks connectors, `authentication` and the `semantic`
+    section without saving.
+  - **Save and reload** needs `serve --edit-config`. It validates first,
+    keeps `duckduck.json.bak`, writes atomically and reconnects every
+    service. A new feedback file path needs a restart.
 
 It has no user accounts, and it answers from your data with your
 credentials, so it listens on this machine only. To open it to others,

@@ -240,6 +240,7 @@ class FeedbackConfig(_Strict):
     memory: bool = True
     #: At most this many similar cases per question, each at least this similar (0–1).
     max_cases: int = Field(default=3, ge=1, le=10)
+    #: How alike (0–1, over the question's words with its values set aside) a past question must be to count.
     min_similarity: float = Field(default=0.6, ge=0.0, le=1.0)
     #: Where accepted answer-wording suggestions are written — loaded on top of ``answer_shapes``.
     learned_answer_shapes: str = "answer_shapes.learned.yaml"

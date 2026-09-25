@@ -17,7 +17,11 @@ HTML page (``webpage.PAGE``) over a JSON API:
 ``POST /api/evaluate``                       feedback → evaluation set → metrics + thresholds
 ``GET  /api/evaluation.json``                that evaluation set, to keep
 ``GET  /api/export.md``                      the still-failing questions, as a brief for a developer
-``GET  /api/meta``                           categories, answer kinds, tables, entities, values
+``GET  /api/meta``                           categories, answer kinds, tables (+ icon kind), entities, values
+``POST /api/sql {sql}`` · ``GET /api/tables``  the SQL console (``allow_sql``; read-only, no files/network)
+``GET  /api/config``                         duckduck.json, secrets masked, + every option documented
+``POST /api/config/validate {config}``       check an edited config without saving
+``PUT  /api/config {config}``                save it (``allow_config_edit``; ``.bak`` kept) and reload
 ==========================================  ==============================================
 
 **It has no user accounts.** It answers from your data with your
@@ -48,12 +52,20 @@ def create_app(
     learned_shapes_path: Optional[str] = None,
     min_support: int = 2,
     token: Optional[str] = None,
+    console: Any = None,
+    config_path: Optional[str] = None,
+    allow_config_edit: bool = False,
+    rebuild: Optional[Callable[[], Any]] = None,
 ):
     """
     ``factory`` builds the ``SemanticSearch`` (called again after an accepted
     suggestion changes the catalog or the wording); it must use ``store``.
     ``catalog_path`` / ``learned_shapes_path``: where accepted suggestions
     are written (without them, suggestions can be listed but not accepted).
+    ``console``: an ``admin.SQLConsole`` for the SQL tab (``None``: no SQL
+    tab). ``config_path``: the ``duckduck.json`` the Config tab shows;
+    saving it needs ``allow_config_edit``, and then ``rebuild()`` →
+    ``(factory, console)`` reconnects everything from the saved file.
     """
     try:
         from fastapi import Body, FastAPI, HTTPException, Request
@@ -67,7 +79,8 @@ def create_app(
     from .webpage import PAGE
 
     app = FastAPI(title="duckduck semantic search", docs_url=None, redoc_url=None)
-    state: Dict[str, Any] = {"search": factory(), "conversations": OrderedDict()}
+    state: Dict[str, Any] = {"search": factory(), "factory": factory, "console": console,
+                             "conversations": OrderedDict()}
     lock = threading.RLock()  # conversations + reloads; searches themselves run concurrently
 
     def dump(payload: Any, status: int = 200) -> Response:
@@ -112,6 +125,9 @@ def create_app(
         search = state["search"]
         cat = search.catalog
         return dump({
+            "features": {"sql": state["console"] is not None, "config": bool(config_path),
+                         "config_edit": bool(config_path and allow_config_edit)},
+            "source_icons": {n: search.source_icon(n) for n in cat.sources},
             "verdicts": list(VERDICTS),
             "categories": CATEGORIES,
             "answer_shapes": {s: search.texts.t(f"answer_shape.{s}") if f"answer_shape.{s}" in search.texts.texts
@@ -227,7 +243,7 @@ def create_app(
             except ValueError as exc:
                 raise HTTPException(400, str(exc))
             store.record_review(s.id, "accepted", body.get("user") or None, what)
-            state["search"] = factory()  # the new catalog / wording, from now on
+            state["search"] = state["factory"]()  # the new catalog / wording, from now on
         logger.info("suggestion %s accepted: %s", s.id, what)
         return dump({"applied": what})
 
@@ -244,7 +260,7 @@ def create_app(
         dataset = store.to_evaluation()
         if not dataset:
             return dump({"size": 0, "note": "no rated questions yet"})
-        search = factory()  # its own instance: calibration sets thresholds to 0 for a while
+        search = state["factory"]()  # its own instance: calibration sets thresholds to 0 for a while
         report = evaluate(search, dataset, execute=False)
         calibration = calibrate_thresholds(search, dataset)
         return dump({
@@ -274,6 +290,73 @@ def create_app(
         return Response(json.dumps(store.to_evaluation(), indent=2, ensure_ascii=False),
                         media_type="application/json",
                         headers={"Content-Disposition": 'attachment; filename="feedback_evaluation.json"'})
+
+    # -- SQL console ---------------------------------------------------------------------------
+
+    def the_console():
+        if state["console"] is None:
+            raise HTTPException(403, "the SQL tab is off — start the server with --sql (serve(allow_sql=True))")
+        return state["console"]
+
+    @app.post("/api/sql")
+    def run_sql(body: Dict[str, Any] = Body(...)):
+        return dump(the_console().run(str(body.get("sql") or "")))
+
+    @app.get("/api/tables")
+    def tables():
+        return dump(the_console().tables())
+
+    # -- duckduck.json -----------------------------------------------------------------------
+
+    from .admin import config_reference, mask, save_config, unmask, validate_config
+
+    def read_config() -> Dict[str, Any]:
+        if not config_path:
+            raise HTTPException(404, "this server wasn't started from a config file")
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return {}
+        except ValueError as exc:
+            raise HTTPException(500, f"{config_path} isn't valid JSON: {exc}")
+
+    @app.get("/api/config")
+    def get_config():
+        return dump({"path": config_path, "config": mask(read_config()), "editable": allow_config_edit,
+                     "reference": config_reference()})
+
+    @app.post("/api/config/validate")
+    def check_config(body: Dict[str, Any] = Body(...)):
+        try:
+            data = unmask(body.get("config"), read_config())
+        except ValueError as exc:
+            return dump({"errors": [str(exc)], "warnings": []})
+        return dump(validate_config(data, config_path or ""))
+
+    @app.put("/api/config")
+    def put_config(body: Dict[str, Any] = Body(...)):
+        if not allow_config_edit:
+            raise HTTPException(403, "editing is off — start the server with --edit-config "
+                                     "(serve(allow_config_edit=True))")
+        read_config()
+        try:
+            saved = save_config(config_path, body.get("config"))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        saved["reloaded"] = False
+        if rebuild is not None:
+            with lock:
+                try:
+                    new_factory, new_console = rebuild()
+                    state["search"], state["factory"] = new_factory(), new_factory
+                    state["console"] = new_console
+                    state["conversations"].clear()
+                    saved["reloaded"] = True
+                except Exception as exc:  # the file is saved (and .bak kept); say why it didn't take
+                    saved["reload_error"] = f"{type(exc).__name__}: {exc}"
+        logger.info("config saved to %s (reloaded: %s)", config_path, saved["reloaded"])
+        return dump(saved)
 
     app.state.duckduck = state
     return app
