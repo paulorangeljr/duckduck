@@ -60,7 +60,9 @@ class QueryPlanner:
         for res in intent.resources:
             fname = self._pick_field(primary, res.type, activity.resource_role if activity else None)
             ref = f"{primary}.{fname}"
-            checks.append(self._field_check(intent, ref, f"filtering on {res.value!r} ({res.type})", _SEMANTIC_MATCH_PRIOR, len(checks)))
+            only_one = len(self.catalog.fields_by_semantic_type(primary, res.type)) == 1
+            checks.append(self._field_check(intent, ref, f"filtering on {res.value!r} ({res.type})", _SEMANTIC_MATCH_PRIOR,
+                                            len(checks), settled=only_one))
             fdef = self.catalog.field(ref)
             operator = "eq" if res.literal_kind in ("ip_address", "email") else (fdef.match or "eq")
             filters.append(Filter(field=ref, operator=operator, value=res.value))
@@ -102,7 +104,18 @@ class QueryPlanner:
             if path.edges:
                 paths.append(path)
             prior = min(self.catalog.entity_fields(intent.target_entity).get(ref, _SEMANTIC_MATCH_PRIOR), _SEMANTIC_MATCH_PRIOR)
-            checks.append(self._field_check(intent, ref, f"identifying the requested {intent.target_entity}", prior, len(checks)))
+            src = ref.split(".")[0]
+            choices = set(self.catalog.fields_by_semantic_type(src, intent.target_entity)) | {
+                r.split(".")[1] for r in self.catalog.entity_fields(intent.target_entity) if r.split(".")[0] == src
+            }
+            if src == primary:
+                choices -= resource_fields
+            label = intent.target_entity + (f" — {entity.description.strip()}" if entity.description.strip() else "")
+            checks.append(self._field_check(
+                intent, ref, f"identifying the requested {intent.target_entity}", prior, len(checks),
+                settled=len(choices) == 1,
+                question=f"Does {ref} hold the {intent.target_entity} the question asks for ({label})?",
+            ))
             select = [ref]
             distinct = True
 
@@ -209,14 +222,22 @@ class QueryPlanner:
     # ------------------------------------------------------------------
 
     def _field_check(self, intent: SemanticIntent, ref: str, purpose: str, prior: float, n: int,
-                     question: Optional[str] = None, failure: Optional[str] = None) -> tuple:
+                     question: Optional[str] = None, failure: Optional[str] = None, settled: bool = False) -> tuple:
+        """
+        A field confirmation for the batch. ``settled``: the catalog leaves no
+        choice (the only field of that type in the source) — recorded as a
+        deterministic decision at ``prior`` instead of being asked: the
+        confirmation exists to catch a wrong pick among candidates, and the
+        entity/value it serves was already decided.
+        """
         ask = Ask(
             key=f"field:{n}", question=question or f"Is {ref} relevant for {purpose}?",
             subject=self.catalog.describe_field(ref), criteria=CRITERIA["field"],
             state=DecisionState(query=intent.question, prior=prior, facts={"field": ref}),
         )
+        settled = settled and prior >= self.thresholds.field  # a weak catalog link still gets asked
         return ask, "field_relevance", ref, self.thresholds.field, \
-            failure or f"Not confident that {ref} is the right field for {purpose}.", [ref]
+            failure or f"Not confident that {ref} is the right field for {purpose}.", [ref], settled
 
     def _merge_paths(self, intent: SemanticIntent, primary: str, paths: List[Path], checks: List[tuple]):
         sources, joins = [primary], []
@@ -231,15 +252,21 @@ class QueryPlanner:
                     state=DecisionState(query=intent.question, prior=edge.confidence, facts={"relationship": edge.type}),
                 )
                 checks.append((ask, "relationship_relevance", f"{edge.left} = {edge.right}", self.thresholds.relationship,
-                               f"Not confident enough in joining {edge.left} = {edge.right}", None))
+                               f"Not confident enough in joining {edge.left} = {edge.right}", None, False))
                 sources.append(edge.right_source)
                 joins.append(Join(left=edge.left, right=edge.right))
         return sources, joins
 
     def _run_checks(self, checks: List[tuple], decisions: List[DecisionRecord]) -> None:
         """Every confirmation in one batch; the first to miss its threshold (in plan order) stops the plan."""
-        answers = ask_all(self.engine, [c[0] for c in checks])
-        for ask, kind, subject, threshold, message, options in checks:
+        answers = ask_all(self.engine, [c[0] for c in checks if not c[-1]])
+        for ask, kind, subject, threshold, message, options, settled in checks:
+            if settled:
+                decisions.append(DecisionRecord(
+                    kind=kind, question=ask.question, subject=subject, answer=True,
+                    probability=ask.state.prior, threshold=threshold, decided_by="deterministic",
+                ))
+                continue
             result = answers[ask.key]
             record = DecisionRecord(
                 kind=kind, question=ask.question, subject=subject,

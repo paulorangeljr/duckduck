@@ -296,3 +296,92 @@ def test_describe_field_lists_known_values_with_their_synonyms():
     text = catalog.describe_field(ref)
     value, synonyms = next(iter(catalog.field(ref).values.items()))
     assert f"Known values: {value!r}" in text and (not synonyms or repr(synonyms[0]) in text)
+
+
+def test_the_only_field_of_its_type_is_settled_without_asking(monkeypatch):
+    search, fake = _jev_search(monkeypatch)
+    result = search.search("Which users generated failed authentication events?")
+    username = next(d for d in result.decisions if d.kind == "field_relevance" and d.subject == "auth_logs.username")
+    assert username.decided_by == "deterministic" and username.passed
+    asked = [q["instructions"] for b in fake.bodies[1:] for q in b["questions"].values()]
+    assert not any("auth_logs.username" in t for t in asked)
+
+
+def test_a_choice_between_fields_is_still_asked_with_the_entity_spelled_out(monkeypatch):
+    data = Catalog.load(CATALOG_PATH).model_dump(by_alias=True)
+    fields = data["sources"]["auth_logs"]["fields"]
+    extra = next(n for n, f in fields.items() if f.get("semantic_type") not in ("user", "event_time"))
+    fields[extra]["semantic_type"] = "user"  # now two 'user' fields in auth_logs
+    search, fake = _jev_search(monkeypatch, catalog=Catalog.model_validate(data))
+    search.search("Which users generated failed authentication events?")
+    asked = [q["instructions"] for b in fake.bodies[1:] for q in b["questions"].values()]
+    assert any(t.startswith("Does auth_logs.") and "hold the user the question asks for (user" in t for t in asked)
+
+
+def test_a_weak_catalog_link_is_asked_even_when_it_is_the_only_field():
+    from duckduck.semantic.planner import QueryPlanner
+
+    planner = QueryPlanner(Catalog.load(CATALOG_PATH), LexicalDecisionEngine())
+    from duckduck.semantic.intent import SemanticIntent
+
+    check = planner._field_check(SemanticIntent(question="q"), "auth_logs.username", "x", 0.5, 0, settled=True)
+    assert check[-1] is False
+
+
+LOCAL_CATALOG = {
+    "sources": {
+        "alerts": {"table": "alerts", "description": "Security alerts raised per IP.",
+                   "entities": ["ip_address"], "activities": ["security_alert"],
+                   "fields": {"ip": {"semantic_type": "ip_address", "description": "IP the alert is about"},
+                              "rule": {"description": "Detection rule",
+                                       "values": {"brute_force": ["brute force"], "port_scan": ["port scan"]}},
+                              "severity": {"values": {"critical": [], "low": []}}}},
+        "owners": {"table": "owners", "description": "Who owns each IP.", "entities": ["user", "ip_address"],
+                   "fields": {"ip": {"semantic_type": "ip_address"}, "owner": {"semantic_type": "user"}}},
+    },
+    "entities": {"ip_address": {"description": "An IP address", "keywords": ["ip", "host", "hosts"]},
+                 "user": {"description": "A person", "keywords": ["owner", "owners"]}},
+    "activities": {"security_alert": {"description": "Alerts raised by detections", "keywords": ["alerts"]}},
+    "relationships": [{"from": "alerts.ip", "to": "owners.ip", "type": "same_entity", "confidence": 0.95}],
+}
+
+
+def test_which_hosts_have_brute_force_alerts(monkeypatch):
+    """The reported case: the only ip field of alerts no longer hinges on a 0.70 field answer."""
+    import pandas as pd
+
+    class Jev:
+        def __init__(self):
+            self.bodies = []
+
+        def __call__(self, url, data, timeout):
+            body = json.loads(data)
+            self.bodies.append(body)
+            answers = {}
+            for key, q in body["questions"].items():
+                if q["type"] == "choice":
+                    wanted = "ip_address" if "entity" in q["instructions"] else "security_alert"
+                    answers[key] = {"probabilities": {c: (0.9 if c == wanted else 0.05) for c in q["criteria"]}}
+                elif key.startswith("source:"):
+                    answers[key] = {"noul": 0.94 if key == "source:alerts" else 0.67}
+                elif " mean " in q["instructions"]:
+                    answers[key] = {"noul": 0.95}
+                else:
+                    answers[key] = {"noul": 0.70}  # what the real run gave for alerts.ip
+            r = MagicMock(status_code=200, ok=True)
+            r.json.return_value = {"answers": answers}
+            return r
+
+    fake = Jev()
+    monkeypatch.setattr("requests.Session.post", lambda self, url, data, timeout: fake(url, data, timeout))
+    duck = DuckAPI()
+    duck.register_api_function("alerts", lambda: pd.DataFrame(
+        {"ip": ["10.0.0.1", "10.0.0.2"], "rule": ["brute_force", "port_scan"], "severity": ["critical", "low"]}))
+    duck.register_api_function("owners", lambda: pd.DataFrame({"ip": ["10.0.0.1"], "owner": ["ana"]}))
+    search = SemanticSearch(Catalog.model_validate(LOCAL_CATALOG), duck,
+                            engine=JEVAdapter(JevClient(api_key="k"), cache_size=0))
+    result = search.search("Which hosts have brute force alerts?")
+    assert result.status == "ok", result.report()
+    assert list(result.results.iloc[:, 0]) == ["10.0.0.1"]
+    ip = next(d for d in result.decisions if d.subject == "alerts.ip")
+    assert ip.decided_by == "deterministic"
