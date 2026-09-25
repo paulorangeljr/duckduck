@@ -307,3 +307,69 @@ def test_an_invalid_catalog_file_is_never_overwritten(project):
     with pytest.raises(ValueError, match="isn't a valid catalog"):
         generate_catalog(config_path=write())
     assert (folder / "catalog.yaml").read_text() == "sources: {broken: {fields: {}}}\n"
+
+
+# ---------------------------------------------------------------------------
+# the YAML shows where notes go; verbose progress
+# ---------------------------------------------------------------------------
+
+
+def test_yaml_has_a_notes_slot_on_every_source_and_field(tmp_path):
+    import yaml
+
+    path = tmp_path / "catalog.yaml"
+    _gen(CountingLLM()).generate().write(str(path))
+    text = path.read_text()
+    assert "Write your observations in `notes`" in text
+    assert "&id" not in text and "*id" not in text  # one shared generated_at, no YAML aliases
+    data = yaml.safe_load(text)
+    for source in data["sources"].values():
+        keys = list(source)
+        assert keys[keys.index("description") + 1] == "notes"
+        assert all("notes" in f for f in source["fields"].values())
+    # a person fills a slot in; it loads, and survives the next forced redraft
+    text = text.replace("notes: ''", "notes: hosts behind the proxy", 1)
+    path.write_text(text)
+    existing = Catalog.load(str(path))
+    assert existing.sources["hosts"].notes == "hosts behind the proxy"
+    redrafted = _gen(CountingLLM()).generate(existing=existing, force=True)
+    assert redrafted.catalog.sources["hosts"].notes == "hosts behind the proxy"
+
+
+def test_verbose_progress(caplog):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="duckduck")
+    _gen(CountingLLM()).generate()
+    text = caplog.text
+    assert "catalog: 2 tables — drafting 2 (2 new), keeping 0" in text
+    assert "[1/2] hosts (new) — profiling hosts()" in text and "[2/2] alerts (new)" in text
+    assert "asking claude (anthropic claude-opus-5)" in text and "elapsed · ~" in text
+    assert "linking 2 sources (2 drafted, 0 kept)" in text and "merged: 2 sources" in text
+
+
+def test_verbose_up_to_date(caplog):
+    import logging
+
+    first = _gen(CountingLLM()).generate()
+    caplog.set_level(logging.INFO, logger="duckduck")
+    _gen(CountingLLM()).generate(existing=first.catalog)
+    assert "all up to date — nothing to draft" in caplog.text
+
+
+def test_llm_calls_log_time_and_tokens(caplog):
+    import logging
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from duckduck.semantic.llm import OpenRouterLLM
+
+    client = MagicMock()
+    message = SimpleNamespace(parsed="OK", refusal=None)
+    client.chat.completions.parse.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=message, finish_reason="stop")],
+        usage=SimpleNamespace(prompt_tokens=1234, completion_tokens=56),
+    )
+    caplog.set_level(logging.INFO, logger="duckduck")
+    OpenRouterLLM("vendor/model", client=client).generate("s", "p", GenSource)
+    assert "llm vendor/model → GenSource" in caplog.text and "1,234 in / 56 out tokens" in caplog.text

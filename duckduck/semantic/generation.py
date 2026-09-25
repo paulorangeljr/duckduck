@@ -34,6 +34,7 @@ column names and types.
 import datetime as _dt
 import fnmatch
 import re
+import time
 import inspect
 import json
 import logging
@@ -42,6 +43,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 
 from pydantic import BaseModel, Field
 
+from ..logs import human_seconds
 from ..kinds import CATALOG, TABLE, TABLE_FUNCTION, kind_of, lists_of, required_params
 from ..local_files import table_name_for
 from .catalog import Catalog, FieldType
@@ -184,16 +186,23 @@ class GenerationResult:
     def to_yaml(self) -> str:
         import yaml
 
-        data = self.catalog.model_dump(by_alias=True, exclude_defaults=True)
+        data = _with_note_slots(self.catalog.model_dump(by_alias=True, exclude_defaults=True))
         header = (
             "# Semantic catalog. Sources with generated_at are maintained by generate-catalog\n"
             "# (redrafted when older than max_age, or when forced); sources without it are\n"
             "# hand-written and left alone. Review drafted sources before relying on them.\n"
+            "# Write your observations in `notes` (on any source or field): the LLM never\n"
+            "# writes them, they survive every redraft and are given to the LLM as context.\n"
+            "# Comments starting with # are NOT kept — the file is rewritten.\n"
             f"# Last generation run: {_dt.datetime.now(_dt.timezone.utc).isoformat(timespec='seconds')}\n"
         )
         if self.warnings:
             header += "# Notes from that run:\n" + "".join(f"#   - {w}\n" for w in self.warnings)
-        return header + yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+        class _NoAliases(yaml.SafeDumper):  # shared values (one generated_at) stay literal, not &id001 / *id001
+            def ignore_aliases(self, data):
+                return True
+
+        return header + yaml.dump(data, Dumper=_NoAliases, sort_keys=False, allow_unicode=True)
 
     def write(self, path: str) -> None:
         with open(path, "w", encoding="utf-8") as f:
@@ -216,6 +225,33 @@ class GenerationResult:
         return "\n".join(lines)
 
 
+def _with_note(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """``entry`` with a ``notes`` key right after ``description`` (empty when unset)."""
+    note = entry.get("notes", "")
+    out: Dict[str, Any] = {}
+    placed = False
+    for key, value in entry.items():
+        if key == "notes":
+            continue
+        out[key] = value
+        if key == "description":
+            out["notes"] = note
+            placed = True
+    if not placed:
+        out = {"notes": note, **out}
+    return out
+
+
+def _with_note_slots(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Every source and field shows a ``notes`` slot in the YAML, so it's obvious where yours go."""
+    sources = {}
+    for name, source in data.get("sources", {}).items():
+        source = _with_note(source)
+        source["fields"] = {f: _with_note(d) for f, d in source.get("fields", {}).items()}
+        sources[name] = source
+    return {**data, "sources": sources}
+
+
 def parse_age(value: Union[int, float, str, _dt.timedelta, None]) -> Optional[_dt.timedelta]:
     """``"7d"`` / ``"12h"`` / ``"30m"`` / ``"45s"`` / ``"2w"`` / seconds → ``timedelta``."""
     if value is None or isinstance(value, _dt.timedelta):
@@ -227,6 +263,14 @@ def parse_age(value: Union[int, float, str, _dt.timedelta, None]) -> Optional[_d
         raise ValueError(f"max_age {value!r}: use a number of seconds or '<n>s|m|h|d|w' (e.g. '7d', '12h')")
     unit = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days", "w": "weeks"}[m.group(2)]
     return _dt.timedelta(**{unit: float(m.group(1))})
+
+
+def _progress(started: float, done: int, total: int) -> str:
+    elapsed = time.perf_counter() - started
+    text = f"{human_seconds(elapsed)} elapsed"
+    if done < total:
+        text += f" · ~{human_seconds(elapsed / done * (total - done))} left"
+    return text
 
 
 def _age_text(delta: _dt.timedelta) -> str:
@@ -257,12 +301,14 @@ class CatalogGenerator:
         max_age: Union[int, str, _dt.timedelta, None] = None,
         llm_label: Optional[str] = None,
         clock: Optional[Callable[[], _dt.datetime]] = None,
+        link_llm_label: Optional[str] = None,
     ):
         self.llm = llm
         #: A generated source older than this is redrafted; ``None`` → never expires.
         self.max_age = parse_age(max_age)
-        #: Stamped as each drafted source's ``generated_by``.
+        #: Stamped as each drafted source's ``generated_by``; also shown in verbose output.
         self.llm_label = llm_label
+        self.link_llm_label = link_llm_label
         self.clock = clock or (lambda: _dt.datetime.now(_dt.timezone.utc))
         #: The final vocabulary/joins call (one call, over every table) — ``llm`` when omitted.
         self.link_llm = link_llm or llm
@@ -320,11 +366,14 @@ class CatalogGenerator:
                     notes.append(f"catalog '{catalog_name}' lists '{target_method}', which isn't registered — skipped")
                     continue
                 required = [p.name for p in required_params(self.duck.functions[target_name])]
+                logger.info("catalog: discovering tables through %s …", catalog_name)
                 try:
                     listing = self.duck.fetch(catalog_name)
                 except Exception as exc:
                     notes.append(f"catalog '{catalog_name}' failed ({exc.__class__.__name__}: {exc}) — its tables skipped")
+                    logger.info("  %s failed: %s", catalog_name, exc)
                     continue
+                logger.info("  %s: %d tables → %s(%s)", catalog_name, len(listing), target_name, ", ".join(required))
                 missing = [r for r in required if r not in listing.columns]
                 if missing:
                     notes.append(f"catalog '{catalog_name}' has no column(s) {missing} for '{target_name}' — skipped")
@@ -433,23 +482,36 @@ class CatalogGenerator:
             )
         todo = todo[: self.max_tables]
         kept_names = [n for n in (existing.sources if existing else {}) if n not in {s.name for s, _ in todo}]
+        self._log_plan(specs, todo, kept_names, deferred)
         if not todo:
             return GenerationResult(catalog=existing, warnings=warnings, kept=kept_names, deferred=deferred)
 
         drafts: Dict[str, GenSource] = {}
         columns: Dict[str, List[str]] = {}
         reasons: Dict[str, str] = {}
-        for spec, reason in todo:
+        started = time.perf_counter()
+        for i, (spec, reason) in enumerate(todo, 1):
+            call = f"{spec.table}({', '.join(f'{k}={v!r}' for k, v in spec.args.items())})"
+            logger.info("[%d/%d] %s (%s) — profiling %s", i, len(todo), spec.name, reason, call)
             try:
                 profile = self.profile(spec, existing.sources.get(spec.name) if existing else None)
             except Exception as exc:
                 warnings.append(f"skipped '{spec.name}': couldn't profile it ({exc})")
+                logger.info("  skipped: couldn't profile it (%s)", exc)
                 continue
             columns[spec.name] = list(profile["columns"])
+            logger.info(
+                "  %d columns, %d sample rows%s — asking %s", len(profile["columns"]), len(profile["sample_rows"]),
+                ", with your notes" if profile["owner_notes"] or profile["field_notes"] else "", self.llm_label or "the LLM",
+            )
             prompt = "Table profile:\n" + json.dumps(profile, indent=1, default=str)
-            drafts[spec.name] = self.llm.generate(self.source_prompt, prompt, GenSource)
+            drafts[spec.name] = draft = self.llm.generate(self.source_prompt, prompt, GenSource)
             reasons[spec.name] = reason
-            logger.info("drafted source %s (%s)", spec.name, reason)
+            logger.info(
+                "  → %d fields, entities %s, activities %s · %s",
+                len(draft.fields), ", ".join(draft.entities) or "none", ", ".join(draft.activities) or "none",
+                _progress(started, i, len(todo)),
+            )
         if not drafts:
             if existing is not None:
                 return GenerationResult(catalog=existing, warnings=warnings, kept=kept_names, deferred=deferred)
@@ -478,14 +540,46 @@ class CatalogGenerator:
             prompt += "\n\nAlready defined — reuse these names rather than inventing synonyms:\n" + json.dumps(
                 {"entities": sorted(existing.entities), "activities": sorted(existing.activities)}, indent=1
             )
+        logger.info(
+            "linking %d sources (%d drafted, %d kept) — asking %s for entities, activities and joins",
+            len(overview), len(drafts), len(overview) - len(drafts), self.link_llm_label or self.llm_label or "the LLM",
+        )
+        link_started = time.perf_counter()
         vocab = self.link_llm.generate(self.link_prompt, prompt, GenVocabulary)
+        logger.info(
+            "  → %d entities, %d activities, %d relationships (%s)", len(vocab.entities), len(vocab.activities),
+            len(vocab.relationships), human_seconds(time.perf_counter() - link_started),
+        )
 
         by_name = {s.name: s for s, _ in todo}
         stamp = {"generated_at": self.clock().replace(microsecond=0), "generated_by": self.llm_label}
+        noted = len(warnings)
         catalog = self._assemble(drafts, vocab, columns, by_name, warnings, existing, stamp)
+        logger.info(
+            "merged: %d sources, %d entities, %d activities, %d relationships · %s total",
+            len(catalog.sources), len(catalog.entities), len(catalog.activities), len(catalog.relationships),
+            human_seconds(time.perf_counter() - started),
+        )
+        for w in warnings[noted:]:
+            logger.info("  dropped: %s", w)
         return GenerationResult(
             catalog=catalog, warnings=warnings, drafted=reasons,
             kept=[n for n in catalog.sources if n not in drafts], deferred=deferred,
+        )
+
+    @staticmethod
+    def _log_plan(specs, todo, kept_names, deferred) -> None:
+        if not todo:
+            logger.info("catalog: %d tables, all up to date — nothing to draft", len(specs))
+            return
+        kinds: Dict[str, int] = {}
+        for _, why in todo:
+            key = "expired" if "max_age" in why else why
+            kinds[key] = kinds.get(key, 0) + 1
+        logger.info(
+            "catalog: %d tables — drafting %d (%s), keeping %d%s", len(specs), len(todo),
+            ", ".join(f"{n} {k}" for k, n in kinds.items()), len(kept_names),
+            f", deferring {len(deferred)} (max_tables)" if deferred else "",
         )
 
     def _align_with(self, specs: List[TableSpec], existing: Optional[Catalog]) -> List[TableSpec]:

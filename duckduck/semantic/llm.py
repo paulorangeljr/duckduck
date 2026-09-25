@@ -17,12 +17,32 @@ Entra ID (``DefaultAzureCredential``: managed identity, ``az login``,
 ``AZURE_*`` env vars — needs ``azure-identity``).
 """
 
+import logging
 import os
+import time
 from typing import Any, Callable, Dict, Mapping, Optional, Protocol, Type, TypeVar
 
 from pydantic import BaseModel
 
 T = TypeVar("T", bound=BaseModel)
+
+logger = logging.getLogger("duckduck.semantic.llm")
+
+
+def _log_call(model: Any, output_model: Type[BaseModel], started: float, prompt: str,
+              tokens_in: Any = None, tokens_out: Any = None) -> None:
+    """One INFO line per LLM call: model, what was asked for, time, tokens. Never raises."""
+    try:
+        if not logger.isEnabledFor(logging.INFO):
+            return
+        count = lambda n: f"{n:,}" if isinstance(n, int) else "?"  # noqa: E731
+        logger.info(
+            "  llm %s → %s: %.1fs · %s in / %s out tokens",
+            model, output_model.__name__, time.perf_counter() - started, count(tokens_in), count(tokens_out),
+        )
+        logger.debug("    prompt: %s chars", f"{len(prompt):,}")
+    except Exception as exc:  # diagnostics must never break the call they describe
+        logger.debug("could not log LLM call: %r", exc)
 
 
 class LLMError(RuntimeError):
@@ -191,12 +211,16 @@ class ClaudeLLM:
         )
         if self.effort:
             kwargs["output_config"] = {"effort": self.effort}
+        started = time.perf_counter()
         if self.fallbacks:
             response = self.client.beta.messages.parse(
                 betas=[self.FALLBACK_BETA], fallbacks=self.fallbacks, **kwargs
             )
         else:
             response = self.client.messages.parse(**kwargs)
+        usage = getattr(response, "usage", None)
+        _log_call(self.model, output_model, started, prompt,
+                  getattr(usage, "input_tokens", None), getattr(usage, "output_tokens", None))
 
         if response.stop_reason == "refusal":
             details = getattr(response, "stop_details", None)
@@ -234,6 +258,7 @@ class _ChatCompletionsLLM:
         completions = self.client.chat.completions
         if not hasattr(completions, "parse"):  # openai < 1.92 only has it under beta
             completions = self.client.beta.chat.completions
+        started = time.perf_counter()
         try:
             response = completions.parse(**kwargs)
         except Exception as exc:
@@ -244,6 +269,9 @@ class _ChatCompletionsLLM:
             if name == "ContentFilterFinishReasonError":
                 raise LLMError(f"the answer was blocked by {self.FILTER_NAME}") from exc
             raise
+        usage = getattr(response, "usage", None)
+        _log_call(self.model_id, output_model, started, prompt,
+                  getattr(usage, "prompt_tokens", None), getattr(usage, "completion_tokens", None))
         choice = response.choices[0]
         if getattr(choice.message, "refusal", None):
             raise LLMError(f"the model declined the request ({choice.message.refusal})")

@@ -463,8 +463,9 @@ place. It doesn't rewrite the file from scratch:
 - **Sources without `generated_at` are yours.** Sources you wrote by hand,
   or drafted ones whose `generated_at` you deleted to keep your edits, are
   only redrafted when forced by name.
-- **`notes` are yours too.** Write them on a source or on any field in the
-  YAML. The LLM never writes them. They're kept when the source is
+- **`notes` are yours too.** Every source and every field in the
+  generated YAML has a `notes: ''` slot right below its `description`.
+  Write there. The LLM never writes them. They're kept when the source is
   redrafted and given to the LLM as context then. YAML `#` comments are not
   kept, because the file is rewritten.
 - Your own `critical` flags, entity and activity definitions, and
@@ -503,6 +504,44 @@ Force a redraft from the terminal or from Python:
 python -m duckduck.semantic generate-catalog --force                     # every generated source
 python -m duckduck.semantic generate-catalog --force proxy_logs "adx_*"  # these, even hand-written
 ```
+
+**Watching it work.** Generation uses the same verbose mode as the
+virtualization layer. Turn it on with `generate_catalog(verbose=True)`,
+`python -m duckduck.semantic -v generate-catalog`, `DuckAPI(verbose=True)`
+or `DUCKDUCK_VERBOSE=info`. You get the plan (how many tables are new,
+expired or kept), then `[n/total]` per table with its profile and each LLM
+call's time and tokens, time elapsed and left, then the linking pass and
+what the merge dropped:
+
+```
+catalog: 12 tables — drafting 3 (2 new, 1 expired), keeping 9
+[1/3] security_proxy_logs (new) — profiling glue_table(database='security', table_name='proxy_logs')
+  18 columns, 5 sample rows, with your notes — asking catalog (openrouter anthropic/claude-sonnet-5)
+  llm anthropic/claude-sonnet-5 → GenSource: 6.2s · 3,410 in / 820 out tokens
+  → 14 fields, entities user, host, activities web_access · 6.4s elapsed · ~12.8s left
+...
+linking 12 sources (3 drafted, 9 kept) — asking catalog (...) for entities, activities and joins
+merged: 12 sources, 6 entities, 4 activities, 9 relationships · 24.1s total
+```
+
+**Using the catalog in your process.** Whatever reads `catalog_path`
+picks the catalog up, with nothing extra to load:
+
+```python
+from duckduck.semantic import SemanticSearch, ask, connect
+
+ask("Which users accessed github in the last 24hrs?")      # reads duckduck.json → catalog_path
+
+duck = connect()                                          # or keep the pieces around
+search = SemanticSearch.from_config(duck)                 # catalog_path, engine, LLMs from the config
+search.search("Which hosts queried example.com?")
+
+search = SemanticSearch("semantic_catalog.yaml", duck)    # or any catalog file, directly
+```
+
+The catalog is read once, when the `SemanticSearch` is built. After
+regenerating, build a new one (`ask()` builds one per call). With
+`auto_refresh`, building it also brings the catalog up to date first.
 
 To review drafts before they go live, set `catalog_generation.output_path`
 to another file. Generation then maintains that file, and you copy what

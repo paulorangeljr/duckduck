@@ -529,6 +529,7 @@ class SemanticConfig(_Strict):
             max_tables=cfg.max_tables,
             max_age=cfg.max_age,
             llm_label=self.llm_label("catalog_generation"),
+            link_llm_label=self.llm_label("catalog_link"),
         )
 
 

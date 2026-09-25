@@ -25,12 +25,15 @@ in a notebook, build it once and reuse it::
     ask("Which users accessed github in the last 24hrs?", duck=duck)
 """
 
+import logging
 import os
 from typing import Any, List, Optional, Union
 
 from .engine import SearchResult, SemanticSearch
 from .generation import GenerationResult
 
+
+logger = logging.getLogger("duckduck.semantic.generation")
 
 def connect(config_path: Optional[str] = None, verbose: Any = None, on_error: str = "warn"):
     """A ``DuckAPI`` with every service from the config registered (what the CLI starts from)."""
@@ -100,9 +103,13 @@ def refresh_catalog(cfg: Any, duck: Any, out: Optional[str] = None, write: bool 
                 f"{target} isn't a valid catalog, so it can't be updated (fix it, or move it away to draft "
                 f"a new one): {exc}"
             ) from exc
+    logger.info("catalog: %s %s", "updating" if existing else "creating", target)
     result = cfg.build_generator(duck).generate(cfg.catalog_generation.tables, existing=existing, force=force)
     if write and result.changed:
         result.write(target)
+        logger.info("catalog: wrote %s", target)
+    elif write:
+        logger.info("catalog: %s left untouched", target)
     return result
 
 

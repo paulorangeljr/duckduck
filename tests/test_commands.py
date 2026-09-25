@@ -34,7 +34,7 @@ def test_every_subcommand_has_an_exported_python_function():
 
 def test_readme_documents_the_python_equivalent_of_every_cli_command():
     readme = open(os.path.join(REPO, "README.md")).read()
-    documented = set(re.findall(r"python -m duckduck\.semantic(?: --config \S+)? ([a-z-]+)", readme))
+    documented = set(re.findall(r"python -m duckduck\.semantic(?: --config \S+)?(?: -v(?: [a-z]+)?)? ([a-z][a-z-]*)", readme))
     assert documented, "README shows no CLI commands?"
     for name in documented:
         fn = _subcommands()[name].get_default("python")
