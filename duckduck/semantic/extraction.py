@@ -64,6 +64,8 @@ class Extraction(BaseModel):
     #: The question's head noun ("*users* who ...", "show me *connections*")
     #: — the strongest evidence for which entity is being asked for.
     focus_terms: List[str] = Field(default_factory=list)
+    #: The question read in English, when an LLM extractor translated it (``None``: as asked).
+    english_question: Optional[str] = None
 
 
 class ValueExtractor(Protocol):

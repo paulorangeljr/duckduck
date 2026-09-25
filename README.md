@@ -439,6 +439,25 @@ The `semantic` section only uses those names:
 - **An LLM** (`default_llm`, or one per stage) drafts the semantic catalog
   from your registered tables and extracts values from questions
   (`extractor.type: "llm"`). You can replace every system prompt.
+  **Questions in any language**: that same extraction call also reads
+  the question in English (`intent.english_question`), so answer wording,
+  retrieval and the catalog's keywords and synonyms only need to exist in
+  English. "Quantos alertas críticos por regra?" is read as "How many
+  critical alerts per rule?", and "críticos" matches `severity =
+  'critical'`. No extra call is made.
+  - **Values are protected.** IPs, emails, domains and quoted text become
+    `⟦n⟧` placeholders before the LLM sees the question, and are put back
+    after. Every other value it extracts must appear in the question as
+    written, and verbatim in the translation.
+  - **Unsafe translations are dropped.** A translation that loses a value
+    is discarded, with a warning in the log, and the question is read as
+    asked.
+  - **The original is kept.** The decision engine gets both the English
+    reading and the original. Clarifications and the transcript show
+    your own words.
+  - **Turning it off.** Use `"extractor": {"type": "llm", "translate":
+    false}`. With `"type": "rules"` there is no translation, and the
+    Portuguese answer wording in `shapes.py` still applies.
   **No LLM at question time?** Use `"extractor": {"type": "rules"}`.
   Values are then pulled out by rules and the catalog: IPs, domains,
   emails, time ranges ("last 24 hours"), catalog values and their

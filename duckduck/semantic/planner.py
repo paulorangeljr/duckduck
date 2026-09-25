@@ -272,14 +272,14 @@ class QueryPlanner:
                                             probability=1.0, decided_by="user"))
             return pinned
         fields = [f for f in src.fields if f"{primary}.{f}" not in refused]
-        words = set(content_stems(intent.question))
+        words = set(content_stems(intent.working_question))
         named = []
         for f in fields:
             tokens = {stem(t) for t in tokenize(f.replace("_", " "))}
             if tokens and tokens <= words:
                 named.append((tokens, f))
         if shape == "count_by":  # "how many ips per rule": the group is the word after "per"
-            after = _words_after(intent.question, self.shapes)
+            after = _words_after(intent.working_question, self.shapes)
             grouped = [(t, f) for t, f in named if t & after]
             named = grouped or named
         entity = self.catalog.entities.get(intent.target_entity) if intent.target_entity else None
@@ -302,7 +302,7 @@ class QueryPlanner:
             return None
         options = {f"{primary}.{f}": self.catalog.describe_field(f"{primary}.{f}") for f in candidates}
         result = self.engine.classify(
-            DecisionState(query=intent.question, terms=sorted(words), facts={"source": primary, "answer": shape}),
+            intent.decision_state(terms=sorted(words), facts={"source": primary, "answer": shape}),
             question, options,
         )
         record = DecisionRecord(kind="values_field", question=question, subject=primary, answer=result.choice,
@@ -469,7 +469,7 @@ class QueryPlanner:
         ask = Ask(
             key=f"field:{n}", question=question or f"Is {ref} relevant for {purpose}?",
             subject=self.catalog.describe_field(ref), criteria=CRITERIA["field"],
-            state=DecisionState(query=intent.question, prior=prior, facts={"field": ref}),
+            state=intent.decision_state(prior=prior, facts={"field": ref}),
         )
         settled = settled and prior >= self.thresholds.field  # a weak catalog link still gets asked
         followup = followup or self.texts.field_filter(intent.question, ref, purpose, self.catalog)
@@ -486,7 +486,7 @@ class QueryPlanner:
                     key=f"join:{len(checks)}",
                     question=f"Is {edge.right_source} relevant for resolving {edge.left} via {edge.right}?",
                     subject=f"{edge.left} {edge.type} {edge.right}", criteria=CRITERIA["relationship"],
-                    state=DecisionState(query=intent.question, prior=edge.confidence, facts={"relationship": edge.type}),
+                    state=intent.decision_state(prior=edge.confidence, facts={"relationship": edge.type}),
                 )
                 followup = self.texts.join(intent.question, edge.left, edge.right, self.catalog)
                 checks.append((ask, "relationship_relevance", f"{edge.left} = {edge.right}", self.thresholds.relationship,

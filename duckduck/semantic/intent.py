@@ -66,6 +66,9 @@ from .shapes import ACROSS_SHAPES, ANSWER_SHAPES, FIELD_SHAPES  # noqa: E402,F40
 
 class SemanticIntent(BaseModel):
     question: str
+    #: The question read in English (``LLMExtractor``), when it was asked in another language —
+    #: what the catalog's English wording, keywords and synonyms are matched against.
+    english_question: Optional[str] = None
     #: What kind of answer — which SQL shape (see ``ANSWER_SHAPES``).
     answer_shape: str = "list"
     target_entity: Optional[str] = None
@@ -77,6 +80,18 @@ class SemanticIntent(BaseModel):
     time_range: Optional[TimeRange] = None
     candidate_sources: List[ScoredSource] = Field(default_factory=list)
     literals: List[ExtractedLiteral] = Field(default_factory=list)
+
+    @property
+    def working_question(self) -> str:
+        """What the pipeline reads: the English reading when there is one, else the question as asked."""
+        return self.english_question or self.question
+
+    def decision_state(self, **kwargs: Any):
+        """A ``DecisionState`` over this question — the English reading, plus the original when translated."""
+        from .decisions import DecisionState
+
+        return DecisionState(query=self.working_question,
+                             original_query=self.question if self.english_question else None, **kwargs)
 
 
 class ClarificationOption(BaseModel):

@@ -52,6 +52,8 @@ class DecisionState(BaseModel):
     facts: Dict[str, Any] = Field(default_factory=dict)
     #: Deterministic prior probability, when the caller has one.
     prior: Optional[float] = None
+    #: The question as the user wrote it, when ``query`` is its English reading.
+    original_query: Optional[str] = None
 
 
 class BinaryDecision(BaseModel):
@@ -248,6 +250,8 @@ class JEVAdapter:
                     else self.decide(a.state, a.question, a.subject or "")
         elif pending:
             payload = {"query": pending[0].state.query, "items": {a.key: _item(a) for a in pending}}
+            if pending[0].state.original_query:
+                payload["original_query"] = pending[0].state.original_query
             spec = {a.key: _question_spec(a) for a in pending}
             started = time.perf_counter()
             raw = self._call(lambda p, q, labels: backend_ask(p, spec), payload,

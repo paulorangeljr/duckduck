@@ -207,6 +207,8 @@ class ExtractorConfig(_Strict):
     system_prompt: Optional[str] = None
     system_prompt_file: Optional[str] = None
     on_error: Literal["fallback", "raise"] = "fallback"
+    #: Read questions asked in other languages in English, in the same LLM call (``llm`` only).
+    translate: bool = True
 
 
 class ApiDocsConfig(_Strict):
@@ -568,7 +570,8 @@ class SemanticConfig(_Strict):
         if cfg.type == "rules":
             return None  # SemanticSearch's default
         prompt = self.prompt(cfg.system_prompt, cfg.system_prompt_file, DEFAULT_EXTRACTION_PROMPT)
-        return LLMExtractor(catalog, self.build_llm(duck, "extractor"), system_prompt=prompt, on_error=cfg.on_error)
+        return LLMExtractor(catalog, self.build_llm(duck, "extractor"), system_prompt=prompt, on_error=cfg.on_error,
+                            translate=cfg.translate)
 
     def build_generator(self, duck: Any):
         from .generation import DEFAULT_LINK_PROMPT, DEFAULT_SOURCE_PROMPT, CatalogGenerator

@@ -76,17 +76,19 @@ class SemanticInterpreter:
         """
         pins = dict(pinned or {})
         extraction = self.extractor.extract(question, now)
-        extraction.literals = self._without_shape_words(question, extraction.literals)
+        english = getattr(extraction, "english_question", None)
+        extraction.literals = self._without_shape_words([question, english], extraction.literals)
         decisions: List[DecisionRecord] = []
         intent = SemanticIntent(
             question=question,
+            english_question=english,
             time_range=extraction.time_range,
             value_filters=extraction.enum_matches,
             literals=extraction.literals,
         )
         try:
             refused = {k[7:] for k, v in pins.items() if k.startswith("source:") and v is False}
-            ranked = self.retriever.search(intent.question, self.top_k + len(refused))
+            ranked = self.retriever.search(intent.working_question, self.top_k + len(refused))
             retrieved = dict([(n, sc) for n, sc in ranked if n not in refused][: self.top_k])
             for key, value in pins.items():  # a source the user picked is a candidate whatever retrieval said
                 if key.startswith("source:") and value and key[7:] in self.catalog.sources:
@@ -137,7 +139,7 @@ class SemanticInterpreter:
             for name, e in self.catalog.entities.items() if name not in ruled_out
         }
         return Ask(key="entity", question="What entity is the user asking for?", options=options,
-                   state=DecisionState(query=intent.question, terms=[focus] if focus else ex.terms))
+                   state=intent.decision_state(terms=[focus] if focus else ex.terms))
 
     def _activity_ask(self, intent: SemanticIntent, ex: Extraction, pins: Dict[str, Any]) -> Optional[Ask]:
         if not self.catalog.activities or "activity" in pins:
@@ -147,7 +149,7 @@ class SemanticInterpreter:
             for name, a in self.catalog.activities.items()
         }
         return Ask(key="activity", question="What activity is being investigated?", options=options,
-                   state=DecisionState(query=intent.question, terms=ex.terms))
+                   state=intent.decision_state(terms=ex.terms))
 
     def _free_text(self, ex: Extraction, pins: Dict[str, Any]) -> list:
         """Untyped free-text values — just the one the user named, when they were asked to pick."""
@@ -199,7 +201,7 @@ class SemanticInterpreter:
         return [Ask(
             key=f"value:{lit.value}", question=f"What kind of value is {lit.value!r} in this question?",
             options={t: t.replace("_", " ") for t in sem_types},
-            state=DecisionState(query=intent.question, terms=ex.terms, facts=facts),
+            state=intent.decision_state(terms=ex.terms, facts=facts),
         )]
 
     def _value_types(self) -> List[str]:
@@ -212,7 +214,7 @@ class SemanticInterpreter:
                      live: Optional[Dict[str, Any]] = None) -> List[Ask]:
         def state(name: str) -> DecisionState:
             facts = {"live_check": live[name]} if live and live.get(name) else {}
-            return DecisionState(query=intent.question, terms=ex.terms, facts=facts)
+            return intent.decision_state(terms=ex.terms, facts=facts)
 
         return [
             Ask(key=f"source:{name}", question="Is this source relevant to answering the question?",
@@ -281,9 +283,9 @@ class SemanticInterpreter:
 
     _SHAPE_QUESTION = "What kind of answer does the question ask for?"
 
-    def _without_shape_words(self, question: str, literals: list) -> list:
+    def _without_shape_words(self, questions: List[Optional[str]], literals: list) -> list:
         """The answer-shape wording ("which tables", "tudo sobre") is never a value to filter on."""
-        shape_tokens = self.shapes.matched_tokens(question)
+        shape_tokens = set().union(*(self.shapes.matched_tokens(q) for q in questions if q))
         if not shape_tokens:
             return literals
         out = []
@@ -304,12 +306,12 @@ class SemanticInterpreter:
     def _shape_ask(self, intent: SemanticIntent, pins: Dict[str, Any]) -> Optional[Ask]:
         if pins.get("answer_shape") in self.shapes.descriptions:
             return None
-        candidates, words = self.shapes.candidates(intent.question)
+        candidates, words = self.shapes.candidates(intent.working_question)
         if len(candidates) == 1:
             return None
         return Ask(key="answer_shape", question=self._SHAPE_QUESTION,
                    options={c: self.shapes.descriptions[c] for c in candidates},
-                   state=DecisionState(query=intent.question, facts={"wording": words}))
+                   state=intent.decision_state(facts={"wording": words}))
 
     def _apply_shape(self, intent: SemanticIntent, result: Any, decisions: List[DecisionRecord],
                      pins: Dict[str, Any]) -> None:
@@ -323,7 +325,7 @@ class SemanticInterpreter:
             intent.answer_shape = pins["answer_shape"]
             decisions.append(_by_user("answer_shape", self._SHAPE_QUESTION, intent.answer_shape, None))
             return
-        candidates, words = self.shapes.candidates(intent.question)
+        candidates, words = self.shapes.candidates(intent.working_question)
         if len(candidates) == 1:
             intent.answer_shape = candidates[0]
             if candidates[0] != "list":

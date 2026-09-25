@@ -271,7 +271,8 @@ def catalog():
 
 def test_llm_extractor_types_values_and_validates_against_the_catalog(catalog):
     llm = FakeLLM(LLMExtractionOutput(
-        values=[LLMValue(value="bob", semantic_type="user"), LLMValue(value="x", semantic_type="spaceship")],
+        values=[LLMValue(value="bob", semantic_type="user"), LLMValue(value="logins", semantic_type="spaceship"),
+                LLMValue(value="alice", semantic_type="user")],
         enum_values=[
             LLMEnumValue(field="auth_logs.outcome", value="failure", term="failed"),
             LLMEnumValue(field="auth_logs.outcome", value="exploded", term="boom"),
@@ -280,11 +281,11 @@ def test_llm_extractor_types_values_and_validates_against_the_catalog(catalog):
         time_range=LLMTimeRange(start="2026-09-23T00:00:00Z", end="2026-09-24T00:00:00Z", text="yesterday"),
     ))
     ex = LLMExtractor(catalog, llm, system_prompt="MY PROMPT").extract("failed logins by bob yesterday", NOW)
-    assert [(lit.value, lit.semantic_type) for lit in ex.literals] == [("bob", "user"), ("x", None)]
+    assert [(lit.value, lit.semantic_type) for lit in ex.literals] == [("bob", "user"), ("logins", None)]  # alice: not in the question
     assert [(m.field, m.value) for m in ex.enum_matches] == [("auth_logs.outcome", "failure")]
     assert (ex.time_range.start.day, ex.time_range.end.day) == (23, 24)
     system, prompt, _ = llm.calls[0]
-    assert system == "MY PROMPT"
+    assert system.startswith("MY PROMPT") and "english_question" in system  # translation asked for too
     assert "Current UTC time: 2026-09-24T12:00:00" in prompt and '"auth_logs.outcome"' in prompt
 
 
@@ -473,7 +474,7 @@ def test_from_config_llm_extractor_reads_prompt_file(tmp_path, monkeypatch):
     search = SemanticSearch.from_config(duck, config_path=path)
     extractor = search.interpreter.extractor
     assert isinstance(extractor, LLMExtractor)
-    assert extractor.system_prompt == "PROMPT FROM FILE"
+    assert extractor.system_prompt.startswith("PROMPT FROM FILE") and extractor.translate
     assert built["api_key"] == "sk-test" and built["model"] == "claude-opus-5"
 
 

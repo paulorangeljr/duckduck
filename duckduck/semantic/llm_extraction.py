@@ -11,13 +11,24 @@ catalog, a time range must parse. Anything else is dropped (and logged).
 On any LLM failure it falls back to ``RuleBasedExtractor`` (with a
 ``RuntimeWarning``) unless ``on_error="raise"``. The rule-based pass
 always runs anyway, for the lexical terms the baseline engine uses.
+
+**Translation** (``translate=True``, the default): the same call also
+returns the question read in English (``english_question``), so wording,
+retrieval and value synonyms only need to exist in English. Values are
+protected: IPs, e-mails, domains and quoted text are replaced by ``⟦n⟧``
+placeholders before the LLM sees the question and put back after; every
+other extracted value must appear in the original question and, verbatim,
+in the translation. A translation that loses a placeholder or a value is
+discarded (logged) and the question is read as asked. The rule-based pass
+then runs over the English reading (terms, enumerated synonyms, time).
 """
 
 import json
 import logging
 import warnings
 from datetime import datetime
-from typing import List, Optional
+import re
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -69,10 +80,22 @@ class LLMTimeRange(BaseModel):
     text: str = ""
 
 
+#: Appended to the system prompt (yours included) when translating, unless it already asks for it.
+TRANSLATION_INSTRUCTIONS = """
+Also return english_question: the question in English — a faithful
+translation if it is written in another language, or the question
+unchanged if it is already English. Keep every ⟦n⟧ placeholder, and every
+name, username, hostname, file name or other value, exactly as written:
+never translate, respell or re-case them. Translate only the words around
+them. The values you return stay as written in the original question.
+"""
+
+
 class LLMExtractionOutput(BaseModel):
     values: List[LLMValue] = Field(default_factory=list)
     enum_values: List[LLMEnumValue] = Field(default_factory=list)
     time_range: Optional[LLMTimeRange] = None
+    english_question: str = ""
 
 
 class LLMExtractor:
@@ -82,11 +105,16 @@ class LLMExtractor:
         llm: LLMClient,
         system_prompt: str = DEFAULT_EXTRACTION_PROMPT,
         on_error: str = "fallback",
+        translate: bool = True,
     ):
         if on_error not in ("fallback", "raise"):
             raise ValueError("on_error must be 'fallback' or 'raise'")
         self.catalog = catalog
         self.llm = llm
+        #: Read questions asked in other languages in English (see the module docstring).
+        self.translate = translate
+        if translate and "english_question" not in system_prompt:
+            system_prompt = system_prompt.rstrip() + "\n" + TRANSLATION_INSTRUCTIONS
         self.system_prompt = system_prompt
         self.on_error = on_error
         self.rules = RuleBasedExtractor(catalog)
@@ -114,10 +142,11 @@ class LLMExtractor:
 
     def extract(self, question: str, now: datetime) -> Extraction:
         base = self.rules.extract(question, now)  # lexical terms + fallback
+        masked, placeholders = _mask(question, base.literals) if self.translate else (question, {})
         prompt = (
             f"Current UTC time: {now.isoformat()}\n\n"
             f"Catalog summary:\n{self._summary}\n\n"
-            f"Question: {question}"
+            f"Question: {masked}"
         )
         try:
             out = self.llm.generate(self.system_prompt, prompt, LLMExtractionOutput)
@@ -131,9 +160,39 @@ class LLMExtractor:
                     RuntimeWarning, stacklevel=2,
                 )
             return base
-        return self._merge(base, out, now)
+        for v in out.values:
+            v.value = _unmask(v.value, placeholders)
+        for e in out.enum_values:
+            e.term = _unmask(e.term, placeholders)
+        english = self._english(question, out, placeholders) if self.translate else None
+        if english:
+            logger.info("llm extraction: read as %r", english)
+            base = self.rules.extract(english, now)  # terms, enum synonyms and time, in the catalog's language
+        result = self._merge(base, out, now, question)
+        result.english_question = english
+        return result
 
-    def _merge(self, base: Extraction, out: LLMExtractionOutput, now: datetime) -> Extraction:
+    def _english(self, question: str, out: LLMExtractionOutput, placeholders: Dict[str, str]) -> Optional[str]:
+        """The validated English reading, or ``None`` (already English, empty, or it lost a value)."""
+        text = (out.english_question or "").strip()
+        if not text:
+            return None
+        missing = [p for p in placeholders if p not in text]
+        text = _unmask(text, placeholders)
+        lost = [v.value for v in out.values
+                if v.value and v.value.lower() in question.lower() and v.value.lower() not in text.lower()]
+        if missing or lost:
+            logger.warning(
+                "llm extraction: translation %r dropped %s — reading the question as asked", text,
+                ", ".join(repr(placeholders[p]) for p in missing) or ", ".join(repr(v) for v in lost),
+            )
+            return None
+        if _normalized(text) == _normalized(question):
+            return None
+        return text
+
+    def _merge(self, base: Extraction, out: LLMExtractionOutput, now: datetime,
+               question: Optional[str] = None) -> Extraction:
         result = base.model_copy(deep=True)
 
         # Shape-recognized literals (IPs, domains, e-mails) stay authoritative;
@@ -143,6 +202,9 @@ class LLMExtractor:
         for v in out.values:
             value = v.value.strip()
             if not value or value.lower() in seen:
+                continue
+            if question is not None and value.lower() not in question.lower():
+                logger.info("llm extraction: dropped value %r (not in the question as written)", value)
                 continue
             sem_type = v.semantic_type if v.semantic_type in self._semantic_types else None
             if v.semantic_type and sem_type is None:
@@ -185,3 +247,26 @@ def _parse_ts(value: Optional[str]) -> Optional[datetime]:
 
         ts = ts.astimezone(timezone.utc).replace(tzinfo=None)
     return ts
+
+
+def _mask(question: str, literals: List[ExtractedLiteral]) -> "tuple[str, Dict[str, str]]":
+    """IPs, e-mails, domains and quoted text → ``⟦n⟧``, so a translation can't touch them."""
+    placeholders: Dict[str, str] = {}
+    masked = question
+    for lit in literals:
+        if lit.kind == "term" or not lit.text or lit.text not in masked:
+            continue
+        key = f"⟦{len(placeholders) + 1}⟧"
+        placeholders[key] = lit.text
+        masked = masked.replace(lit.text, key)
+    return masked, placeholders
+
+
+def _unmask(text: str, placeholders: Dict[str, str]) -> str:
+    for key, original in placeholders.items():
+        text = text.replace(key, original)
+    return text
+
+
+def _normalized(text: str) -> str:
+    return re.sub(r"[\W_]+", " ", text).strip().lower()

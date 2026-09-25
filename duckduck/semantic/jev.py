@@ -170,6 +170,8 @@ class JevClient:
     def _state(state: Dict[str, Any]) -> Dict[str, Any]:
         """Compact business fields only — no lexical hints, nothing empty."""
         out: Dict[str, Any] = {"user_question": state.get("query", "")}
+        if state.get("original_query"):  # user_question is its English reading
+            out["original_question"] = state["original_query"]
         if state.get("subject"):
             out["subject"] = _trim(state["subject"])
         if state.get("candidates"):
