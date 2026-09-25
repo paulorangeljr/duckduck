@@ -29,12 +29,12 @@ from .decisions import (
     JEVBackend,
     LexicalDecisionEngine,
 )
-from .engine import SearchResult, SemanticSearch
+from .engine import Conversation, SearchResult, SemanticSearch
 from .evaluation import CalibrationReport, calibrate_thresholds, evaluate, load_dataset
 from .extraction import RuleBasedExtractor
 from .generation import CatalogGenerator, GenerationResult, TableSpec
 from .graph import RelationshipGraph
-from .intent import ClarificationNeeded, DecisionRecord, SemanticIntent, Thresholds
+from .intent import Clarification, ClarificationNeeded, ClarificationOption, DecisionRecord, SemanticIntent, Thresholds
 from .interpreter import SemanticInterpreter
 from .jev import JevAPIError, JevClient
 from .llm import AzureOpenAILLM, ClaudeLLM, LLMClient, LLMError, OpenRouterLLM
@@ -48,6 +48,9 @@ __all__ = [
     "Ask",
     "BinaryDecision",
     "Catalog",
+    "Clarification",
+    "ClarificationOption",
+    "Conversation",
     "CatalogGenerator",
     "ClarificationNeeded",
     "Classification",

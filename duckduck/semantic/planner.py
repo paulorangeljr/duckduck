@@ -14,12 +14,12 @@ out as one batch once it's laid out (``ask_all``), and are checked in
 the order they were needed.
 """
 
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from .catalog import ActivityDef, Catalog
 from .decisions import CRITERIA, Ask, DecisionEngine, DecisionState, ask_all
 from .graph import Path, RelationshipGraph
-from .intent import ClarificationNeeded, DecisionRecord, SemanticIntent, Thresholds
+from .intent import Clarification, ClarificationNeeded, ClarificationOption, DecisionRecord, SemanticIntent, Thresholds
 from .plan import Filter, Join, LogicalQueryPlan, TimeRangeFilter
 
 #: Prior for "a field whose semantic_type matches exactly is the right one".
@@ -47,7 +47,10 @@ class QueryPlanner:
         self.default_limit = default_limit
         self.max_hops = max_hops
 
-    def plan(self, intent: SemanticIntent) -> Tuple[LogicalQueryPlan, List[DecisionRecord]]:
+    def plan(self, intent: SemanticIntent,
+             pinned: Optional[Dict[str, Any]] = None) -> Tuple[LogicalQueryPlan, List[DecisionRecord]]:
+        """``pinned``: field/join confirmations the user answered (``field:<ref>``, ``join:<a>=<b>``)."""
+        pins = dict(pinned or {})
         decisions: List[DecisionRecord] = []
         checks: List[tuple] = []  # (Ask, record kind, threshold, message if it fails, options)
         activity = self.catalog.activities.get(intent.activity) if intent.activity else None
@@ -82,6 +85,7 @@ class QueryPlanner:
                 # the catalog lists the stored value — ask about that exact reading
                 question=f"Does {term!r} in the question mean {match.field} = {match.value!r}?",
                 failure=f"Not confident that {term!r} means {match.field} = {match.value!r}.",
+                ask_user=f"By {term!r}, do you mean {match.field} = {match.value!r}?",
             ))
             filters.append(Filter(field=match.field, operator="eq", value=match.value))
 
@@ -115,12 +119,13 @@ class QueryPlanner:
                 intent, ref, f"identifying the requested {intent.target_entity}", prior, len(checks),
                 settled=len(choices) == 1,
                 question=f"Does {ref} hold the {intent.target_entity} the question asks for ({label})?",
+                ask_user=f"Should the answer list {ref} (as the {intent.target_entity})?",
             ))
             select = [ref]
             distinct = True
 
         sources, joins = self._merge_paths(intent, primary, paths, checks)
-        self._run_checks(checks, decisions)
+        self._run_checks(checks, decisions, pins)
         plan = LogicalQueryPlan(
             select=select, sources=sources, joins=joins, filters=filters,
             time_range=time_range, distinct=distinct, limit=self.default_limit,
@@ -222,7 +227,8 @@ class QueryPlanner:
     # ------------------------------------------------------------------
 
     def _field_check(self, intent: SemanticIntent, ref: str, purpose: str, prior: float, n: int,
-                     question: Optional[str] = None, failure: Optional[str] = None, settled: bool = False) -> tuple:
+                     question: Optional[str] = None, failure: Optional[str] = None, settled: bool = False,
+                     ask_user: Optional[str] = None) -> tuple:
         """
         A field confirmation for the batch. ``settled``: the catalog leaves no
         choice (the only field of that type in the source) — recorded as a
@@ -236,8 +242,9 @@ class QueryPlanner:
             state=DecisionState(query=intent.question, prior=prior, facts={"field": ref}),
         )
         settled = settled and prior >= self.thresholds.field  # a weak catalog link still gets asked
+        followup = _yes_no("field", ask_user or f"Should I use {ref} for {purpose}?", f"field:{ref}")
         return ask, "field_relevance", ref, self.thresholds.field, \
-            failure or f"Not confident that {ref} is the right field for {purpose}.", [ref], settled
+            failure or f"Not confident that {ref} is the right field for {purpose}.", followup, settled
 
     def _merge_paths(self, intent: SemanticIntent, primary: str, paths: List[Path], checks: List[tuple]):
         sources, joins = [primary], []
@@ -251,16 +258,36 @@ class QueryPlanner:
                     subject=f"{edge.left} {edge.type} {edge.right}", criteria=CRITERIA["relationship"],
                     state=DecisionState(query=intent.question, prior=edge.confidence, facts={"relationship": edge.type}),
                 )
+                followup = _yes_no(
+                    "join", f"Should I connect {edge.left.split('.')[0]} to {edge.right_source} through "
+                            f"{edge.left} = {edge.right}?", f"join:{edge.left}={edge.right}",
+                )
                 checks.append((ask, "relationship_relevance", f"{edge.left} = {edge.right}", self.thresholds.relationship,
-                               f"Not confident enough in joining {edge.left} = {edge.right}", None, False))
+                               f"Not confident enough in joining {edge.left} = {edge.right}", followup, False))
                 sources.append(edge.right_source)
                 joins.append(Join(left=edge.left, right=edge.right))
         return sources, joins
 
-    def _run_checks(self, checks: List[tuple], decisions: List[DecisionRecord]) -> None:
+    def _run_checks(self, checks: List[tuple], decisions: List[DecisionRecord], pins: Dict[str, Any]) -> None:
         """Every confirmation in one batch; the first to miss its threshold (in plan order) stops the plan."""
-        answers = ask_all(self.engine, [c[0] for c in checks if not c[-1]])
-        for ask, kind, subject, threshold, message, options, settled in checks:
+        pin_of = {id(c): next(iter(c[5].options[0].pins)) for c in checks}  # "field:<ref>" / "join:<a>=<b>"
+        answers = ask_all(self.engine, [c[0] for c in checks if not c[-1] and pin_of[id(c)] not in pins])
+        for check in checks:
+            ask, kind, subject, threshold, message, followup, settled = check
+            key = pin_of[id(check)]
+            if key in pins:
+                yes = bool(pins[key])
+                record = DecisionRecord(kind=kind, question=ask.question, subject=subject, answer=yes,
+                                        probability=1.0 if yes else 0.0, threshold=threshold, decided_by="user")
+                decisions.append(record)
+                if not yes:
+                    exc = ClarificationNeeded(
+                        f"You said not to use {subject} — this question can't be answered without it; "
+                        f"try rephrasing it.", record,
+                    )
+                    exc.decisions = list(decisions)
+                    raise exc
+                continue
             if settled:
                 decisions.append(DecisionRecord(
                     kind=kind, question=ask.question, subject=subject, answer=True,
@@ -276,9 +303,16 @@ class QueryPlanner:
             if not record.passed:
                 if kind == "relationship_relevance":
                     message = f"{message} ({result.probability:.2f})."
-                exc = ClarificationNeeded(message, record, options)
+                exc = ClarificationNeeded(message, record, [subject], followup)
                 exc.decisions = list(decisions)  # the confirmations that did pass, for the audit
                 raise exc
 
     def _is_allowed(self, source: str) -> bool:
         return self.allowed is None or source in self.allowed
+
+
+def _yes_no(kind: str, question: str, key: str) -> Clarification:
+    return Clarification(kind=kind, question=question, options=[
+        ClarificationOption(value="yes", label="yes", pins={key: True}),
+        ClarificationOption(value="no", label="no", pins={key: False}),
+    ])

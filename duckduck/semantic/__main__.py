@@ -34,12 +34,35 @@ def cmd_generate(args) -> int:
 
 
 def cmd_ask(args) -> int:
+    if args.interactive:
+        return _converse(args)
     result = ask(args.question, config_path=args.config, verbose=args.verbose, execute=not args.plan_only)
     if args.json:
         print(json.dumps(result.to_dict(), indent=2, default=str))
     else:
         print(result.report())
     return 0 if result.status in ("ok", "planned") else 1
+
+
+def _converse(args, read=None) -> int:
+    """``ask --interactive``: answer the clarifications at the prompt until it's answered (empty line quits)."""
+    from .commands import connect
+
+    read = read or input
+    from .engine import SemanticSearch
+
+    duck = connect(args.config, args.verbose)
+    conversation = SemanticSearch.from_config(duck, args.config).conversation(args.question, execute=not args.plan_only)
+    while not conversation.done:
+        print(conversation.result.report())
+        reply = read("> ").strip()
+        if not reply:
+            break
+        conversation.answer(reply)
+        if conversation.history[-1]["understood"] is None:
+            print("(didn't get that — answer with a number or an option's name)")
+    print(conversation.result.report())
+    return 0 if conversation.result.status in ("ok", "planned") else 1
 
 
 def cmd_jev_check(args) -> int:
@@ -83,6 +106,8 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("question")
     q.add_argument("--plan-only", action="store_true", help="plan without executing")
     q.add_argument("--json", action="store_true", help="print the full result as JSON")
+    q.add_argument("-i", "--interactive", action="store_true",
+                   help="when it needs clarification, ask you at the prompt and continue with your answer")
     q.set_defaults(fn=cmd_ask, python=ask)
 
     check = sub.add_parser("jev-check", help="make one Jev call to verify the key/network")

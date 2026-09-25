@@ -573,6 +573,7 @@ print(jev_check().ranked())                    # raises if the key/network/parsi
 | `ask "..."` | `ask("...")` → `SearchResult` (`.report()`, `.results`, `.sql`, `.decisions`) |
 | `ask "..." --plan-only` | `ask("...", execute=False)` |
 | `ask "..." --json` | `ask("...").to_dict()` (or `.to_json()`) |
+| `ask "..." --interactive` | `search.conversation("...")` + `.answer(reply)` until `.done` |
 | `generate-catalog` | `generate_catalog()` → `GenerationResult` (`.summary()`, `.catalog`, `.warnings`, `.path`) |
 | `generate-catalog --out x.yaml` | `generate_catalog(out="x.yaml")` (`write=False` to keep it in memory) |
 | `generate-catalog --force` | `generate_catalog(force=True)` |
@@ -695,6 +696,49 @@ among the candidates. Other details:
 - **Size and cost.** A request over the API's 32 KiB is split
   automatically. Repeated questions in a session come from a cache, and
   the cost the API reports is logged per call, with a session total.
+
+**Asking the user back.** When a decision falls below its threshold,
+the result is `needs_clarification`. It carries a `followup`: a question
+for the user plus options, built from templates and the catalog (no
+LLM). Each option *pins* the decision it answers. On the next run that
+decision counts as the user's (`decided_by="user"`) and is never asked
+again, so every round settles one doubt and the loop ends.
+
+```python
+conversation = search.conversation("Which hosts have brute force alerts?")
+while not conversation.done:
+    print(conversation.result.clarification_question)   # question + numbered options
+    conversation.answer(input("> "))                     # "2", an option's name, or free text
+result = conversation.result                             # "ok", or unresolvable: rephrase / fix the catalog
+print(conversation.transcript)                           # the question, each clarification and reply
+```
+
+```
+Which data should answer this?
+  1) proxy_logs — HTTP and HTTPS web proxy traffic, one row per request
+  2) dns_logs — DNS resolver logs, one row per lookup
+> 1
+```
+
+| `followup.kind` | Asked when | Choosing pins |
+|---|---|---|
+| `entity` | what the answer should list is unclear | `entity` |
+| `value_type` | what a value is (`'github'`: domain? user?) is unclear | `value:<value>` |
+| `value_term` | several words could be the value | `value_term` |
+| `source` | no source looks relevant | `source:<name>` |
+| `field` | a field (or a value's field) is doubtful: yes / no | `field:<source.field>` |
+| `join` | a JOIN is doubtful: yes / no | `join:<a.x>=<b.y>` |
+| `unresolvable` | no answer would help (no path in the catalog, a needed field refused) | nothing: no options |
+
+- **Free-text replies.** A reply that isn't an option's number or name
+  goes to the decision engine as a choice question. If it isn't sure
+  (below `thresholds.reply`, 0.70), the question stays open.
+- **Round limit.** `max_rounds` (default 5) caps the loop.
+- **Stateless use.** A web app can skip `Conversation` and keep the pins
+  itself: `search.search(question, pinned={**previous, **option.pins})`.
+  `result.to_json()` includes `followup` and `pinned`.
+- **In the terminal:** `python -m duckduck.semantic ask -i "..."` asks at
+  the prompt.
 
 **Tuning the thresholds.** The defaults (`source` 0.80, `field` 0.85, ...)
 are round numbers. Tune them for your engine version with labeled

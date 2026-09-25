@@ -13,13 +13,15 @@ didn't propose (the question used words the catalog doesn't).
 """
 
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .catalog import Catalog
 from .decisions import CRITERIA, Ask, DecisionEngine, DecisionState, ask_all
 from .extraction import Extraction, RuleBasedExtractor, ValueExtractor
 from .intent import (
+    Clarification,
     ClarificationNeeded,
+    ClarificationOption,
     DecisionRecord,
     ResourceFilter,
     ScoredSource,
@@ -57,7 +59,13 @@ class SemanticInterpreter:
             f.semantic_type for s in catalog.sources.values() for f in s.fields.values() if f.semantic_type
         }
 
-    def interpret(self, question: str, now: datetime) -> Tuple[SemanticIntent, List[DecisionRecord]]:
+    def interpret(self, question: str, now: datetime,
+                  pinned: Optional[Dict[str, Any]] = None) -> Tuple[SemanticIntent, List[DecisionRecord]]:
+        """
+        ``pinned``: decisions the user settled by answering clarifications
+        (see ``Clarification``) — taken as given, never asked again.
+        """
+        pins = dict(pinned or {})
         extraction = self.extractor.extract(question, now)
         decisions: List[DecisionRecord] = []
         intent = SemanticIntent(
@@ -68,21 +76,24 @@ class SemanticInterpreter:
         )
         try:
             retrieved = dict(self.retriever.search(intent.question, self.top_k))
-            asks = [a for a in (self._entity_ask(intent, extraction), self._activity_ask(intent, extraction)) if a]
-            asks += self._value_asks(intent, extraction)
-            asks += self._source_asks(intent, extraction, retrieved)
+            for key, value in pins.items():  # a source the user picked is a candidate whatever retrieval said
+                if key.startswith("source:") and value and key[7:] in self.catalog.sources:
+                    retrieved.setdefault(key[7:], 0.0)
+            asks = [a for a in (self._entity_ask(intent, extraction, pins), self._activity_ask(intent, extraction, pins)) if a]
+            asks += self._value_asks(intent, extraction, pins)
+            asks += self._source_asks(intent, extraction, [n for n in retrieved if f"source:{n}" not in pins])
             answers = ask_all(self.engine, asks)
 
-            self._apply_entity(intent, answers.get("entity"), decisions)
-            self._apply_activity(intent, answers.get("activity"), decisions)
-            self._apply_resources(intent, extraction, answers, decisions)
+            self._apply_entity(intent, answers.get("entity"), decisions, pins)
+            self._apply_activity(intent, answers.get("activity"), decisions, pins)
+            self._apply_resources(intent, extraction, answers, decisions, pins)
 
             # sources that declare what was decided, but that lexical retrieval missed
             extra = self._declaring_sources(intent, exclude=retrieved)
             if extra:
                 answers.update(ask_all(self.engine, self._source_asks(intent, extraction, extra)))
                 retrieved.update(extra)
-            self._apply_sources(intent, retrieved, answers, decisions)
+            self._apply_sources(intent, retrieved, answers, decisions, pins)
         except ClarificationNeeded as exc:
             exc.decisions = decisions  # everything decided so far, for the result/audit
             raise
@@ -92,8 +103,8 @@ class SemanticInterpreter:
     # the questions
     # ------------------------------------------------------------------
 
-    def _entity_ask(self, intent: SemanticIntent, ex: Extraction) -> Optional[Ask]:
-        if not self.catalog.entities:
+    def _entity_ask(self, intent: SemanticIntent, ex: Extraction, pins: Dict[str, Any]) -> Optional[Ask]:
+        if not self.catalog.entities or "entity" in pins:
             return None
         # The head noun is the strongest evidence: the first word the catalog
         # knows as an entity ("show me failed authentication *attempts*
@@ -109,8 +120,8 @@ class SemanticInterpreter:
         return Ask(key="entity", question="What entity is the user asking for?", options=options,
                    state=DecisionState(query=intent.question, terms=[focus] if focus else ex.terms))
 
-    def _activity_ask(self, intent: SemanticIntent, ex: Extraction) -> Optional[Ask]:
-        if not self.catalog.activities:
+    def _activity_ask(self, intent: SemanticIntent, ex: Extraction, pins: Dict[str, Any]) -> Optional[Ask]:
+        if not self.catalog.activities or "activity" in pins:
             return None
         options = {
             name: f"{a.description} Keywords: {', '.join(a.keywords)}"
@@ -119,11 +130,18 @@ class SemanticInterpreter:
         return Ask(key="activity", question="What activity is being investigated?", options=options,
                    state=DecisionState(query=intent.question, terms=ex.terms))
 
-    def _value_asks(self, intent: SemanticIntent, ex: Extraction) -> List[Ask]:
+    def _free_text(self, ex: Extraction, pins: Dict[str, Any]) -> list:
+        """Untyped free-text values — just the one the user named, when they were asked to pick."""
+        free = [lit for lit in ex.literals if lit.kind == "term" and not self._known_type(lit)]
+        if "value_term" in pins:
+            free = [lit for lit in free if lit.value == pins["value_term"]]
+        return free
+
+    def _value_asks(self, intent: SemanticIntent, ex: Extraction, pins: Dict[str, Any]) -> List[Ask]:
         """"What kind of value is X?" for a free-text value nothing else types (answer used only if needed)."""
-        free_text = [lit for lit in ex.literals if lit.kind == "term" and not self._known_type(lit)]
-        if len(free_text) != 1:
-            return []  # none to type, or ambiguous (asked back to the user, not to the engine)
+        free_text = self._free_text(ex, pins)
+        if len(free_text) != 1 or f"value:{free_text[0].value}" in pins:
+            return []  # none to type, ambiguous (asked back to the user), or already answered by them
         sem_types = self._value_types()
         if not sem_types:
             return []
@@ -161,10 +179,14 @@ class SemanticInterpreter:
     # the answers, in the order a person would check them
     # ------------------------------------------------------------------
 
-    def _apply_entity(self, intent: SemanticIntent, result, decisions: List[DecisionRecord]) -> None:
+    def _apply_entity(self, intent: SemanticIntent, result, decisions: List[DecisionRecord], pins: Dict[str, Any]) -> None:
+        question = "What entity is the user asking for?"
+        if pins.get("entity") in self.catalog.entities:
+            decisions.append(_by_user("entity", question, pins["entity"], self.thresholds.entity))
+            intent.target_entity, intent.target_confidence = pins["entity"], 1.0
+            return
         if result is None:
             return
-        question = "What entity is the user asking for?"
         record = DecisionRecord(
             kind="entity", question=question, answer=result.choice,
             probability=result.probability, threshold=self.thresholds.entity,
@@ -172,14 +194,24 @@ class SemanticInterpreter:
         )
         decisions.append(record)
         if not record.passed:
+            ranked = [label for label, _ in result.ranked()[:4]]
             raise ClarificationNeeded(
                 f"Couldn't tell what you're asking for (best guess: '{result.choice}', "
                 f"{result.probability:.2f}).",
-                record, [label for label, _ in result.ranked()[:4]],
+                record, ranked,
+                Clarification(kind="entity", question="What are you asking for? The answer should list:", options=[
+                    ClarificationOption(value=e, label=_labelled(e, self.catalog.entities[e].description), pins={"entity": e})
+                    for e in ranked
+                ]),
             )
         intent.target_entity, intent.target_confidence = result.choice, result.probability
 
-    def _apply_activity(self, intent: SemanticIntent, result, decisions: List[DecisionRecord]) -> None:
+    def _apply_activity(self, intent: SemanticIntent, result, decisions: List[DecisionRecord], pins: Dict[str, Any]) -> None:
+        if pins.get("activity") in self.catalog.activities:
+            decisions.append(_by_user("activity", "What activity is being investigated?", pins["activity"],
+                                      self.thresholds.activity))
+            intent.activity, intent.activity_confidence = pins["activity"], 1.0
+            return
         if result is None:
             return
         record = DecisionRecord(
@@ -193,11 +225,16 @@ class SemanticInterpreter:
         if record.passed:
             intent.activity, intent.activity_confidence = result.choice, result.probability
 
-    def _apply_resources(self, intent: SemanticIntent, ex: Extraction, answers, decisions: List[DecisionRecord]) -> None:
+    def _apply_resources(self, intent: SemanticIntent, ex: Extraction, answers, decisions: List[DecisionRecord],
+                         pins: Dict[str, Any]) -> None:
         activity = self.catalog.activities.get(intent.activity) if intent.activity else None
-        free_text = [lit for lit in ex.literals if lit.kind == "term" and not self._known_type(lit)]
+        free_text = self._free_text(ex, pins)
+        dropped = {lit.value for lit in ex.literals if lit.kind == "term" and not self._known_type(lit)} \
+            - {lit.value for lit in free_text}
 
         for lit in ex.literals:
+            if lit.value in dropped:
+                continue  # the user said another word was the value
             sem_type = self._known_type(lit)
             if sem_type:
                 # Recognized by shape (an IP, a domain), typed by the extractor,
@@ -220,7 +257,18 @@ class SemanticInterpreter:
                     "More than one word could be the value to filter on: "
                     + ", ".join(repr(t.value) for t in free_text) + ". Quote the value you mean.",
                     options=[t.value for t in free_text],
+                    followup=Clarification(kind="value_term", question="Which of these is the value to look for?", options=[
+                        ClarificationOption(value=t.value, label=t.value, pins={"value_term": t.value}) for t in free_text
+                    ]),
                 )
+
+            pinned_type = pins.get(f"value:{lit.value}")
+            if lit.kind == "term" and pinned_type:
+                decisions.append(_by_user("resource_type", f"What kind of value is {lit.value!r}?", pinned_type,
+                                          self.thresholds.resource_type))
+                intent.resources.append(ResourceFilter(type=pinned_type, value=lit.value, confidence=1.0,
+                                                       literal_kind=lit.kind))
+                continue
 
             if activity is not None and activity.resource:
                 # The activity says what it's about ("accessed X" → X is a domain).
@@ -252,10 +300,14 @@ class SemanticInterpreter:
             else:
                 # Never drop it silently — that would answer a broader
                 # question than the one asked.
+                ranked = [label for label, _ in result.ranked()[:4]]
                 raise ClarificationNeeded(
                     f"Couldn't tell what {lit.value!r} refers to — name its type right "
-                    f"before it (e.g. 'user {lit.value}', 'host {lit.value}').", record,
-                    [label for label, _ in result.ranked()[:4]],
+                    f"before it (e.g. 'user {lit.value}', 'host {lit.value}').", record, ranked,
+                    Clarification(kind="value_type", question=f"What is {lit.value!r}?", options=[
+                        ClarificationOption(value=t, label=t.replace("_", " "), pins={f"value:{lit.value}": t})
+                        for t in ranked
+                    ]),
                 )
 
     def _known_type(self, lit) -> Optional[str]:
@@ -284,10 +336,17 @@ class SemanticInterpreter:
         return sem_type
 
     def _apply_sources(self, intent: SemanticIntent, retrieved: Dict[str, float], answers,
-                       decisions: List[DecisionRecord]) -> None:
+                       decisions: List[DecisionRecord], pins: Dict[str, Any]) -> None:
         scored: List[ScoredSource] = []
         question = "Is this source relevant to answering the question?"
         for name, retrieval_score in retrieved.items():
+            if f"source:{name}" in pins:
+                chosen = bool(pins[f"source:{name}"])
+                decisions.append(_by_user("source_relevance", question, chosen, self.thresholds.source, subject=name,
+                                          probability=1.0 if chosen else 0.0))
+                if chosen:
+                    scored.append(ScoredSource(source=name, confidence=1.0, retrieval_score=retrieval_score))
+                continue
             result = answers[f"source:{name}"]
             threshold = self.thresholds.critical if self.catalog.sources[name].critical else self.thresholds.source
             record = DecisionRecord(
@@ -302,9 +361,34 @@ class SemanticInterpreter:
                 (d for d in decisions if d.kind == "source_relevance"),
                 key=lambda d: d.probability, default=None,
             )
+            asked = sorted(
+                (d for d in decisions if d.kind == "source_relevance" and d.decided_by != "user"),
+                key=lambda d: d.probability, reverse=True,
+            )
             raise ClarificationNeeded(
                 "No data source looks relevant enough to answer this question.",
                 best, [d.subject for d in decisions if d.kind == "source_relevance"],
+                Clarification(
+                    kind="source", question="Which data should answer this?",
+                    options=[
+                        ClarificationOption(value=d.subject, label=_labelled(d.subject, self.catalog.sources[d.subject].description),
+                                            pins={f"source:{d.subject}": True})
+                        for d in asked
+                    ],
+                ) if asked else None,
             )
         scored.sort(key=lambda s: (s.confidence, s.retrieval_score), reverse=True)
         intent.candidate_sources = scored
+
+
+def _by_user(kind: str, question: str, answer: Any, threshold: Optional[float], subject: str = "",
+             probability: float = 1.0) -> DecisionRecord:
+    """A decision the user settled by answering a clarification."""
+    return DecisionRecord(kind=kind, question=question, subject=subject, answer=answer, probability=probability,
+                          threshold=threshold, decided_by="user")
+
+
+def _labelled(name: str, description: str) -> str:
+    """``name — first sentence of its description`` (just the name when there's none)."""
+    first = (description or "").strip().split(". ")[0].rstrip(".")
+    return f"{name} — {first}" if first else name

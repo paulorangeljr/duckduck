@@ -1,6 +1,6 @@
 """Data models shared by the interpreter, planner and search result."""
 
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -18,6 +18,8 @@ class Thresholds(BaseModel):
     entity: float = 0.60
     activity: float = 0.60
     resource_type: float = 0.60
+    #: A free-text reply to a clarification must pick one option this surely.
+    reply: float = 0.70
 
 
 class DecisionRecord(BaseModel):
@@ -31,8 +33,9 @@ class DecisionRecord(BaseModel):
     answer: Any
     probability: float
     threshold: Optional[float] = None
-    #: ``engine`` (asked the decision engine) or ``deterministic``
-    #: (decided by the extractor/catalog without asking).
+    #: ``engine`` (asked the decision engine), ``deterministic`` (decided
+    #: by the extractor/catalog without asking) or ``user`` (pinned by an
+    #: answer to a clarification).
     decided_by: str = "engine"
     alternatives: List[tuple] = Field(default_factory=list)
 
@@ -69,14 +72,55 @@ class SemanticIntent(BaseModel):
     literals: List[ExtractedLiteral] = Field(default_factory=list)
 
 
+class ClarificationOption(BaseModel):
+    """One answer to a clarification, and the decisions choosing it pins."""
+
+    value: str
+    label: str
+    #: Decision key → value, passed back as ``search(..., pinned=...)``:
+    #: ``entity``, ``activity``, ``value:<literal>``, ``value_term``,
+    #: ``source:<name>``, ``field:<source.field>``, ``join:<a.x>=<b.y>``.
+    pins: Dict[str, Any] = Field(default_factory=dict)
+
+
+class Clarification(BaseModel):
+    """What to ask the user back — built from templates and the catalog, no LLM."""
+
+    #: ``entity`` / ``value_type`` / ``value_term`` / ``source`` / ``field`` /
+    #: ``join`` — or ``unresolvable`` (no answer would help: rephrase the
+    #: question or fix the catalog), which has no options.
+    kind: str
+    question: str
+    options: List[ClarificationOption] = Field(default_factory=list)
+
+    def option(self, reply: str) -> Optional[ClarificationOption]:
+        """The option a reply names exactly: its number (1-based), value or label."""
+        text = reply.strip().lower().rstrip(".)")
+        if text.isdigit() and 1 <= int(text) <= len(self.options):
+            return self.options[int(text) - 1]
+        for opt in self.options:
+            if text in (opt.value.lower(), opt.label.lower()) or text == opt.label.split(" — ")[0].lower():
+                return opt
+        return None
+
+    def render(self) -> str:
+        """The question and numbered options, ready to show."""
+        lines = [self.question]
+        lines += [f"  {i}) {o.label}" for i, o in enumerate(self.options, 1)]
+        return "\n".join(lines)
+
+
 class ClarificationNeeded(Exception):
     """
     A decision didn't clear its confidence threshold — the question must
     be clarified (or routed to a fallback) rather than executed on a guess.
     """
 
-    def __init__(self, reason: str, decision: Optional[DecisionRecord] = None, options: Optional[List[str]] = None):
+    def __init__(self, reason: str, decision: Optional[DecisionRecord] = None, options: Optional[List[str]] = None,
+                 followup: Optional["Clarification"] = None):
         super().__init__(reason)
         self.reason = reason
         self.decision = decision
         self.options = options or []
+        #: What to ask the user back; ``None`` → ``unresolvable``.
+        self.followup = followup
