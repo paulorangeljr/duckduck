@@ -69,7 +69,10 @@ Describe the table and every column worth querying:
   status-like columns, list the stored values with the words people use
   for them (e.g. DENY -> denied, blocked).
 - time_field: the column holding when the row happened, if any.
-- entities: the kinds of things this table can answer "which X?" about.
+- entities: the kinds of things this table can answer "which X?" about —
+  only ones one of its fields holds (that field's semantic_type is the
+  entity's name). If people say "hosts" but the table identifies them by
+  IP, the entity is ip_address, not host.
   Include "event" if rows are individual events/records.
 - activities: short snake_case names for what the rows record happening
   (e.g. web_access, authentication, network_connection).
@@ -84,7 +87,11 @@ Define the shared vocabulary and the joins:
 - entities: define every entity name used by any source, with a
   description and the keywords/synonyms people use for it in questions
   (plural forms included). Mark row_level true only for the entity that
-  means "the records themselves" (e.g. event).
+  means "the records themselves" (e.g. event). Every entity must be held
+  by some field (a field whose semantic_type is its name): when people's
+  word for something is held by a field of another type — hosts known by
+  their IP — don't define a separate entity; put the word in that
+  entity's keywords instead (ip_address: host, hosts, machine).
 - activities: define every activity name used by any source, with a
   description, the verbs/nouns people use for it, the semantic_type of
   the thing the activity is about (resource), and the roles of the
@@ -650,7 +657,9 @@ class CatalogGenerator:
         """A field's computed profile, and its category values merged into its value list."""
         if not st:
             return
-        profile = {k: st[k] for k in ("distinct", "null_ratio", "min", "max") if st.get(k) is not None}
+        if not field.get("semantic_type") and st.get("shape"):
+            field["semantic_type"] = st["shape"]  # nearly every value is an IP / email / URL / domain
+        profile = {k: st[k] for k in ("distinct", "null_ratio", "min", "max", "shape") if st.get(k) is not None}
         sensitive = field.get("semantic_type") in SENSITIVE_TYPES and not self.sample_sensitive
         if self.sample_values and not sensitive and st.get("examples"):
             profile["examples"] = st["examples"][: self.sample_values]
@@ -844,9 +853,89 @@ class CatalogGenerator:
                 warnings.append(f"activity '{name}': resource '{a['resource']}' no longer matches a field — dropped it")
                 a["resource"] = None
 
+        _tidy_entities(sources, entities, relationships, warnings)
         return Catalog.model_validate({
             "sources": sources, "entities": entities, "activities": activities, "relationships": relationships,
         })
+
+
+_MAX_KEYWORDS = 25
+
+
+def _tidy_entities(sources: Dict[str, Any], entities: Dict[str, Any], relationships: List[Dict[str, Any]],
+                   warnings: List[str]) -> None:
+    """
+    Deterministic clean-up of the vocabulary, over the whole catalog:
+
+    - an entity **no field holds** (no field of its semantic_type, no
+      ``represents`` link) can never be answered — it only makes questions
+      ask back. It's merged into the entity the data does hold for it
+      (named in its description, or held by the sources that claim it),
+      its name and keywords becoming that entity's keywords
+      ("host" → ip_address: host, hosts);
+    - every entity gets the names of the fields that hold it as keywords
+      ("src ip", "owner").
+    """
+    held: Dict[str, List[str]] = {}
+    for sname, src in sources.items():
+        for fname, f in src.get("fields", {}).items():
+            if f.get("semantic_type"):
+                held.setdefault(f["semantic_type"], []).append(fname)
+    for r in relationships:
+        if r.get("type") == "represents":
+            held.setdefault(r["to"], []).append(r["from"].split(".")[-1])
+
+    for name in list(entities):
+        e = entities[name]
+        if name in held or e.get("row_level"):
+            continue
+        target = _merge_target(name, e, entities, sources, held)
+        if target is None:
+            warnings.append(f"entity '{name}': no field holds it — questions about it will be asked back")
+            continue
+        words = [name.replace("_", " "), *(e.get("keywords") or [])]
+        _add_keywords(entities[target], words)
+        for src in sources.values():
+            claimed = src.get("entities") or []
+            if name in claimed:
+                src["entities"] = list(dict.fromkeys(target if x == name else x for x in claimed))
+        del entities[name]
+        warnings.append(f"entity '{name}': no field holds it — merged into '{target}' "
+                        f"(now a keyword of it: {', '.join(words[:4])})")
+
+    for name, e in entities.items():
+        _add_keywords(e, [f.replace("_", " ") for f in held.get(name, [])])
+
+
+def _merge_target(name: str, entity: Dict[str, Any], entities: Dict[str, Any], sources: Dict[str, Any],
+                  held: Dict[str, List[str]]) -> Optional[str]:
+    """The held entity an orphan stands for: named in its description/keywords, else held where it's claimed."""
+    text = " " + " ".join([entity.get("description") or "", *(entity.get("keywords") or [])]).lower() + " "
+    scores: Dict[str, float] = {}
+    for other, oe in entities.items():
+        if other == name or other not in held or oe.get("row_level"):
+            continue
+        words = {other.replace("_", " "), *[k.lower() for k in (oe.get("keywords") or [])]}
+        scores[other] = 2.0 * sum(1 for w in words if w and re.search(rf"\b{re.escape(w)}\b", text))
+    for src in sources.values():
+        if name not in (src.get("entities") or []):
+            continue
+        for f in src.get("fields", {}).values():
+            if f.get("semantic_type") in scores:
+                scores[f["semantic_type"]] += 1.0
+    best = max(scores.items(), key=lambda kv: kv[1], default=(None, 0.0))
+    return best[0] if best[1] > 0 else None
+
+
+def _add_keywords(entity: Dict[str, Any], words: List[str]) -> None:
+    keywords = list(entity.get("keywords") or [])
+    seen = {k.lower() for k in keywords}
+    for w in words:
+        w = w.strip()
+        if w and w.lower() not in seen and len(keywords) < _MAX_KEYWORDS:
+            keywords.append(w)
+            seen.add(w.lower())
+    entity["keywords"] = keywords
 
 
 def _is_identifier(name: str) -> bool:

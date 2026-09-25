@@ -14,7 +14,10 @@ Describe the table and every column worth querying:
   status-like columns, list the stored values with the words people use
   for them (e.g. DENY -> denied, blocked).
 - time_field: the column holding when the row happened, if any.
-- entities: the kinds of things this table can answer "which X?" about.
+- entities: the kinds of things this table can answer "which X?" about —
+  only ones one of its fields holds (that field's semantic_type is the
+  entity's name). If people say "hosts" but the table identifies them by
+  IP, the entity is ip_address, not host.
   Include "event" if rows are individual events/records.
 - activities: short snake_case names for what the rows record happening
   (e.g. web_access, authentication, network_connection).

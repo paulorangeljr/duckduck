@@ -3,11 +3,13 @@ Deterministic column profiles for catalog generation — computed with
 pandas from the rows generation samples, never by the LLM.
 
 Per column: distinct values, share of empty values, min/max (numbers and
-dates — also dates stored as text), a few example values, and — for
-categorical columns — every value seen (``values``), which generation
-merges into the field's enumerated values.
+dates — also dates stored as text), the values' shape (IP, email, URL,
+domain — ``shape``), a few example values, and — for categorical
+columns — every value seen (``values``), which generation merges into
+the field's enumerated values.
 """
 
+import re
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -20,6 +22,14 @@ IDENTIFIER_TYPES = {"ip_address", "user", "email", "host", "domain", "url", "hos
 SENSITIVE_TYPES = {"user", "email"}
 
 _MAX_TEXT = 60
+
+#: Value shapes recognizable without any model → the semantic type they denote (first match wins).
+SHAPES = [
+    ("url", re.compile(r"^[a-z][a-z0-9+.-]*://\S+$", re.I)),
+    ("email", re.compile(r"^[^@\s]+@[^@\s]+\.[a-z]{2,}$", re.I)),
+    ("ip_address", re.compile(r"^(\d{1,3}\.){3}\d{1,3}(/\d{1,2})?$|^(?=.*:.*:)[0-9a-f:]+(/\d{1,3})?$", re.I)),
+    ("domain", re.compile(r"^(?=.{4,253}$)([a-z0-9-]+\.)+[a-z]{2,}$", re.I)),
+]
 
 
 def profile_frame(df: pd.DataFrame, max_enum_values: int = 20, examples: int = 3) -> Dict[str, Dict[str, Any]]:
@@ -38,6 +48,9 @@ def profile_frame(df: pd.DataFrame, max_enum_values: int = 20, examples: int = 3
         low, high = _range(present)
         if low is not None:
             stats["min"], stats["max"] = low, high
+        shape = _shape(present)
+        if shape:
+            stats["shape"] = shape
         if _categorical(present, stats["distinct"], rows, max_enum_values):
             stats["values"] = sorted(present.astype(str).unique().tolist())
         out[str(col)] = stats
@@ -69,6 +82,17 @@ def _range(present: pd.Series):
         if len(parsed) >= 0.9 * len(as_text):
             return _text(parsed.min()), _text(parsed.max())
     return None, None
+
+
+def _shape(present: pd.Series) -> Optional[str]:
+    """The shape nearly every value has (IP, email, URL, domain), if any."""
+    if present.empty or pd.api.types.is_numeric_dtype(present) or pd.api.types.is_datetime64_any_dtype(present):
+        return None
+    values = present.astype(str).str.strip()
+    for name, pattern in SHAPES:
+        if values.str.match(pattern).mean() >= 0.9:
+            return name
+    return None
 
 
 def _categorical(present: pd.Series, distinct: int, rows: int, max_values: int) -> bool:

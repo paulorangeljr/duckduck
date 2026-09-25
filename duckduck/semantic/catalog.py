@@ -54,6 +54,8 @@ class FieldProfile(_Strict):
     #: Smallest / largest value seen (numbers and dates, as text).
     min: Optional[str] = None
     max: Optional[str] = None
+    #: What nearly every value looked like: ip_address / email / url / domain.
+    shape: Optional[str] = None
     #: A few real values (only with ``catalog_generation.sample_values``).
     examples: List[str] = Field(default_factory=list)
 

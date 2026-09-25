@@ -573,6 +573,31 @@ fields unless you set `"sample_sensitive": true`.
 "catalog_generation": {"profile_rows": 1000, "sample_values": 3, "max_enum_values": 20}
 ```
 
+**Entities and their keywords, from the data.** After the LLM's drafts
+are merged, generation tidies the vocabulary with plain rules (no model):
+
+- **Value shapes type fields.** A column whose values are nearly all
+  (≥ 90%) IP addresses, emails, URLs or domains gets that
+  `semantic_type` when the LLM left it untyped. The shape is kept in
+  the field's `profile`. The LLM's own typing always wins.
+- **An entity no field holds is merged.** Say the LLM invents `host`,
+  but your hosts are identified by IP address. No field is typed
+  `host`, so a question about hosts could never be answered, only asked
+  back. Instead, `host` is merged into the entity that is held: the one
+  its description or keywords name ("identified by its IP address"),
+  else the one held by the sources that claimed it. Its name and
+  keywords (`host`, `hosts`, `machine`...) become keywords of that
+  entity (`ip_address`), sources that listed it now list the target,
+  and the run's warnings say so. It also applies to entities already in
+  your catalog, on the next redraft. An orphan with nothing to merge
+  into is kept, with a warning.
+- **Field names become keywords** of the entity they hold (`src_ip` →
+  "src ip" on `ip_address`, `owner` on `user`). Keywords are capped at 25.
+
+So you don't need to add `host`/`hosts` to `ip_address` by hand: run
+`generate_catalog(force=True)` and check `entities` in the file. You can
+still add keywords yourself; the ones you add are kept.
+
 **Watching it work.** Generation uses the same verbose mode, with the
 same levels, as the virtualization layer: `True` / `"info"` shows
 progress, and `"debug"` also shows what goes to the LLM (each table's
