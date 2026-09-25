@@ -498,50 +498,42 @@ sources:
         notes: Query strings are stripped before logging.                   # yours, kept
 ```
 
-Force a redraft from the terminal or from Python:
+**Forcing a redraft, or updating part of the catalog.** Both take
+*selectors*, which are fnmatch patterns and ignore case. The "service" is
+the name you gave the connector in `services`:
+
+| Selector | Matches |
+|---|---|
+| `glue` | every table of the `glue` service |
+| `glue:security.*` | the `glue` tables in database `security` |
+| `glue:security.proxy_logs` or `glue:proxy_logs` | one table of that service |
+| `proxy_logs` / `security` | a table by its catalog name, its registered table, `database.table`, or any single argument |
+| `*` | everything |
 
 ```bash
-python -m duckduck.semantic generate-catalog --force                     # every generated source
-python -m duckduck.semantic generate-catalog --force proxy_logs "adx_*"  # these, even hand-written
+python -m duckduck.semantic generate-catalog                                   # new + expired only
+python -m duckduck.semantic generate-catalog --force                           # redraft every generated source
+python -m duckduck.semantic generate-catalog --force "*"                       # rewrite everything, hand-written too
+python -m duckduck.semantic generate-catalog --force glue:security.proxy_logs  # exactly this table, nothing else
+python -m duckduck.semantic generate-catalog --force glue adx:ProxyLogs        # these, nothing else
+python -m duckduck.semantic generate-catalog --only glue                       # update (new + expired) glue's tables only
+python -m duckduck.semantic generate-catalog --only glue --force               # redraft all of glue's tables
 ```
-
-**Watching it work.** Generation uses the same verbose mode as the
-virtualization layer. Turn it on with `generate_catalog(verbose=True)`,
-`python -m duckduck.semantic -v generate-catalog`, `DuckAPI(verbose=True)`
-or `DUCKDUCK_VERBOSE=info`. You get the plan (how many tables are new,
-expired or kept), then `[n/total]` per table with its profile and each LLM
-call's time and tokens, time elapsed and left, then the linking pass and
-what the merge dropped:
-
-```
-catalog: 12 tables — drafting 3 (2 new, 1 expired), keeping 9
-[1/3] security_proxy_logs (new) — profiling glue_table(database='security', table_name='proxy_logs')
-  18 columns, 5 sample rows, with your notes — asking catalog (openrouter anthropic/claude-sonnet-5)
-  llm anthropic/claude-sonnet-5 → GenSource: 6.2s · 3,410 in / 820 out tokens
-  → 14 fields, entities user, host, activities web_access · 6.4s elapsed · ~12.8s left
-...
-linking 12 sources (3 drafted, 9 kept) — asking catalog (...) for entities, activities and joins
-merged: 12 sources, 6 entities, 4 activities, 9 relationships · 24.1s total
-```
-
-**Using the catalog in your process.** Whatever reads `catalog_path`
-picks the catalog up, with nothing extra to load:
 
 ```python
-from duckduck.semantic import SemanticSearch, ask, connect
-
-ask("Which users accessed github in the last 24hrs?")      # reads duckduck.json → catalog_path
-
-duck = connect()                                          # or keep the pieces around
-search = SemanticSearch.from_config(duck)                 # catalog_path, engine, LLMs from the config
-search.search("Which hosts queried example.com?")
-
-search = SemanticSearch("semantic_catalog.yaml", duck)    # or any catalog file, directly
+generate_catalog(force=True)
+generate_catalog(force="glue:security.proxy_logs")
+generate_catalog(only="glue")
+generate_catalog(only=["glue:security.*", "adx"], force=True)
 ```
 
-The catalog is read once, when the `SemanticSearch` is built. After
-regenerating, build a new one (`ask()` builds one per call). With
-`auto_refresh`, building it also brings the catalog up to date first.
+- **Forcing by name** redrafts exactly those tables. It doesn't also
+  pick up new or expired ones, and it includes hand-written sources.
+- **Your `notes`** are kept in every case.
+- **New tables in a connector** (a new Glue table, a new ADX table) are
+  picked up by any run without `--force`, or with `--only` naming their
+  service.
+- **To start from nothing,** move the file away. Your notes go with it.
 
 To review drafts before they go live, set `catalog_generation.output_path`
 to another file. Generation then maintains that file, and you copy what
@@ -578,7 +570,8 @@ print(jev_check().ranked())                    # raises if the key/network/parsi
 | `generate-catalog` | `generate_catalog()` → `GenerationResult` (`.summary()`, `.catalog`, `.warnings`, `.path`) |
 | `generate-catalog --out x.yaml` | `generate_catalog(out="x.yaml")` (`write=False` to keep it in memory) |
 | `generate-catalog --force` | `generate_catalog(force=True)` |
-| `generate-catalog --force proxy_logs "adx_*"` | `generate_catalog(force=["proxy_logs", "adx_*"])` |
+| `generate-catalog --force glue:security.proxy_logs adx` | `generate_catalog(force=["glue:security.proxy_logs", "adx"])` |
+| `generate-catalog --only glue` | `generate_catalog(only="glue")` |
 | `jev-check` | `jev_check()` → `Classification` |
 | `--config path` | `config_path="path"` |
 | `-v` / `-v debug` | `verbose="info"` / `verbose="debug"` |

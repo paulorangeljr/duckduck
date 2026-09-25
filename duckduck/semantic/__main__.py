@@ -5,7 +5,7 @@ functions in ``duckduck.semantic.commands`` (``ask``, ``generate_catalog``,
 commands read ``duckduck.json`` (or ``--config``): connectors from
 ``services``, everything else from its ``semantic`` section.
 
-    python -m duckduck.semantic generate-catalog [--force [NAME ...]] [--out semantic_catalog.yaml]
+    python -m duckduck.semantic generate-catalog [--force [NAME ...]] [--only NAME ...] [--out FILE]
     python -m duckduck.semantic ask "Which users accessed github in the last 24hrs?"
     python -m duckduck.semantic jev-check
 """
@@ -19,7 +19,8 @@ from .commands import ask, generate_catalog, jev_check
 
 def cmd_generate(args) -> int:
     force = False if args.force is None else (args.force or True)  # bare --force → everything
-    result = generate_catalog(config_path=args.config, out=args.out, verbose=args.verbose, force=force)
+    result = generate_catalog(config_path=args.config, out=args.out, verbose=args.verbose, force=force,
+                              only=args.only or None)
     print(result.summary())
     return 0
 
@@ -54,8 +55,13 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--out", help="catalog file to update (default: output_path, else catalog_path)")
     gen.add_argument(
         "--force", nargs="*", metavar="NAME",
-        help="redraft even if not expired: every generated source (no NAME), or the sources "
-             "matching each NAME / fnmatch pattern (hand-written ones included)",
+        help="redraft even if not expired: every generated source (no NAME), or exactly the tables "
+             "matching each NAME — a table, a service (glue), or service:table (glue:security.proxy_logs); "
+             "fnmatch patterns; hand-written ones included",
+    )
+    gen.add_argument(
+        "--only", nargs="+", metavar="NAME",
+        help="only look at these tables this run (same selectors as --force): new/expired among them",
     )
     gen.set_defaults(fn=cmd_generate, python=generate_catalog)
 

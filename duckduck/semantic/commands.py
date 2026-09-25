@@ -35,6 +35,14 @@ from .generation import GenerationResult
 
 logger = logging.getLogger("duckduck.semantic.generation")
 
+def _apply_verbose(verbose: Any) -> None:
+    """Same values as ``DuckAPI(verbose=...)`` — also when the caller passes its own ``duck``."""
+    if verbose is not None:
+        from duckduck.logs import set_verbose
+
+        set_verbose(verbose)
+
+
 def connect(config_path: Optional[str] = None, verbose: Any = None, on_error: str = "warn"):
     """A ``DuckAPI`` with every service from the config registered (what the CLI starts from)."""
     from duckduck import DuckAPI
@@ -57,6 +65,7 @@ def ask(
     ``result.report()`` is the CLI's printed output; ``result.to_dict()``
     its ``--json``.
     """
+    _apply_verbose(verbose)
     duck = duck if duck is not None else connect(config_path, verbose)
     search = SemanticSearch.from_config(duck, config_path)
     return search.search(question, execute=execute)
@@ -69,27 +78,41 @@ def generate_catalog(
     verbose: Any = None,
     write: bool = True,
     force: Union[bool, str, List[str], None] = False,
+    only: Union[str, List[str], None] = None,
 ) -> GenerationResult:
     """
     Brings the semantic catalog up to date with the configured LLM. It
     reads and updates ``catalog_generation.output_path`` — by default
     ``catalog_path``, the catalog ``ask`` reads — drafting only what's
     missing, expired (``max_age``) or forced; hand-written sources and
-    your ``notes`` are kept. ``force=True`` redrafts every generated
-    source; a name / list of names or fnmatch patterns redrafts those
-    (hand-written ones included). ``out`` overrides the file;
-    ``write=False`` keeps the result in memory. Nothing to redraft → no
-    LLM call and the file is left untouched.
+    your ``notes`` are kept. Nothing to redraft → no LLM call and the file
+    is left untouched.
+
+    Selectors — a name or list of fnmatch patterns: a table (catalog
+    source name, registered table, ``database.table`` args, any single
+    arg), a whole service (``"glue"``), or service + table
+    (``"glue:security.proxy_logs"``, ``"adx:Proxy*"``).
+
+    - ``force=True`` redrafts every generated source; ``force=<selectors>``
+      redrafts exactly those (hand-written ones included) and nothing else.
+    - ``only=<selectors>`` limits the run to those tables (new/expired
+      among them, or what ``force`` picks among them).
+
+    ``out`` overrides the file; ``write=False`` keeps the result in memory.
+    ``verbose`` takes the same values as ``DuckAPI(verbose=...)``
+    (``True``/``"info"``/``"debug"``), even with your own ``duck``.
     """
     from .config import SemanticConfig
 
+    _apply_verbose(verbose)
     duck = duck if duck is not None else connect(config_path, verbose)
     cfg = SemanticConfig.load(duck, config_path)
-    return refresh_catalog(cfg, duck, out=out, write=write, force=force)
+    return refresh_catalog(cfg, duck, out=out, write=write, force=force, only=only)
 
 
 def refresh_catalog(cfg: Any, duck: Any, out: Optional[str] = None, write: bool = True,
-                    force: Union[bool, str, List[str], None] = False) -> GenerationResult:
+                    force: Union[bool, str, List[str], None] = False,
+                    only: Union[str, List[str], None] = None) -> GenerationResult:
     """``generate_catalog`` for an already-loaded ``SemanticConfig``."""
     from .catalog import Catalog
 
@@ -104,7 +127,7 @@ def refresh_catalog(cfg: Any, duck: Any, out: Optional[str] = None, write: bool 
                 f"a new one): {exc}"
             ) from exc
     logger.info("catalog: %s %s", "updating" if existing else "creating", target)
-    result = cfg.build_generator(duck).generate(cfg.catalog_generation.tables, existing=existing, force=force)
+    result = cfg.build_generator(duck).generate(cfg.catalog_generation.tables, existing=existing, force=force, only=only)
     if write and result.changed:
         result.write(target)
         logger.info("catalog: wrote %s", target)
@@ -126,6 +149,7 @@ def jev_check(config_path: Optional[str] = None, verbose: Any = None):
     from .config import SemanticConfig
     from .decisions import DecisionState
 
+    _apply_verbose(verbose)
     duck = DuckAPI(verbose=verbose)  # no connectors needed, only credential resolution
     cfg = SemanticConfig.load(duck, config_path)
     if cfg.decision_engine.ai_provider is None:

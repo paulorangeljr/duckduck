@@ -373,3 +373,135 @@ def test_llm_calls_log_time_and_tokens(caplog):
     caplog.set_level(logging.INFO, logger="duckduck")
     OpenRouterLLM("vendor/model", client=client).generate("s", "p", GenSource)
     assert "llm vendor/model → GenSource" in caplog.text and "1,234 in / 56 out tokens" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# selectors: service, service:table, args; --only; verbose levels
+# ---------------------------------------------------------------------------
+
+
+class Lake:
+    """A connector whose tables sit behind a catalog, like Glue."""
+
+    def __init__(self, tables):
+        self._tables = tables  # {(database, table): rows}
+
+    def listing(self):
+        return pd.DataFrame([{"database": d, "table_name": t} for d, t in self._tables])
+
+    def table(self, database: str, table_name: str, limit=None):
+        return pd.DataFrame(self._tables[(database, table_name)])
+
+
+def _two_service_duck():
+    from duckduck.kinds import catalog
+
+    duck = DuckAPI()
+    lake = Lake({("security", "proxy_logs"): [{"ip": "1"}], ("security", "dns_logs"): [{"q": "a"}],
+                 ("sales", "orders"): [{"id": 1}]})
+    lake.tables = catalog(lists="table")(lake.listing.__func__).__get__(lake)
+    for name, fn in (("glue_tables", lake.tables), ("glue_table", lake.table)):
+        duck.register_api_function(name, fn)
+        duck.service_of[name] = "glue"
+    duck.register_api_function("hosts", lambda limit=None: pd.DataFrame({"ip": ["1"]}))
+    duck.service_of["hosts"] = "inventory"
+    return duck
+
+
+def _gen2(llm, **kw):
+    return CatalogGenerator(llm, _two_service_duck(), clock=lambda: NOW, **kw)
+
+
+def test_the_catalog_is_discovered_per_service():
+    result = _gen2(CountingLLM()).generate()
+    assert set(result.catalog.sources) == {"security_proxy_logs", "security_dns_logs", "sales_orders", "hosts"}
+
+
+@pytest.mark.parametrize("selector, expected", [
+    ("glue", {"security_proxy_logs", "security_dns_logs", "sales_orders"}),        # a whole service
+    ("glue:security.*", {"security_proxy_logs", "security_dns_logs"}),              # service + database
+    ("glue:security.proxy_logs", {"security_proxy_logs"}),                          # service + table
+    ("glue:proxy_logs", {"security_proxy_logs"}),                                   # service + table name alone
+    ("security", {"security_proxy_logs", "security_dns_logs"}),                     # any single arg
+    ("inventory:hosts", {"hosts"}),
+    ("sales_orders", {"sales_orders"}),                                             # catalog source name
+    ("*", {"security_proxy_logs", "security_dns_logs", "sales_orders", "hosts"}),  # everything
+])
+def test_force_selectors(selector, expected):
+    existing = _gen2(CountingLLM()).generate().catalog
+    llm = CountingLLM()
+    result = _gen2(llm).generate(existing=existing, force=selector)
+    assert set(llm.drafted) == expected and set(result.drafted) == expected
+
+
+def test_force_by_name_drafts_nothing_else_even_new_tables():
+    existing = _gen2(CountingLLM()).generate().catalog
+    data = existing.model_dump(by_alias=True)
+    del data["sources"]["hosts"]  # hosts is "new" now
+    llm = CountingLLM()
+    _gen2(llm).generate(existing=Catalog.model_validate(data), force="glue:sales.orders")
+    assert llm.drafted == ["sales_orders"]
+
+
+def test_service_selector_does_not_match_another_service():
+    existing = _gen2(CountingLLM()).generate().catalog
+    llm = CountingLLM()
+    result = _gen2(llm).generate(existing=existing, force="inventory:proxy_logs")
+    assert llm.drafted == [] and any("matched no table" in w for w in result.warnings)
+
+
+def test_only_limits_the_run_to_a_service():
+    llm = CountingLLM()
+    result = _gen2(llm).generate(only="glue:security.*")
+    assert set(llm.drafted) == {"security_proxy_logs", "security_dns_logs"}
+    # later: only the other service; what's already there is kept
+    llm = CountingLLM()
+    result = _gen2(llm).generate(existing=result.catalog, only="inventory")
+    assert llm.drafted == ["hosts"] and set(result.catalog.sources) >= {"security_proxy_logs", "hosts"}
+
+
+def test_only_and_force_true_together():
+    existing = _gen2(CountingLLM()).generate().catalog
+    llm = CountingLLM()
+    _gen2(llm).generate(existing=existing, only="glue:sales.*", force=True)
+    assert llm.drafted == ["sales_orders"]
+
+
+def test_auto_register_records_each_table_s_service(project):
+    folder, write, llm = project
+    duck = DuckAPI()
+    duck.auto_register(config_path=write())
+    assert duck.service_of == {"hosts": "src", "alerts": "src"}
+
+
+def test_cli_only(project, capsys):
+    from duckduck.semantic.__main__ import main
+
+    folder, write, llm = project
+    assert main(["--config", write(), "generate-catalog", "--only", "src:alerts"]) == 0
+    assert llm.drafted == ["alerts"]
+
+
+def test_verbose_level_applies_even_with_your_own_duck(project, caplog):
+    import logging
+
+    from duckduck.logs import set_verbose
+
+    folder, write, llm = project
+    cfg = write()
+    duck = DuckAPI()
+    duck.auto_register(config_path=cfg)
+    try:
+        generate_catalog(config_path=cfg, duck=duck, verbose="debug")
+        assert logging.getLogger("duckduck").level == logging.DEBUG
+    finally:
+        set_verbose(False)
+
+
+def test_debug_shows_what_goes_to_the_llm_and_what_comes_back(caplog):
+    import logging
+
+    caplog.set_level(logging.DEBUG, logger="duckduck")
+    _gen(CountingLLM()).generate()
+    assert "sent to the LLM:" in caplog.text and '"sample_rows"' in caplog.text
+    assert "draft:" in caplog.text and "vocabulary:" in caplog.text

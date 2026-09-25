@@ -265,6 +265,18 @@ def parse_age(value: Union[int, float, str, _dt.timedelta, None]) -> Optional[_d
     return _dt.timedelta(**{unit: float(m.group(1))})
 
 
+def _selectors(value: Union[bool, str, List[str], None]) -> List[str]:
+    if value in (None, False, True, "", []):
+        return []
+    return [value] if isinstance(value, str) else [str(v) for v in value]
+
+
+def _debug_json(label: str, payload: Any) -> None:
+    if logger.isEnabledFor(logging.DEBUG):
+        text = payload if isinstance(payload, str) else json.dumps(payload, default=str)
+        logger.debug("    %s: %s", label, text if len(text) <= 4000 else text[:4000] + "…")
+
+
 def _progress(started: float, done: int, total: int) -> str:
     elapsed = time.perf_counter() - started
     text = f"{human_seconds(elapsed)} elapsed"
@@ -455,19 +467,36 @@ class CatalogGenerator:
         specs: Optional[List[TableSpec]] = None,
         existing: Optional[Catalog] = None,
         force: Union[bool, str, List[str], None] = False,
+        only: Union[str, List[str], None] = None,
     ) -> GenerationResult:
         """
         Drafts what needs drafting (see the module docstring) and returns
-        the resulting catalog. ``force``: ``True`` → every generated source;
-        a name or a list of fnmatch patterns (source name, registered
-        table, or joined args like ``security.proxy_*``) → those, even if
-        hand-written.
+        the resulting catalog.
+
+        Selectors (``force`` / ``only`` entries, fnmatch patterns,
+        case-insensitive): ``"proxy_logs"`` matches a table by its catalog
+        source name, registered table, joined args (``security.proxy_logs``)
+        or any single arg (``security``), or a whole ``auto_register``
+        service (``glue``); ``"glue:security.proxy_logs"`` /
+        ``"glue:security.*"`` / ``"adx:Proxy*"`` — service, then table.
+
+        - ``force=True`` → redraft every generated source (plus new ones);
+          ``force=<selectors>`` → redraft exactly those, hand-written ones
+          included, and nothing else this run.
+        - ``only=<selectors>`` → the run only looks at those tables (new /
+          expired / forced among them); everything else is kept as is.
         """
         warnings: List[str] = []
         if specs is None:
             specs, notes = self.plan_specs()
             warnings.extend(notes)
         specs = self._align_with(specs, existing)
+        only_patterns = _selectors(only)
+        if only_patterns:
+            matched_only = set()
+            specs = [s for s in specs if self._matches(s, only_patterns, matched_only)]
+            warnings += [f"only: '{p}' matched no table" for p in only_patterns if p not in matched_only]
+            logger.info("catalog: only %s → %d tables", ", ".join(only_patterns), len(specs))
         todo, kept = self._select(specs, existing, force, warnings)
         if not todo and existing is None:
             raise ValueError(
@@ -505,7 +534,9 @@ class CatalogGenerator:
                 ", with your notes" if profile["owner_notes"] or profile["field_notes"] else "", self.llm_label or "the LLM",
             )
             prompt = "Table profile:\n" + json.dumps(profile, indent=1, default=str)
+            _debug_json("sent to the LLM", profile)
             drafts[spec.name] = draft = self.llm.generate(self.source_prompt, prompt, GenSource)
+            _debug_json("draft", draft.model_dump_json())
             reasons[spec.name] = reason
             logger.info(
                 "  → %d fields, entities %s, activities %s · %s",
@@ -545,7 +576,9 @@ class CatalogGenerator:
             len(overview), len(drafts), len(overview) - len(drafts), self.link_llm_label or self.llm_label or "the LLM",
         )
         link_started = time.perf_counter()
+        _debug_json("sent to the LLM", prompt)
         vocab = self.link_llm.generate(self.link_prompt, prompt, GenVocabulary)
+        _debug_json("vocabulary", vocab.model_dump_json())
         logger.info(
             "  → %d entities, %d activities, %d relationships (%s)", len(vocab.entities), len(vocab.activities),
             len(vocab.relationships), human_seconds(time.perf_counter() - link_started),
@@ -566,6 +599,28 @@ class CatalogGenerator:
             catalog=catalog, warnings=warnings, drafted=reasons,
             kept=[n for n in catalog.sources if n not in drafts], deferred=deferred,
         )
+
+    def service_of(self, spec: TableSpec) -> Optional[str]:
+        """The ``auto_register`` service that registered the spec's table, when known."""
+        return getattr(self.duck, "service_of", {}).get(spec.table.lower())
+
+    def _matches(self, spec: TableSpec, patterns: List[str], matched: set) -> bool:
+        """Does ``spec`` match any selector (see ``generate``)? Records which patterns matched."""
+        service = (self.service_of(spec) or "").lower()
+        values = [str(v) for v in spec.args.values()]
+        labels = {x.lower() for x in (spec.name, spec.table, ".".join(values), *values) if x}
+        hit = False
+        for p in patterns:
+            low = p.lower()
+            if ":" in low:
+                svc_pat, tbl_pat = low.split(":", 1)
+                ok = bool(service) and fnmatch.fnmatch(service, svc_pat) and any(fnmatch.fnmatch(l, tbl_pat) for l in labels)
+            else:
+                ok = any(fnmatch.fnmatch(l, low) for l in labels | ({service} if service else set()))
+            if ok:
+                matched.add(p)
+                hit = True
+        return hit
 
     @staticmethod
     def _log_plan(specs, todo, kept_names, deferred) -> None:
@@ -597,21 +652,18 @@ class CatalogGenerator:
     def _select(self, specs, existing, force, warnings) -> Tuple[List[Tuple[TableSpec, str]], List[str]]:
         """(spec, reason) to draft — forced first, then new, then stale (oldest first) — and the kept names."""
         force_all = force is True
-        patterns = [] if force in (None, False, True) else ([force] if isinstance(force, str) else list(force))
+        patterns = [] if force in (None, False, True) else _selectors(force)
         matched = set()
-
-        def forced_by_name(spec: TableSpec) -> bool:
-            labels = [spec.name, spec.table, ".".join(str(v) for v in spec.args.values())]
-            hit = [p for p in patterns if any(fnmatch.fnmatch(l.lower(), p.lower()) for l in labels if l)]
-            matched.update(hit)
-            return bool(hit)
 
         now = _utc(self.clock())
         forced, new, stale, kept = [], [], [], []
         for spec in specs:
             current = existing.sources.get(spec.name) if existing else None
-            if forced_by_name(spec):
-                forced.append((spec, "forced"))
+            if patterns:  # forcing by name: exactly those, nothing else this run
+                if self._matches(spec, patterns, matched):
+                    forced.append((spec, "forced"))
+                else:
+                    kept.append(spec.name)
             elif current is None:
                 new.append((spec, "new"))
             elif current.generated_at is None:

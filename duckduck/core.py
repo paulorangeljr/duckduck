@@ -252,6 +252,8 @@ class DuckAPI:
             set_verbose(verbose)
         self.conn = duckdb.connect(database)
         self.functions: Dict[str, Any] = {}
+        #: Registered table name (lowercase) → the auto_register service that registered it.
+        self.service_of: Dict[str, str] = {}
         self._streaming_functions: Dict[str, Any] = {}
         self._table_counter = 0
 
@@ -555,6 +557,7 @@ class DuckAPI:
                     )
                 for t, fn in tables.items():
                     self.register_api_function(full(t), fn)
+                    self.service_of[full(t).lower()] = name
                     registered_by[full(t)] = name
                 for t, fn in streaming.items():
                     self.register_streaming_function(full(t), fn)
