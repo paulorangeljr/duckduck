@@ -75,7 +75,12 @@ class QueryPlanner:
             match, path = self._locate_enum(primary, term, matches)
             if path.edges:
                 paths.append(path)
-            checks.append(self._field_check(intent, match.field, f"the value {term!r}", _ENUM_MATCH_PRIOR, len(checks)))
+            checks.append(self._field_check(
+                intent, match.field, f"the value {term!r}", _ENUM_MATCH_PRIOR, len(checks),
+                # the catalog lists the stored value — ask about that exact reading
+                question=f"Does {term!r} in the question mean {match.field} = {match.value!r}?",
+                failure=f"Not confident that {term!r} means {match.field} = {match.value!r}.",
+            ))
             filters.append(Filter(field=match.field, operator="eq", value=match.value))
 
         # 3. time range, always on the primary source's event time
@@ -203,14 +208,15 @@ class QueryPlanner:
     # Confirmation decisions + join assembly
     # ------------------------------------------------------------------
 
-    def _field_check(self, intent: SemanticIntent, ref: str, purpose: str, prior: float, n: int) -> tuple:
+    def _field_check(self, intent: SemanticIntent, ref: str, purpose: str, prior: float, n: int,
+                     question: Optional[str] = None, failure: Optional[str] = None) -> tuple:
         ask = Ask(
-            key=f"field:{n}", question=f"Is {ref} relevant for {purpose}?",
+            key=f"field:{n}", question=question or f"Is {ref} relevant for {purpose}?",
             subject=self.catalog.describe_field(ref), criteria=CRITERIA["field"],
             state=DecisionState(query=intent.question, prior=prior, facts={"field": ref}),
         )
         return ask, "field_relevance", ref, self.thresholds.field, \
-            f"Not confident that {ref} is the right field for {purpose}.", [ref]
+            failure or f"Not confident that {ref} is the right field for {purpose}.", [ref]
 
     def _merge_paths(self, intent: SemanticIntent, primary: str, paths: List[Path], checks: List[tuple]):
         sources, joins = [primary], []

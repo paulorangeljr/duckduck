@@ -274,3 +274,25 @@ def test_calibrate_cli(capsys):
 
     assert main(["--config", f"{EXAMPLES}/duckduck.local.json", "calibrate", DATASET_PATH]) == 0
     assert "calibrated on 6 labeled questions" in capsys.readouterr().out
+
+
+def test_an_enum_match_is_confirmed_as_the_exact_stored_value(monkeypatch):
+    search, fake = _jev_search(monkeypatch)
+    search.search("Which users generated failed authentication events?")
+    planned = fake.bodies[1]
+    texts = {k: q["instructions"] for k, q in planned["questions"].items()}
+    enum_q = next(t for t in texts.values() if " mean " in t)
+    assert enum_q.startswith("Does 'failed' in the question mean auth_logs.outcome = 'failure'?")
+    key = next(k for k, t in texts.items() if t == enum_q)
+    assert planned["state"]["items"][key]["subject"] == (
+        "auth_logs.outcome (string): Result of the sign-in attempt. Known values: 'success' (said as "
+        "'successful', 'succeeded'), 'failure' (said as 'failed', 'failure', 'unsuccessful')."
+    )
+
+
+def test_describe_field_lists_known_values_with_their_synonyms():
+    catalog = Catalog.load(CATALOG_PATH)
+    ref = next(f"{s}.{n}" for s, src in catalog.sources.items() for n, f in src.fields.items() if f.values)
+    text = catalog.describe_field(ref)
+    value, synonyms = next(iter(catalog.field(ref).values.items()))
+    assert f"Known values: {value!r}" in text and (not synonyms or repr(synonyms[0]) in text)

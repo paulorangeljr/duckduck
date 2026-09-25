@@ -269,9 +269,21 @@ class Catalog(_Strict):
         return found
 
     def describe_field(self, ref: str) -> str:
-        """``source.field (type): description`` + the owner's notes (fed to the decision engine)."""
+        """
+        ``source.field (type): description`` + its known values (with the
+        words people use for them) + the owner's notes — fed to the
+        decision engine.
+        """
         f = self.field(ref)
-        text = f"{ref} ({f.semantic_type or f.type}): {f.description}"
+        description = f.description.strip()
+        text = f"{ref} ({f.semantic_type or f.type}): {description}"
+        if description and not description.endswith((".", "!", "?")):
+            text += "."
+        if f.values:
+            shown = [f"{v!r}" + (f" (said as {', '.join(repr(s) for s in syn)})" if syn else "")
+                     for v, syn in list(f.values.items())[:20]]
+            more = f", and {len(f.values) - 20} more" if len(f.values) > 20 else ""
+            text += f" Known values: {', '.join(shown)}{more}."
         return text + (f" Owner's notes: {f.notes.strip()}" if f.notes.strip() else "")
 
     def describe_source(self, name: str) -> str:
