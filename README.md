@@ -824,10 +824,21 @@ python -m duckduck.semantic feedback-export    # what still fails, as a brief fo
     suggested ones are ticked, with their relevance, and each system has
     an **only this** button. Your choice goes with the question: only
     those tables are used, joins included.
+  - **Joins.** When the answer needs another table to find what the
+    question asks for ("which machines…" on firewall logs needs the asset
+    inventory for hostnames), that table is ticked too, tagged *joined*,
+    and the panel lists the join (`firewall_logs.src_ip =
+    asset_inventory.ip_address`, to find the host). Untick a join and the
+    answer routes around it (`join:<a>=<b>` pinned to no), e.g. through
+    `dst_ip` instead.
   - Clicking *About* lets you pick the entity, which is then never asked.
   - *Let it choose* goes back to the automatic choice.
+  - A choice belongs to the question it was made for: small edits keep
+    it, a different question starts from its own suggestions. Asking
+    before the pause, or clicking a suggested question, updates the chips
+    too.
 
-  In Python: `search.preview("...")` and `search.search("...",
+  In Python: `search.preview("...")` (with `joins`) and `search.search("...",
   only_sources=["sharepoint_list_items"])`, or
   `search.conversation(..., only_sources=..., pinned={"entity": "user"})`.
   The restriction narrows `allowed_sources`, never widens it. It's

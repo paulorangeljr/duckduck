@@ -92,6 +92,36 @@ def test_preview_groups_every_table_by_system_and_marks_the_relevant_ones():
     assert preview["answer_shape"] == {"choice": "list", "probability": 1.0, "sure": True}
 
 
+def test_preview_suggests_the_joins_the_answer_needs():
+    import os
+
+    from duckduck.semantic import connect
+
+    config = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "examples", "semantic", "duckduck.local.json")
+    search = SemanticSearch.from_config(connect(config), config)
+    preview = search.preview("Which machines communicated with 203.0.113.9?")  # hostnames live in asset_inventory
+    assert preview["joins"] == [{"left": "firewall_logs.src_ip", "right": "asset_inventory.ip_address",
+                                 "type": "same_entity", "confidence": 0.95, "for": "host"}]
+    tables = {s["source"]: s for g in preview["systems"] for s in g["sources"]}
+    assert tables["asset_inventory"]["relevant"] and tables["asset_inventory"]["joined"]
+    assert not tables["firewall_logs"]["joined"]
+    assert search.preview("Which users accessed github in the last 24hrs?")["joins"] == []
+
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from duckduck.semantic.server import create_app
+
+    client = TestClient(create_app(lambda: search, store=None))
+    body = {"question": "Which machines communicated with 203.0.113.9?"}
+    joins = lambda r: [(j["left"], j["right"]) for j in r.json()["result"]["query_plan"]["joins"]]  # noqa: E731
+    assert joins(client.post("/api/ask", json=body)) == [("firewall_logs.src_ip", "asset_inventory.ip_address")]
+    unticked = client.post("/api/ask", json={**body, "blocked_joins": [["firewall_logs.src_ip",
+                                                                        "asset_inventory.ip_address"]]})
+    assert joins(unticked) == [("firewall_logs.dst_ip", "asset_inventory.ip_address")]  # routed around
+
+
 def test_preview_is_one_batch_records_nothing_and_is_cached(monkeypatch):
     from duckduck.semantic.feedback import FeedbackStore
 
@@ -131,6 +161,8 @@ def test_the_api(tmp_path):
                                             "description": "Who owns each IP address."}]
     assert client.post("/api/ask", json={"question": "x y z", "only_sources": ["nope"]}).status_code == 400
     assert client.post("/api/ask", json={"question": "x y z", "entity": "nope"}).status_code == 400
+    assert client.post("/api/ask", json={"question": "x y z", "blocked_joins": [["alerts.nope", "owners.ip"]]}
+                       ).status_code == 400
 
     def broken(question):
         raise RuntimeError("Jev is down")

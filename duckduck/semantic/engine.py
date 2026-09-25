@@ -17,7 +17,7 @@ import time
 import warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Iterable, List, Optional, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 import pandas as pd
 
@@ -408,11 +408,46 @@ class SemanticSearch:
             self._previews.move_to_end(key)
             return cached
         seen = self.interpreter.preview(question, self.clock())
+        seen["joins"] = self._preview_joins(seen)
         seen["systems"] = self._systems({s["source"]: s for s in seen["sources"]})
         self._previews[key] = seen
         while len(self._previews) > 256:
             self._previews.popitem(last=False)
         return seen
+
+    def _preview_joins(self, seen: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        The joins the answer would need: from each relevant table to the
+        nearest one holding the entity the question asks for (the planner's
+        own rule, ``_find_entity_field``). The tables on the way become
+        relevant (``joined``), so the suggestion ticks them too.
+        """
+        entity = seen.get("entity") or {}
+        shape = (seen.get("answer_shape") or {}).get("choice")
+        ent = self.catalog.entities.get(entity.get("choice") or "")
+        if not entity.get("sure") or ent is None or ent.row_level or shape in ("catalog", "small_talk", "lookup", "locate"):
+            return []
+        judged = {s["source"]: s for s in seen["sources"]}
+        joins: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        for name in [s["source"] for s in seen["sources"] if s["relevant"]]:
+            try:
+                found = self.planner._find_entity_field(name, entity["choice"], None, set(), set(), None)
+            except Exception:  # a preview never fails
+                continue
+            if found is None:
+                continue
+            for edge in found[1].edges:
+                joins.setdefault((edge.left, edge.right), {
+                    "left": edge.left, "right": edge.right, "type": edge.type,
+                    "confidence": round(edge.confidence, 3), "for": entity["choice"]})
+                if edge.right_source not in judged:
+                    judged[edge.right_source] = {"source": edge.right_source, "probability": None, "relevant": True}
+                    seen["sources"].append(judged[edge.right_source])
+                target = judged[edge.right_source]
+                if not target["relevant"]:
+                    target["relevant"] = True
+                target["joined"] = True
+        return list(joins.values())
 
     def _systems(self, judged: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Every table the user may use, grouped by system, relevant ones first."""
@@ -437,7 +472,7 @@ class SemanticSearch:
             group["sources"].append({
                 "source": name, "description": src.description.strip().split(". ")[0].rstrip("."),
                 "probability": j.get("probability"), "relevant": bool(j.get("relevant")),
-                "icon": self.source_icon(name),
+                "joined": bool(j.get("joined")), "icon": self.source_icon(name),
             })
         out = list(groups.values())
         for g in out:

@@ -316,10 +316,21 @@ $("#user").addEventListener("change", () => store.set("duckduck-user", $("#user"
 // A pause in typing asks /api/preview (one decision-engine batch, nothing run). The chips show the systems
 // and the entity it points at; clicking one lets the user choose. Their choice goes with the question:
 // only_sources (nothing else is used, joins included) and entity (pinned, never asked).
-const pre = {data: null, chosen: null, entity: null, open: null, seq: 0, timer: null, ctrl: null, thinking: false};
+// A choice belongs to the question it was made for (pre.forQ): small edits keep it, a new question starts
+// from the new suggestions.
+const pre = {data: null, chosen: null, entity: null, blocked: new Set(), forQ: null, open: null, seq: 0, timer: null,
+             ctrl: null, thinking: false, error: null};
+function resetChoices() { Object.assign(pre, {chosen: null, entity: null, blocked: new Set(), forQ: null}); }
+function chose() { pre.forQ = $("#question").value.trim(); }
+const words = (t) => new Set((t || "").toLowerCase().match(/[\p{L}\p{N}_.:-]+/gu) || []);
+function sameQuestion(a, b) {
+  const A = words(a), B = words(b); if (!A.size || !B.size) return false;
+  let both = 0; A.forEach(w => { if (B.has(w)) both++; });
+  return both / Math.max(A.size, B.size) >= 0.5;
+}
 $("#question").addEventListener("input", () => {
   clearTimeout(pre.timer);
-  if (!$("#question").value.trim()) { Object.assign(pre, {data: null, chosen: null, entity: null, open: null}); drawChips(); return; }
+  if (!$("#question").value.trim()) { Object.assign(pre, {data: null, open: null, error: null}); resetChoices(); drawChips(); return; }
   pre.timer = setTimeout(runPreview, 600);
 });
 async function runPreview() {
@@ -330,10 +341,16 @@ async function runPreview() {
   try {
     const d = await api("/api/preview", {question: q}, pre.ctrl.signal);
     if (mine !== pre.seq) return;
+    pre.error = d.error || null;
     pre.data = d.error ? null : d;
-  } catch (err) { if (err.name === "AbortError") return; }
-  pre.thinking = false; drawChips();
+    if (pre.forQ !== null && !sameQuestion(pre.forQ, q)) resetChoices();  // a new question: fresh suggestions
+  } catch (err) {
+    if (err.name === "AbortError") return;
+    if (mine === pre.seq) { pre.error = err.message; pre.data = null; }
+  }
+  if (mine === pre.seq) { pre.thinking = false; drawChips(); }
 }
+const joinKey = (j) => `${j.left}=${j.right}`;
 const allSources = () => (pre.data?.systems || []).flatMap(g => g.sources.map(s => s.source));
 const suggested = () => { const rel = (pre.data?.systems || []).flatMap(g => g.sources.filter(s => s.relevant).map(s => s.source));
                           return new Set(rel.length ? rel : allSources()); };
@@ -354,7 +371,9 @@ function drawChips() {
         label = sys.length ? sys.join(", ") : "any";
       }
       const icons = [...new Set(d.systems.filter(g => pre.chosen ? g.sources.some(s => pre.chosen.has(s.source)) : g.relevant).map(g => g.icon))];
-      chips.push(`<button class="chip ${pre.chosen ? "mine" : ""}" type="button" data-open="systems" aria-expanded="${pre.open === "systems"}"><span class="dot"></span><span class="k">Systems</span> ${icons.map(icon).join("")}${esc(label)}</button>`);
+      const used = (d.joins || []).filter(j => !pre.blocked.has(joinKey(j))).length;
+      const joins = (d.joins || []).length ? ` · ${used} join${used === 1 ? "" : "s"}` : "";
+      chips.push(`<button class="chip ${pre.chosen || pre.blocked.size ? "mine" : ""}" type="button" data-open="systems" aria-expanded="${pre.open === "systems"}"><span class="dot"></span><span class="k">Systems</span> ${icons.map(icon).join("")}${esc(label)}${joins}</button>`);
     }
     const e = d.entity;
     if (shape !== "catalog" && e && (pre.entity || e.sure)) {
@@ -365,6 +384,7 @@ function drawChips() {
       chips.push(`<button class="chip" type="button" disabled><span class="dot"></span><span class="k">Answer</span> ${esc(SHAPE_WORDS[shape] || shape)}</button>`);
   }
   if (pre.thinking) chips.push(`<span class="chip thinking"><span class="dot"></span>reading your question…</span>`);
+  else if (pre.error) chips.push(`<span class="chip thinking" title="${esc(pre.error)}"><span class="dot"></span>couldn't read the question yet — it will still be answered</span>`);
   box.innerHTML = chips.join("");
   box.querySelectorAll("[data-open]").forEach(b => b.addEventListener("click", () => {
     pre.open = pre.open === b.dataset.open ? null : b.dataset.open; drawChips();
@@ -384,26 +404,34 @@ function drawPanel() {
           ${g.label ? `<span class="label">${esc(g.label)}</span>` : ""}
           <button class="secondary small" type="button" data-only="${esc(g.system)}" style="padding:2px 8px;margin-left:auto;font-size:12px;white-space:nowrap">only this</button></h4>` +
         g.sources.map(s => `<label class="srcrow"><input type="checkbox" data-source="${esc(s.source)}" ${picked.has(s.source) ? "checked" : ""}>
-          <span>${icon(s.icon)}${esc(s.source)} ${s.relevant ? `<span class="tag">suggested</span>` : ""}</span>
+          <span>${icon(s.icon)}${esc(s.source)} ${s.joined ? `<span class="tag" title="needed to join">joined</span>` : s.relevant ? `<span class="tag">suggested</span>` : ""}</span>
           ${s.probability === null || s.probability === undefined ? "<span></span>" : `<span class="rel" title="relevance ${Math.round(s.probability * 100)}%"><span style="width:${Math.round(s.probability * 100)}%"></span></span>`}
           ${s.description ? `<span class="desc">${esc(s.description)}</span>` : ""}</label>`).join("")).join("") +
+      ((d.joins || []).length ? `<h4>Joins <span class="label">untick one to keep the answer from using it</span></h4>` +
+        d.joins.map(j => `<label class="srcrow"><input type="checkbox" data-join="${esc(joinKey(j))}" ${pre.blocked.has(joinKey(j)) ? "" : "checked"}>
+          <span class="mono">${esc(j.left)} = ${esc(j.right)}</span>
+          <span class="rel" title="confidence ${Math.round(j.confidence * 100)}%"><span style="width:${Math.round(j.confidence * 100)}%"></span></span>
+          <span class="desc">to find the ${esc(String(j.for).replace(/_/g, " "))} · ${esc(j.type.replace(/_/g, " "))}</span></label>`).join("") : "") +
       `<div class="foot"><button class="secondary" type="button" id="useall">Let it choose</button>
         <button class="primary" type="button" id="paneldone">Done</button></div>`;
     panel.querySelectorAll("[data-source]").forEach(cb => cb.addEventListener("change", () => {
       const set = new Set(pre.chosen || suggested());
       cb.checked ? set.add(cb.dataset.source) : set.delete(cb.dataset.source);
-      pre.chosen = set; drawChips();
+      pre.chosen = set; chose(); drawChips();
+    }));
+    panel.querySelectorAll("[data-join]").forEach(cb => cb.addEventListener("change", () => {
+      cb.checked ? pre.blocked.delete(cb.dataset.join) : pre.blocked.add(cb.dataset.join); chose(); drawChips();
     }));
     panel.querySelectorAll("[data-system]").forEach(cb => { cb.indeterminate = cb.dataset.some === "1"; });
     panel.querySelectorAll("[data-only]").forEach(b => b.addEventListener("click", () => {
-      pre.chosen = new Set(d.systems.find(g => g.system === b.dataset.only).sources.map(s => s.source)); drawChips();
+      pre.chosen = new Set(d.systems.find(g => g.system === b.dataset.only).sources.map(s => s.source)); chose(); drawChips();
     }));
     panel.querySelectorAll("[data-system]").forEach(cb => cb.addEventListener("change", () => {
       const set = new Set(pre.chosen || suggested());
       d.systems.find(g => g.system === cb.dataset.system).sources.forEach(s => cb.checked ? set.add(s.source) : set.delete(s.source));
-      pre.chosen = set; drawChips();
+      pre.chosen = set; chose(); drawChips();
     }));
-    $("#useall").addEventListener("click", () => { pre.chosen = null; pre.open = null; drawChips(); });
+    $("#useall").addEventListener("click", () => { pre.chosen = null; pre.blocked = new Set(); pre.open = null; drawChips(); });
   } else {
     const e = d.entity, desc = e.descriptions || {};
     panel.innerHTML = `<p class="muted small" style="margin:0 0 6px">What should the answer be about?</p>` +
@@ -413,7 +441,7 @@ function drawPanel() {
         ${desc[name] ? `<span class="desc">${esc(desc[name])}</span>` : ""}</label>`).join("") +
       `<div class="foot"><button class="secondary" type="button" id="useall">Let it decide</button>
         <button class="primary" type="button" id="paneldone">Done</button></div>`;
-    panel.querySelectorAll("input[name=ent]").forEach(r => r.addEventListener("change", () => { pre.entity = r.value; drawChips(); }));
+    panel.querySelectorAll("input[name=ent]").forEach(r => r.addEventListener("change", () => { pre.entity = r.value; chose(); drawChips(); }));
     $("#useall").addEventListener("click", () => { pre.entity = null; pre.open = null; drawChips(); });
   }
   $("#paneldone").addEventListener("click", () => { pre.open = null; drawChips(); });
@@ -423,17 +451,29 @@ function drawPanel() {
 $("#askform").addEventListener("submit", (e) => {
   e.preventDefault();
   const q = $("#question").value.trim(); if (!q) return;
-  clearTimeout(pre.timer); pre.ctrl?.abort(); pre.thinking = false; pre.open = null; drawChips();
-  if (pre.chosen && pre.chosen.size === 0) { toast("Choose at least one table, or let it choose."); return; }
+  clearTimeout(pre.timer); pre.open = null;
+  if (pre.forQ !== null && !sameQuestion(pre.forQ, q)) resetChoices();  // chosen for another question
+  if (pre.chosen && pre.chosen.size === 0) { drawChips(); toast("Choose at least one table, or let it choose."); return; }
+  const stale = pre.data?.question !== q;
+  if (stale) { pre.data = null; pre.error = null; }
+  drawChips();
   ask(q);
+  if (stale) runPreview();  // asked before the pause: the box catches up with this question
 });
 async function ask(q, extra = {}) {
   const body = {question: q, user: user(), ...extra};
   if (pre.chosen) body.only_sources = [...pre.chosen];
   if (pre.entity) body.entity = pre.entity;
+  if (pre.blocked.size) body.blocked_joins = [...pre.blocked].map(k => k.split("="));
   $("#conversation").innerHTML = `<div class="card muted">Thinking…</div>`;
   try { render(await api("/api/ask", body)); }
   catch (err) { $("#conversation").innerHTML = `<div class="card error">${esc(err.message)}</div>`; }
+}
+
+// a question put in the box by a click (a suggested question): its own suggestions, not the last one's
+function askFresh() {
+  Object.assign(pre, {data: null, open: null, error: null}); resetChoices(); drawChips();
+  $("#askform").requestSubmit();
 }
 
 async function reply(convId, text) {
@@ -498,7 +538,7 @@ function render(c) {
   box.querySelectorAll("button.option").forEach(b => b.addEventListener("click", () => reply(c.conversation_id, b.dataset.reply)));
   box.querySelector("[data-runsql]")?.addEventListener("click", () => { $("#sqltext").value = r.sql; openTab("sql"); });
   box.querySelectorAll("[data-suggest]").forEach(b => b.addEventListener("click", () => {
-    $("#question").value = b.dataset.suggest; $("#askform").requestSubmit(); }));
+    $("#question").value = b.dataset.suggest; askFresh(); }));
   box.querySelector("[data-anyway]")?.addEventListener("click", () => ask(r.question, {in_scope: true}));
   $("#freeform")?.addEventListener("submit", (e) => { e.preventDefault(); const t = $("#freetext").value.trim(); if (t) reply(c.conversation_id, t); });
   wireFeedback(r);
