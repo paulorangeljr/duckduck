@@ -212,3 +212,44 @@ def test_offline_the_usual_reading_is_a_list():
     result = _ok("Which IPs have critical alerts from 10.0.0.2?")
     shape = next(d for d in result.decisions if d.kind == "answer_shape")
     assert shape.answer == "list" and shape.probability == pytest.approx(0.9)
+
+
+# ---------------------------------------------------------------------------
+# "What kind of information do you have?" — about the catalog, not the data
+
+
+@pytest.mark.parametrize("question", [
+    "What kind of information do you have access to?", "Que tipo de informações você tem acesso",
+    "What data do you have?", "Which tables are available?", "What can I ask?", "Quais dados você tem?",
+    "O que você sabe?",
+])
+def test_catalog_wording(question):
+    assert AnswerShapes().candidates(question)[0] == ["catalog"]
+
+
+@pytest.mark.parametrize("question, shape", [
+    ("Which tables contain 10.0.0.1?", "locate"), ("What types of rule exist?", "values"),
+    ("What kinds of alerts are critical?", "values"),
+])
+def test_neighbours_keep_their_shape(question, shape):
+    assert AnswerShapes().candidates(question)[0] == [shape]
+
+
+def test_a_catalog_question_asks_nothing_and_reads_no_data():
+    duck = _duck()
+    duck.fetch = lambda *a, **k: (_ for _ in ()).throw(AssertionError("no data read"))
+    search = SemanticSearch(Catalog.model_validate(CATALOG), duck)
+    result = search.search("Que tipo de informações você tem acesso")
+    assert result.status == "ok"
+    assert [(d.kind, d.answer, d.decided_by) for d in result.decisions] == [("answer_shape", "catalog", "deterministic")]
+    assert result.results.to_dict("records") == [
+        {"source": "alerts", "description": "Security alerts raised about IP addresses.",
+         "about": "ip address, security alert", "example_question": ""},
+        {"source": "owners", "description": "Who owns each IP address.", "about": "ip address, user",
+         "example_question": ""},
+    ]
+
+
+def test_the_catalog_answer_respects_allowed_sources():
+    search = SemanticSearch(Catalog.model_validate(CATALOG), _duck(), allowed_sources=["alerts"])
+    assert search.search("What data do you have?").results["source"].tolist() == ["alerts"]

@@ -67,6 +67,7 @@ DEFAULT_TEXTS: Dict[str, str] = {
     "answer_shape.count_by": "a count for each value of something (a breakdown)",
     "answer_shape.lookup": "everything about it, from every table that has it",
     "answer_shape.locate": "which tables have it",
+    "answer_shape.catalog": "what data I have access to",
     "values_field.question": "The different values of what?",
     "values_field.context": "“{question}” asks for the different values of something in the {source}, "
                             "but I'm not sure of what.",

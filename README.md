@@ -990,6 +990,7 @@ among the candidates. Other details:
 | `count_by` | "How many alerts per rule?", "quantos alertas por cada regra" | `SELECT rule, COUNT(*) … GROUP BY rule` (hosts per rule: distinct hosts per rule) |
 | `lookup` | "What can I find for 10.0.0.196?", "tudo sobre 10.0.0.196" | one `SELECT *` per table that has a field of the value's type |
 | `locate` | "Which tables contain 10.0.0.196?", "em quais tabelas existe o ip …" | one `COUNT(*)` per table; no value → from the catalog alone |
+| `catalog` | "What kind of information do you have?", "que tipo de informações você tem acesso", "what can I ask?" | no SQL: each table, what it holds and an example question, from the catalog |
 
 The decision works like a small tree:
 
@@ -1022,6 +1023,13 @@ so it's answered as the list of users. Pin `answer_shape` (one of the
 five) and `values_field` (`source.field`) to force either decision.
 Words like "per", "different" or "types" are never taken as values to
 filter on.
+
+**Questions about the data itself (`catalog`).** "What kind of
+information do you have access to?" is about the catalog, not about
+records. It's answered from the catalog: the tables you're allowed to
+see, what each one holds, and a question it answers. No data is read,
+and nothing else is decided or asked back (no entity, activity or table
+questions). Add your own wording under `answer_shapes.catalog`.
 
 **Everything about a value (`lookup`) and where it is (`locate`).** Both
 look in **every table that has a field of the value's type**, not only

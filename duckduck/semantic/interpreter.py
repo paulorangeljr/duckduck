@@ -92,6 +92,8 @@ class SemanticInterpreter:
         )
         if self.memory is not None:
             intent.similar_cases = self.memory.similar(question_template(intent.working_question, intent.literals))
+        if self._about_the_catalog(intent, decisions, pins):
+            return intent, decisions  # nothing to decide about the data — no entity, activity or tables to ask about
         try:
             refused = {k[7:] for k, v in pins.items() if k.startswith("source:") and v is False}
             ranked = self.retriever.search(intent.working_question, self.top_k + len(refused))
@@ -297,6 +299,20 @@ class SemanticInterpreter:
             intent.activity, intent.activity_confidence = result.choice, result.probability
 
     _SHAPE_QUESTION = "What kind of answer does the question ask for?"
+
+    def _about_the_catalog(self, intent: SemanticIntent, decisions: List[DecisionRecord], pins: Dict[str, Any]) -> bool:
+        """"What kind of information do you have?" — answered from the catalog, before any other decision."""
+        if pins.get("answer_shape") not in (None, "catalog"):
+            return False
+        candidates, words = self._candidates(intent)
+        if pins.get("answer_shape") != "catalog" and candidates != ["catalog"]:
+            return False
+        intent.answer_shape = "catalog"
+        decisions.append(
+            _by_user("answer_shape", self._SHAPE_QUESTION, "catalog", None) if pins.get("answer_shape") == "catalog"
+            else DecisionRecord(kind="answer_shape", question=self._SHAPE_QUESTION, answer="catalog", probability=0.99,
+                                decided_by="deterministic", subject=words))
+        return True
 
     def _without_shape_words(self, questions: List[Optional[str]], literals: list) -> list:
         """The answer-shape wording ("which tables", "tudo sobre") is never a value to filter on."""

@@ -385,6 +385,11 @@ class SemanticSearch:
             intent, decisions = self.interpreter.interpret(question, now, pinned, evidence=prober)
             result.intent = intent
             result.decisions.extend(decisions)
+            if intent.answer_shape == "catalog":  # "what kind of information do you have?"
+                result.results = self._catalog_overview()
+                result.status = "ok" if execute else "planned"
+                result.elapsed_ms = (time.perf_counter() - started) * 1000
+                return result
             if intent.answer_shape == "lookup" and not intent.resources:
                 intent.answer_shape = "list"  # "tell me about the alerts": no value to look up — list them
             if intent.answer_shape not in ACROSS_SHAPES:
@@ -487,6 +492,20 @@ class SemanticSearch:
             )
             result.results = result.summary if intent.answer_shape == "locate" else _rows_found(result.sections)
             result.status = "ok"
+
+    def _catalog_overview(self) -> pd.DataFrame:
+        """What there is to ask about: each table, what it holds, and a question it answers — no data read."""
+        rows = []
+        for name, src in self.catalog.sources.items():
+            if not self.planner._is_allowed(name):
+                continue
+            about = [e for e in src.entities if not getattr(self.catalog.entities.get(e), "row_level", False)]
+            rows.append({
+                "source": name, "description": src.description.strip(),
+                "about": ", ".join(e.replace("_", " ") for e in about + [a.replace("_", " ") for a in src.activities]),
+                "example_question": src.examples[0] if src.examples else "",
+            })
+        return pd.DataFrame(rows, columns=["source", "description", "about", "example_question"])
 
     def _catalog_listing(self, intent: SemanticIntent) -> pd.DataFrame:
         """"Which tables have IPs?" / "which tables exist?" — answered from the catalog, no data read."""

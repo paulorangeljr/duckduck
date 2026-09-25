@@ -33,6 +33,7 @@ ANSWER_SHAPES: Dict[str, str] = {
     "count_by": "a count for each value of an attribute — a breakdown (GROUP BY field)",
     "lookup": "everything the data holds about a given value, from every table that has it",
     "locate": "which tables contain a given value (or hold that kind of thing), not the rows themselves",
+    "catalog": "what data there is to ask about — the tables and what they hold, from the catalog (no data read)",
 }
 #: The shapes that need to know which field they're about.
 FIELD_SHAPES = ("values", "count_values", "count_by")
@@ -40,6 +41,17 @@ FIELD_SHAPES = ("values", "count_values", "count_by")
 ACROSS_SHAPES = ("lookup", "locate")
 
 DEFAULT_WORDING: Dict[str, Dict[str, List[str]]] = {
+    "catalog": {"wording": [
+        "re:\\bwhat (kinds?|types?|sorts?) of (information|info|data|tables|sources|datasets)\\b",
+        "re:\\bwhat (information|info|data|tables|sources|datasets)( do| can| does)? (you|we|i) (have|access|see|know|hold|cover|query)",
+        "re:\\b(which|what) (tables|sources|datasets|data sources) (do you have|are available|are there|exist)\\b",
+        "have access to", "has access to", "what do you know", "what can you answer", "what can i ask",
+        "what questions can", "what is available", "what's available", "what data is there",
+        "re:\\bque tipos? de (informa\\w+|dados|tabelas|fontes)\\b",
+        "re:\\bquais (informa\\w+|dados|tabelas|fontes|bases) (voc[eê]|vc) (tem|possui|acessa|conhece|enxerga)\\b",
+        "re:\\b(voc[eê]|vc) tem acesso\\b", "o que você sabe", "o que voce sabe", "o que posso perguntar",
+        "re:\\bquais (dados|tabelas|fontes|bases) (existem|est[aã]o dispon[ií]veis|h[aá])\\b",
+    ]},
     "count": {"wording": [
         "how many", "number of", "count of", "count the", "count all", "total number of", "re:^\\s*count\\b",
         "quantos", "quantas", "número de", "numero de", "contagem",
@@ -114,6 +126,8 @@ class AnswerShapes:
         found = {s: self._find(question, s) for s in DEFAULT_WORDING}
         maybe = self._find(question, "count_by", "maybe_wording")
         words = ", ".join(f"'{m.group(0).strip()}'" for m in [*found.values(), maybe] if m)
+        if found["catalog"]:
+            return ["catalog"], words
         if found["locate"]:
             return ["locate"], words
         if found["lookup"]:

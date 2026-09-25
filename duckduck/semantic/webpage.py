@@ -189,7 +189,8 @@ function table(rows, max = 500) {
 }
 
 const SHAPE_WORDS = {list: "a list", count: "a count", values: "the different values", count_values: "a count of values",
-                     count_by: "a count per group", lookup: "everything about the value", locate: "where the value is"};
+                     count_by: "a count per group", lookup: "everything about the value", locate: "where the value is",
+                     catalog: "what data there is"};
 
 function render(c) {
   const r = c.result, box = $("#conversation");
@@ -208,9 +209,10 @@ function render(c) {
     html += `<div class="card"><h3>I couldn't answer this</h3><p class="context">${esc(r.clarification || r.status)}</p></div>`;
   } else {
     const shape = (r.intent && r.intent.answer_shape) || "list";
+    const tables = shape === "catalog" ? [] : (r.query_plan ? r.query_plan.sources : (r.sections || []).filter(s => s.rows).map(s => s.source));
     const n = (r.results || []).length;
     html += `<div class="card"><div class="row"><span class="pill">${esc(SHAPE_WORDS[shape] || shape)}</span>
-      ${(r.query_plan ? r.query_plan.sources : (r.sections || []).filter(s => s.rows).map(s => s.source)).map(s => `<span class="pill">${esc(s)}</span>`).join("")}
+      ${tables.map(s => `<span class="pill">${esc(s)}</span>`).join("")}
       <span class="muted small">${n} row${n === 1 ? "" : "s"}${c.truncated ? " (first 500 shown)" : ""}</span></div>
       ${table(r.results)}
       ${r.summary ? `<details><summary>Where it was looked for</summary>${table(r.summary)}</details>` : ""}
