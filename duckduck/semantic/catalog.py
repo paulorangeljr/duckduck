@@ -44,6 +44,28 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
 
+class FieldProfile(_Strict):
+    """What the data looked like when the catalog was generated — computed, not written by the LLM."""
+
+    #: Distinct non-empty values in the sampled rows.
+    distinct: Optional[int] = None
+    #: Share of empty values in the sampled rows.
+    null_ratio: Optional[float] = None
+    #: Smallest / largest value seen (numbers and dates, as text).
+    min: Optional[str] = None
+    max: Optional[str] = None
+    #: A few real values (only with ``catalog_generation.sample_values``).
+    examples: List[str] = Field(default_factory=list)
+
+
+class SourceProfile(_Strict):
+    #: Rows the profile was computed from (a sample, not the whole table).
+    rows_sampled: int = 0
+    #: Earliest / latest value of the time field in those rows.
+    time_min: Optional[str] = None
+    time_max: Optional[str] = None
+
+
 class FieldDef(_Strict):
     type: FieldType = "string"
     #: What the value *means* (``user``, ``ip_address``, ``domain``,
@@ -74,6 +96,8 @@ class FieldDef(_Strict):
     #: Your observations about this field. Never written by the LLM, kept
     #: when the source is redrafted, and given to the LLM as context then.
     notes: str = ""
+    #: Computed from the data at generation time.
+    profile: Optional[FieldProfile] = None
 
 
 class SourceDef(_Strict):
@@ -105,6 +129,8 @@ class SourceDef(_Strict):
     generated_at: Optional[datetime] = None
     #: The LLM that drafted it (``name (provider model)``).
     generated_by: Optional[str] = None
+    #: Computed from the data at generation time.
+    profile: Optional[SourceProfile] = None
 
     @model_validator(mode="after")
     def _check(self) -> "SourceDef":
@@ -284,6 +310,13 @@ class Catalog(_Strict):
                      for v, syn in list(f.values.items())[:20]]
             more = f", and {len(f.values) - 20} more" if len(f.values) > 20 else ""
             text += f" Known values: {', '.join(shown)}{more}."
+        if f.profile:
+            if f.profile.examples and not f.values:
+                text += f" E.g. {', '.join(repr(x) for x in f.profile.examples)}."
+            if f.profile.min and f.profile.max and f.profile.min != f.profile.max:
+                text += f" Ranges from {f.profile.min} to {f.profile.max}."
+            if f.profile.null_ratio is not None and f.profile.null_ratio >= 0.5:
+                text += f" Mostly empty ({f.profile.null_ratio:.0%} of sampled rows)."
         return text + (f" Owner's notes: {f.notes.strip()}" if f.notes.strip() else "")
 
     def describe_source(self, name: str) -> str:
@@ -294,6 +327,8 @@ class Catalog(_Strict):
             for fname, f in src.fields.items()
         )
         parts = [f"{name}: {src.description.strip()}", f"Fields: {fields}."]
+        if src.profile and src.profile.time_min:
+            parts.append(f"Sampled records span {src.profile.time_min} to {src.profile.time_max}.")
         if src.notes.strip():
             parts.append(f"Owner's notes: {src.notes.strip()}")
         if src.entities:

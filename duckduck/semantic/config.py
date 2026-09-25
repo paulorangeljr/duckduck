@@ -231,6 +231,17 @@ class CatalogGenerationConfig(_Strict):
     #: Cap on sources drafted per run — each one is an LLM call. The rest
     #: are drafted on later runs.
     max_tables: int = Field(default=50, ge=1)
+    #: Rows read per table to compute each field's profile (distinct values,
+    #: empty share, min/max, the source's date range, category values). 0: none.
+    profile_rows: int = Field(default=1000, ge=0)
+    #: Real example values stored per field in the catalog (0: none — they
+    #: write real data into the file).
+    sample_values: int = Field(default=0, ge=0)
+    #: Store example values for user/email fields too.
+    sample_sensitive: bool = False
+    #: A text column with at most this many distinct (repeating) values
+    #: becomes a value list automatically.
+    max_enum_values: int = Field(default=20, ge=0)
 
     @model_validator(mode="after")
     def _check(self) -> "CatalogGenerationConfig":
@@ -535,6 +546,10 @@ class SemanticConfig(_Strict):
             max_age=cfg.max_age,
             llm_label=self.llm_label("catalog_generation"),
             link_llm_label=self.llm_label("catalog_link"),
+            profile_rows=cfg.profile_rows,
+            sample_values=cfg.sample_values,
+            sample_sensitive=cfg.sample_sensitive,
+            max_enum_values=cfg.max_enum_values,
         )
 
 

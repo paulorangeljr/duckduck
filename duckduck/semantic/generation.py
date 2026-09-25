@@ -48,6 +48,7 @@ from ..kinds import CATALOG, TABLE, TABLE_FUNCTION, kind_of, lists_of, required_
 from ..local_files import table_name_for
 from .catalog import Catalog, FieldType
 from .llm import LLMClient
+from .profiling import IDENTIFIER_TYPES, SENSITIVE_TYPES, profile_frame
 
 logger = logging.getLogger("duckduck.semantic.generation")
 
@@ -314,6 +315,10 @@ class CatalogGenerator:
         llm_label: Optional[str] = None,
         clock: Optional[Callable[[], _dt.datetime]] = None,
         link_llm_label: Optional[str] = None,
+        profile_rows: int = 1000,
+        sample_values: int = 0,
+        sample_sensitive: bool = False,
+        max_enum_values: int = 20,
     ):
         self.llm = llm
         #: A generated source older than this is redrafted; ``None`` → never expires.
@@ -321,6 +326,14 @@ class CatalogGenerator:
         #: Stamped as each drafted source's ``generated_by``; also shown in verbose output.
         self.llm_label = llm_label
         self.link_llm_label = link_llm_label
+        #: Rows read per table to compute each field's profile (0: no profiles).
+        self.profile_rows = profile_rows
+        #: Real example values stored per field in the catalog (0: none).
+        self.sample_values = sample_values
+        #: Store examples even for user/email fields.
+        self.sample_sensitive = sample_sensitive
+        #: A text column with up to this many distinct values becomes a value list.
+        self.max_enum_values = max_enum_values
         self.clock = clock or (lambda: _dt.datetime.now(_dt.timezone.utc))
         #: The final vocabulary/joins call (one call, over every table) — ``llm`` when omitted.
         self.link_llm = link_llm or llm
@@ -444,12 +457,18 @@ class CatalogGenerator:
             raise KeyError(f"table '{spec.table}' isn't registered in DuckAPI")
         kwargs = dict(spec.args)
         if "limit" in inspect.signature(fn).parameters:
-            kwargs["limit"] = max(self.sample_rows, 1)
+            kwargs["limit"] = max(self.sample_rows, self.profile_rows, 1)
         df = self.duck.fetch(spec.table, **kwargs)
         rows = []
         if self.sample_rows > 0 and not df.empty:
             sample = df.head(self.sample_rows).astype(str).apply(lambda col: col.str.slice(0, 120))
             rows = sample.to_dict(orient="records")
+        stats = profile_frame(df, self.max_enum_values, max(self.sample_values, 3)) if self.profile_rows else {}
+        # for the LLM: counts and ranges; the value lists only when data values may be sent at all
+        column_stats = {
+            c: {k: v for k, v in st.items() if k != "examples" and (k != "values" or self.sample_rows > 0)}
+            for c, st in stats.items()
+        }
         described = self.duck.list_tables().set_index("name")
         meta = described.loc[spec.table.lower()] if spec.table.lower() in described.index else None
         return {
@@ -458,8 +477,11 @@ class CatalogGenerator:
             "connector_description": None if meta is None else meta["description"],
             "columns": {c: str(t) for c, t in df.dtypes.items()},
             "sample_rows": rows,
+            "rows_profiled": len(df) if stats else 0,
+            "column_stats": column_stats,
             "owner_notes": "\n".join(n for n in (spec.notes, getattr(previous, "notes", "")) if n),
             "field_notes": {f: d.notes for f, d in (previous.fields.items() if previous else ()) if d.notes},
+            "_stats": stats,  # kept out of the prompt
         }
 
     def generate(
@@ -517,6 +539,7 @@ class CatalogGenerator:
 
         drafts: Dict[str, GenSource] = {}
         columns: Dict[str, List[str]] = {}
+        stats: Dict[str, tuple] = {}
         reasons: Dict[str, str] = {}
         started = time.perf_counter()
         for i, (spec, reason) in enumerate(todo, 1):
@@ -529,6 +552,7 @@ class CatalogGenerator:
                 logger.info("  skipped: couldn't profile it (%s)", exc)
                 continue
             columns[spec.name] = list(profile["columns"])
+            stats[spec.name] = (profile.pop("_stats"), profile["rows_profiled"])
             logger.info(
                 "  %d columns, %d sample rows%s — asking %s", len(profile["columns"]), len(profile["sample_rows"]),
                 ", with your notes" if profile["owner_notes"] or profile["field_notes"] else "", self.llm_label or "the LLM",
@@ -587,7 +611,7 @@ class CatalogGenerator:
         by_name = {s.name: s for s, _ in todo}
         stamp = {"generated_at": self.clock().replace(microsecond=0), "generated_by": self.llm_label}
         noted = len(warnings)
-        catalog = self._assemble(drafts, vocab, columns, by_name, warnings, existing, stamp)
+        catalog = self._assemble(drafts, vocab, columns, by_name, warnings, existing, stamp, stats)
         logger.info(
             "merged: %d sources, %d entities, %d activities, %d relationships · %s total",
             len(catalog.sources), len(catalog.entities), len(catalog.activities), len(catalog.relationships),
@@ -621,6 +645,34 @@ class CatalogGenerator:
                 matched.add(p)
                 hit = True
         return hit
+
+    def _apply_profile(self, field: Dict[str, Any], st: Optional[Dict[str, Any]]) -> None:
+        """A field's computed profile, and its category values merged into its value list."""
+        if not st:
+            return
+        profile = {k: st[k] for k in ("distinct", "null_ratio", "min", "max") if st.get(k) is not None}
+        sensitive = field.get("semantic_type") in SENSITIVE_TYPES and not self.sample_sensitive
+        if self.sample_values and not sensitive and st.get("examples"):
+            profile["examples"] = st["examples"][: self.sample_values]
+        if profile:
+            field["profile"] = profile
+        if (st.get("values") and field.get("type", "string") == "string" and field.get("match") != "contains"
+                and field.get("semantic_type") not in IDENTIFIER_TYPES):
+            values = field.setdefault("values", {})
+            for v in st["values"]:
+                values.setdefault(v, [])  # the LLM's synonyms stay; values it missed are added
+
+    @staticmethod
+    def _source_profile(fields: Dict[str, Any], time_field: Optional[str], stats: Optional[tuple]) -> Dict[str, Any]:
+        if not stats or not stats[0]:
+            return {}
+        column_stats, rows = stats
+        profile: Dict[str, Any] = {"rows_sampled": rows}
+        tf = time_field or next((n for n, f in fields.items() if f.get("semantic_type") == "event_time"), None)
+        st = column_stats.get(tf) if tf else None
+        if st and st.get("min"):
+            profile["time_min"], profile["time_max"] = st["min"], st["max"]
+        return profile
 
     @staticmethod
     def _log_plan(specs, todo, kept_names, deferred) -> None:
@@ -684,7 +736,8 @@ class CatalogGenerator:
     # ------------------------------------------------------------------
 
     def _assemble(self, drafts, vocab: GenVocabulary, columns, specs, warnings: List[str],
-                  existing: Optional[Catalog] = None, stamp: Optional[Dict[str, Any]] = None) -> Catalog:
+                  existing: Optional[Catalog] = None, stamp: Optional[Dict[str, Any]] = None,
+                  stats: Optional[Dict[str, tuple]] = None) -> Catalog:
         base = existing.model_dump(by_alias=True, exclude_defaults=True) if existing else {}
         old_sources = {n: s for n, s in base.get("sources", {}).items() if n not in drafts}
         entities = {
@@ -723,6 +776,7 @@ class CatalogGenerator:
                 kept_note = base.get("sources", {}).get(name, {}).get("fields", {}).get(f.name, {}).get("notes")
                 if kept_note:
                     fields[f.name]["notes"] = kept_note
+                self._apply_profile(fields[f.name], (stats or {}).get(name, ({}, 0))[0].get(f.name))
             if not fields:
                 warnings.append(f"{name}: no usable fields — source dropped")
                 continue
@@ -735,6 +789,7 @@ class CatalogGenerator:
                     if item not in known:
                         warnings.append(f"{name}: {kind} '{item}' was never defined — dropped")
             spec = specs[name]
+            source_profile = self._source_profile(fields, time_field, (stats or {}).get(name))
             previous = base.get("sources", {}).get(name, {})
             for gone in set(previous.get("fields", {})) - set(fields):
                 if previous["fields"][gone].get("notes"):
@@ -748,6 +803,7 @@ class CatalogGenerator:
                 # what a person wrote survives the redraft
                 **({"notes": previous["notes"]} if previous.get("notes") else {}),
                 **({"critical": previous["critical"]} if previous.get("critical") else {}),
+                **({"profile": source_profile} if source_profile else {}),
                 **(stamp or {}),
             }
         # existing order first (redrafted sources in place), then the new ones
