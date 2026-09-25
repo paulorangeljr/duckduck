@@ -253,3 +253,36 @@ def test_a_catalog_question_asks_nothing_and_reads_no_data():
 def test_the_catalog_answer_respects_allowed_sources():
     search = SemanticSearch(Catalog.model_validate(CATALOG), _duck(), allowed_sources=["alerts"])
     assert search.search("What data do you have?").results["source"].tolist() == ["alerts"]
+
+
+@pytest.mark.parametrize("question, topic", [
+    ("Quais entidades existem no seu catalogo", "entities"), ("Which entities exist in your catalog?", "entities"),
+    ("Quais atividades existem?", "activities"), ("What columns does alerts have?", "fields"),
+    ("Quais campos tem a tabela owners?", "fields"), ("How are the tables related?", "relationships"),
+    ("Como as tabelas se relacionam?", "relationships"), ("What kind of information do you have?", "tables"),
+    ("Show me your catalog", "tables"),
+])
+def test_catalog_topics(question, topic):
+    result = _search().search(question)
+    assert result.status == "ok" and result.intent.answer_shape == "catalog" and result.intent.catalog_topic == topic
+
+
+def test_catalog_entities_say_where_each_one_is():
+    rows = {r["entity"]: r for r in _ok("Quais entidades existem no seu catalogo").results.to_dict("records")}
+    assert rows["ip_address"]["tables"] == "alerts, owners" and rows["ip_address"]["fields"] == "alerts.ip, owners.ip"
+    assert rows["user"]["fields"] == "owners.owner" and rows["event"]["records_themselves"]
+
+
+def test_catalog_fields_of_the_table_named():
+    rows = _ok("What columns does alerts have?").results
+    assert rows["source"].unique().tolist() == ["alerts"] and rows["field"].tolist() == ["ip", "rule", "severity"]
+    assert rows.set_index("field")["known_values"]["severity"] == "low, high, critical"
+    assert set(_ok("Quais campos existem?").results["source"]) == {"alerts", "owners"}  # no table named: all
+
+
+def test_catalog_relationships_and_allowed_sources():
+    assert _ok("How are the tables related?").results.to_dict("records") == [
+        {"from": "alerts.ip", "to": "owners.ip", "type": "same_entity", "confidence": 0.95}]
+    limited = SemanticSearch(Catalog.model_validate(CATALOG), _duck(), allowed_sources=["alerts"])
+    assert limited.search("How are the tables related?").results.empty
+    assert limited.search("Which entities exist?").results.set_index("entity")["tables"]["user"] == ""

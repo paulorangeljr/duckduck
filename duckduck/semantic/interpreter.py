@@ -30,7 +30,7 @@ from .intent import (
 )
 from .retrieval import CatalogRetriever, LexicalRetriever
 from .memory import as_fact, question_template
-from .shapes import ACROSS_SHAPES, AnswerShapes
+from .shapes import ACROSS_SHAPES, AnswerShapes, catalog_topic
 from .text import vocabulary
 
 #: Shape-recognized literal kinds → the semantic type they denote.
@@ -308,6 +308,8 @@ class SemanticInterpreter:
         if pins.get("answer_shape") != "catalog" and candidates != ["catalog"]:
             return False
         intent.answer_shape = "catalog"
+        intent.catalog_topic = catalog_topic(intent.working_question)
+        words = f"{words}, topic: {intent.catalog_topic}" if words else f"topic: {intent.catalog_topic}"
         decisions.append(
             _by_user("answer_shape", self._SHAPE_QUESTION, "catalog", None) if pins.get("answer_shape") == "catalog"
             else DecisionRecord(kind="answer_shape", question=self._SHAPE_QUESTION, answer="catalog", probability=0.99,

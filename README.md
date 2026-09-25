@@ -990,7 +990,7 @@ among the candidates. Other details:
 | `count_by` | "How many alerts per rule?", "quantos alertas por cada regra" | `SELECT rule, COUNT(*) … GROUP BY rule` (hosts per rule: distinct hosts per rule) |
 | `lookup` | "What can I find for 10.0.0.196?", "tudo sobre 10.0.0.196" | one `SELECT *` per table that has a field of the value's type |
 | `locate` | "Which tables contain 10.0.0.196?", "em quais tabelas existe o ip …" | one `COUNT(*)` per table; no value → from the catalog alone |
-| `catalog` | "What kind of information do you have?", "que tipo de informações você tem acesso", "what can I ask?" | no SQL: each table, what it holds and an example question, from the catalog |
+| `catalog` | "What kind of information do you have?", "quais entidades existem no catálogo?", "what columns does alerts have?" | no SQL: answered from the catalog (see below) |
 
 The decision works like a small tree:
 
@@ -1026,10 +1026,22 @@ filter on.
 
 **Questions about the data itself (`catalog`).** "What kind of
 information do you have access to?" is about the catalog, not about
-records. It's answered from the catalog: the tables you're allowed to
-see, what each one holds, and a question it answers. No data is read,
-and nothing else is decided or asked back (no entity, activity or table
-questions). Add your own wording under `answer_shapes.catalog`.
+records. It's answered from the catalog: no data is read, and nothing
+else is decided or asked back (no entity, activity or table questions).
+What it answers depends on the question's topic (`intent.catalog_topic`):
+
+| Topic | Example | Answer |
+|---|---|---|
+| tables | "What kind of information do you have?", "show me your catalog" | each table, what it holds, an example question |
+| entities | "Quais entidades existem no seu catálogo?" | each entity: description, keywords, the tables and fields that hold it |
+| activities | "Which activities are there?" | each activity: description, keywords, what it's about, its tables |
+| fields | "What columns does alerts have?", "quais campos tem a tabela owners?" | the named table's fields (all tables if none is named): type, meaning, description, known values |
+| relationships | "How are the tables related?", "como as tabelas se relacionam?" | the joins: from, to, type, confidence |
+
+Only the tables you're allowed to see (`allowed_sources`) show up. Add
+your own wording under `answer_shapes.catalog`; the topic is read from
+the words entity/activity/field/column/relationship (and their
+Portuguese forms).
 
 **Everything about a value (`lookup`) and where it is (`locate`).** Both
 look in **every table that has a field of the value's type**, not only

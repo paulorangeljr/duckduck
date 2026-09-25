@@ -386,7 +386,7 @@ class SemanticSearch:
             result.intent = intent
             result.decisions.extend(decisions)
             if intent.answer_shape == "catalog":  # "what kind of information do you have?"
-                result.results = self._catalog_overview()
+                result.results = self._catalog_answer(intent)
                 result.status = "ok" if execute else "planned"
                 result.elapsed_ms = (time.perf_counter() - started) * 1000
                 return result
@@ -492,6 +492,60 @@ class SemanticSearch:
             )
             result.results = result.summary if intent.answer_shape == "locate" else _rows_found(result.sections)
             result.status = "ok"
+
+    def _catalog_answer(self, intent: SemanticIntent) -> pd.DataFrame:
+        """A question about the catalog itself, by topic — never reads data."""
+        topic = intent.catalog_topic or "tables"
+        allowed = [n for n in self.catalog.sources if self.planner._is_allowed(n)]
+        cat = self.catalog
+
+        def holders(kind: str, name: str) -> List[str]:
+            if kind == "entity":
+                refs = [f"{s}.{f}" for s in allowed for f, d in cat.sources[s].fields.items() if d.semantic_type == name]
+                refs += [r for r in cat.entity_fields(name) if r.split(".")[0] in allowed and r not in refs]
+                srcs = {r.split(".")[0] for r in refs} | {s for s in allowed if name in cat.sources[s].entities}
+                return sorted(srcs)
+            return sorted(s for s in allowed if name in cat.sources[s].activities)
+
+        if topic == "entities":
+            rows = [{"entity": n, "description": e.description.strip(), "keywords": ", ".join(e.keywords),
+                     "tables": ", ".join(holders("entity", n)),
+                     "fields": ", ".join(f"{s}.{f}" for s in allowed for f, d in cat.sources[s].fields.items()
+                                         if d.semantic_type == n),
+                     "records_themselves": bool(e.row_level)}
+                    for n, e in cat.entities.items()]
+            return pd.DataFrame(rows, columns=["entity", "description", "keywords", "tables", "fields",
+                                               "records_themselves"])
+        if topic == "activities":
+            rows = [{"activity": n, "description": a.description.strip(), "keywords": ", ".join(a.keywords),
+                     "about": (a.resource or "").replace("_", " "), "tables": ", ".join(holders("activity", n))}
+                    for n, a in cat.activities.items()]
+            return pd.DataFrame(rows, columns=["activity", "description", "keywords", "about", "tables"])
+        if topic == "fields":
+            named = self._tables_named_in(intent.working_question, allowed) or allowed
+            rows = [{"source": s, "field": f, "type": d.type, "meaning": (d.semantic_type or "").replace("_", " "),
+                     "description": d.description.strip(),
+                     "known_values": ", ".join(list(d.values)[:10]) + (" …" if len(d.values) > 10 else "")}
+                    for s in named for f, d in cat.sources[s].fields.items()]
+            return pd.DataFrame(rows, columns=["source", "field", "type", "meaning", "description", "known_values"])
+        if topic == "relationships":
+            rows = [{"from": r.from_, "to": r.to, "type": r.type, "confidence": r.confidence}
+                    for r in cat.relationships
+                    if r.from_.split(".")[0] in allowed and (r.to.split(".")[0] in allowed or "." not in r.to)]
+            return pd.DataFrame(rows, columns=["from", "to", "type", "confidence"])
+        return self._catalog_overview()
+
+    @staticmethod
+    def _tables_named_in(question: str, names: List[str]) -> List[str]:
+        """The tables a question names ("the columns of proxy logs" → proxy_logs)."""
+        import re
+
+        found = []
+        for name in names:
+            variants = {name, name.replace("_", " ")}
+            if any(re.search(rf"(?<![\w]){re.escape(v)}(?![\w])", question, re.I) for v in variants):
+                found.append(name)
+        return found
 
     def _catalog_overview(self) -> pd.DataFrame:
         """What there is to ask about: each table, what it holds, and a question it answers — no data read."""

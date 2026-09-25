@@ -71,6 +71,8 @@ class SemanticIntent(BaseModel):
     english_question: Optional[str] = None
     #: What kind of answer — which SQL shape (see ``ANSWER_SHAPES``).
     answer_shape: str = "list"
+    #: For ``catalog``: which part of it — tables / entities / activities / fields / relationships.
+    catalog_topic: Optional[str] = None
     target_entity: Optional[str] = None
     target_confidence: float = 0.0
     activity: Optional[str] = None

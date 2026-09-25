@@ -51,6 +51,13 @@ DEFAULT_WORDING: Dict[str, Dict[str, List[str]]] = {
         "re:\\bquais (informa\\w+|dados|tabelas|fontes|bases) (voc[eê]|vc) (tem|possui|acessa|conhece|enxerga)\\b",
         "re:\\b(voc[eê]|vc) tem acesso\\b", "o que você sabe", "o que voce sabe", "o que posso perguntar",
         "re:\\bquais (dados|tabelas|fontes|bases) (existem|est[aã]o dispon[ií]veis|h[aá])\\b",
+        # the catalog's parts: entities, activities, fields, relationships
+        "re:\\bcat[aá]log(o|ue)?\\b",
+        "re:\\b(which|what|list( the| all)?|show( me)?( the| all)?) (entities|activities|relationships|joins)\\b",
+        "re:\\b(which|what) (fields|columns|attributes)\\b",
+        "re:\\bhow are (the )?tables (related|connected|linked|joined)\\b",
+        "re:\\b(quais|que|liste|mostre)( as| os| me)? (entidades|atividades|relacionamentos|rela[cç][oõ]es|campos|colunas|atributos)\\b",
+        "re:\\bcomo (as )?tabelas se (relacionam|conectam|ligam)\\b",
     ]},
     "count": {"wording": [
         "how many", "number of", "count of", "count the", "count all", "total number of", "re:^\\s*count\\b",
@@ -171,6 +178,21 @@ def _compile(phrase: str, shape: str) -> re.Pattern:
         return re.compile(r"(?<!\w)" + r"\s+".join(words) + r"(?!\w)", re.IGNORECASE)
     except re.error as exc:
         raise ValueError(f"answer_shapes[{shape!r}]: bad regex {phrase!r}: {exc}") from exc
+
+
+#: What a ``catalog`` question is about, by its wording (first match wins; default: the tables).
+CATALOG_TOPICS = [
+    ("relationships", re.compile(r"\b(relationships?|joins?|related|connected|linked|relacionament\w*|rela[cç](ão|ao|ões|oes)"
+                                 r"|relacionam|conectam|ligam)\b", re.I)),
+    ("fields", re.compile(r"\b(fields?|columns?|attributes?|campos?|colunas?|atributos?)\b", re.I)),
+    ("activities", re.compile(r"\b(activit(y|ies)|atividades?)\b", re.I)),
+    ("entities", re.compile(r"\b(entit(y|ies)|entidades?|kinds? of things|tipos? de coisas?)\b", re.I)),
+]
+
+
+def catalog_topic(question: str) -> str:
+    """``tables`` / ``entities`` / ``activities`` / ``fields`` / ``relationships`` — what a catalog question asks about."""
+    return next((topic for topic, regex in CATALOG_TOPICS if regex.search(question)), "tables")
 
 
 def merge_answer_shapes(base: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any]:
