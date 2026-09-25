@@ -813,14 +813,18 @@ python -m duckduck.semantic feedback-export    # what still fails, as a brief fo
   value, missing data, too many questions) and say why. Optionally you say
   what would have been right: the tables, the kind of answer, what it
   asks about, or *"word X means field = value"*.
-- **Two ways to read a question: Rules or LLM.** A switch next to the
-  question picks the reader. The choice is remembered in your browser;
+- **Two ways to read a question: 🦆 Paddle or 🤿 Dive.** A switch next to
+  the question picks the reader. Paddle skims the words on the surface: the
+  `rules` reader. Dive goes under for what you meant: the `llm` reader. The
+  API, CLI and config call them `rules` and `llm`. The **?** next to the
+  switch explains both: how each reads, what it's good at, its limits, and
+  its speed and cost. The choice is remembered in your browser;
   `semantic.reader` sets the default, `ask --reader llm` / `search(q,
   reader="llm")` in code.
-  - **Rules** (as before). The wording decides the kind of answer and what
+  - **Paddle — `rules`** (as before). The wording decides the kind of answer and what
     it's about. The decision engine (Jev) settles what the wording leaves
     open, and a doubt is asked back.
-  - **LLM.** An LLM reads the question first, in the same call that
+  - **Dive — `llm`.** An LLM reads the question first, in the same call that
     translates it. It returns the kind of answer, what it's about (an
     entity, a field, a table or a value) and the grouping, using only
     names that exist in the catalog; anything else is dropped. Then Jev
@@ -830,13 +834,15 @@ python -m duckduck.semantic feedback-export    # what still fails, as a brief fo
       LLM's reading on every question it's asked;
     - a doubt is still asked back, never guessed.
 
-    The reading shows as a chip (*LLM read: a count of values · about field
+    The reading shows as a chip (*Dive found: a count of values · about field
     owners.department*) and as the first line of *How it was decided*.
     Needs an LLM (`extractor.llm` or `default_llm`). Without one the switch
     is disabled and says why. If the LLM call fails, the search falls back
     to the rules.
   - **Ask waits for the reading.** While the question is being read
-    (either way), the Ask button is disabled and reads *Reading…*. Pressing
+    (either way), the Ask button is disabled and reads *Paddling…* or
+    *Diving…*, while the duck says what it's up to ("rubber-duck debugging
+    your question…"). Pressing
     Enter then asks as soon as the reading is done. With the LLM, the
     reading is cached for 5 minutes, so the preview and the search that
     follows make **one** LLM call.

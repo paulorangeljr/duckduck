@@ -627,7 +627,7 @@ Both readers produce the same three decisions. What differs is who proposes them
   - `search`/`conversation`/`preview(reader=)` (the preview cache is keyed per reader); `Conversation.reader` holds every round;
   - server: `/api/preview` and `/api/ask` take `reader`; `/api/meta.readers` = {available, default, llm_unavailable};
   - CLI: `ask --reader`.
-- **The page.** A Rules | LLM switch (`READER`, localStorage). Ask is disabled while the preview is pending or running (`busy`, `updateAsk`); Enter while busy sets `pendingSubmit`, which submits once the preview lands; a 60s abort keeps Ask from staying disabled. Tests: `tests/test_readers.py`.
+- **The page.** A 🦆 Paddle (`rules`) | 🤿 Dive (`llm`) switch (`READER`, `READER_NAMES`, localStorage; only the page uses those names). While reading, the thinking chip rotates `QUIPS[READER]` (`startQuips`/`stopQuips`, every 2.2s; never opens with the last one) and Ask reads Paddling…/Diving…. The `?` (`#readerhelpbtn`) toggles `#readerhelp`: per mode how it reads / good at / limits (keep it in sync when a reader changes). Ask is disabled while the preview is pending or running (`busy`, `updateAsk`); Enter while busy sets `pendingSubmit`, which submits once the preview lands; a 60s abort keeps Ask from staying disabled. Tests: `tests/test_readers.py`.
 
 ### Invariants — don't break these
 

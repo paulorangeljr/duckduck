@@ -53,6 +53,14 @@ input, textarea, select { font: inherit; color: var(--ink); background: var(--su
 .ask .reader { align-self: center; flex: none; }
 .ask .reader button[disabled] { opacity: .45; cursor: not-allowed; }
 #askbtn { min-width: 92px; }
+button.help { flex: none; align-self: center; width: 26px; height: 26px; border-radius: 50%; padding: 0;
+              border: 1px solid var(--border); background: var(--surface-2); color: var(--ink-2); cursor: pointer;
+              font: inherit; font-size: 13px; font-weight: 600; }
+button.help[aria-expanded="true"] { outline: 2px solid var(--accent); }
+.readerhelp .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.readerhelp p { margin: 6px 0 0; font-size: 13.5px; color: var(--ink-2); line-height: 1.45; }
+.readerhelp p b { color: var(--ink); }
+@media (max-width: 700px) { .readerhelp .modes { grid-template-columns: 1fr; } }
 button.primary, button.secondary, button.option, button.verdict {
   font: inherit; border-radius: 8px; padding: 8px 14px; cursor: pointer; border: 1px solid var(--border); }
 button.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
@@ -211,13 +219,43 @@ button.add { background: none; border: 1px dashed var(--border); border-radius: 
       <form class="ask" id="askform">
         <div class="seg reader" role="group" aria-label="How the question is read">
           <button type="button" data-reader="rules" aria-pressed="true"
-            title="Rules read the wording; the decision engine (Jev) settles what's unclear">Rules</button>
+            title="Paddle: fast, predictable, no LLM — reads the wording (click ? for more)">🦆 Paddle</button>
           <button type="button" data-reader="llm" aria-pressed="false"
-            title="An LLM reads the question first; the decision engine (Jev) decides on that reading">LLM</button>
+            title="Dive: an LLM reads what you meant first — better with free phrasing, slower (click ? for more)">🤿 Dive</button>
         </div>
+        <button type="button" class="help" id="readerhelpbtn" aria-expanded="false" aria-controls="readerhelp"
+          title="What do Paddle and Dive do?">?</button>
         <input id="question" placeholder="Ask about your data — e.g. Which hosts have critical alerts?" autocomplete="off">
         <button class="primary" type="submit" id="askbtn">Ask</button>
       </form>
+      <div class="panel readerhelp" id="readerhelp" hidden>
+        <div class="modes">
+          <section>
+            <h4>🦆 Paddle <span class="label">rules + Jev</span></h4>
+            <p><b>How it reads.</b> Skims the words on the surface: wording rules spot what you ask for ("how many",
+              "per", "the different…", "show me table…"), and the decision engine (Jev) settles only what the wording
+              leaves open.</p>
+            <p><b>Good at.</b> Fast: no LLM call while you type. Predictable: the same question is always read the
+              same way. Free, and works offline.</p>
+            <p><b>Limits.</b> It only knows the phrasings it has rules for. Unusual wording may come back as a plain
+              list, or it asks you what you meant. Other languages depend on the translation step, if one is
+              configured.</p>
+          </section>
+          <section>
+            <h4>🤿 Dive <span class="label">LLM reads first + Jev</span></h4>
+            <p><b>How it reads.</b> Goes under the surface for what you meant: an LLM reads the question (the kind of
+              answer, what it's about, the grouping) using only names from your catalog. Jev then decides, weighing
+              that reading against the rules'; a doubt is still asked back, never guessed.</p>
+            <p><b>Good at.</b> Free phrasing, other languages, indirect questions ("the departments I have"), and
+              picking the field or table you mean.</p>
+            <p><b>Limits.</b> Slower and not free: one LLM call per pause while typing (usually a second or two; the
+              reading is kept for 5 minutes, so asking doesn't call again). Needs an LLM configured. It can still
+              misread: the catalog and Jev check it, and <i>How it was decided</i> shows what it read.</p>
+          </section>
+        </div>
+        <p class="muted small" style="margin:10px 0 0">Tip: Paddle for everyday questions, Dive when Paddle misreads
+          one. Your choice is remembered in this browser.</p>
+      </div>
       <div class="chips" id="chips" aria-live="polite"></div>
       <div class="panel" id="chippanel" hidden></div>
     </div>
@@ -329,14 +367,34 @@ $("#user").addEventListener("change", () => store.set("duckduck-user", $("#user"
 // from the new suggestions.
 const pre = {data: null, chosen: null, entity: null, field: null, blocked: new Set(), forQ: null, open: null, seq: 0, timer: null,
              ctrl: null, thinking: false, error: null, pendingSubmit: false};
-// How the question is read: "rules" (the wording + Jev) or "llm" (an LLM reads it, then Jev) — per question, remembered.
+// How the question is read: "rules" = Paddle (the wording + Jev) or "llm" = Dive (an LLM reads it, then Jev) — remembered.
+const READER_NAMES = {rules: "Paddle", llm: "Dive"};
+// What the duck says while it reads — Dive's rotate every couple of seconds (an LLM takes a moment).
+const QUIPS = {
+  rules: ["paddling through your words…"],
+  llm: ["diving for what you meant…", "holding breath, reading between the lines…",
+        "rubber-duck debugging your question…", "asking the fish what you meant…",
+        "untangling it one feather at a time…", "quack… thinking… quack…",
+        "looking for meaning under the surface…", "almost there — duck still underwater…"],
+};
+let quipAt = 0, quipTimer = null;
+function quip() { const q = QUIPS[READER] || QUIPS.rules; return q[quipAt % q.length]; }
+function startQuips() {
+  const n = (QUIPS[READER] || [1]).length;  // any opener but the last ("almost there…" only after a while)
+  clearInterval(quipTimer); quipAt = Math.floor(Math.random() * Math.max(1, n - 1));
+  if ((QUIPS[READER] || []).length < 2) return;
+  quipTimer = setInterval(() => {
+    quipAt++; const el = document.querySelector("#chips .chip.thinking .txt"); if (el) el.textContent = quip();
+  }, 2200);
+}
+function stopQuips() { clearInterval(quipTimer); quipTimer = null; }
 let READER = store.get("duckduck-reader") || "rules";
 const previewable = (q) => q.length >= 8 && q.split(/\s+/).length >= 2;
 // Ask waits for the question to be read: disabled while the preview is pending or running (Enter queues the ask).
 const busy = () => !!pre.timer || pre.thinking;
 function updateAsk() {
-  const b = $("#askbtn"); b.disabled = busy(); b.textContent = busy() ? "Reading…" : "Ask";
-  b.title = busy() ? "Reading the question — it's asked as soon as that's done if you press Enter" : "";
+  const b = $("#askbtn"); b.disabled = busy(); b.textContent = busy() ? (READER === "llm" ? "Diving…" : "Paddling…") : "Ask";
+  b.title = busy() ? "Reading the question — press Enter and it's asked as soon as the duck surfaces" : "";
 }
 function setReader(r, rerun = true) {
   const available = META?.readers?.available || ["rules"];
@@ -346,10 +404,14 @@ function setReader(r, rerun = true) {
   if (rerun && previewable($("#question").value.trim())) { pre.data = null; clearTimeout(pre.timer); pre.timer = null; runPreview(); }
 }
 document.querySelectorAll("[data-reader]").forEach(b => b.addEventListener("click", () => setReader(b.dataset.reader)));
+$("#readerhelpbtn").addEventListener("click", () => {
+  const open = $("#readerhelp").hidden; $("#readerhelp").hidden = !open;
+  $("#readerhelpbtn").setAttribute("aria-expanded", String(open));
+});
 function showReaders() {
   const llm = document.querySelector('[data-reader="llm"]'), why = META?.readers?.llm_unavailable;
   llm.disabled = !!why;
-  if (why) llm.title = "Unavailable: " + why;
+  if (why) llm.title = "Dive is unavailable: " + why;
   setReader(READER, false);
 }
 function resetChoices() { Object.assign(pre, {chosen: null, entity: null, field: null, blocked: new Set(), forQ: null}); }
@@ -365,21 +427,21 @@ $("#question").addEventListener("input", () => {
   const q = $("#question").value.trim();
   if (!q) { Object.assign(pre, {data: null, open: null, error: null}); resetChoices(); drawChips(); return; }
   if (previewable(q)) pre.timer = setTimeout(runPreview, 600);
-  else { pre.ctrl?.abort(); pre.seq++; pre.thinking = false; }
+  else { pre.ctrl?.abort(); pre.seq++; pre.thinking = false; stopQuips(); }
   updateAsk();
 });
 $("#question").addEventListener("keydown", (e) => {  // Enter while the question is being read: ask once it's read
   if (e.key !== "Enter" || !busy()) return;
   e.preventDefault(); pre.pendingSubmit = true;
   if (pre.timer) { clearTimeout(pre.timer); pre.timer = null; runPreview(); }
-  toast("Reading the question — it's asked as soon as that's done");
+  toast("Got it — asking as soon as the duck surfaces 🦆");
 });
 async function runPreview() {
   pre.timer = null;
   const q = $("#question").value.trim();
   if (!previewable(q)) { updateAsk(); return; }
   pre.ctrl?.abort(); pre.ctrl = new AbortController();
-  const ctrl = pre.ctrl, mine = ++pre.seq; pre.thinking = true; drawChips();
+  const ctrl = pre.ctrl, mine = ++pre.seq; pre.thinking = true; startQuips(); drawChips();
   const giveUp = setTimeout(() => ctrl.abort("timeout"), 60000);  // never keep Ask disabled forever
   try {
     const d = await api("/api/preview", {question: q, reader: READER}, ctrl.signal);
@@ -392,7 +454,7 @@ async function runPreview() {
     pre.error = ctrl.signal.reason === "timeout" ? "reading the question took too long" : err.message; pre.data = null;
   } finally { clearTimeout(giveUp); }
   if (mine === pre.seq) {
-    pre.thinking = false; drawChips();
+    pre.thinking = false; stopQuips(); drawChips();
     if (pre.pendingSubmit) { pre.pendingSubmit = false; $("#askform").requestSubmit(); }
   }
 }
@@ -435,9 +497,9 @@ function drawChips() {
   }
   if (d && d.reading && READER === "llm") {
     const r = d.reading, about = r.about ? ` · about ${esc(r.about_kind)} ${esc(r.about)}` : "", grp = r.group_by ? ` · per ${esc(r.group_by)}` : "";
-    chips.push(`<span class="chip" title="${esc(d.english_question ? "read as: " + d.english_question : "")}"><span class="dot"></span><span class="k">LLM read</span> ${esc(SHAPE_WORDS[r.answer] || r.answer || "—")}${about}${grp}</span>`);
+    chips.push(`<span class="chip" title="${esc(d.english_question ? "read as: " + d.english_question : "")}"><span class="dot"></span><span class="k">Dive found</span> ${esc(SHAPE_WORDS[r.answer] || r.answer || "—")}${about}${grp}</span>`);
   }
-  if (pre.thinking) chips.push(`<span class="chip thinking"><span class="dot"></span>${READER === "llm" ? "the LLM is reading your question…" : "reading your question…"}</span>`);
+  if (pre.thinking) chips.push(`<span class="chip thinking"><span class="dot"></span><span class="txt">${esc(quip())}</span></span>`);
   else if (pre.error) chips.push(`<span class="chip thinking" title="${esc(pre.error)}"><span class="dot"></span>couldn't read the question yet — it will still be answered</span>`);
   box.innerHTML = chips.join("");
   updateAsk();
