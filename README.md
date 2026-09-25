@@ -135,21 +135,24 @@ duck.sql("SELECT * FROM assets WHERE hostname = 'web-prod' LIMIT 25").df()
 
 ## Public APIs: NVD (CVEs) and REST Countries
 
-Two connectors for APIs from [public-apis](https://github.com/public-apis/public-apis),
-no account needed:
+Two connectors for APIs from [public-apis](https://github.com/public-apis/public-apis):
 
 ```python
 from duckduck import DuckAPI
 
 duck = DuckAPI()
-duck.auto_register({"nvd": {}, "world": {"connector": "restcountries"}})
+duck.auto_register({
+    "nvd": {},                                   # no key needed (one raises the rate limit)
+    "world": {"connector": "restcountries",      # v5 needs a free key: restcountries.com/sign-up
+              "authentication": {"type": "local", "api_key": "rc_live_..."}},
+})
 
 # CVEs: severity, KEV, CWE and date ranges go to NVD as its own filters
 duck.sql("""SELECT id, cvss_score, kev_added, description FROM nvd_cves
             WHERE severity = 'CRITICAL' AND in_kev = true AND published >= '2026-06-01'""").df()
 duck.sql("SELECT id, severity FROM nvd_cves(keyword='log4j') ORDER BY cvss_score DESC").df()
 
-# Countries: codes, names, capitals, regions go to the matching endpoint
+# Countries: a code, name, capital, subregion or region picks the request
 duck.sql("SELECT name, capital, population FROM world_countries WHERE region = 'Americas'").df()
 ```
 
@@ -165,13 +168,17 @@ duck.sql("SELECT name, capital, population FROM world_countries WHERE region = '
   when rate limited); an `api_key` in the `authentication` block (optional)
   raises that to 50 and the pause to 0.6 s. Rejected CVE IDs are left out
   unless `include_rejected: true`.
-- **`world_countries`** (REST Countries v3.1): `name`, `official_name`,
-  `cca2`/`cca3`/`ccn3`, `region`, `subregion`, `capital`, `population`,
-  `area`, `languages`, `currencies`, `continents`, `timezones`, `borders`,
-  `independent`, `un_member`, `landlocked`, `latitude`/`longitude`, `tld`,
-  `flag`. A code, a name (`=` or a `LIKE`/`ILIKE` pattern), a capital, a
-  subregion or a region picks the endpoint; anything else reads all
-  countries (the API has no paging — it's ~250 rows).
+- **`world_countries`** (REST Countries **v5**, `api.restcountries.com` —
+  the old keyless v3.1 API was retired and now only redirects to a notice,
+  which the connector reports as an error instead of reading it as a
+  country): `name`, `official_name`, `cca2`/`cca3`/`ccn3`, `region`,
+  `subregion`, `capital`, `population`, `area`, `languages`, `currencies`,
+  `continents`, `timezones`, `borders`, `independent`, `un_member`,
+  `landlocked`, `latitude`/`longitude`, `tld`, `flag`, `calling_codes`,
+  `memberships` (`un, nato, g7`…), `leaders`. A code (`/code/{c}`), a name,
+  a capital, a subregion or a region picks the request; anything else reads
+  every country (~250, paged). Fields a record doesn't carry stay empty.
+  Needs `api_key` (free tier; their README's demo key is `rc_live_demo`).
 
 ## Seeing what happens: verbose mode
 

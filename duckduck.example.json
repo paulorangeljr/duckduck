@@ -83,7 +83,8 @@
       "authentication": {"type": "aws", "secret_id": "prod/nvd", "api_key": "$secret.api_key"}
     },
     "world": {
-      "connector": "restcountries"
+      "connector": "restcountries",
+      "authentication": {"type": "aws", "secret_id": "prod/restcountries", "api_key": "$secret.api_key"}
     },
     "axonius": {
       "connector": "axonius",

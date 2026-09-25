@@ -135,18 +135,17 @@ SERVICE_REGISTRY: Dict[str, ServiceSpec] = {
             "users": "iter_users",
         },
     ),
-    # public APIs (github.com/public-apis/public-apis): no credentials needed
+    # public APIs (github.com/public-apis/public-apis)
     "nvd": ServiceSpec(
         factory=NVD.from_secret,
         tables={"cves": "cves"},
         streaming_tables={"cves": "iter_cves"},
         requires_authentication=False,  # an optional api_key raises NVD's rate limit
     ),
-    "restcountries": ServiceSpec(
+    "restcountries": ServiceSpec(  # v5 needs a (free) API key: authentication.api_key
         factory=RestCountries.from_secret,
         tables={"countries": "countries"},
         streaming_tables={},
-        requires_authentication=False,
     ),
     "glue": ServiceSpec(
         factory=GlueTable.from_secret,

@@ -172,96 +172,112 @@ def test_keyword_is_nvd_s_own_search_and_bad_severities_are_refused():
 
 
 # ---------------------------------------------------------------------------
-# REST Countries
+# REST Countries (v5 — the keyless v3.1 was retired)
 # ---------------------------------------------------------------------------
 
-BRAZIL = {"name": {"common": "Brazil", "official": "Federative Republic of Brazil"}, "cca2": "BR", "cca3": "BRA",
-          "ccn3": "076", "independent": True, "unMember": True, "currencies": {"BRL": {"name": "Brazilian real"}},
-          "capital": ["Brasília"], "region": "Americas", "subregion": "South America",
-          "languages": {"por": "Portuguese"}, "latlng": [-10.0, -55.0], "landlocked": False,
-          "borders": ["ARG", "BOL", "COL", "GUF", "GUY", "PRY", "PER", "SUR", "URY", "VEN"], "area": 8515767.0,
-          "population": 212559409, "timezones": ["UTC-05:00", "UTC-04:00", "UTC-03:00", "UTC-02:00"],
-          "continents": ["South America"], "tld": [".br"], "flag": "🇧🇷"}
-PORTUGAL = {"name": {"common": "Portugal", "official": "Portuguese Republic"}, "cca2": "PT", "cca3": "PRT",
-            "ccn3": "620", "independent": True, "unMember": True, "currencies": {"EUR": {"name": "Euro"}},
-            "capital": ["Lisbon"], "region": "Europe", "subregion": "Southern Europe",
-            "languages": {"por": "Portuguese"}, "latlng": [39.5, -8.0], "landlocked": False, "borders": ["ESP"],
-            "area": 92090.0, "population": 10305564, "timezones": ["UTC-01:00", "UTC"], "continents": ["Europe"],
-            "tld": [".pt"], "flag": "🇵🇹"}
-ICELAND = {"name": {"common": "Iceland", "official": "Iceland"}, "cca2": "IS", "cca3": "ISL", "ccn3": "352",
-           "region": "Europe", "subregion": "Northern Europe", "capital": ["Reykjavik"], "population": 366425,
-           "area": 103000.0, "latlng": [65.0, -18.0], "landlocked": False, "unMember": True, "independent": True}
-COUNTRIES = [BRAZIL, PORTUGAL, ICELAND]
+from duckduck.restcountries import RestCountriesError  # noqa: E402
+
+
+def _v5(common, official, a2, a3, n3, region, subregion, capital, population, **more):
+    return {"uuid": f"uuid-{a3}", "names": {"common": common, "official": official},
+            "codes": {"alpha_2": a2, "alpha_3": a3, "ccn3": n3},
+            "capitals": [{"name": capital, "attributes": {"primary": True},
+                          "coordinates": {"lat": 0.0, "lng": 0.0}}],
+            "region": region, "subregion": subregion, "population": population, **more}
+
+
+# the README's sample record, as documented
+CANADA = {**_v5("Canada", "Canada", "CA", "CAN", "124", "Americas", "North America", "Ottawa", 41575585),
+          "currencies": [{"code": "CAD", "name": "Canadian dollar", "symbol": "$"}],
+          "leaders": [{"name": "Mark Carney", "title": "Prime Minister"}], "calling_codes": ["1"],
+          "memberships": {"un": True, "nato": True, "g7": True, "commonwealth": True, "eu": False},
+          "flag": {"emoji": "🇨🇦", "url_svg": "https://flagcdn.com/ca.svg"}}
+BRAZIL = {**_v5("Brazil", "Federative Republic of Brazil", "BR", "BRA", "076", "Americas", "South America",
+                "Brasília", 212559409),
+          "currencies": [{"code": "BRL", "name": "Brazilian real"}], "languages": [{"code": "por", "name": "Portuguese"}],
+          "memberships": {"un": True, "brics": True}, "area": {"kilometers": 8515767.0, "miles": 3287956.0}}
+PORTUGAL = _v5("Portugal", "Portuguese Republic", "PT", "PRT", "620", "Europe", "Southern Europe", "Lisbon", 10305564)
+ICELAND = _v5("Iceland", "Iceland", "IS", "ISL", "352", "Europe", "Northern Europe", "Reykjavik", 366425)
+COUNTRIES = [BRAZIL, CANADA, ICELAND, PORTUGAL]
 
 
 class FakeCountries:
-    def __init__(self):
-        self.calls = []
+    """v5: data.objects; limit/offset paging; reads by /code, /names.common, /capitals, /subregion, ?region."""
+
+    def __init__(self, ignore_offset=False):
+        self.calls, self.ignore_offset = [], ignore_offset
 
     def __call__(self, url, params=None, timeout=None):
-        path = urlsplit(url).path.replace("/v3.1", "")
-        self.calls.append((path, dict(params or {})))
+        path = urlsplit(url).path.replace("/countries/v5", "")
+        params = dict(params or {})
+        self.calls.append((path, {k: v for k, v in params.items() if k not in ("limit", "offset")}))
         kind, _, arg = path.strip("/").partition("/")
         arg = arg.lower()
-        if kind == "all":
-            fields = (params or {})["fields"].split(",")
-            assert len(fields) <= 10 and "cca3" in fields  # the API's own limit
-            return _response([{f: c[f] for f in fields if f in c} for c in COUNTRIES])
         match = {
-            "alpha": lambda c: arg in (c["cca2"].lower(), c["cca3"].lower(), c["ccn3"]),
-            "name": lambda c: (arg == c["name"]["common"].lower() or arg == c["name"]["official"].lower())
-            if (params or {}).get("fullText") else arg in c["name"]["common"].lower() + " " + c["name"]["official"].lower(),
-            "capital": lambda c: arg in [x.lower() for x in c.get("capital", [])],
-            "region": lambda c: c["region"].lower() == arg,
+            "": lambda c: "region" not in params or c["region"] == params["region"],
+            "code": lambda c: arg in (c["codes"]["alpha_2"].lower(), c["codes"]["alpha_3"].lower(), c["codes"]["ccn3"]),
+            "names.common": lambda c: c["names"]["common"].lower() == arg,
+            "capitals": lambda c: arg in [x["name"].lower() for x in c["capitals"]],
             "subregion": lambda c: c["subregion"].lower() == arg,
         }[kind]
         found = [c for c in COUNTRIES if match(c)]
-        return _response(found) if found else _response({"status": 404, "message": "Not Found"}, status=404)
+        if not found:
+            return _response({"error": {"message": "not found"}}, status=404)
+        offset = 0 if self.ignore_offset else int(params.get("offset", 0))
+        page = found[offset:offset + int(params.get("limit", 250))]
+        r = _response({"data": {"objects": page}})
+        r.url = url
+        return r
 
 
-def _countries():
-    rc = RestCountries()
-    fake = FakeCountries()
-    rc.session.get = fake
+def _countries(**fake):
+    rc = RestCountries(api_key="rc_test")
+    f = FakeCountries(**fake)
+    rc.session.get = f
     duck = DuckAPI()
     duck.register_api_function("countries", rc.countries)
-    return rc, fake, duck
+    return rc, f, duck
 
 
 def test_a_country_as_a_row():
-    row = RestCountries._normalize([BRAZIL]).iloc[0]
-    assert (row["name"], row["cca3"], row["capital"], row["currencies"], row["languages"]) == \
-        ("Brazil", "BRA", "Brasília", "BRL", "Portuguese")
-    assert row["borders"].startswith("ARG, BOL") and (row["latitude"], row["longitude"]) == (-10.0, -55.0)
-    assert row["un_member"] and not row["landlocked"]
+    df = RestCountries._normalize([CANADA, BRAZIL]).set_index("cca3")
+    ca, br = df.loc["CAN"], df.loc["BRA"]
+    assert (ca["name"], ca["cca2"], ca["capital"], ca["population"], ca["currencies"]) == \
+        ("Canada", "CA", "Ottawa", 41575585, "CAD")
+    assert ca["memberships"] == "commonwealth, g7, nato, un" and bool(ca["un_member"])  # eu: false left out
+    assert ca["leaders"] == "Mark Carney (Prime Minister)" and ca["flag"] == "🇨🇦" and ca["calling_codes"] == "1"
+    assert br["languages"] == "Portuguese" and br["area"] == 8515767.0 and pd.isna(br["latitude"])
+    assert pd.isna(br["borders"]) and pd.isna(br["timezones"])  # not in the record: empty, never guessed
 
 
-def test_the_most_selective_endpoint_is_asked():
+def test_the_most_selective_read_is_asked():
     rc, fake, duck = _countries()
+    assert rc.session.headers["Authorization"] == "Bearer rc_test"
     assert duck.sql("SELECT name FROM countries WHERE cca2 = 'BR'").df()["name"].tolist() == ["Brazil"]
-    assert fake.calls[-1] == ("/alpha/BR", {})
+    assert fake.calls[-1] == ("/code/BR", {})
     assert duck.sql("SELECT cca3 FROM countries WHERE name = 'Portugal'").df()["cca3"].tolist() == ["PRT"]
-    assert fake.calls[-1] == ("/name/Portugal", {"fullText": "true"})
+    assert fake.calls[-1] == ("/names.common/Portugal", {})
+    assert duck.sql("SELECT name FROM countries WHERE capital = 'Ottawa'").df()["name"].tolist() == ["Canada"]
     assert duck.sql("SELECT name FROM countries WHERE region = 'Europe' ORDER BY 1").df()["name"].tolist() == \
         ["Iceland", "Portugal"]
-    assert fake.calls[-1] == ("/region/Europe", {})
+    assert fake.calls[-1] == ("", {"region": "Europe"})
 
 
-def test_a_name_pattern_is_a_partial_search_filtered_exactly():
+def test_other_filters_are_applied_before_the_limit():
     rc, fake, duck = _countries()
-    out = duck.sql("SELECT name FROM countries WHERE name ILIKE 'port%'").df()
-    assert out["name"].tolist() == ["Portugal"] and fake.calls[-1][0] == "/name/port"
-    # the other filters the function took are applied before LIMIT, so the one row is a right one
     out = duck.sql("SELECT name FROM countries WHERE name ILIKE '%l%' AND region = 'Europe' LIMIT 1").df()
-    assert out["name"].tolist() == ["Iceland"] and fake.calls[-1][0] == "/name/l"
+    assert out["name"].tolist() == ["Iceland"] and fake.calls[-1] == ("", {"region": "Europe"})
+    out = duck.sql("SELECT name, population FROM countries WHERE population > 100000000").df()
+    assert out["name"].tolist() == ["Brazil"]
 
 
-def test_all_is_asked_in_field_groups_and_joined():
+def test_paging_stops_when_nothing_new_comes():
+    rc, fake, duck = _countries(ignore_offset=True)  # an API that ignores offset must not loop
+    rc.page_size = 2
+    assert len(rc.countries()) == 2 and len(fake.calls) == 2  # the repeated page ends it
     rc, fake, duck = _countries()
-    df = duck.sql("SELECT name, population, borders FROM countries WHERE population > 1000000 ORDER BY 1").df()
-    assert df["name"].tolist() == ["Brazil", "Portugal"] and df.loc[1, "borders"] == "ESP"
-    groups = [p["fields"].split(",") for path, p in fake.calls if path == "/all"]
-    assert len(groups) == 3 and {f for g in groups for f in g} >= {"name", "population", "borders", "latlng"}
+    rc.page_size = 2
+    assert rc.countries()["cca3"].tolist() == ["BRA", "CAN", "ISL", "PRT"] and len(fake.calls) == 3
 
 
 def test_nothing_found_is_an_empty_table_not_an_error():
@@ -269,12 +285,39 @@ def test_nothing_found_is_an_empty_table_not_an_error():
     assert duck.sql("SELECT name FROM countries WHERE cca3 = 'XXX'").df().empty
 
 
-def test_auto_register_needs_no_authentication():
+def test_a_notice_or_the_retired_api_is_an_error_never_a_row():
+    rc = RestCountries(api_key="k")
+    notice = _response({"message": "REST Countries v3.1 has been retired. See restcountries.com"})
+    notice.url = "https://files-03.restcountries.com/countries.00/legacy.json?fields=cca3"
+    rc.session.get = lambda url, params=None, timeout=None: notice
+    with pytest.raises(RestCountriesError, match="retired REST Countries API"):
+        rc.countries()
+    odd = _response({"message": "maintenance"})
+    odd.url = "https://api.restcountries.com/countries/v5"
+    rc.session.get = lambda url, params=None, timeout=None: odd
+    with pytest.raises(RestCountriesError, match="data.objects.*maintenance"):
+        rc.countries()
+    denied = _response({"error": "invalid api key"}, status=401)
+    rc.session.get = lambda url, params=None, timeout=None: denied
+    with pytest.raises(RestCountriesError, match="401.*invalid api key"):
+        rc.countries()
+
+
+def test_a_key_is_required():
+    with pytest.raises(ValueError, match="sign-up"):
+        RestCountries()
+    assert RestCountries.from_secret({"api_key": "k"}).session.headers["Authorization"] == "Bearer k"
+
+
+def test_auto_register():
     duck = DuckAPI()
-    duck.auto_register({"nvd": {"request_interval": 0}, "world": {"connector": "restcountries"}})
+    duck.auto_register({"nvd": {"request_interval": 0},
+                        "world": {"connector": "restcountries", "authentication": {"type": "local", "api_key": "k"}}})
     tables = duck.list_tables().set_index("name")
     assert tables.loc["nvd_cves", "source"].startswith("NVD") and "severity =" in tables.loc["nvd_cves", "pushdown"]
     assert tables.loc["world_countries", "source"] == "REST Countries (HTTP API)"
+    with pytest.raises(Exception, match="authentication"):
+        DuckAPI().auto_register({"world": {"connector": "restcountries"}})
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +335,6 @@ def test_live_nvd():
 
 @live
 def test_live_restcountries():
-    rc = RestCountries()
+    rc = RestCountries(api_key=os.environ.get("RESTCOUNTRIES_API_KEY", "rc_live_demo"))
     assert rc.countries(cca2="BR").loc[0, "cca3"] == "BRA"
     assert len(rc.countries()) > 200
