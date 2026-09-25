@@ -541,6 +541,74 @@ generate_catalog(only=["glue:security.*", "adx"], force=True)
   service.
 - **To start from nothing,** move the file away. Your notes go with it.
 
+**What the data looks like.** Generation also profiles each table from
+up to `profile_rows` rows (default 1000), with pandas and not the LLM,
+and stores the result in the catalog:
+
+- **Per field:** a `profile` with distinct values, share of empty
+  values, and min/max (numbers and dates, including dates stored as text).
+- **Per source:** how many rows were sampled and the date range of its
+  time field.
+- **Category columns** (few distinct values that repeat, like `severity`
+  or `rule`) get every value added to `values`, so "critical" or "brute
+  force" match even if the LLM didn't list them. Identifiers (IP, user,
+  domain...) never become lists.
+
+All of this goes into what the decision engine reads, e.g. *"… Known
+values: 'low', 'critical'"*, *"Mostly empty (95% of sampled rows)"*,
+*"Sampled records span 2026-09-01 to 2026-09-20"*. It's refreshed
+whenever the source is redrafted. It describes the sampled rows, not
+necessarily the whole table.
+
+Real example values are **opt-in**, because they write real data into
+the file: `"sample_values": 3`. Even then they're skipped for user/email
+fields unless you set `"sample_sensitive": true`.
+
+```json
+"catalog_generation": {"profile_rows": 1000, "sample_values": 3, "max_enum_values": 20}
+```
+
+**Watching it work.** Generation uses the same verbose mode, with the
+same levels, as the virtualization layer: `True` / `"info"` shows
+progress, and `"debug"` also shows what goes to the LLM (each table's
+profile and sample rows) and what comes back. Turn it on with
+`generate_catalog(verbose="info")`, which also works when you pass your
+own `duck=`. The CLI takes `-v` / `-v debug`; `DuckAPI(verbose=...)` and
+`DUCKDUCK_VERBOSE=info` work too. You get the plan (how many tables are new,
+expired or kept), then `[n/total]` per table with its profile and each LLM
+call's time and tokens, time elapsed and left, then the linking pass and
+what the merge dropped:
+
+```
+catalog: 12 tables — drafting 3 (2 new, 1 expired), keeping 9
+[1/3] security_proxy_logs (new) — profiling glue_table(database='security', table_name='proxy_logs')
+  18 columns, 5 sample rows, with your notes — asking catalog (openrouter anthropic/claude-sonnet-5)
+  llm anthropic/claude-sonnet-5 → GenSource: 6.2s · 3,410 in / 820 out tokens
+  → 14 fields, entities user, host, activities web_access · 6.4s elapsed · ~12.8s left
+...
+linking 12 sources (3 drafted, 9 kept) — asking catalog (...) for entities, activities and joins
+merged: 12 sources, 6 entities, 4 activities, 9 relationships · 24.1s total
+```
+
+**Using the catalog in your process.** Whatever reads `catalog_path`
+picks the catalog up, with nothing extra to load:
+
+```python
+from duckduck.semantic import SemanticSearch, ask, connect
+
+ask("Which users accessed github in the last 24hrs?")      # reads duckduck.json → catalog_path
+
+duck = connect()                                          # or keep the pieces around
+search = SemanticSearch.from_config(duck)                 # catalog_path, engine, LLMs from the config
+search.search("Which hosts queried example.com?")
+
+search = SemanticSearch("semantic_catalog.yaml", duck)    # or any catalog file, directly
+```
+
+The catalog is read once, when the `SemanticSearch` is built. After
+regenerating, build a new one (`ask()` builds one per call). With
+`auto_refresh`, building it also brings the catalog up to date first.
+
 To review drafts before they go live, set `catalog_generation.output_path`
 to another file. Generation then maintains that file, and you copy what
 you approve into `catalog_path`.
