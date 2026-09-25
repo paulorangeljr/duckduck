@@ -941,7 +941,13 @@ python -m duckduck.semantic feedback-export    # what still fails, as a brief fo
   Azure Blob, Azure Data Explorer, local files, Python module, DuckDB, or
   another API. These are generic shapes, not brand logos, drawn from the
   connector behind each table (`SemanticSearch.source_icon`).
-- **History.** Every question, with its result and its rating.
+- **History.** Every question, with its result and its rating — and you
+  can rate it right there: 👍 / 🤏 / 👎 on the row save with one tap (or
+  change the rating it had). Click a question to open it: **the SQL it
+  ran** (for "everything about X", one query per table it looked in), with
+  *Open in the SQL tab*, and the rest of the feedback — what went wrong,
+  your words, what would have been right — filled with what was saved and
+  saving as you change it. After 🤏 or 👎 the row opens by itself.
 - **Dashboard.** Answer rate overall, by kind of answer and by table; what
   went wrong; how often it asked back; searches per day.
 - **Suggestions.** The catalog changes proposed from the feedback, to

@@ -86,6 +86,21 @@ button.verdict.pop { animation: fbpop .28s ease; }
 .fbchip:hover { border-color: var(--accent); }
 .fbchip[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
 .fbok { color: var(--good-ink); font-weight: 600; } .fberr { color: var(--bad); }
+button.verdict.sm { padding: 4px 9px; gap: 0; } button.verdict.sm .e { font-size: 15px; }
+.row.fbmini { gap: 4px; flex-wrap: nowrap; } td.hfb { min-width: 136px; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.hopen { all: unset; cursor: pointer; color: var(--ink); }
+.hopen::before { content: "▸ "; color: var(--muted); }
+.hopen[aria-expanded="true"]::before { content: "▾ "; }
+.hopen:hover, .hopen:focus-visible { text-decoration: underline; }
+.hopen:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+tr.hrow.open td { border-bottom-color: transparent; }
+tr.hdetail > td { background: var(--surface-2); }
+.hdgrid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 18px; padding: 6px 2px; }
+.hdgrid h4 { margin: 0 0 6px; font-size: 13px; }
+.hdgrid pre { margin: 0 0 8px; max-height: 260px; overflow: auto; }
+.hmore:has(.fbmore:not([hidden])) .hmorehint { display: none; }
+@media (max-width: 860px) { .hdgrid { grid-template-columns: 1fr; } }
 .muted { color: var(--muted); } .small { font-size: 13px; }
 .q { font-weight: 600; font-size: 16px; }
 .thread .turn { margin: 6px 0; color: var(--ink-2); font-size: 14px; }
@@ -885,123 +900,166 @@ function render(c) {
 function options(obj, blank) { return (blank ? `<option value="">${blank}</option>` : "") +
   Object.entries(obj).map(([k, v]) => `<option value="${esc(k)}" title="${esc(v)}">${esc(k)}</option>`).join(""); }
 
-function feedbackForm(r) {
-  const m = META || {categories: {}, sources: {}, answer_shapes: {}, entities: {}, values: {}};
-  return `<div class="card feedback" id="fb">
-    <div class="fbhead"><h3>Did this answer your question?</h3>
-      <span class="muted small" id="fbstatus" role="status" aria-live="polite">One tap — it learns from every answer.</span></div>
-    <div class="row fbverdicts">
-      <button class="verdict" type="button" data-v="answered" aria-pressed="false"><span class="e" aria-hidden="true">👍</span>Yes</button>
-      <button class="verdict" type="button" data-v="partial" aria-pressed="false"><span class="e" aria-hidden="true">🤏</span>Partly</button>
-      <button class="verdict" type="button" data-v="not_answered" aria-pressed="false"><span class="e" aria-hidden="true">👎</span>No</button>
-    </div>
-    <div id="fbmore" hidden>
-      <p class="muted small fblabel">What went wrong? <span>Optional — tap any that fit; it saves as you go.</span></p>
-      <div class="fbchips">${Object.entries(m.categories).map(([k, v]) =>
-        `<button type="button" class="fbchip" data-cat="${esc(k)}" aria-pressed="false">${esc(v)}</button>`).join("")}</div>
-      <textarea id="fbreason" rows="2" placeholder="Or say it in your words — e.g. I wanted how many, not the list"></textarea>
-      <details><summary>What would have been right? <span class="muted small">(optional — this is what it learns the most from)</span></summary>
-        <div class="grid2">
-          <label>Tables<br><select id="fbsources" multiple size="${Math.min(Math.max(Object.keys(m.sources).length, 2), 8)}">${options(m.sources)}</select></label>
-          <label>Kind of answer<br><select id="fbshape">${options(m.answer_shapes, "—")}</select></label>
-          <label>What it asks about<br><select id="fbentity">${options(m.entities, "—")}</select></label>
-        </div>
-        <p class="muted small" style="margin:12px 0 4px">A word it misread: “<em>word</em>” means <em>field = value</em></p>
-        <div class="row"><input id="fbword" placeholder="word, e.g. urgentes" style="width:180px">
-          <select id="fbfield">${options(Object.fromEntries(Object.keys(m.values).map(k => [k, k])), "field")}</select>
-          <select id="fbvalue"><option value="">value</option></select></div>
-      </details>
-    </div></div>`;
-}
-
-// Every tap and every word is saved as it happens — no "send" button. One answer keeps one feedback row:
-// the first save creates it, later ones replace it (feedback_id).
-let FB = null;  // {searchId, id, verdict, chain, timer}
+// Feedback: one tap on a verdict saves it; chips, words and "what would have been right" save as they change.
+// One widget per search — on the Ask page under the answer, and on every History row. One answer keeps one
+// feedback row: the first save creates it, the next ones replace it (feedback_id).
 const FB_THANKS = {answered: "✓ Saved — thanks! It'll remember this worked.",
                    partial: "✓ Saved. Tap what was missing below, if you like.",
                    not_answered: "✓ Saved. Tap what went wrong below, if you like — it learns from it."};
-function fbStatus(text, cls = "") { const el = $("#fbstatus"); if (el) { el.textContent = text; el.className = "small " + (cls || "muted"); } }
-function fbPress(verdict) {
-  document.querySelectorAll("#fb button.verdict").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.v === verdict)));
-  const more = $("#fbmore"); if (more) more.hidden = !verdict || verdict === "answered";
+function fbVerdicts(compact = false) {
+  const b = (v, e, label) => `<button class="verdict${compact ? " sm" : ""}" type="button" data-v="${v}" aria-pressed="false" title="${label}"><span class="e" aria-hidden="true">${e}</span>${compact ? `<span class="sr">${label}</span>` : label}</button>`;
+  return b("answered", "👍", "Yes") + b("partial", "🤏", "Partly") + b("not_answered", "👎", "No");
 }
-function fbBody() {
-  const answered = FB.verdict === "answered", expected = {};
-  if (!answered) {
-    const srcs = [...($("#fbsources")?.selectedOptions || [])].map(o => o.value);
-    if (srcs.length) expected.sources = srcs;
-    if ($("#fbshape")?.value) expected.answer_shape = $("#fbshape").value;
-    if ($("#fbentity")?.value) expected.entity = $("#fbentity").value;
-    if ($("#fbword")?.value.trim() && $("#fbfield")?.value && $("#fbvalue")?.value)
-      expected.synonym = {word: $("#fbword").value.trim(), field: $("#fbfield").value, value: $("#fbvalue").value};
-  }
-  return {search_id: FB.searchId, verdict: FB.verdict, user: user(),
-    categories: answered ? [] : [...document.querySelectorAll("#fb .fbchip[aria-pressed=true]")].map(b => b.dataset.cat),
-    reason: answered ? "" : ($("#fbreason")?.value || ""), expected: answered ? null : expected};
+function fbMoreHtml() {
+  const m = META || {categories: {}, sources: {}, answer_shapes: {}, entities: {}, values: {}};
+  return `<p class="muted small fblabel">What went wrong? <span>Optional — tap any that fit; it saves as you go.</span></p>
+    <div class="fbchips">${Object.entries(m.categories).map(([k, v]) =>
+      `<button type="button" class="fbchip" data-cat="${esc(k)}" aria-pressed="false">${esc(v)}</button>`).join("")}</div>
+    <textarea class="fbreason" rows="2" placeholder="Or say it in your words — e.g. I wanted how many, not the list"></textarea>
+    <details><summary>What would have been right? <span class="muted small">(optional — this is what it learns the most from)</span></summary>
+      <div class="grid2">
+        <label>Tables<br><select class="fbsources" multiple size="${Math.min(Math.max(Object.keys(m.sources).length, 2), 8)}">${options(m.sources)}</select></label>
+        <label>Kind of answer<br><select class="fbshape">${options(m.answer_shapes, "—")}</select></label>
+        <label>What it asks about<br><select class="fbentity">${options(m.entities, "—")}</select></label>
+      </div>
+      <p class="muted small" style="margin:12px 0 4px">A word it misread: “<em>word</em>” means <em>field = value</em></p>
+      <div class="row"><input class="fbword" placeholder="word, e.g. urgentes" style="width:180px">
+        <select class="fbfield">${options(Object.fromEntries(Object.keys(m.values).map(k => [k, k])), "field")}</select>
+        <select class="fbvalue"><option value="">value</option></select></div>
+    </details>`;
 }
-function fbSave(thanks) {  // saves are chained, so the first one's id is known before the next replaces it
-  const fb = FB; if (!fb || !fb.verdict) return;
-  clearTimeout(fb.timer); fb.timer = null;
-  fbStatus("Saving…");
-  fb.chain = fb.chain.then(async () => {
-    try {
-      const saved = await api("/api/feedback", {...fbBody(), feedback_id: fb.id});
-      fb.id = saved.id;
-      if (FB === fb) fbStatus(thanks || "✓ Saved", "fbok");
-    } catch (err) { if (FB === fb) fbStatus("Couldn't save — tap again. " + err.message, "fberr"); }
-  });
-}
-function fbSoon() { if (FB?.verdict) { clearTimeout(FB.timer); fbStatus("…"); FB.timer = setTimeout(() => fbSave(), 700); } }
+const parseJson = (x, fallback) => { if (x && typeof x === "object") return x; try { return x ? JSON.parse(x) : fallback; } catch (e) { return fallback; } };
 
-function wireFeedback(r) {
-  const fb = $("#fb"); if (!fb) return;
-  FB = {searchId: r.search_id, id: null, verdict: null, chain: Promise.resolve(), timer: null};
-  fb.querySelectorAll("button.verdict").forEach(b => b.addEventListener("click", () => {
-    FB.verdict = b.dataset.v; fbPress(FB.verdict);
+// saved: {search_id, feedback_id, verdict, categories, reason, expected} (a History row, or just the search id)
+// els: {verdicts, status, more?} — more can come later (attachMore), e.g. when a History row is opened
+function feedbackWidget(saved, els, opts = {}) {
+  const w = {searchId: saved.search_id, id: saved.feedback_id || null, verdict: saved.verdict || null,
+             categories: new Set(parseJson(saved.categories, [])), reason: saved.reason || "",
+             expected: parseJson(saved.expected, null) || {}, chain: Promise.resolve(), timer: null, more: null};
+  const status = (text, cls = "") => { if (els.status) { els.status.textContent = text; els.status.className = "small fbstatus " + (cls || "muted"); } };
+  w.press = (v) => {
+    els.verdicts.querySelectorAll("button.verdict").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.v === v)));
+    if (w.more) w.more.hidden = !v || v === "answered";
+  };
+  w.body = () => {
+    const answered = w.verdict === "answered";
+    return {search_id: w.searchId, verdict: w.verdict, user: user(), feedback_id: w.id,
+            categories: answered ? [] : [...w.categories], reason: answered ? "" : w.reason,
+            expected: answered ? null : w.expected};
+  };
+  w.save = (thanks) => {  // chained, so the first save's id is known before the next replaces it
+    if (!w.verdict) return;
+    clearTimeout(w.timer); w.timer = null; status("Saving…");
+    w.chain = w.chain.then(async () => {
+      try { const r = await api("/api/feedback", w.body()); w.id = r.id; status(thanks || "✓ Saved", "fbok"); opts.onSaved?.(w); }
+      catch (err) { status("Couldn't save — tap again. " + err.message, "fberr"); }
+    });
+  };
+  w.soon = () => { if (w.verdict) { clearTimeout(w.timer); status("…"); w.timer = setTimeout(() => w.save(), 700); } };
+  w.attachMore = (el) => {
+    if (w.more === el) return;
+    el.innerHTML = fbMoreHtml(); w.more = el;
+    const q = (c) => el.querySelector(c), e = w.expected;
+    el.querySelectorAll(".fbchip").forEach(c => {
+      c.setAttribute("aria-pressed", String(w.categories.has(c.dataset.cat)));
+      c.addEventListener("click", () => {
+        const on = c.getAttribute("aria-pressed") !== "true"; c.setAttribute("aria-pressed", String(on));
+        on ? w.categories.add(c.dataset.cat) : w.categories.delete(c.dataset.cat); w.save();
+      });
+    });
+    q(".fbreason").value = w.reason;
+    q(".fbreason").addEventListener("input", () => { w.reason = q(".fbreason").value; w.soon(); });
+    q(".fbreason").addEventListener("blur", () => { if (w.timer) w.save(); });
+    const fillValues = () => { const vals = (META?.values?.[q(".fbfield").value] || []);
+      q(".fbvalue").innerHTML = `<option value="">value</option>` + vals.map(v => `<option>${esc(v)}</option>`).join(""); };
+    [...q(".fbsources").options].forEach(o => o.selected = (e.sources || []).includes(o.value));
+    q(".fbshape").value = e.answer_shape || ""; q(".fbentity").value = e.entity || "";
+    if (e.synonym) { q(".fbword").value = e.synonym.word || ""; q(".fbfield").value = e.synonym.field || ""; fillValues(); q(".fbvalue").value = e.synonym.value || ""; }
+    if (e.sources?.length || e.answer_shape || e.entity || e.synonym) q("details").open = true;
+    const readExpected = () => {
+      const x = {}, srcs = [...q(".fbsources").selectedOptions].map(o => o.value);
+      if (srcs.length) x.sources = srcs;
+      if (q(".fbshape").value) x.answer_shape = q(".fbshape").value;
+      if (q(".fbentity").value) x.entity = q(".fbentity").value;
+      if (q(".fbword").value.trim() && q(".fbfield").value && q(".fbvalue").value)
+        x.synonym = {word: q(".fbword").value.trim(), field: q(".fbfield").value, value: q(".fbvalue").value};
+      w.expected = x;
+    };
+    q(".fbfield").addEventListener("change", fillValues);
+    [".fbsources", ".fbshape", ".fbentity", ".fbfield", ".fbvalue"].forEach(c => q(c).addEventListener("change", () => { readExpected(); w.save(); }));
+    q(".fbword").addEventListener("input", () => { readExpected(); w.soon(); });
+    w.press(w.verdict);
+  };
+  els.verdicts.querySelectorAll("button.verdict").forEach(b => b.addEventListener("click", () => {
+    w.verdict = b.dataset.v; w.press(w.verdict);
     b.classList.remove("pop"); void b.offsetWidth; b.classList.add("pop");
-    fbSave(FB_THANKS[FB.verdict]);
+    opts.onVerdict?.(w);
+    w.save(opts.thanks ? FB_THANKS[w.verdict] : "✓ Saved");
   }));
-  fb.querySelectorAll(".fbchip").forEach(c => c.addEventListener("click", () => {
-    c.setAttribute("aria-pressed", String(c.getAttribute("aria-pressed") !== "true")); fbSave();
-  }));
-  $("#fbreason").addEventListener("input", fbSoon);
-  $("#fbreason").addEventListener("blur", () => { if (FB.timer) fbSave(); });
-  $("#fbfield")?.addEventListener("change", () => {
-    const vals = (META.values[$("#fbfield").value] || []);
-    $("#fbvalue").innerHTML = `<option value="">value</option>` + vals.map(v => `<option>${esc(v)}</option>`).join("");
-  });
-  ["#fbsources", "#fbshape", "#fbentity", "#fbfield", "#fbvalue"].forEach(sel => $(sel)?.addEventListener("change", () => fbSave()));
-  $("#fbword")?.addEventListener("input", fbSoon);
+  if (els.more) w.attachMore(els.more);
+  w.press(w.verdict);
+  // "Take over from here" counts as a yes (the server records it when nobody rated the answer yet)
+  w.takenOver = (f) => { if (!f) return; w.id = f.id; w.verdict = f.verdict; w.press(f.verdict);
+                         status("✓ Marked as answered — you took the rows over.", "fbok"); };
+  return w;
 }
-// "Take over from here" counts as a yes (the server records it when nobody rated the answer yet)
-function fbTakenOver(feedback) {
-  if (!feedback || !FB) return;
-  Object.assign(FB, {id: feedback.id, verdict: feedback.verdict});
-  fbPress(feedback.verdict); fbStatus("✓ Marked as answered — you took the rows over.", "fbok");
+
+function feedbackForm(r) {
+  return `<div class="card feedback" id="fb">
+    <div class="fbhead"><h3>Did this answer your question?</h3>
+      <span class="small fbstatus muted" role="status" aria-live="polite">One tap — it learns from every answer.</span></div>
+    <div class="row fbverdicts">${fbVerdicts()}</div>
+    <div class="fbmore" hidden></div></div>`;
 }
+let FB = null;  // the Ask page's widget
+function wireFeedback(r) {
+  const fb = $("#fb"); if (!fb) { FB = null; return; }
+  FB = feedbackWidget({search_id: r.search_id}, {verdicts: fb.querySelector(".fbverdicts"),
+    status: fb.querySelector(".fbstatus"), more: fb.querySelector(".fbmore")}, {thanks: true});
+}
+function fbTakenOver(feedback) { if (FB) FB.takenOver(feedback); }
 
 // ---- history -----------------------------------------------------------
-function verdictBadge(v) {
-  if (!v) return `<span class="muted small">not rated</span>`;
-  const m = {answered: ["good", "✓", "answered"], partial: ["mid", "◐", "partly"], not_answered: ["bad", "✗", "not answered"]}[v];
-  return `<span class="status ${m[0]}"><i aria-hidden="true">${m[1]}</i>${m[2]}</span>`;
-}
 async function loadHistory() {
   try {
     const mode = $("#historymode").value;
     const rows = await api("/api/searches?limit=200" + (mode ? "&reader=" + encodeURIComponent(mode) : ""));
-    $("#history").innerHTML = rows.length ? `<div class="tablewrap"><table><thead><tr><th>When</th><th>Question</th><th>Mode</th><th>Result</th><th>Answer</th><th>Tables</th><th class="num">Time</th><th class="num">Calls</th><th>Feedback</th></tr></thead><tbody>${
-      rows.map(r => `<tr><td class="small muted">${esc((r.created_at || "").replace("T", " ").slice(0, 16))}</td>
-        <td>${esc(r.question)}${r.user_name ? `<div class="muted small">${esc(r.user_name)}</div>` : ""}</td>
+    if (!rows.length) { $("#history").innerHTML = `<p class="muted">No questions asked yet${mode ? " in this mode" : ""}.</p>`; return; }
+    $("#history").innerHTML = `<div class="tablewrap"><table class="histtable"><thead><tr><th>When</th><th>Question</th><th>Mode</th><th>Result</th><th>Answer</th><th>Tables</th><th class="num">Time</th><th class="num">Calls</th><th>Did it answer?</th></tr></thead><tbody>${
+      rows.map((r, i) => `<tr class="hrow" data-i="${i}"><td class="small muted">${esc((r.created_at || "").replace("T", " ").slice(0, 16))}</td>
+        <td><button type="button" class="hopen" aria-expanded="false" title="The SQL it ran, and more feedback">${esc(r.question)}</button>
+          ${r.user_name ? `<div class="muted small">${esc(r.user_name)}</div>` : ""}</td>
         <td class="small" title="${esc(r.engine || "")}">${r.requested_reader === "auto" ? "🧭→" : ""}${modeName(r.reader)}</td>
         <td class="small">${esc(r.status)}</td><td class="small">${esc(r.answer_shape || "")}</td>
-        <td class="small">${esc((JSON.parse(r.sources || "[]")).join(", "))}</td>
+        <td class="small">${esc((parseJson(r.sources, [])).join(", "))}</td>
         <td class="num small">${ms(r.elapsed_ms)}</td>
         <td class="num small" title="decision-engine calls · LLM calls${r.llm_tokens ? " · " + r.llm_tokens + " LLM tokens" : ""}${r.cost !== null && r.cost !== undefined ? " · $" + r.cost.toFixed(6) : ""}">${r.engine_calls ?? 0} · ${r.llm_calls ?? 0}</td>
-        <td>${verdictBadge(r.verdict)}${r.reason ? `<div class="muted small">${esc(r.reason)}</div>` : ""}</td></tr>`).join("")}</tbody></table></div>`
-      : `<p class="muted">No questions asked yet${mode ? " in this mode" : ""}.</p>`;
+        <td class="hfb"><div class="row fbverdicts fbmini">${fbVerdicts(true)}</div><div class="small fbstatus muted">${r.verdict ? "" : "not rated"}</div></td></tr>
+      <tr class="hdetail" data-i="${i}" hidden><td colspan="9"><div class="hdgrid">
+        <div class="hsql"><h4>SQL it ran</h4>${r.sql ? `<pre>${esc(r.sql)}</pre>${META?.features?.sql ? `<button class="secondary" type="button" data-opensql="${i}">Open in the SQL tab</button>` : ""}`
+          : `<p class="muted small">No SQL — ${r.status === "needs_clarification" ? "it asked back" + (r.clarification ? ": " + esc(r.clarification) : "") : esc(r.clarification || r.status || "nothing ran")}.</p>`}
+          ${r.english_question && r.english_question !== r.question ? `<p class="muted small">read as: ${esc(r.english_question)}</p>` : ""}</div>
+        <div class="hmore"><h4>Feedback</h4><p class="muted small hmorehint">Tap 👍 🤏 👎 on the row. After 🤏 or 👎, say what went wrong here.</p><div class="fbmore" hidden></div></div>
+      </div></td></tr>`).join("")}</tbody></table></div>`;
+    const open = (i, on) => {
+      const row = $(`#history tr.hrow[data-i="${i}"]`), det = $(`#history tr.hdetail[data-i="${i}"]`);
+      det.hidden = !on; row.querySelector(".hopen").setAttribute("aria-expanded", String(on)); row.classList.toggle("open", on);
+      if (on) HISTORY_FB[i].attachMore(det.querySelector(".fbmore"));
+    };
+    HISTORY_FB = rows.map((r, i) => {
+      const row = $(`#history tr.hrow[data-i="${i}"]`);
+      return feedbackWidget({...r, search_id: r.id}, {verdicts: row.querySelector(".fbverdicts"), status: row.querySelector(".fbstatus")},
+        {onVerdict: (w) => { if (w.verdict !== "answered") open(i, true); }});
+    });
+    document.querySelectorAll("#history .hopen").forEach(b => b.addEventListener("click", () => {
+      const i = +b.closest("tr").dataset.i; open(i, $(`#history tr.hdetail[data-i="${i}"]`).hidden);
+    }));
+    document.querySelectorAll("#history [data-opensql]").forEach(b => b.addEventListener("click", () => {
+      $("#sqltext").value = rows[+b.dataset.opensql].sql; openTab("sql");
+    }));
   } catch (err) { $("#history").innerHTML = `<p class="error">${esc(err.message)}</p>`; }
 }
+let HISTORY_FB = [];
 
 // ---- modes: names, what one search cost, the comparison table ------------------------------
 const modeName = (r) => `${READER_ICONS[r || "rules"] || ""} ${esc(READER_NAMES[r || "rules"] || r || "")}`;

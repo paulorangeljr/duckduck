@@ -156,7 +156,7 @@ class FeedbackStore:
             intent.target_entity if intent else None, intent.activity if intent else None,
             json.dumps(answer_sources(result)),
             json.dumps([d.model_dump(mode="json") for d in result.decisions], default=str),
-            json.dumps(result.pinned, default=str), result.sql, rows, result.clarification,
+            json.dumps(result.pinned, default=str), sql_of(result), rows, result.clarification,
             float(result.elapsed_ms or 0.0), catalog_version, engine,
             getattr(result, "reader", None), json.dumps(getattr(result, "usage", None) or {}),
             getattr(result, "requested_reader", None),
@@ -231,14 +231,16 @@ class FeedbackStore:
 
     def searches(self, limit: int = 100, reader: Optional[str] = None) -> pd.DataFrame:
         """
-        The latest searches, each with its latest feedback (if any) and how it
-        ran: ``reader`` (the mode), ``engine``, time and usage. ``reader``
-        filters to one mode. SQL NULLs are ``None``.
+        The latest searches, each with its latest feedback (if any —
+        ``feedback_id`` to replace it) and how it ran: ``reader`` (the
+        mode), ``engine``, time and usage, and the ``sql`` it ran.
+        ``reader`` filters to one mode. SQL NULLs are ``None``.
         """
         where = "WHERE coalesce(s.reader, 'rules') = ?" if reader else ""
         return _nulls(self.query(f"""
             SELECT s.id, s.created_at, s.conversation_id, s.user_name, s.question, s.english_question,
-                   s.status, s.answer_shape, s.entity, s.sources, s.rows, f.verdict, f.categories, f.reason,
+                   s.status, s.answer_shape, s.entity, s.sources, s.rows, s.sql, s.clarification,
+                   f.feedback_id, f.verdict, f.categories, f.reason, f.expected,
                    coalesce(s.reader, 'rules') AS reader, s.requested_reader, s.engine, s.elapsed_ms, {_USAGE_COLUMNS}
             FROM searches s LEFT JOIN ({_LATEST_FEEDBACK}) f ON f.search_id = s.id {where}
             ORDER BY s.created_at DESC, s.rowid DESC LIMIT {int(limit)}""", [reader] if reader else None))
@@ -419,10 +421,19 @@ class FeedbackStore:
 _READING = ("sources", "answer_shape", "entity", "activity")
 
 _LATEST_FEEDBACK = """
-    SELECT search_id, arg_max(verdict, created_at) AS verdict, arg_max(categories, created_at) AS categories,
+    SELECT search_id, arg_max(id, created_at) AS feedback_id,
+           arg_max(verdict, created_at) AS verdict, arg_max(categories, created_at) AS categories,
            arg_max(reason, created_at) AS reason, arg_max(expected, created_at) AS expected,
            max(created_at) AS created_at
     FROM feedback GROUP BY search_id"""
+
+
+def sql_of(result: Any) -> Optional[str]:
+    """The SQL a result ran: its own, or — for a lookup / locate — each table's, one after the other."""
+    if getattr(result, "sql", None):
+        return result.sql
+    parts = [f"-- {s.source}\n{s.sql}" for s in (getattr(result, "sections", None) or []) if getattr(s, "sql", "")]
+    return "\n\n".join(parts) or None
 
 
 _SEARCH_COLUMNS = ("id", "created_at", "conversation_id", "user_name", "question", "english_question", "template",

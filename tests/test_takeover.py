@@ -1,5 +1,7 @@
 """'Take over from here': an answer's rows registered as a table, queried with duck.sql."""
 
+import json
+
 import pytest
 
 pytest.importorskip("pydantic")
@@ -142,3 +144,23 @@ def test_the_page_saves_feedback_as_it_is_given():
     taken = client.post("/api/takeover", json={"conversation_id": fresh["conversation_id"], "name": "sev"}).json()
     assert taken["feedback"]["verdict"] == "answered"
     assert store.verdict_of(fresh["result"]["search_id"]) == "answered"
+
+
+def test_the_history_keeps_the_sql_and_the_feedback_to_replace():
+    from duckduck.semantic.feedback import FeedbackStore
+
+    store = FeedbackStore()
+    search = SemanticSearch(Catalog.model_validate(CATALOG), _duck(), feedback=store)
+    listed = search.search("What are the severities of the events?")
+    looked_up = search.search("What I can find for this ip 10.0.0.3")  # lookup: one SQL per table it looked in
+    rows = store.searches().set_index("id")
+    assert rows.loc[listed.search_id, "sql"] == listed.sql and "SELECT" in listed.sql
+    across = rows.loc[looked_up.search_id, "sql"]
+    assert "-- owners\n" in across and "-- alerts\n" in across
+    assert rows.loc[listed.search_id, "feedback_id"] is None
+    fid = search.feedback(listed, "not_answered", categories=["wrong_answer_kind"], expected={"answer_shape": "count"})
+    row = store.searches().set_index("id").loc[listed.search_id]
+    assert row["feedback_id"] == fid and json.loads(row["expected"]) == {"answer_shape": "count"}
+    search.feedback(listed, "answered", feedback_id=fid)  # the History row's widget replaces it
+    assert store.verdict_of(listed.search_id) == "answered"
+    assert store.query("SELECT count(*) AS n FROM feedback")["n"][0] == 1
