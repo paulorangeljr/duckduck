@@ -821,7 +821,21 @@ the user can answer `sim` / `não`.
 | `source` | no source looks relevant | `source:<name>` |
 | `field` | a field (or a value's field) is doubtful: yes / no | `field:<source.field>` |
 | `join` | a JOIN is doubtful: yes / no | `join:<a.x>=<b.y>` |
-| `unresolvable` | no answer would help (no path in the catalog, a needed field refused) | nothing: no options |
+| `ignore_term` | every reading of a term was refused: answer without it? | `term:<words>` |
+| `unresolvable` | no answer would help (nothing left to try) | nothing: no options |
+
+**"No" opens the other possibilities.** A "no" is not the end of the
+conversation. The refused field or JOIN is left out and the plan looks
+for another way; only when there's none does the follow-up change to
+what's still possible:
+
+| Refused | Next |
+|---|---|
+| the field a value was searched in | another field of that type, in any source that fits; else *"What is “github”?"* without that type |
+| the reading of a term (`“failed”` = `outcome 'failure'`) | another field that value appears in; else *"Should I answer without “failed”?"* |
+| the field listed as the answer | another field that represents it, e.g. the owner of the machine via a JOIN; else the kinds of things that *can* be listed from there |
+| a JOIN | another join path, each question naming the fields it matches |
+| every option shown (entity, source) | **none of these** (always the last option): those are ruled out and the next ones are offered |
 
 - **Free-text replies.** A reply that isn't an option's number or name
   goes to the decision engine as a choice question. If it isn't sure

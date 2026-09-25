@@ -77,7 +77,9 @@ class SemanticInterpreter:
             literals=extraction.literals,
         )
         try:
-            retrieved = dict(self.retriever.search(intent.question, self.top_k))
+            refused = {k[7:] for k, v in pins.items() if k.startswith("source:") and v is False}
+            ranked = self.retriever.search(intent.question, self.top_k + len(refused))
+            retrieved = dict([(n, sc) for n, sc in ranked if n not in refused][: self.top_k])
             for key, value in pins.items():  # a source the user picked is a candidate whatever retrieval said
                 if key.startswith("source:") and value and key[7:] in self.catalog.sources:
                     retrieved.setdefault(key[7:], 0.0)
@@ -108,6 +110,9 @@ class SemanticInterpreter:
     def _entity_ask(self, intent: SemanticIntent, ex: Extraction, pins: Dict[str, Any]) -> Optional[Ask]:
         if not self.catalog.entities or "entity" in pins:
             return None
+        ruled_out = {k[11:] for k, v in pins.items() if k.startswith("not_entity:") and v}
+        if ruled_out and not set(self.catalog.entities) - ruled_out:
+            raise ClarificationNeeded("None of the kinds of things in the data is what the question asks for.")
         # The head noun is the strongest evidence: the first word the catalog
         # knows as an entity ("show me failed authentication *attempts*
         # from user bob"); fall back to every term.
@@ -117,7 +122,7 @@ class SemanticInterpreter:
         )
         options = {
             name: f"{e.description} Keywords: {', '.join(e.keywords)}"
-            for name, e in self.catalog.entities.items()
+            for name, e in self.catalog.entities.items() if name not in ruled_out
         }
         return Ask(key="entity", question="What entity is the user asking for?", options=options,
                    state=DecisionState(query=intent.question, terms=[focus] if focus else ex.terms))

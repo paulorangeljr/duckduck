@@ -53,21 +53,31 @@ class QueryPlanner:
 
     def plan(self, intent: SemanticIntent,
              pinned: Optional[Dict[str, Any]] = None) -> Tuple[LogicalQueryPlan, List[DecisionRecord]]:
-        """``pinned``: field/join confirmations the user answered (``field:<ref>``, ``join:<a>=<b>``)."""
+        """
+        ``pinned``: what the user answered (``field:<ref>``, ``join:<a>=<b>``,
+        ``term:<words>``). A "no" isn't the end: the refused field / join is
+        left out and the plan looks for another way (another field or
+        source, another join path); when there is none, the follow-up
+        offers what is still possible.
+        """
         pins = dict(pinned or {})
+        refused = {k[6:] for k, v in pins.items() if k.startswith("field:") and v is False}
+        blocked = {frozenset(k[5:].split("=", 1)) for k, v in pins.items() if k.startswith("join:") and v is False}
         decisions: List[DecisionRecord] = []
         checks: List[tuple] = []  # (Ask, record kind, threshold, message if it fails, options)
         activity = self.catalog.activities.get(intent.activity) if intent.activity else None
-        primary = self._choose_primary(intent, activity)
+        primary = self._choose_primary(intent, activity, refused)
         paths: List[Path] = []
         filters: List[Filter] = []
         resource_fields: Set[str] = set()
 
         # 1. values from the question typed by resource (github → domain)
         for res in intent.resources:
-            fname = self._pick_field(primary, res.type, activity.resource_role if activity else None)
+            usable = self._usable_fields(primary, res.type, refused)
+            fname = self._pick_field(primary, res.type, activity.resource_role if activity else None,
+                                     exclude=set(self.catalog.fields_by_semantic_type(primary, res.type)) - set(usable))
             ref = f"{primary}.{fname}"
-            only_one = len(self.catalog.fields_by_semantic_type(primary, res.type)) == 1
+            only_one = len(usable) == 1
             checks.append(self._field_check(
                 intent, ref, f"filtering on {res.value!r} ({res.type})", _SEMANTIC_MATCH_PRIOR, len(checks),
                 settled=only_one, followup=self.texts.field_filter(intent.question, ref, res.value, self.catalog),
@@ -83,7 +93,22 @@ class QueryPlanner:
         for match in intent.value_filters:
             by_term.setdefault(match.term, []).append(match)
         for term, matches in by_term.items():
-            match, path = self._locate_enum(primary, term, matches)
+            answer = pins.get(f"term:{term}")
+            if answer == "ignore":  # the user said to answer without it
+                decisions.append(DecisionRecord(kind="value_filter", question=f"Filter on {term!r}?", subject=term,
+                                                answer="ignored", probability=1.0, decided_by="user"))
+                continue
+            if answer is False:
+                exc = ClarificationNeeded(f"You'll rephrase the question without {term!r}.")
+                exc.decisions = list(decisions)
+                raise exc
+            matches = [m for m in matches if m.field not in refused]
+            if not matches:  # every reading of the term was refused
+                raise ClarificationNeeded(
+                    f"No other meaning of {term!r} found in the catalog.", None, [],
+                    self.texts.ignore_term(intent.question, term),
+                )
+            match, path = self._locate_enum(primary, term, matches, blocked, intent)
             if path.edges:
                 paths.append(path)
             checks.append(self._field_check(
@@ -110,7 +135,8 @@ class QueryPlanner:
             select = [f"{primary}.{f}" for f in self.catalog.sources[primary].fields]
             distinct = False
         else:
-            ref, path = self._locate_entity(primary, intent.target_entity, activity, resource_fields)
+            ref, path = self._locate_entity(primary, intent.target_entity, activity, resource_fields,
+                                            refused, blocked, intent)
             if path.edges:
                 paths.append(path)
             prior = min(self.catalog.entity_fields(intent.target_entity).get(ref, _SEMANTIC_MATCH_PRIOR), _SEMANTIC_MATCH_PRIOR)
@@ -118,6 +144,7 @@ class QueryPlanner:
             choices = set(self.catalog.fields_by_semantic_type(src, intent.target_entity)) | {
                 r.split(".")[1] for r in self.catalog.entity_fields(intent.target_entity) if r.split(".")[0] == src
             }
+            choices -= {r.split(".")[1] for r in refused if r.split(".")[0] == src}
             if src == primary:
                 choices -= resource_fields
             label = intent.target_entity + (f" — {entity.description.strip()}" if entity.description.strip() else "")
@@ -142,7 +169,10 @@ class QueryPlanner:
     # Primary source
     # ------------------------------------------------------------------
 
-    def _choose_primary(self, intent: SemanticIntent, activity: Optional[ActivityDef]) -> str:
+    def _usable_fields(self, source: str, semantic_type: str, refused: Set[str]) -> List[str]:
+        return [f for f in self.catalog.fields_by_semantic_type(source, semantic_type) if f"{source}.{f}" not in refused]
+
+    def _choose_primary(self, intent: SemanticIntent, activity: Optional[ActivityDef], refused: Set[str] = frozenset()) -> str:
         eligible = []
         for cand in intent.candidate_sources:
             if not self._is_allowed(cand.source):
@@ -150,11 +180,12 @@ class QueryPlanner:
             src = self.catalog.sources[cand.source]
             if intent.time_range and not src.resolved_time_field:
                 continue
-            if any(not self.catalog.fields_by_semantic_type(cand.source, r.type) for r in intent.resources):
+            if any(not self._usable_fields(cand.source, r.type, refused) for r in intent.resources):
                 continue
             supports = bool(intent.activity) and intent.activity in src.activities
             eligible.append(((supports, cand.confidence, cand.retrieval_score), cand.source))
         if not eligible:
+            self._retry_value_type(intent, refused)
             needs = []
             if intent.time_range:
                 needs.append("a time field")
@@ -167,6 +198,26 @@ class QueryPlanner:
             )
         eligible.sort(key=lambda e: e[0], reverse=True)
         return eligible[0][1]
+
+    def _retry_value_type(self, intent: SemanticIntent, refused: Set[str]) -> None:
+        """A value whose field the user refused, with no other field of its type: ask what it is instead."""
+        for res in intent.resources:
+            refused_here = [r for r in refused if self.catalog.field(r).semantic_type == res.type]
+            if not refused_here or any(self._usable_fields(c.source, res.type, refused) for c in intent.candidate_sources):
+                continue
+            counts: Dict[str, int] = {}
+            for cand in intent.candidate_sources:
+                for f in self.catalog.sources[cand.source].fields.values():
+                    if f.semantic_type and f.semantic_type not in (res.type, "event_time"):
+                        counts[f.semantic_type] = counts.get(f.semantic_type, 0) + 1
+            others = sorted(counts, key=lambda t: (-counts[t], t))[:6]
+            if others:
+                raise ClarificationNeeded(
+                    f"{res.value!r} isn't in {refused_here[0]}, and no other data has a '{res.type}' field.",
+                    None, others,
+                    self.texts.value_type(intent.question, res.value, others, rejected_field=refused_here[0],
+                                          catalog=self.catalog),
+                )
 
     # ------------------------------------------------------------------
     # Field location
@@ -182,14 +233,14 @@ class QueryPlanner:
                     return f
         return candidates[0]
 
-    def _locate_enum(self, primary: str, term: str, matches: list):
+    def _locate_enum(self, primary: str, term: str, matches: list, blocked=frozenset(), intent=None):
         for m in matches:
             if m.field.split(".")[0] == primary:
                 return m, Path(primary)
         best = None
         for m in matches:
             target = m.field.split(".")[0]
-            path = self.graph.find_path(primary, lambda s, t=target: s == t, self.max_hops, self._is_allowed)
+            path = self.graph.find_path(primary, lambda s, t=target: s == t, self.max_hops, self._is_allowed, blocked)
             if path and (best is None or path.confidence > best[1].confidence):
                 best = (m, path)
         if best is None:
@@ -197,14 +248,34 @@ class QueryPlanner:
                 f"{term!r} is a value of {', '.join(m.field for m in matches)}, which can't be "
                 f"connected to '{primary}' through any known relationship.",
                 options=[m.field for m in matches],
+                followup=self.texts.ignore_term(intent.question, term) if intent is not None else None,
             )
         return best
 
-    def _locate_entity(self, primary: str, entity: str, activity: Optional[ActivityDef], resource_fields: Set[str]):
+    def _locate_entity(self, primary: str, entity: str, activity: Optional[ActivityDef], resource_fields: Set[str],
+                       refused: Set[str] = frozenset(), blocked=frozenset(), intent=None):
+        found = self._find_entity_field(primary, entity, activity, resource_fields, refused, blocked)
+        if found is not None:
+            return found
+        reachable = [
+            e for e in self.catalog.entities
+            if e != entity and not self.catalog.entities[e].row_level
+            and self._find_entity_field(primary, e, activity, resource_fields, refused, blocked) is not None
+        ]
+        raise ClarificationNeeded(
+            f"Couldn't find any '{entity}' field reachable from '{primary}'.",
+            options=sorted(self.catalog.entity_fields(entity)),
+            followup=self.texts.entity_reachable(intent.question, entity, primary, reachable, self.catalog)
+            if reachable and intent is not None else None,
+        )
+
+    def _find_entity_field(self, primary: str, entity: str, activity: Optional[ActivityDef], resource_fields: Set[str],
+                           refused: Set[str], blocked) -> Optional[Tuple[str, Path]]:
         actor_role = activity.actor_role if activity else None
         represents = self.catalog.entity_fields(entity)
 
         def field_in(source: str, exclude: Iterable[str] = ()) -> Optional[str]:
+            exclude = set(exclude) | {r.split(".")[1] for r in refused if r.split(".")[0] == source}
             fname = self._pick_field(source, entity, actor_role, exclude)
             if fname is None:
                 # explicit "represents" relationships (e.g. owner → user)
@@ -219,13 +290,10 @@ class QueryPlanner:
         if direct:
             return f"{primary}.{direct}", Path(primary)
         path = self.graph.find_path(
-            primary, lambda s: s != primary and field_in(s) is not None, self.max_hops, self._is_allowed,
+            primary, lambda s: s != primary and field_in(s) is not None, self.max_hops, self._is_allowed, blocked,
         )
         if path is None:
-            raise ClarificationNeeded(
-                f"Couldn't find any '{entity}' field reachable from '{primary}'.",
-                options=sorted(represents),
-            )
+            return None
         return f"{path.end}.{field_in(path.end)}", path
 
     # ------------------------------------------------------------------

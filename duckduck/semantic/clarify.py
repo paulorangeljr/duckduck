@@ -28,10 +28,17 @@ from .intent import Clarification, ClarificationOption
 DEFAULT_TEXTS: Dict[str, str] = {
     "yes": "yes",
     "no": "no",
+    "none": "none of these",
     "entity.question": "What should the answer list?",
     "entity.context": "“{question}” could be asking for more than one kind of thing.",
     "value_type.question": "What is “{value}”?",
     "value_type.context": "I don't know what kind of information “{value}” is, so I don't know where to look for it.",
+    "value_type.context_retry": "You said “{value}” isn't the {field}, and none of the other data that fits your question has that kind of field.",
+    "entity.context_reachable": "I can't find {entity} starting from the {source}. From there, the answer can list:",
+    "ignore_term.question": "Should I answer without “{term}”, then?",
+    "ignore_term.context": "I couldn't find another meaning for “{term}” in the data.",
+    "ignore_term.yes": "answer without filtering on it",
+    "ignore_term.no": "I'll rephrase the question",
     "value_term.question": "Which of these is what you want me to look for?",
     "value_term.context": "More than one word in “{question}” could be the value to search for.",
     "source.question": "Which of these should answer your question?",
@@ -48,8 +55,8 @@ DEFAULT_TEXTS: Dict[str, str] = {
     "field_return.context": "In the {source}, that's how {entity} is recorded ({field_name}).",
     "field_return.yes": "list it",
     "field_return.no": "that's not what I'm asking for",
-    "join.question": "Should I combine the {source} with the {other_source}?",
-    "join.context": "They share the {field} and the {other_field}; the answer needs both.",
+    "join.question": "Should I match the {field} in the {source} with the {other_field} in the {other_source}?",
+    "join.context": "That's how the two can be combined to answer; if they don't refer to the same thing, I'll look for another way.",
     "join.yes": "combine them",
     "join.no": "they're unrelated",
 }
@@ -97,20 +104,41 @@ class ClarificationTexts:
     # one builder per kind
     # ------------------------------------------------------------------
 
-    def entity(self, question: str, ranked: Iterable[str], catalog: Catalog) -> Clarification:
+    def entity(self, question: str, ranked: Iterable[str], catalog: Catalog, context: Optional[str] = None) -> Clarification:
+        ranked = list(ranked)
         return Clarification(
             kind="entity", question=self.t("entity.question", question=question),
-            context=self.t("entity.context", question=question),
+            context=context or self.t("entity.context", question=question),
             options=[ClarificationOption(value=e, label=_label(catalog.entities[e].description, e),
-                                         pins={"entity": e}) for e in ranked],
+                                         pins={"entity": e}) for e in ranked]
+            + [self._none({f"not_entity:{e}": True for e in ranked})],
         )
 
-    def value_type(self, question: str, value: str, ranked: Iterable[str]) -> Clarification:
+    def entity_reachable(self, question: str, entity: str, source: str, reachable: Iterable[str],
+                         catalog: Catalog) -> Clarification:
+        """The entity asked for can't be reached from the primary source — offer the ones that can."""
+        edef = catalog.entities.get(entity)
+        context = self.t(
+            "entity.context_reachable", question=question, entity_name=entity, source_name=source,
+            entity=_lower_first(short(edef.description)) if edef and edef.description else human(entity),
+            source=_lower_first(short(catalog.sources[source].description)) or human(source),
+        )
+        return self.entity(question, reachable, catalog, context=_upper_first(context))
+
+    def value_type(self, question: str, value: str, ranked: Iterable[str],
+                   rejected_field: Optional[str] = None, catalog: Optional[Catalog] = None) -> Clarification:
+        context = self.t("value_type.context", question=question, value=value)
+        if rejected_field and catalog is not None:
+            context = self.t("value_type.context_retry", **self._field_values(question, rejected_field, catalog, value=value))
         return Clarification(
             kind="value_type", question=self.t("value_type.question", question=question, value=value),
-            context=self.t("value_type.context", question=question, value=value),
+            context=_upper_first(context),
             options=[ClarificationOption(value=t, label=human(t), pins={f"value:{value}": t}) for t in ranked],
         )
+
+    def ignore_term(self, question: str, term: str) -> Clarification:
+        return self._yes_no("ignore_term", "ignore_term", f"term:{term}", {"question": question, "term": term},
+                            yes_value="ignore")
 
     def value_term(self, question: str, terms: Iterable[str]) -> Clarification:
         return Clarification(
@@ -120,12 +148,18 @@ class ClarificationTexts:
         )
 
     def source(self, question: str, names: Iterable[str], catalog: Catalog) -> Clarification:
+        names = list(names)
         return Clarification(
             kind="source", question=self.t("source.question", question=question),
             context=self.t("source.context", question=question),
             options=[ClarificationOption(value=n, label=_label(catalog.sources[n].description, n),
-                                         pins={f"source:{n}": True}) for n in names],
+                                         pins={f"source:{n}": True}) for n in names]
+            + [self._none({f"source:{n}": False for n in names})],
         )
+
+    def _none(self, pins: Dict[str, Any]) -> ClarificationOption:
+        """'None of these' — rules the shown options out, so the next round offers others."""
+        return ClarificationOption(value="none", label=self.t("none"), pins=pins)
 
     def field_filter(self, question: str, ref: str, value: str, catalog: Catalog) -> Clarification:
         return self._yes_no("field", "field_filter", f"field:{ref}", self._field_values(question, ref, catalog, value=value))
@@ -157,12 +191,13 @@ class ClarificationTexts:
         return {"question": question, "field": _lower_first(field), "field_name": ref,
                 "source": _lower_first(source), "source_name": source_name, **extra}
 
-    def _yes_no(self, kind: str, prefix: str, key: str, values: Dict[str, Any]) -> Clarification:
+    def _yes_no(self, kind: str, prefix: str, key: str, values: Dict[str, Any], yes_value: Any = True) -> Clarification:
         return Clarification(
             kind=kind, question=_upper_first(self.t(f"{prefix}.question", **values)),
             context=_upper_first(self.t(f"{prefix}.context", **values)),
             options=[
-                ClarificationOption(value="yes", label=self.t("yes"), detail=self.t(f"{prefix}.yes", **values), pins={key: True}),
+                ClarificationOption(value="yes", label=self.t("yes"), detail=self.t(f"{prefix}.yes", **values),
+                                    pins={key: yes_value}),
                 ClarificationOption(value="no", label=self.t("no"), detail=self.t(f"{prefix}.no", **values), pins={key: False}),
             ],
         )

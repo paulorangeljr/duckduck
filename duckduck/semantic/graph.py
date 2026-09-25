@@ -18,7 +18,7 @@ import heapq
 import itertools
 import math
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, FrozenSet, List, Optional, Set
 
 from .catalog import JOINABLE_RELATIONSHIPS, Catalog, split_ref
 
@@ -81,11 +81,13 @@ class RelationshipGraph:
         goal: Callable[[str], bool],
         max_hops: int = 3,
         allowed: Optional[Callable[[str], bool]] = None,
+        blocked: Optional[Set[FrozenSet[str]]] = None,
     ) -> Optional[Path]:
         """
         Best path from ``start`` to the nearest source satisfying ``goal``
         (``start`` itself counts — an empty path). ``allowed`` can exclude
-        sources from being traversed (e.g. unauthorized ones).
+        sources from being traversed (e.g. unauthorized ones); ``blocked``
+        excludes joins, as ``frozenset({left_field, right_field})``.
         """
         counter = itertools.count()
         heap = [(0.0, next(counter), Path(start))]
@@ -106,6 +108,8 @@ class RelationshipGraph:
                 if nxt in visited or nxt in best_cost:
                     continue
                 if allowed is not None and not allowed(nxt):
+                    continue
+                if blocked and frozenset((edge.left, edge.right)) in blocked:
                     continue
                 step = -math.log(max(edge.confidence, 1e-9)) + self.HOP_PENALTY
                 heapq.heappush(heap, (cost + step, next(counter), Path(start, path.edges + [edge])))
