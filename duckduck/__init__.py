@@ -5,7 +5,9 @@ from .blob_storage import BlobStorage
 from .core import DuckAPI, PushDownContext
 from .database import SQLDatabase
 from .glue import GlueTable
+from .nvd import NVD
 from .rapid7 import InsightVM
+from .restcountries import RestCountries
 from .secrets import SecretsManager
 from .servicenow import ServiceNow
 from .sharepoint import SharePoint
@@ -21,6 +23,8 @@ __all__ = [
     "Axonius",
     "GlueTable",
     "BlobStorage",
+    "NVD",
+    "RestCountries",
     "SecretsManager",
     "AzureKeyVaultSecrets",
 ]

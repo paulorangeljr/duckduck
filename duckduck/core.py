@@ -1139,6 +1139,8 @@ class DuckAPI:
         "duckduck.rapid7": "InsightVM (HTTP API)",
         "duckduck.servicenow": "ServiceNow (HTTP API)",
         "duckduck.axonius": "Axonius (HTTP API)",
+        "duckduck.nvd": "NVD — National Vulnerability Database (HTTP API)",
+        "duckduck.restcountries": "REST Countries (HTTP API)",
         "duckduck.database": "SQL database",
         "duckduck.glue": "S3 / Glue Data Catalog",
         "duckduck.blob_storage": "Azure Blob Storage",

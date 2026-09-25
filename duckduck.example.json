@@ -78,6 +78,13 @@
         "api_base": "https://internal-gateway.company.com/v1/now"
       }
     },
+    "nvd": {
+      "connector": "nvd",
+      "authentication": {"type": "aws", "secret_id": "prod/nvd", "api_key": "$secret.api_key"}
+    },
+    "world": {
+      "connector": "restcountries"
+    },
     "axonius": {
       "connector": "axonius",
       "authentication": {

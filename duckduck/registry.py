@@ -4,7 +4,7 @@ Central registry of the API wrappers supported by
 
 Each entry maps a "type" (``"sharepoint"``, ``"insightvm"``, ``"database"``,
 ``"servicenow"``, ``"axonius"``, ``"glue"``, ``"blob_storage"``, ``"adx"``,
-``"files"``, ``"python"``) to:
+``"files"``, ``"python"``, ``"nvd"``, ``"restcountries"``) to:
 
 - ``factory``          : classmethod that builds the instance from a
                           credentials dict (``Wrapper.from_secret``)
@@ -24,8 +24,10 @@ from .blob_storage import BlobStorage
 from .database import SQLDatabase
 from .glue import GlueTable
 from .local_files import LocalFiles
+from .nvd import NVD
 from .python_source import PythonSource
 from .rapid7 import InsightVM
+from .restcountries import RestCountries
 from .servicenow import ServiceNow
 from .sharepoint import SharePoint
 
@@ -132,6 +134,19 @@ SERVICE_REGISTRY: Dict[str, ServiceSpec] = {
             "devices": "iter_devices",
             "users": "iter_users",
         },
+    ),
+    # public APIs (github.com/public-apis/public-apis): no credentials needed
+    "nvd": ServiceSpec(
+        factory=NVD.from_secret,
+        tables={"cves": "cves"},
+        streaming_tables={"cves": "iter_cves"},
+        requires_authentication=False,  # an optional api_key raises NVD's rate limit
+    ),
+    "restcountries": ServiceSpec(
+        factory=RestCountries.from_secret,
+        tables={"countries": "countries"},
+        streaming_tables={},
+        requires_authentication=False,
     ),
     "glue": ServiceSpec(
         factory=GlueTable.from_secret,

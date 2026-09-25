@@ -133,6 +133,46 @@ duck.register_api_function("vulnerabilities", r7.vulnerabilities)
 duck.sql("SELECT * FROM assets WHERE hostname = 'web-prod' LIMIT 25").df()
 ```
 
+## Public APIs: NVD (CVEs) and REST Countries
+
+Two connectors for APIs from [public-apis](https://github.com/public-apis/public-apis),
+no account needed:
+
+```python
+from duckduck import DuckAPI
+
+duck = DuckAPI()
+duck.auto_register({"nvd": {}, "world": {"connector": "restcountries"}})
+
+# CVEs: severity, KEV, CWE and date ranges go to NVD as its own filters
+duck.sql("""SELECT id, cvss_score, kev_added, description FROM nvd_cves
+            WHERE severity = 'CRITICAL' AND in_kev = true AND published >= '2026-06-01'""").df()
+duck.sql("SELECT id, severity FROM nvd_cves(keyword='log4j') ORDER BY cvss_score DESC").df()
+
+# Countries: codes, names, capitals, regions go to the matching endpoint
+duck.sql("SELECT name, capital, population FROM world_countries WHERE region = 'Americas'").df()
+```
+
+- **`nvd_cves`** (NVD CVE API 2.0): `id`, `published`, `last_modified`,
+  `status`, `description`, `severity` / `cvss_score` / `cvss_vector` (CVSS
+  v3.x), `cvss4_severity` / `cvss4_score`, `cwe`, `in_kev` + `kev_added` /
+  `kev_due` / `kev_action` / `kev_name` (CISA's Known Exploited
+  Vulnerabilities), `source`, `references`. `id`, `severity`,
+  `cvss4_severity`, `cwe`, `in_kev = true` and ranges on `published` /
+  `last_modified` are asked of NVD (ranges cut into its 120-day windows);
+  `keyword=` inline is NVD's word search. Without a key NVD allows 5
+  requests per 30 s, so the connector waits 6 s between pages (and retries
+  when rate limited); an `api_key` in the `authentication` block (optional)
+  raises that to 50 and the pause to 0.6 s. Rejected CVE IDs are left out
+  unless `include_rejected: true`.
+- **`world_countries`** (REST Countries v3.1): `name`, `official_name`,
+  `cca2`/`cca3`/`ccn3`, `region`, `subregion`, `capital`, `population`,
+  `area`, `languages`, `currencies`, `continents`, `timezones`, `borders`,
+  `independent`, `un_member`, `landlocked`, `latitude`/`longitude`, `tld`,
+  `flag`. A code, a name (`=` or a `LIKE`/`ILIKE` pattern), a capital, a
+  subregion or a region picks the endpoint; anything else reads all
+  countries (the API has no paging — it's ~250 rows).
+
 ## Seeing what happens: verbose mode
 
 ```python
@@ -937,7 +977,7 @@ python -m duckduck.semantic feedback-export    # what still fails, as a brief fo
   machines…" limited to the firewall offers its IPs, since the hostnames
   live in the inventory.
 - **Icons.** Every table shows the kind of source it comes from:
-  SharePoint, SQL database, ServiceNow, InsightVM, Axonius, S3/Glue,
+  SharePoint, SQL database, ServiceNow, InsightVM, Axonius, NVD, REST Countries, S3/Glue,
   Azure Blob, Azure Data Explorer, local files, Python module, DuckDB, or
   another API. These are generic shapes, not brand logos, drawn from the
   connector behind each table (`SemanticSearch.source_icon`).
