@@ -980,6 +980,24 @@ python -m duckduck.semantic feedback-export    # what still fails, as a brief fo
     `conversation.take_over(...)`), then
     `duck.sql("SELECT ... FROM machines_seen")`. `list_tables()` shows these
     tables as *Taken over*, with the question they came from.
+- **Config → Semantic catalog.** Generate the catalog from the page — what
+  `generate-catalog` does. The card shows the catalog file, the LLM that
+  drafts it, and every table: when it was drafted and by which LLM (or
+  *written by hand*), whether it has your notes, and the registered tables
+  **not in the catalog yet**.
+  - **Update catalog** drafts the new tables and those older than
+    `max_age`; **Redraft all generated** redrafts every generated table (it
+    tells you how many LLM calls first); **Redraft** / **Add** on a row does
+    just that table.
+  - It runs in the background: a progress bar (*Drafting 3 of 12…*), the
+    generation's log as it happens, then what was drafted, kept or left for
+    the next run (`max_tables`) and the warnings. The app reloads with the
+    new catalog when it's done — questions use it right away. One run at a
+    time.
+  - Hand-written tables and your `notes` are kept, as in the CLI. Like
+    saving the config, it rewrites a file and spends LLM calls, so it needs
+    `serve --edit-config`; without it the card shows the catalog and says
+    why the buttons are off.
 - **Config.** `duckduck.json` as a **form** or as **JSON** (a toggle; both
   edit the same config, so a change in one shows in the other), next to
   **every option there is**, searchable.

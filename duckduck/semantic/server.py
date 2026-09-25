@@ -24,6 +24,9 @@ HTML page (``webpage.PAGE``) over a JSON API:
 ``GET  /api/config``                         duckduck.json, secrets masked, + every option documented
 ``POST /api/config/validate {config}``       check an edited config without saving
 ``PUT  /api/config {config}``                save it (``allow_config_edit``; ``.bak`` kept) and reload
+``GET  /api/catalog``                        the semantic catalog: its tables, their age, the tables not in it yet
+``POST /api/catalog/generate {force, only}``  draft it with the LLM, as a job (``allow_config_edit``) → 202
+``GET  /api/catalog/jobs/{id}?since=n``      that job: running / done / failed, its log from line n, the result
 ==========================================  ==============================================
 
 **It has no user accounts.** It answers from your data with your
@@ -58,6 +61,8 @@ def create_app(
     config_path: Optional[str] = None,
     allow_config_edit: bool = False,
     rebuild: Optional[Callable[[], Any]] = None,
+    catalog_runner: Optional[Callable[[Any, Any], Any]] = None,
+    catalog_info: Optional[Callable[[], Dict[str, Any]]] = None,
 ):
     """
     ``factory`` builds the ``SemanticSearch`` (called again after an accepted
@@ -68,6 +73,11 @@ def create_app(
     tab). ``config_path``: the ``duckduck.json`` the Config tab shows;
     saving it needs ``allow_config_edit``, and then ``rebuild()`` →
     ``(factory, console)`` reconnects everything from the saved file.
+    ``catalog_runner(force, only)`` → a ``GenerationResult``: the Config
+    tab's *Semantic catalog* card generates with it (as a background job,
+    ``catalog_jobs``) — also gated by ``allow_config_edit``, since it
+    rewrites the catalog file and spends LLM calls; ``catalog_info()`` →
+    the file, the LLM and the limits it shows.
     """
     try:
         from fastapi import Body, FastAPI, HTTPException, Request
@@ -128,7 +138,8 @@ def create_app(
         cat = search.catalog
         return dump({
             "features": {"sql": state["console"] is not None, "config": bool(config_path),
-                         "config_edit": bool(config_path and allow_config_edit)},
+                         "config_edit": bool(config_path and allow_config_edit),
+                         "catalog_generation": bool(catalog_runner is not None and allow_config_edit)},
             "source_icons": {n: search.source_icon(n) for n in cat.sources},
             "texts": {"ask_anyway": search.texts.t("reply.ask_anyway")},
             "readers": {"available": search.readers, "default": search.reader,
@@ -406,6 +417,80 @@ def create_app(
                     saved["reload_error"] = f"{type(exc).__name__}: {exc}"
         logger.info("config saved to %s (reloaded: %s)", config_path, saved["reloaded"])
         return dump(saved)
+
+    # -- the semantic catalog: generate it from the page ------------------------------------
+
+    from .catalog_jobs import CatalogJobs
+
+    def reload_after_generation(_result: Any) -> None:
+        with lock:
+            state["search"] = state["factory"]()  # the new catalog, from now on
+            state["conversations"].clear()
+
+    jobs = CatalogJobs(catalog_runner, on_changed=reload_after_generation) if catalog_runner else None
+    state["catalog_jobs"] = jobs
+
+    def generation_off() -> Optional[str]:
+        if catalog_runner is None:
+            return "this server wasn't started from a config file (duckduck.json), so it can't generate a catalog"
+        if not allow_config_edit:
+            return ("generating rewrites the catalog file and calls the LLM once per table — start the server "
+                    "with --edit-config (serve(allow_config_edit=True)) to do it from here")
+        return None
+
+    @app.get("/api/catalog")
+    def catalog_status():
+        search = state["search"]
+        sources = []
+        for name, src in search.catalog.sources.items():
+            sources.append({
+                "name": name, "table": src.table, "args": src.args, "relation": bool(src.relation),
+                "fields": len(src.fields), "description": (src.description or "").split("\n")[0][:200],
+                "generated_at": src.generated_at.isoformat(timespec="seconds") if src.generated_at else None,
+                "generated_by": src.generated_by, "notes": bool(src.notes or any(f.notes for f in src.fields.values())),
+                "service": search.duck.service_of.get(src.table) if search.duck is not None and src.table else None,
+            })
+        bound = {s["table"] for s in sources if s["table"] and not s["args"]}
+        missing = []
+        if search.duck is not None:
+            try:
+                listed = search.duck.list_tables(kind="table")
+                missing = [n for n in listed["name"] if n not in bound and search.duck.service_of.get(n) != "taken over"]
+            except Exception as exc:  # the card still shows the catalog
+                logger.info("catalog status: couldn't list tables (%s)", exc)
+        info = {}
+        if catalog_info is not None:
+            try:
+                info = catalog_info()
+            except Exception as exc:
+                info = {"error": f"{type(exc).__name__}: {exc}"}
+        latest = jobs.latest() if jobs else None
+        return dump({"sources": sources, "not_in_catalog": missing, "info": info, "off": generation_off(),
+                     "job": latest.to_dict() if latest else None})
+
+    @app.post("/api/catalog/generate")
+    def catalog_generate(body: Optional[Dict[str, Any]] = Body(None)):
+        off = generation_off()
+        if off:
+            raise HTTPException(403, off)
+        body = body or {}
+        force, only = body.get("force", False), body.get("only") or None
+        if not (isinstance(force, bool) or (isinstance(force, list) and all(isinstance(f, str) for f in force))):
+            raise HTTPException(400, "force: true/false, or a list of table names")
+        if only is not None and not (isinstance(only, list) and all(isinstance(o, str) for o in only)):
+            raise HTTPException(400, "only: a list of table names")
+        try:
+            job = jobs.start(force=force or False, only=only)
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc))
+        return dump(job.to_dict(), status=202)
+
+    @app.get("/api/catalog/jobs/{job_id}")
+    def catalog_job(job_id: str, since: int = 0):
+        job = jobs.get(job_id) if jobs else None
+        if job is None:
+            raise HTTPException(404, f"no catalog job {job_id!r}")
+        return dump(job.to_dict(since=since))
 
     app.state.duckduck = state
     return app

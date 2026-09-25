@@ -230,7 +230,9 @@ def serve(
     tables, read queries only, on a connection with no file or network
     access. ``False`` (CLI ``--no-sql``) leaves the tab saying it's off.
     ``allow_config_edit``: the Config tab may save ``duckduck.json`` (secrets
-    stay masked in the page; a ``.bak`` is kept) and reconnect everything.
+    stay masked in the page; a ``.bak`` is kept) and reconnect everything,
+    and its *Semantic catalog* card may generate the catalog (what
+    ``generate_catalog`` does, as a background job with its log live).
     Reading the config (masked) and its options reference is always there.
     """
     from .admin import SQLConsole
@@ -243,11 +245,29 @@ def serve(
             if c.feedback.memory else None
         return lambda: SemanticSearch.from_config(d, config_path, feedback=store, memory=memory)
 
+    current = {"duck": duck}
+
     def rebuild():
         from .config import SemanticConfig
 
         d = connect(config_path, verbose)
+        current["duck"] = d
         return factory_for(d, SemanticConfig.load(d, config_path)), (SQLConsole(d) if allow_sql else None)
+
+    def generate(force, only):  # the Config tab's "Semantic catalog" card — what generate-catalog runs
+        from .config import SemanticConfig
+
+        return refresh_catalog(SemanticConfig.load(current["duck"], config_path), current["duck"],
+                               force=force, only=only)
+
+    def catalog_info():
+        from .config import SemanticConfig
+
+        c = SemanticConfig.load(current["duck"], config_path)
+        gen = c.catalog_generation
+        return {"path": c.catalog_target(), "llm": c.llm_label("catalog_generation"),
+                "max_age": gen.max_age, "max_tables": gen.max_tables, "sample_rows": gen.sample_rows,
+                "tables_configured": len(gen.tables or [])}
 
     app = create_app(
         factory_for(duck, cfg), store, catalog_path=cfg.path(cfg.catalog_path),
@@ -255,6 +275,7 @@ def serve(
         token=token if token is not None else os.environ.get("DUCKDUCK_SERVER_TOKEN") or None,
         console=SQLConsole(duck) if allow_sql else None, config_path=cfg.config_file,
         allow_config_edit=allow_config_edit, rebuild=rebuild,
+        catalog_runner=generate if cfg.config_file else None, catalog_info=catalog_info,
     )
     if not run:
         return app

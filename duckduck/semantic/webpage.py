@@ -146,6 +146,17 @@ textarea.editor { width: 100%; min-height: 180px; resize: vertical; tab-size: 2;
 .badge { font-size: 11px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--ink-2); margin-left: 4px; }
 @media (max-width: 860px) { .sqlgrid, .cfggrid { grid-template-columns: 1fr; } }
 /* Config form */
+.catcard { margin-bottom: 14px; }
+.catbar { gap: 10px; align-items: center; }
+.catprog { gap: 10px; align-items: center; margin-top: 12px; } .catprog progress { flex: 1; min-width: 120px; height: 8px; }
+.catlog { max-height: 260px; overflow: auto; background: var(--surface-2); border: 1px solid var(--border);
+          border-radius: 8px; padding: 10px 12px; margin: 8px 0 0; font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; }
+.spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--border); border-top-color: var(--accent);
+        animation: spin .8s linear infinite; flex: none; }
+.spin[hidden] { display: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+#catlist table td .mono { font-size: 12.5px; }
 .cfghead { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
 .cfghead h3 { margin: 0; }
 .cfgbar { position: sticky; bottom: 0; background: var(--surface); padding: 10px 0 4px; margin-top: 8px;
@@ -364,6 +375,23 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
     </div>
   </section>
   <section id="tab-config" hidden>
+    <div class="card catcard" id="catcard">
+      <div class="cfghead"><h3>Semantic catalog <span class="muted small mono" id="catpath"></span></h3>
+        <span class="muted small" id="catllm"></span></div>
+      <p class="muted small" style="margin:6px 0 10px">What questions are answered from: each table, its fields and what they mean.
+        The LLM drafts it from the columns and a few sample rows; tables you wrote by hand and your <em>notes</em> are kept.</p>
+      <div class="row catbar">
+        <button class="primary" type="button" id="catupdate" title="Draft the tables that are new or older than max_age">Update catalog</button>
+        <button class="secondary" type="button" id="catall" title="Draft every generated table again (one LLM call each)">Redraft all generated</button>
+        <span class="small" id="catnote"></span></div>
+      <div id="catjob" hidden>
+        <div class="row catprog"><span class="spin" id="catspin" aria-hidden="true"></span><strong id="catstate"></strong>
+          <progress id="catbar" max="1" value="0"></progress><span class="muted small" id="catelapsed"></span></div>
+        <pre class="catlog mono" id="catlog" aria-live="polite"></pre>
+        <div id="catresult"></div>
+      </div>
+      <details id="cattables"><summary id="catcount">Tables</summary><div id="catlist"></div></details>
+    </div>
     <div class="cfggrid">
       <div class="card"><div class="cfghead"><h3>duckduck.json <span class="muted small mono" id="cfgpath"></span></h3>
           <div class="seg" role="group" aria-label="Edit as">
@@ -466,7 +494,7 @@ document.querySelectorAll("nav button").forEach(b => b.addEventListener("click",
   document.querySelectorAll("main > section").forEach(s => s.hidden = s.id !== "tab-" + b.dataset.tab);
   ({history: loadHistory, dashboard: loadDashboard, suggestions: loadSuggestions,
     sql: () => META?.features?.sql && loadTables(),
-    config: () => CFG || loadConfig()})[b.dataset.tab]?.();  // config: loaded once, so switching tabs keeps edits
+    config: () => { loadCatalog(); return CFG || loadConfig(); }})[b.dataset.tab]?.();  // config: loaded once, so switching tabs keeps edits
 }));
 $("#user").value = store.get("duckduck-user") || "";
 $("#user").addEventListener("change", () => store.set("duckduck-user", $("#user").value));
@@ -1161,6 +1189,90 @@ async function runSql() {
 }
 $("#sqlrun").addEventListener("click", runSql);
 $("#sqltext").addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); runSql(); } });
+
+// ---- Semantic catalog (Config tab): generate it with the LLM, as a job with its log live ----------
+let CAT = null, CATJOB = null;  // CATJOB: {id, lines, timer}
+function ago(iso) {
+  if (!iso) return "";
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  return s < 90 ? "just now" : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 129600 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} days ago`;
+}
+async function loadCatalog() {
+  try { CAT = await api("/api/catalog"); } catch (err) { $("#catnote").innerHTML = `<span class="msg bad">${esc(err.message)}</span>`; return; }
+  const info = CAT.info || {};
+  $("#catpath").textContent = info.path || "";
+  $("#catllm").textContent = info.llm ? `drafted by ${info.llm}` : (CAT.off ? "" : "no LLM configured for catalog_generation");
+  const off = CAT.off || (!info.llm ? "no LLM is configured for catalog generation (default_llm or catalog_generation.llm)" : null);
+  const running = CAT.job?.state === "running";
+  $("#catupdate").disabled = $("#catall").disabled = !!off || running;
+  $("#catnote").className = "small " + (off ? "muted" : "muted");
+  $("#catnote").textContent = off ? off : (info.max_age ? `Update drafts new tables and those older than ${info.max_age}` : "Update drafts the tables not in the catalog yet")
+    + (info.max_tables ? ` · at most ${info.max_tables} per run` : "") + (off ? "" : ".");
+  drawCatalogTables(!!off || running);
+  if (CAT.job && (!CATJOB || CATJOB.id !== CAT.job.id)) watchJob(CAT.job);  // a job started elsewhere, or before a reload
+}
+function drawCatalogTables(disabled) {
+  const src = CAT.sources || [], missing = CAT.not_in_catalog || [];
+  $("#catcount").textContent = `Tables — ${src.length} in the catalog` + (missing.length ? ` · ${missing.length} not yet` : "");
+  const btn = (label, attr, title) => `<button class="secondary" type="button" ${attr} title="${esc(title)}" style="padding:3px 10px;font-size:12.5px" ${disabled ? "disabled" : ""}>${label}</button>`;
+  $("#catlist").innerHTML = `<div class="tablewrap"><table><thead><tr><th>table</th><th>reads</th><th class="num">fields</th><th>drafted</th><th></th></tr></thead><tbody>
+    ${src.map(t => `<tr><td><strong>${esc(t.name)}</strong>${t.notes ? ` <span class="muted small" title="has your notes — kept when redrafted">✎ notes</span>` : ""}
+        ${t.description ? `<div class="muted small">${esc(t.description)}</div>` : ""}</td>
+      <td class="mono">${t.relation ? "DuckDB relation" : esc(t.table || "") + (Object.keys(t.args || {}).length ? `(${esc(Object.entries(t.args).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", "))})` : "")}</td>
+      <td class="num">${t.fields}</td>
+      <td class="small">${t.generated_at ? `${esc(ago(t.generated_at))}<div class="muted">${esc(t.generated_by || "")}</div>` : `<span class="muted">written by hand</span>`}</td>
+      <td>${t.relation ? "" : btn("Redraft", `data-redraft="${esc(t.name)}"`, t.generated_at ? "Draft this table again" : "Replace the hand-written description with a draft (your notes are kept)")}</td></tr>`).join("")}
+    ${missing.map(n => `<tr><td><span class="muted">${esc(n)}</span> <span class="pill">not in the catalog</span></td><td class="mono">${esc(n)}</td><td></td><td></td>
+      <td>${btn("Add", `data-add="${esc(n)}"`, "Draft this table into the catalog")}</td></tr>`).join("")}
+    </tbody></table></div>`;
+  $("#catlist").querySelectorAll("[data-redraft]").forEach(b => b.addEventListener("click", () => startGeneration({force: [b.dataset.redraft]})));
+  $("#catlist").querySelectorAll("[data-add]").forEach(b => b.addEventListener("click", () => startGeneration({only: [b.dataset.add]})));
+}
+async function startGeneration(body) {
+  try { watchJob(await api("/api/catalog/generate", body)); }
+  catch (err) { $("#catnote").innerHTML = `<span class="msg bad">✗ ${esc(err.message)}</span>`; }
+}
+function watchJob(job) {
+  if (CATJOB?.timer) clearTimeout(CATJOB.timer);
+  CATJOB = {id: job.id, lines: 0, timer: null};
+  $("#catlog").textContent = ""; $("#catresult").innerHTML = ""; $("#catjob").hidden = false;
+  showJob(job);
+}
+function showJob(job) {
+  const log = $("#catlog"), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
+  if (job.log?.length) { log.textContent += (log.textContent ? "\n" : "") + job.log.join("\n"); CATJOB.lines = job.log_size; }
+  if (atEnd) log.scrollTop = log.scrollHeight;
+  const steps = [...log.textContent.matchAll(/\[(\d+)\/(\d+)\]/g)], last = steps[steps.length - 1];
+  const running = job.state === "running";
+  $("#catspin").hidden = !running;
+  $("#catbar").max = last ? +last[2] : 1; $("#catbar").value = running ? (last ? +last[1] - 0.5 : 0) : $("#catbar").max;
+  $("#catstate").textContent = running ? (last ? `Drafting ${last[1]} of ${last[2]}…` : "Looking at the tables…")
+    : job.state === "done" ? (job.result?.changed ? "Catalog updated" : "Already up to date") : "Generation failed";
+  $("#catelapsed").textContent = `${Math.round(job.elapsed_s)} s`;
+  $("#catupdate").disabled = $("#catall").disabled = running || !!CAT?.off;
+  document.querySelectorAll("#catlist button").forEach(b => b.disabled = running || !!CAT?.off);
+  if (running) { CATJOB.timer = setTimeout(pollJob, 1000); return; }
+  const r = job.result;
+  $("#catresult").innerHTML = job.state === "failed" ? `<p class="msg bad">✗ ${esc(job.error)}</p>` :
+    `<p class="msg good">✓ ${esc(Object.keys(r.drafted).length ? `Drafted ${Object.keys(r.drafted).length} table${Object.keys(r.drafted).length === 1 ? "" : "s"}` : "Nothing needed drafting")} · ${r.sources} in the catalog${r.deferred.length ? ` · ${r.deferred.length} left for the next run (max_tables)` : ""}</p>
+     ${job.reloaded ? `<p class="msg good">✓ Questions use the new catalog from now on.</p>` : ""}
+     ${job.reload_error ? `<p class="msg bad">Written, but reloading failed: ${esc(job.reload_error)}</p>` : ""}
+     ${(r.warnings || []).map(w => `<p class="msg warn">! ${esc(w)}</p>`).join("")}
+     ${r.changed ? `<p class="muted small">Review the file — it's a draft: add <em>notes</em> where the LLM got something wrong, and they're kept next time.</p>` : ""}`;
+  if (job.reloaded) api("/api/meta").then(m => { META = m; showFeatures(); }).catch(() => {});
+  if (!CAT || CAT.job?.id !== job.id || CAT.job.state !== job.state) loadCatalog();  // the table ages, the buttons
+}
+async function pollJob() {
+  if (!CATJOB) return;
+  try { showJob(await api(`/api/catalog/jobs/${CATJOB.id}?since=${CATJOB.lines}`)); }
+  catch (err) { $("#catstate").textContent = "Lost track of the job: " + err.message; $("#catspin").hidden = true; }
+}
+$("#catupdate").addEventListener("click", () => startGeneration({force: false}));
+$("#catall").addEventListener("click", () => {
+  const n = (CAT?.sources || []).filter(t => t.generated_at).length + (CAT?.not_in_catalog || []).length;
+  if (confirm(`Draft every generated table again? That's about ${n} LLM call${n === 1 ? "" : "s"}. Hand-written tables and your notes are kept.`))
+    startGeneration({force: true});
+});
 
 // ---- Config tab --------------------------------------------------------------------------
 let CFG = null;

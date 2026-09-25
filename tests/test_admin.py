@@ -231,7 +231,7 @@ def _client(path, **kw):
 def test_sql_is_on_and_saving_off_by_default(served):
     client = _client(served)
     features = client.get("/api/meta").json()["features"]
-    assert features == {"sql": True, "config": True, "config_edit": False}
+    assert features == {"sql": True, "config": True, "config_edit": False, "catalog_generation": False}
     assert client.post("/api/sql", json={"sql": "SELECT 1"}).json()["rows"] == [[1]]
     off = _client(served, allow_sql=False)
     assert off.get("/api/meta").json()["features"]["sql"] is False
