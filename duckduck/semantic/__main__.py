@@ -13,14 +13,15 @@ commands read ``duckduck.json`` (or ``--config``): connectors from
     python -m duckduck.semantic feedback-report
     python -m duckduck.semantic feedback-to-eval [--out FILE]
     python -m duckduck.semantic feedback-suggest [--accept ID ...] [--dismiss ID ...]
+    python -m duckduck.semantic feedback-export [--out FILE] [--since 7d] [--redact]
 """
 
 import argparse
 import json
 import sys
 
-from .commands import (ask, calibrate, feedback_report, feedback_suggest, feedback_to_eval, generate_catalog,
-                       jev_check, serve)
+from .commands import (ask, calibrate, feedback_export, feedback_report, feedback_suggest, feedback_to_eval,
+                       generate_catalog, jev_check, serve)
 
 
 def cmd_calibrate(args) -> int:
@@ -101,6 +102,13 @@ def cmd_feedback_suggest(args) -> int:
     return 0
 
 
+def cmd_feedback_export(args) -> int:
+    print(feedback_export(config_path=args.config, out=args.out, since=args.since, limit=args.limit,
+                          include_partial=not args.not_answered_only, redact=args.redact,
+                          verbose=args.verbose).summary())
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m duckduck.semantic")
     parser.add_argument("--config", help="config file (default: duckduck.json lookup)")
@@ -155,6 +163,14 @@ def build_parser() -> argparse.ArgumentParser:
     sug.add_argument("--accept", nargs="+", metavar="ID", help="apply these suggestions")
     sug.add_argument("--dismiss", nargs="+", metavar="ID", help="set these aside")
     sug.set_defaults(fn=cmd_feedback_suggest, python=feedback_suggest)
+
+    exp = sub.add_parser("feedback-export", help="the questions that still fail, as a brief for a developer (Markdown)")
+    exp.add_argument("--out", help="where to write it (default: feedback_export.md)")
+    exp.add_argument("--since", help="only feedback since a date (2026-09-01) or an age (7d, 2w)")
+    exp.add_argument("--limit", type=int, default=50, help="at most this many question patterns (default 50)")
+    exp.add_argument("--not-answered-only", action="store_true", help="leave out 'partly answered'")
+    exp.add_argument("--redact", action="store_true", help="question templates instead of questions; no SQL")
+    exp.set_defaults(fn=cmd_feedback_export, python=feedback_export)
     return parser
 
 

@@ -15,6 +15,7 @@ HTML page (``webpage.PAGE``) over a JSON API:
 ``POST /api/suggestions/{id}/accept|dismiss``  apply (and reload) / set aside
 ``POST /api/evaluate``                       feedback → evaluation set → metrics + thresholds
 ``GET  /api/evaluation.json``                that evaluation set, to keep
+``GET  /api/export.md``                      the still-failing questions, as a brief for a developer
 ``GET  /api/meta``                           categories, answer kinds, tables, entities, values
 ==========================================  ==============================================
 
@@ -233,6 +234,18 @@ def create_app(
             "calibration": calibration.summary(),
             "thresholds": calibration.thresholds,
         })
+
+    @app.get("/api/export.md")
+    def export_md(redact: int = 0, since_days: int = 0):
+        import datetime as dt
+
+        from .export import build_export
+
+        since = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - dt.timedelta(days=since_days) \
+            if since_days else None
+        built = build_export(store, suggester().suggest(), since=since, redact=bool(redact))
+        return Response(built["markdown"], media_type="text/markdown; charset=utf-8",
+                        headers={"Content-Disposition": 'attachment; filename="feedback_export.md"'})
 
     @app.get("/api/evaluation.json")
     def evaluation_set():

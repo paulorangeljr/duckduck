@@ -128,6 +128,13 @@ textarea { width: 100%; min-height: 60px; }
       <button class="secondary" id="evalbtn">Evaluate and calibrate</button>
       <div id="evaluation"></div>
     </div>
+    <div class="card">
+      <h3>For developers</h3>
+      <p class="muted small">What suggestions can't fix — questions users still rate as not answered, with what the
+        system did and what they expected — as a document to hand to whoever changes the code.</p>
+      <div class="row"><button class="secondary" id="exportbtn">Download the brief</button>
+        <label class="check"><input type="checkbox" id="exportredact"> hide the questions' values and the SQL</label></div>
+    </div>
     <div class="row" style="margin: 4px 0 10px"><label class="check"><input type="checkbox" id="showall">
       show accepted and dismissed too</label></div>
     <div id="suggestions"></div>
@@ -378,6 +385,13 @@ $("#evalbtn").addEventListener("click", async () => {
       ${e.misses.length ? `<details><summary>${e.misses.length} question(s) it still gets wrong</summary>${table(e.misses)}</details>` : ""}
       <details open><summary>Suggested thresholds</summary><pre>${esc(e.calibration)}</pre></details>`;
   } catch (err) { $("#evaluation").innerHTML = `<p class="error">${esc(err.message)}</p>`; }
+});
+$("#exportbtn").addEventListener("click", async () => {
+  const headers = {}; const t = store.get("duckduck-token"); if (t) headers["X-Duckduck-Token"] = t;
+  const r = await fetch("/api/export.md?redact=" + ($("#exportredact").checked ? 1 : 0), {headers});
+  if (!r.ok) { toast("couldn't build the brief"); return; }
+  const a = document.createElement("a"); a.href = URL.createObjectURL(await r.blob());
+  a.download = "feedback_export.md"; a.click();
 });
 $("#evaljson").addEventListener("click", async (e) => {
   e.preventDefault();

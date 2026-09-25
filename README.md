@@ -762,6 +762,7 @@ print(jev_check().ranked())                    # raises if the key/network/parsi
 | `feedback-report` | `feedback_report()` → `FeedbackReport` (`.summary()`, `.stats`) |
 | `feedback-to-eval` | `feedback_to_eval()` → `FeedbackEvaluation` (`.summary()`, `.dataset`, `.report`, `.calibration`) |
 | `feedback-suggest --accept ID` | `feedback_suggest(accept=["ID"])` → `SuggestionReport` (`.summary()`, `.suggestions`) |
+| `feedback-export --since 7d --redact` | `feedback_export(since="7d", redact=True)` → `FeedbackExport` (`.summary()`, `.markdown`, `.path`, `.gaps`) |
 | `--config path` | `config_path="path"` |
 | `-v` / `-v debug` | `verbose="info"` / `verbose="debug"` |
 
@@ -791,6 +792,7 @@ python -m duckduck.semantic serve              # http://127.0.0.1:8765
 python -m duckduck.semantic feedback-report    # answer rates, what went wrong
 python -m duckduck.semantic feedback-to-eval   # rated questions → evaluation set + suggested thresholds
 python -m duckduck.semantic feedback-suggest   # catalog suggestions; --accept ID / --dismiss ID
+python -m duckduck.semantic feedback-export    # what still fails, as a brief for a developer (Markdown)
 ```
 
 ```json
@@ -873,6 +875,36 @@ expected={"sources": ["owners"]})` stores what the user said.
   kept. Accepted wording goes to `feedback.learned_answer_shapes`
   (`answer_shapes.learned.yaml`), which is loaded on top of
   `answer_shapes`. The web app reloads right away.
+
+**What suggestions can't fix: the developer brief.** Suggestions fix
+what the catalog can fix. A question that keeps failing after that is
+usually a missing capability or a bug. `feedback_export()` (web app →
+Suggestions → *Download the brief*) writes those questions as a Markdown
+document, `feedback_export.md`, to hand to whoever changes the code.
+
+- **What counts.** Only question patterns whose *latest* rating is still
+  "not answered" or "partly". Questions are grouped by template, so
+  "10.0.0.1" and "10.0.0.2" asked the same way are one gap. The most
+  frequent come first.
+- **For each gap:**
+  - how often, and by how many people;
+  - what the system did: kind of answer, tables, rows, and what it said
+    or asked back;
+  - every decision, with its probability and who made it;
+  - the SQL;
+  - what users said, and what they said would have been right;
+  - an open suggestion that might already fix it;
+  - a command that reproduces it with full logging.
+- **The workflow it suggests:** reproduce the gap, decide whether it's the
+  catalog or the code, fix it, then run `feedback-to-eval`. That run
+  replays every rated question, so what users confirmed stays right.
+- **Options:**
+  - `since` (`"2026-09-01"` or `"7d"`) and `limit` narrow what's included;
+  - `include_partial=False` leaves out "partly" ratings;
+  - `redact=True` shows templates instead of questions and leaves out the
+    SQL.
+- **Before sharing.** Users' free-text reasons are kept as written, so
+  read the brief before sharing it outside the team.
 
 Measuring never learns from itself. `evaluate` and `calibrate` switch off
 recording and case memory while they run, since the memory would hand

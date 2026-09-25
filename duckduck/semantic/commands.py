@@ -371,3 +371,62 @@ def feedback_suggest(
         search = SemanticSearch.from_config(duck, config_path, feedback=None, memory=None)
         suggester = CatalogSuggester(store, search.catalog, search.shapes, min_support=cfg.feedback.min_support)
     return SuggestionReport(suggester.suggest(), applied, dismissed)
+
+
+class FeedbackExport:
+    """``feedback_export()``'s result: the Markdown brief, where it was written, and the gaps in it."""
+
+    def __init__(self, markdown: str, path: Optional[str], gaps: list, counts: dict):
+        self.markdown, self.path, self.gaps, self.counts = markdown, path, gaps, counts
+
+    def summary(self) -> str:
+        where = f" to {self.path}" if self.path else ""
+        shown = self.counts["shown"]
+        more = f" ({self.counts['gaps']} in all)" if self.counts["gaps"] > shown else ""
+        return f"wrote {shown} still-failing question pattern(s){more}{where}"
+
+
+def feedback_export(
+    config_path: Optional[str] = None,
+    out: Optional[str] = None,
+    since: Optional[str] = None,
+    limit: int = 50,
+    include_partial: bool = True,
+    redact: bool = False,
+    duck: Any = None,
+    verbose: Any = None,
+    write: bool = True,
+) -> FeedbackExport:
+    """
+    The questions users still rate as not answered, as a Markdown brief for
+    whoever changes the code (``duckduck.semantic.export``): grouped by
+    pattern, with what the system did, every decision, the SQL, what users
+    said and would have expected, related suggestions, and how to reproduce.
+    ``since``: ``"2026-09-01"`` or an age like ``"7d"``. ``redact``: question
+    templates instead of questions, no SQL. Written to ``out`` (default
+    ``feedback_export.md`` next to the config) unless ``write=False``.
+    """
+    import datetime as dt
+
+    from .export import build_export
+    from .generation import parse_age
+    from .suggest import CatalogSuggester
+
+    duck, cfg, store = _feedback_setup(config_path, duck, verbose)
+    start = None
+    if since:
+        try:
+            start = dt.datetime.fromisoformat(since)
+        except ValueError:
+            start = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - parse_age(since)
+    search = SemanticSearch.from_config(duck, config_path, feedback=None, memory=None)
+    suggestions = CatalogSuggester(store, search.catalog, search.shapes,
+                                   min_support=cfg.feedback.min_support).suggest()
+    built = build_export(store, suggestions, since=start, limit=limit, include_partial=include_partial, redact=redact,
+                         config_path=config_path)
+    path = None
+    if write:
+        path = out or cfg.path("feedback_export.md")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(built["markdown"])
+    return FeedbackExport(built["markdown"], path, built["gaps"], built["counts"])

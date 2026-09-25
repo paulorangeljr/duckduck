@@ -10,7 +10,7 @@ pytest.importorskip("httpx")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from duckduck.semantic import (Catalog, SemanticSearch, feedback_report, feedback_suggest,  # noqa: E402
+from duckduck.semantic import (Catalog, SemanticSearch, feedback_export, feedback_report, feedback_suggest,  # noqa: E402
                                feedback_to_eval, serve)
 from duckduck.semantic.__main__ import main  # noqa: E402
 from duckduck.semantic.feedback import FeedbackStore  # noqa: E402
@@ -193,3 +193,62 @@ def test_feedback_to_eval_writes_the_set_and_scores_it(config, project):
     written = json.loads((project / "feedback_evaluation.json").read_text())
     assert written[0]["expected_answer_shape"] == "count_by" and evaluation.report.metrics["answer_shape_accuracy"] == 1.0
     assert evaluation.summary().startswith("wrote 1 rated questions") and '"thresholds"' in evaluation.summary()
+
+
+# ---------------------------------------------------------------------------
+# feedback-export: the brief for developers
+
+
+def _rate_some(config):
+    client = TestClient(serve(config_path=config, run=False))
+
+    def rate(question, verdict, user="ana", **body):
+        sid = client.post("/api/ask", json={"question": question, "user": user}).json()["result"]["search_id"]
+        client.post("/api/feedback", json={"search_id": sid, "verdict": verdict, "user": user, **body})
+
+    rate("How many alerts per host per day?", "not_answered", categories=["wrong_answer_kind"],
+         reason="by host and by day")
+    rate("How many alerts per host per day?", "not_answered", user="bob", reason="two groups")
+    rate("Which alerts are urgent?", "not_answered", categories=["wrong_values"],
+         expected={"synonym": {"field": "alerts.severity", "value": "critical", "word": "urgent"}})
+    rate("How many alerts per rule?", "not_answered")
+    rate("How many alerts per rule?", "answered")  # answered since: not a gap
+    return client
+
+
+def test_the_brief_lists_what_still_fails(config, project):
+    client = _rate_some(config)
+    client.app.state.duckduck["search"].feedback_store.close()
+    brief = feedback_export(config_path=config)
+    md = brief.markdown
+    assert brief.counts == {"gaps": 2, "shown": 2} and brief.path.endswith("feedback_export.md")
+    assert md.index("“How many alerts per host per day?”") < md.index("“Which alerts are urgent?”")  # most frequent first
+    assert "2× not answered · 2 users" in md and "“by host and by day”" in md and "“two groups”" in md
+    assert "How many alerts per rule" not in md  # answered in its latest rating
+    assert "May be fixed by suggestion" in md and "value_synonym alerts.severity=critical → “urgent”" in md
+    assert f"--config '{config}' -v debug ask 'Which alerts are urgent?'" in md
+    assert "It said / asked back:** Couldn't tell what 'urgent' refers to" in md  # what the user saw
+    assert open(brief.path, encoding="utf-8").read() == md
+
+
+def test_the_brief_can_be_redacted_limited_and_dated(config, project, capsys):
+    client = _rate_some(config)
+    client.app.state.duckduck["search"].feedback_store.close()
+    redacted = feedback_export(config_path=config, redact=True, write=False).markdown
+    assert "“which alerts are <term>”" in redacted and "Which alerts are urgent" not in redacted
+    assert "```sql" not in redacted and "Reproduce:" not in redacted and "look them up by their search ids" in redacted
+    assert feedback_export(config_path=config, limit=1, write=False).counts == {"gaps": 2, "shown": 1}
+    assert feedback_export(config_path=config, since="2999-01-01", write=False).counts["gaps"] == 0
+    assert feedback_export(config_path=config, since="7d", write=False).counts["gaps"] == 2
+    out = str(project / "brief.md")
+    assert main(["--config", config, "feedback-export", "--out", out]) == 0
+    assert capsys.readouterr().out.strip() == f"wrote 2 still-failing question pattern(s) to {out}"
+
+
+def test_the_brief_downloads_from_the_web_app(config):
+    client = _rate_some(config)
+    response = client.get("/api/export.md")
+    assert response.headers["content-type"].startswith("text/markdown")
+    assert "questions that still fail" in response.text and "“Which alerts are urgent?”" in response.text
+    assert "Which alerts are urgent?" not in client.get("/api/export.md?redact=1").text
+    client.app.state.duckduck["search"].feedback_store.close()

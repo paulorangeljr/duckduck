@@ -15,8 +15,8 @@ Requires ``pip install "duckduck[semantic]"`` (pydantic, PyYAML).
 """
 
 from .catalog import Catalog
-from .commands import (ask, calibrate, connect, feedback_report, feedback_suggest, feedback_to_eval,
-                       generate_catalog, jev_check, serve)
+from .commands import (ask, calibrate, connect, feedback_export, feedback_report, feedback_suggest,
+                       feedback_to_eval, generate_catalog, jev_check, serve)
 from .config import SemanticConfig
 from .feedback import FeedbackStore
 from .memory import CaseMemory
@@ -53,6 +53,7 @@ __all__ = [
     "CaseMemory",
     "CatalogSuggester",
     "FeedbackStore",
+    "feedback_export",
     "feedback_report",
     "feedback_suggest",
     "feedback_to_eval",

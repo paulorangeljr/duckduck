@@ -19,5 +19,6 @@ generated_catalog.yaml
 feedback.duckdb
 feedback.duckdb.wal
 feedback_evaluation.json
+feedback_export.md
 *.yaml.bak
 *.json.bak
