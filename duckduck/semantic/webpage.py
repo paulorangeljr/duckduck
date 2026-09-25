@@ -149,7 +149,10 @@ async function api(path, body) {
     const t = prompt("This server needs its access token:");
     if (t) { store.set("duckduck-token", t); return api(path, body); }
   }
-  const data = await r.json().catch(() => ({}));
+  const text = await r.text();
+  let data;
+  try { data = text ? JSON.parse(text) : {}; }
+  catch { throw new Error(`the server sent a response the page can't read (${path}, HTTP ${r.status})`); }
   if (!r.ok) throw new Error(data.detail || data.error || r.statusText);
   return data;
 }

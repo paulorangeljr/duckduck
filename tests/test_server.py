@@ -25,6 +25,23 @@ def project(tmp_path):
     return tmp_path
 
 
+def _strict(response):
+    """What a browser's JSON.parse accepts — no NaN / Infinity (Python's json would let them through)."""
+    def reject(token):
+        raise AssertionError(f"{response.request.url.path} sent {token}, which browsers can't parse")
+    return json.loads(response.text, parse_constant=reject)
+
+
+def test_history_is_readable_by_a_browser_with_unanswered_questions(project):
+    client, _ = _client(project)
+    client.post("/api/ask", json={"question": "How many alerts per rule?"})
+    client.post("/api/ask", json={"question": "What is the weather like?"})  # no rows: NULL count
+    history = _strict(client.get("/api/searches"))
+    assert [h["rows"] for h in history] == [None, 3]
+    for path in ("/api/stats", "/api/suggestions", "/api/meta", f"/api/searches/{history[0]['id']}"):
+        _strict(client.get(path))
+
+
 def _client(project, token=None):
     store = FeedbackStore(str(project / "feedback.duckdb"))
     catalog = str(project / "catalog.json")

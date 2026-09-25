@@ -196,12 +196,12 @@ class FeedbackStore:
             return self._conn.execute(sql, params or []).df()
 
     def searches(self, limit: int = 100) -> pd.DataFrame:
-        """The latest searches, each with its latest feedback (if any)."""
-        return self.query(f"""
+        """The latest searches, each with its latest feedback (if any). SQL NULLs are ``None``."""
+        return _nulls(self.query(f"""
             SELECT s.id, s.created_at, s.conversation_id, s.user_name, s.question, s.english_question,
                    s.status, s.answer_shape, s.entity, s.sources, s.rows, f.verdict, f.categories, f.reason
             FROM searches s LEFT JOIN ({_LATEST_FEEDBACK}) f ON f.search_id = s.id
-            ORDER BY s.created_at DESC LIMIT {int(limit)}""")
+            ORDER BY s.created_at DESC, s.rowid DESC LIMIT {int(limit)}"""))
 
     def search(self, search_id: str) -> Optional[Dict[str, Any]]:
         df = _nulls(self.query("SELECT * FROM searches WHERE id = ?", [search_id]))

@@ -69,8 +69,9 @@ def create_app(
     lock = threading.RLock()  # conversations + reloads; searches themselves run concurrently
 
     def dump(payload: Any, status: int = 200) -> Response:
-        return Response(json.dumps(payload, default=_json_default), status_code=status,
-                        media_type="application/json")
+        # strict JSON: browsers reject NaN / Infinity (a NULL count from pandas arrives as NaN)
+        return Response(json.dumps(_finite(payload), default=_json_default, allow_nan=False),
+                        status_code=status, media_type="application/json")
 
     @app.middleware("http")
     async def check_token(request: Request, call_next):
@@ -241,6 +242,22 @@ def create_app(
 
     app.state.duckduck = state
     return app
+
+
+def _finite(value: Any) -> Any:
+    """NaN / ±Infinity → ``None``, anywhere in a JSON-bound structure (numpy floats included)."""
+    import math
+
+    if isinstance(value, dict):
+        return {k: _finite(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_finite(v) for v in value]
+    if isinstance(value, float) or type(value).__name__.startswith("float"):
+        try:
+            return None if not math.isfinite(float(value)) else value
+        except (TypeError, ValueError):
+            return value
+    return value
 
 
 def run(app: Any, host: str = "127.0.0.1", port: int = 8765) -> None:  # pragma: no cover - blocks
