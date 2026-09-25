@@ -62,6 +62,8 @@ class SearchResult:
     followup: Optional[Clarification] = None
     #: The decisions the user had settled when this ran (``search(pinned=)``).
     pinned: Dict[str, Any] = field(default_factory=dict)
+    #: Live checks run for the decision engine (``live_evidence``): field, value, found.
+    evidence: List[Any] = field(default_factory=list)
 
     @property
     def clarification_question(self) -> Optional[str]:
@@ -114,6 +116,7 @@ class SearchResult:
             "options": self.options,
             "followup": self.followup.model_dump() if self.followup else None,
             "pinned": self.pinned,
+            "evidence": [vars(p) for p in self.evidence],
         }
 
     def to_json(self, results_only: bool = False, **dumps_kwargs: Any) -> str:
@@ -167,6 +170,7 @@ class SemanticSearch:
         clock: Callable[[], datetime] = _utcnow,
         strict: bool = False,
         clarification_texts: Optional[Dict[str, str]] = None,
+        live_evidence: Union[bool, Dict[str, Any], None] = None,
     ):
         if isinstance(catalog, str):
             catalog = Catalog.load(catalog)
@@ -178,6 +182,9 @@ class SemanticSearch:
         self.graph = RelationshipGraph(self.catalog)
         #: The questions asked back to the user (``clarify.DEFAULT_TEXTS`` + overrides).
         self.texts = ClarificationTexts(clarification_texts)
+        #: Probe the question's values in candidate sources before deciding (see ``evidence``):
+        #: ``True`` or ``{"max_probes": 8, "timeout": 5.0}``; off by default.
+        self.live_evidence = ({} if live_evidence is True else dict(live_evidence)) if live_evidence else None
         self.interpreter = SemanticInterpreter(
             self.catalog, self.engine, retriever=retriever, extractor=extractor, thresholds=self.thresholds,
             texts=self.texts,
@@ -215,6 +222,7 @@ class SemanticSearch:
             engine=cfg.build_engine(duck),
             thresholds=cfg.thresholds,
             clarification_texts=cfg.clarification_texts,
+            live_evidence=cfg.live_evidence.model_dump(exclude={"enabled"}) if cfg.live_evidence.enabled else None,
             allowed_sources=cfg.allowed_sources,
             default_limit=cfg.default_limit,
             strict=cfg.strict,
@@ -250,11 +258,17 @@ class SemanticSearch:
         started = time.perf_counter()
         now = self.clock()
         result = SearchResult(question=question, status="planned", pinned=dict(pinned or {}))
+        prober = None
+        if self.live_evidence is not None and self.duck is not None:
+            from .evidence import EvidenceProber
+
+            prober = EvidenceProber(self.catalog, self.duck, **self.live_evidence)
+            result.evidence = prober.probes  # filled in as the probes run
         try:
-            intent, decisions = self.interpreter.interpret(question, now, pinned)
+            intent, decisions = self.interpreter.interpret(question, now, pinned, evidence=prober)
             result.intent = intent
             result.decisions.extend(decisions)
-            plan, plan_decisions = self.planner.plan(intent, pinned)
+            plan, plan_decisions = self.planner.plan(intent, pinned, evidence=prober)
             result.decisions.extend(plan_decisions)
             result.query_plan = self.validator.validate(plan)
             result.sql = display_sql(plan, self.catalog, now)

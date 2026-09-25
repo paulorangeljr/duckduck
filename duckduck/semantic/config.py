@@ -72,6 +72,16 @@ class DecisionEngineConfig(_Strict):
     system_prompt_file: Optional[str] = None
 
 
+class LiveEvidenceConfig(_Strict):
+    """Probe the question's values in candidate sources before deciding — see ``semantic.evidence``."""
+
+    enabled: bool = False
+    #: Probes per question at most (each is one tiny query at a source).
+    max_probes: int = Field(default=8, ge=0)
+    #: Seconds per probe before it counts as "couldn't check".
+    timeout: float = Field(default=5.0, gt=0)
+
+
 class AIProviderConfig(_Strict):
     """
     One entry of the top-level ``ai_providers`` section. ``provider``:
@@ -270,6 +280,8 @@ class SemanticConfig(_Strict):
     thresholds: Thresholds = Field(default_factory=Thresholds)
     #: Override the questions asked back to the user (``clarify.DEFAULT_TEXTS`` keys) — e.g. in Portuguese.
     clarification_texts: Dict[str, str] = Field(default_factory=dict)
+    #: Check the question's values live in candidate sources and tell the decision engine.
+    live_evidence: LiveEvidenceConfig = Field(default_factory=LiveEvidenceConfig)
     allowed_sources: Optional[List[str]] = None
     default_limit: int = 1000
     strict: bool = False

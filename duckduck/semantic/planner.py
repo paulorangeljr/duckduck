@@ -51,8 +51,8 @@ class QueryPlanner:
         #: The questions asked back to the user.
         self.texts = texts or ClarificationTexts()
 
-    def plan(self, intent: SemanticIntent,
-             pinned: Optional[Dict[str, Any]] = None) -> Tuple[LogicalQueryPlan, List[DecisionRecord]]:
+    def plan(self, intent: SemanticIntent, pinned: Optional[Dict[str, Any]] = None,
+             evidence: Any = None) -> Tuple[LogicalQueryPlan, List[DecisionRecord]]:
         """
         ``pinned``: what the user answered (``field:<ref>``, ``join:<a>=<b>``,
         ``term:<words>``). A "no" isn't the end: the refused field / join is
@@ -78,10 +78,13 @@ class QueryPlanner:
                                      exclude=set(self.catalog.fields_by_semantic_type(primary, res.type)) - set(usable))
             ref = f"{primary}.{fname}"
             only_one = len(usable) == 1
-            checks.append(self._field_check(
+            check = self._field_check(
                 intent, ref, f"filtering on {res.value!r} ({res.type})", _SEMANTIC_MATCH_PRIOR, len(checks),
                 settled=only_one, followup=self.texts.field_filter(intent.question, ref, res.value, self.catalog),
-            ))
+            )
+            if evidence is not None and not check[-1]:  # asked: tell the engine whether the value is there
+                check[0].state.facts["live_check"] = {"value": res.value, "found": evidence.found(ref, res.value)}
+            checks.append(check)
             fdef = self.catalog.field(ref)
             operator = "eq" if res.literal_kind in ("ip_address", "email") else (fdef.match or "eq")
             filters.append(Filter(field=ref, operator=operator, value=res.value))

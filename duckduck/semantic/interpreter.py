@@ -61,11 +61,13 @@ class SemanticInterpreter:
             f.semantic_type for s in catalog.sources.values() for f in s.fields.values() if f.semantic_type
         }
 
-    def interpret(self, question: str, now: datetime,
-                  pinned: Optional[Dict[str, Any]] = None) -> Tuple[SemanticIntent, List[DecisionRecord]]:
+    def interpret(self, question: str, now: datetime, pinned: Optional[Dict[str, Any]] = None,
+                  evidence: Any = None) -> Tuple[SemanticIntent, List[DecisionRecord]]:
         """
         ``pinned``: decisions the user settled by answering clarifications
         (see ``Clarification``) — taken as given, never asked again.
+        ``evidence``: an ``EvidenceProber`` — where the question's values
+        were (not) found in the candidate sources goes to the engine as facts.
         """
         pins = dict(pinned or {})
         extraction = self.extractor.extract(question, now)
@@ -83,9 +85,10 @@ class SemanticInterpreter:
             for key, value in pins.items():  # a source the user picked is a candidate whatever retrieval said
                 if key.startswith("source:") and value and key[7:] in self.catalog.sources:
                     retrieved.setdefault(key[7:], 0.0)
+            live = self._live_evidence(extraction, pins, retrieved, evidence) if evidence is not None else {}
             asks = [a for a in (self._entity_ask(intent, extraction, pins), self._activity_ask(intent, extraction, pins)) if a]
-            asks += self._value_asks(intent, extraction, pins)
-            asks += self._source_asks(intent, extraction, [n for n in retrieved if f"source:{n}" not in pins])
+            asks += self._value_asks(intent, extraction, pins, live)
+            asks += self._source_asks(intent, extraction, [n for n in retrieved if f"source:{n}" not in pins], live)
             answers = ask_all(self.engine, asks)
 
             self._apply_entity(intent, answers.get("entity"), decisions, pins)
@@ -95,7 +98,8 @@ class SemanticInterpreter:
             # sources that declare what was decided, but that lexical retrieval missed
             extra = self._declaring_sources(intent, exclude=retrieved)
             if extra:
-                answers.update(ask_all(self.engine, self._source_asks(intent, extraction, extra)))
+                extra_live = self._live_evidence(extraction, pins, extra, evidence) if evidence is not None else {}
+                answers.update(ask_all(self.engine, self._source_asks(intent, extraction, extra, extra_live)))
                 retrieved.update(extra)
             self._apply_sources(intent, retrieved, answers, decisions, pins)
         except ClarificationNeeded as exc:
@@ -144,7 +148,35 @@ class SemanticInterpreter:
             free = [lit for lit in free if lit.value == pins["value_term"]]
         return free
 
-    def _value_asks(self, intent: SemanticIntent, ex: Extraction, pins: Dict[str, Any]) -> List[Ask]:
+    def _live_evidence(self, ex: Extraction, pins: Dict[str, Any], sources, evidence) -> Dict[str, Any]:
+        """
+        ``{source: [{value, found_in, not_found_in}, ...], "types:<value>": [semantic types found]}``
+        for the question's values over the fields that could hold them.
+        """
+        free = {lit.value for lit in self._free_text(ex, pins)}
+        dropped = {lit.value for lit in ex.literals if lit.kind == "term" and not self._known_type(lit)} - free
+        out: Dict[str, Any] = {}
+        for lit in ex.literals:
+            if lit.value in dropped:
+                continue
+            typed = self._known_type(lit) or pins.get(f"value:{lit.value}")
+            found_types = set()
+            for name in sources:
+                src = self.catalog.sources[name]
+                refs = [f"{name}.{f}" for f, d in src.fields.items()
+                        if (d.semantic_type == typed if typed else
+                            d.type == "string" and d.semantic_type and d.semantic_type != "event_time")][:3]
+                if not refs:
+                    continue
+                fact = evidence.summary(lit.value, refs)
+                out.setdefault(name, []).append(fact)
+                found_types |= {self.catalog.field(r).semantic_type for r in fact["found_in"]}
+            if not typed:
+                out[f"types:{lit.value}"] = sorted(found_types)
+        return out
+
+    def _value_asks(self, intent: SemanticIntent, ex: Extraction, pins: Dict[str, Any],
+                    live: Optional[Dict[str, Any]] = None) -> List[Ask]:
         """"What kind of value is X?" for a free-text value nothing else types (answer used only if needed)."""
         free_text = self._free_text(ex, pins)
         if len(free_text) != 1 or f"value:{free_text[0].value}" in pins:
@@ -153,10 +185,13 @@ class SemanticInterpreter:
         if not sem_types:
             return []
         lit = free_text[0]
+        facts: Dict[str, Any] = {"value": lit.value}
+        if live and f"types:{lit.value}" in live:
+            facts["live_check"] = {"value_found_in_fields_of_type": live[f"types:{lit.value}"]}
         return [Ask(
             key=f"value:{lit.value}", question=f"What kind of value is {lit.value!r} in this question?",
             options={t: t.replace("_", " ") for t in sem_types},
-            state=DecisionState(query=intent.question, terms=ex.terms, facts={"value": lit.value}),
+            state=DecisionState(query=intent.question, terms=ex.terms, facts=facts),
         )]
 
     def _value_types(self) -> List[str]:
@@ -165,11 +200,15 @@ class SemanticInterpreter:
             if f.semantic_type and f.semantic_type != "event_time"
         })
 
-    def _source_asks(self, intent: SemanticIntent, ex: Extraction, names) -> List[Ask]:
-        state = DecisionState(query=intent.question, terms=ex.terms)
+    def _source_asks(self, intent: SemanticIntent, ex: Extraction, names,
+                     live: Optional[Dict[str, Any]] = None) -> List[Ask]:
+        def state(name: str) -> DecisionState:
+            facts = {"live_check": live[name]} if live and live.get(name) else {}
+            return DecisionState(query=intent.question, terms=ex.terms, facts=facts)
+
         return [
             Ask(key=f"source:{name}", question="Is this source relevant to answering the question?",
-                subject=self.catalog.describe_source(name), criteria=CRITERIA["source"], state=state)
+                subject=self.catalog.describe_source(name), criteria=CRITERIA["source"], state=state(name))
             for name in names
         ]
 
