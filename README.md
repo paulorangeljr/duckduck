@@ -855,12 +855,48 @@ among the candidates. Other details:
   automatically. Repeated questions in a session come from a cache, and
   the cost the API reports is logged per call, with a session total.
 
-**Lists and counts.** "Which hosts…" answers with the list; "How many
-hosts…" (also "number of", "count", "quantos", "número de") answers with
-one number, the count of the distinct things the list would have held, or
-of the records for "how many failed sign-ins". It's read off the wording,
-not by a model, and shows up as an `answer_shape` decision. Pin
-`answer_shape` (`"list"` / `"count"`) to force either.
+**What kind of answer (which SQL).** Every question gets an
+`answer_shape` decision, and the shape decides the SQL:
+
+| Shape | Example | SQL |
+|---|---|---|
+| `list` | "Which hosts have critical alerts?" | `SELECT DISTINCT ip` (records: `SELECT *`) |
+| `count` | "How many hosts have brute force alerts?" | `COUNT(*)` over that list |
+| `values` | "Show me the different severities", "quais os tipos de regra" | `SELECT DISTINCT severity` |
+| `count_values` | "How many different severities are there?" | `COUNT(*)` over `SELECT DISTINCT severity` |
+| `count_by` | "How many alerts per rule?", "quantos alertas por cada regra" | `SELECT rule, COUNT(*) … GROUP BY rule` (hosts per rule: distinct hosts per rule) |
+
+The decision works like a small tree:
+
+1. **Clear wording is settled without a model.** "how many" / "quantos"
+   is a count, "different" / "distinct" / "types of" / "diferentes" asks
+   for values, and "per" / "for each" / "por cada" asks for a count per
+   group. Combinations like "how many different" and "how many … per"
+   are recognized too. No wording at all means a list.
+2. **Ambiguous wording goes to the decision engine.** "How many alerts
+   *by* severity?" could be one number or a breakdown, and "alerts for
+   each rule" could be a list or a count per rule. Only the shapes the
+   wording allows are offered, as a choice question in the same Jev
+   request as entity and activity, so it costs no extra round trip.
+3. **A doubt is asked back.** Below `thresholds.answer_shape` (0.60), the
+   result is a `needs_clarification` with *"What kind of answer do you
+   want?"* and one option per shape.
+
+The shapes about a field (`values`, `count_values`, `count_by`) also need
+to know which field:
+
+1. **The field the question names** is used directly ("severities" →
+   `severity`; for a count per group, the word after "per" / "by" wins).
+2. **Otherwise the engine picks** among the primary source's fields
+   ("the different detections" → `rule`).
+3. **A doubt is asked back:** *"The different values of what?"* or *"A
+   count for each what?"*. Its "none of these" answers as a plain list.
+
+"The different users" names an entity, whose list is already distinct,
+so it's answered as the list of users. Pin `answer_shape` (one of the
+five) and `values_field` (`source.field`) to force either decision.
+Words like "per", "different" or "types" are never taken as values to
+filter on.
 
 **Asking the user back.** When a decision falls below its threshold,
 the result is `needs_clarification`. It carries a `followup`: a question

@@ -18,6 +18,8 @@ class Thresholds(BaseModel):
     entity: float = 0.60
     activity: float = 0.60
     resource_type: float = 0.60
+    #: Which kind of answer (list / count / different values / count per group), when the wording is ambiguous.
+    answer_shape: float = 0.60
     #: A free-text reply to a clarification must pick one option this surely.
     reply: float = 0.70
 
@@ -59,9 +61,21 @@ class ResourceFilter(BaseModel):
     literal_kind: str
 
 
+#: The kinds of answer a question can ask for → the SQL each compiles to.
+ANSWER_SHAPES = {
+    "list": "the matching records or things (SELECT / SELECT DISTINCT entity)",
+    "count": "how many there are, one number (COUNT)",
+    "values": "the different values of an attribute (SELECT DISTINCT field)",
+    "count_values": "how many different values an attribute has (COUNT DISTINCT field)",
+    "count_by": "a count for each value of an attribute — a breakdown (GROUP BY field)",
+}
+#: The shapes that need to know which field they're about.
+FIELD_SHAPES = ("values", "count_values", "count_by")
+
+
 class SemanticIntent(BaseModel):
     question: str
-    #: ``list`` the matching things, or ``count`` them ("how many ...").
+    #: What kind of answer — which SQL shape (see ``ANSWER_SHAPES``).
     answer_shape: str = "list"
     target_entity: Optional[str] = None
     target_confidence: float = 0.0

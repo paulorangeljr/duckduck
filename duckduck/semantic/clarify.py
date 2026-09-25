@@ -31,6 +31,7 @@ DEFAULT_TEXTS: Dict[str, str] = {
     "no": "no",
     "none": "none of these",
     "entity.question": "What should the answer list?",
+    "entity.question_count": "What should I count?",
     "entity.context": "“{question}” could be asking for more than one kind of thing.",
     "value_type.question": "What is “{value}”?",
     "value_type.context": "I don't know what kind of information “{value}” is, so I don't know where to look for it.",
@@ -57,6 +58,19 @@ DEFAULT_TEXTS: Dict[str, str] = {
     "field_return.context": "In the {source}, that's how {entity} is recorded ({field_name}).",
     "field_return.yes": "list it",
     "field_return.no": "that's not what I'm asking for",
+    "answer_shape.question": "What kind of answer do you want?",
+    "answer_shape.context": "“{question}” could be asking for more than one kind of answer.",
+    "answer_shape.list": "a list of what matches",
+    "answer_shape.count": "how many there are (one number)",
+    "answer_shape.values": "the different values of something",
+    "answer_shape.count_values": "how many different values something has",
+    "answer_shape.count_by": "a count for each value of something (a breakdown)",
+    "values_field.question": "The different values of what?",
+    "values_field.context": "“{question}” asks for the different values of something in the {source}, "
+                            "but I'm not sure of what.",
+    "count_by_field.question": "A count for each what?",
+    "count_by_field.context": "“{question}” asks for a count broken down by something in the {source}, "
+                              "but I'm not sure by what.",
     "join.question": "Should I match the {field} in the {source} with the {other_field} in the {other_source}?",
     "join.context": "That's how the two can be combined to answer; if they don't refer to the same thing, I'll look for another way.",
     "join.yes": "combine them",
@@ -120,10 +134,11 @@ class ClarificationTexts:
     # one builder per kind
     # ------------------------------------------------------------------
 
-    def entity(self, question: str, ranked: Iterable[str], catalog: Catalog, context: Optional[str] = None) -> Clarification:
+    def entity(self, question: str, ranked: Iterable[str], catalog: Catalog, context: Optional[str] = None,
+               counting: bool = False) -> Clarification:
         ranked = list(ranked)
         return Clarification(
-            kind="entity", question=self.t("entity.question", question=question),
+            kind="entity", question=self.t("entity.question_count" if counting else "entity.question", question=question),
             context=context or self.t("entity.context", question=question),
             options=[ClarificationOption(value=e, label=_label(catalog.entities[e].description, e),
                                          pins={"entity": e}) for e in ranked]
@@ -171,6 +186,30 @@ class ClarificationTexts:
             options=[ClarificationOption(value=n, label=_label(catalog.sources[n].description, n),
                                          pins={f"source:{n}": True}) for n in names]
             + [self._none({f"source:{n}": False for n in names})],
+        )
+
+    def answer_shape(self, question: str, shapes: Iterable[str]) -> Clarification:
+        return Clarification(
+            kind="answer_shape", question=self.t("answer_shape.question", question=question),
+            context=self.t("answer_shape.context", question=question),
+            options=[ClarificationOption(value=s, label=self.t(f"answer_shape.{s}", question=question),
+                                         pins={"answer_shape": s}) for s in shapes],
+        )
+
+    def values_field(self, question: str, refs: Iterable[str], catalog: Catalog, prefix: str = "values_field") -> Clarification:
+        """Which field a values / count-per-group answer is about. "None of these" → answer as a plain list."""
+        refs = list(refs)
+        values = self._field_values(question, refs[0], catalog)
+        options = []
+        for ref in refs:
+            src, name = ref.split(".", 1)
+            fdef = catalog.sources[src].fields.get(name)
+            options.append(ClarificationOption(value=ref, label=_label(fdef.description if fdef else "", human(name)),
+                                               pins={"values_field": ref}))
+        return Clarification(
+            kind="values_field", question=self.t(f"{prefix}.question", **values),
+            context=_upper_first(self.t(f"{prefix}.context", **values)),
+            options=options + [self._none({"answer_shape": "list"})],
         )
 
     def _none(self, pins: Dict[str, Any]) -> ClarificationOption:

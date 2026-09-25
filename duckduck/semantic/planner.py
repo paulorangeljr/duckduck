@@ -14,14 +14,17 @@ out as one batch once it's laid out (``ask_all``), and are checked in
 the order they were needed.
 """
 
+import re
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from .catalog import ActivityDef, Catalog
 from .decisions import CRITERIA, Ask, DecisionEngine, DecisionState, ask_all
 from .graph import Path, RelationshipGraph
 from .clarify import ClarificationTexts
-from .intent import Clarification, ClarificationNeeded, DecisionRecord, SemanticIntent, Thresholds
+from .intent import FIELD_SHAPES, Clarification, ClarificationNeeded, DecisionRecord, SemanticIntent, Thresholds
+from .interpreter import _GROUP_RE, _MAYBE_GROUP_RE
 from .plan import Filter, Join, LogicalQueryPlan, TimeRangeFilter
+from .text import content_stems, stem, tokenize
 
 #: Prior for "a field whose semantic_type matches exactly is the right one".
 _SEMANTIC_MATCH_PRIOR = 0.95
@@ -134,7 +137,14 @@ class QueryPlanner:
 
         # 4. what to return
         entity = self.catalog.entities.get(intent.target_entity) if intent.target_entity else None
-        if entity is None or entity.row_level:
+        shape = intent.answer_shape
+        shape_ref = self._shape_field(intent, shape, primary, refused, pins, decisions) if shape in FIELD_SHAPES else None
+        if shape in FIELD_SHAPES and shape_ref is None:  # "the different users": the entity answer is already distinct
+            shape = "count" if shape == "count_values" else "list"
+        group_by: List[str] = []
+        if shape in ("values", "count_values"):  # "the different severities": the distinct values of that field
+            select, distinct = [shape_ref], True
+        elif entity is None or entity.row_level:
             select = [f"{primary}.{f}" for f in self.catalog.sources[primary].fields]
             distinct = False
         else:
@@ -159,15 +169,93 @@ class QueryPlanner:
             ))
             select = [ref]
             distinct = True
+        if shape == "count_by":  # per group: how many distinct entities, or how many records
+            group_by = [shape_ref]
+            if not distinct:
+                select = [shape_ref]
 
         sources, joins = self._merge_paths(intent, primary, paths, checks)
         self._run_checks(checks, decisions, pins)
         plan = LogicalQueryPlan(
             select=select, sources=sources, joins=joins, filters=filters,
             time_range=time_range, distinct=distinct, limit=self.default_limit,
-            aggregate="count" if intent.answer_shape == "count" else None,
+            aggregate="count" if shape in ("count", "count_values", "count_by") else None,
+            group_by=group_by,
         )
         return plan, decisions
+
+    _FIELD_QUESTIONS = {
+        "values": "Which field's different values does the question ask for?",
+        "count_values": "Which field's different values does the question count?",
+        "count_by": "Which field does the question want a count for each value of?",
+    }
+
+    def _shape_field(self, intent: SemanticIntent, shape: str, primary: str, refused: Set[str],
+                     pins: Dict[str, Any], decisions: List[DecisionRecord]) -> Optional[str]:
+        """
+        The field a ``values`` / ``count_values`` / ``count_by`` answer is
+        about: pinned by the user; else the one the question names
+        ("severities" → ``severity``; for a count per group, the word after
+        "per"/"by" wins); else — unless a real entity already makes the
+        answer distinct ("the different users") — the engine picks among
+        the primary source's fields, and a doubt is asked back.
+        """
+        src = self.catalog.sources[primary]
+        question = self._FIELD_QUESTIONS[shape]
+        pinned = pins.get("values_field")
+        if isinstance(pinned, str) and pinned.split(".")[0] == primary and pinned.split(".", 1)[-1] in src.fields:
+            decisions.append(DecisionRecord(kind="values_field", question=question, subject=primary, answer=pinned,
+                                            probability=1.0, decided_by="user"))
+            return pinned
+        fields = [f for f in src.fields if f"{primary}.{f}" not in refused]
+        words = set(content_stems(intent.question))
+        named = []
+        for f in fields:
+            tokens = {stem(t) for t in tokenize(f.replace("_", " "))}
+            if tokens and tokens <= words:
+                named.append((tokens, f))
+        if shape == "count_by":  # "how many ips per rule": the group is the word after "per"
+            after = _words_after(intent.question)
+            grouped = [(t, f) for t, f in named if t & after]
+            named = grouped or named
+        entity = self.catalog.entities.get(intent.target_entity) if intent.target_entity else None
+        if entity is not None and not entity.row_level and shape != "count_by":
+            named = [(t, f) for t, f in named if src.fields[f].semantic_type != intent.target_entity] or named
+        if named:
+            best = max(len(t) for t, _ in named)
+            candidates = [f for t, f in named if len(t) == best]
+            if len(candidates) == 1:
+                ref = f"{primary}.{candidates[0]}"
+                decisions.append(DecisionRecord(kind="values_field", question=question, answer=ref, probability=0.99,
+                                                subject=f"the question names '{candidates[0]}'",
+                                                decided_by="deterministic"))
+                return ref
+        else:
+            if entity is not None and not entity.row_level and shape != "count_by":
+                return None  # "the different users": listing the entity is already distinct
+            candidates = [f for f in fields if f != src.resolved_time_field]
+        if not candidates:
+            return None
+        options = {f"{primary}.{f}": self.catalog.describe_field(f"{primary}.{f}") for f in candidates}
+        result = self.engine.classify(
+            DecisionState(query=intent.question, terms=sorted(words), facts={"source": primary, "answer": shape}),
+            question, options,
+        )
+        record = DecisionRecord(kind="values_field", question=question, subject=primary, answer=result.choice,
+                                probability=result.probability, threshold=self.thresholds.field,
+                                alternatives=result.ranked()[1:4])
+        decisions.append(record)
+        if not record.passed:
+            top = [ref for ref, _ in result.ranked()[:4]]
+            exc = ClarificationNeeded(
+                f"Not sure which field the question means (best guess {result.choice}, "
+                f"{result.probability:.2f} < {self.thresholds.field:.2f}).", record, top,
+                self.texts.values_field(intent.question, top, self.catalog,
+                                        "count_by_field" if shape == "count_by" else "values_field"),
+            )
+            exc.decisions = list(decisions)
+            raise exc
+        return result.choice
 
     # ------------------------------------------------------------------
     # Primary source
@@ -385,3 +473,13 @@ class QueryPlanner:
     def _is_allowed(self, source: str) -> bool:
         return self.allowed is None or source in self.allowed
 
+
+def _words_after(question: str) -> Set[str]:
+    """Stems of the word right after "per" / "by" / "for each" / "por" ... — the group in a count per group."""
+    out = set()
+    for regex in (_GROUP_RE, _MAYBE_GROUP_RE):
+        for m in regex.finditer(question):
+            nxt = re.match(r"\s+(?:the |a |an |o |a |os |as )?([\w-]+)", question[m.end():], re.I)
+            if nxt:
+                out |= {stem(t) for t in tokenize(nxt.group(1))}
+    return out

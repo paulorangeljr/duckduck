@@ -131,6 +131,23 @@ def compile_plan(
         )
 
     sql = "WITH " + ",\n".join(ctes)
+    if plan.aggregate == "count" and plan.group_by:
+        groups = [f"{quote_ident(r.split('.')[0])}.{quote_ident(r.split('.')[1])}" for r in plan.group_by]
+        names = [quote_ident(r.split(".")[1]) for r in plan.group_by]
+        if plan.distinct:  # how many distinct things per group
+            taken = set(field_names)
+            aliases = [n if r.split(".")[1] not in taken else quote_ident("group_" + r.split(".")[1])
+                       for n, r in zip(names, plan.group_by)]
+            inner = [f"{g} AS {a}" for g, a in zip(groups, aliases)]
+            sql += (f"\nSELECT {', '.join(aliases)}, COUNT(*) AS \"count\" FROM (\n  SELECT DISTINCT {', '.join(inner)}, "
+                    f"{', '.join(select_items)}\n  FROM {from_clause}\n) AS _answer"
+                    f"\nGROUP BY {', '.join(aliases)}")
+        else:  # how many records per group
+            sql += (f"\nSELECT {', '.join(groups)}, COUNT(*) AS \"count\"\nFROM {from_clause}"
+                    f"\nGROUP BY {', '.join(groups)}")
+        sql += f"\nORDER BY \"count\" DESC, {', '.join(str(i + 1) for i in range(len(names)))}"
+        sql += f"\nLIMIT {int(plan.limit)}"
+        return sql
     if plan.aggregate == "count":
         if plan.distinct:  # how many distinct things: count the distinct answer
             sql += (f"\nSELECT COUNT(*) AS \"count\" FROM (\n  SELECT DISTINCT {', '.join(select_items)}"

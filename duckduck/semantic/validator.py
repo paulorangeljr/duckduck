@@ -66,6 +66,8 @@ class QueryValidator:
 
         for ref in plan.select:
             check_field(ref, "select")
+        for ref in plan.group_by:
+            check_field(ref, "group_by")
 
         for flt in plan.filters:
             if not check_field(flt.field, "filter"):

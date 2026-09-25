@@ -91,6 +91,15 @@ _DOMAIN_RE = re.compile(r"\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}\b", 
 
 #: Extra words that are never a filter value on their own.
 _NON_VALUE_WORDS = {"many", "much", "most", "least", "some", "who", "whose", "whom"}
+#: Words that say what kind of answer is wanted (count, different values, per group) —
+#: never a value to filter on, never the thing asked for.
+_SHAPE_WORDS = {
+    "count", "number", "total", "per", "each", "every", "different", "distinct", "unique", "types", "kinds",
+    "sorts", "values", "breakdown", "grouped", "group", "broken", "split", "exist", "exists",
+    "quantos", "quantas", "numero", "número", "contagem", "por", "cada", "diferente", "diferentes", "distinto",
+    "distintos", "distinta", "distintas", "unico", "unicos", "único", "únicos", "tipos", "valores", "categorias",
+    "agrupado", "agrupados", "agrupada", "agrupadas", "separado", "separados", "existe", "existem",
+}
 
 
 def _shape(value: str) -> str:
@@ -178,7 +187,7 @@ class RuleBasedExtractor:
         # 3. enumerated values, then catalog terms / leftover free text
         tokens = tokenize(text)
         stems = [stem(t) for t in tokens]
-        consumed = [t in STOPWORDS for t in tokens]
+        consumed = [t in STOPWORDS or t in _SHAPE_WORDS for t in tokens]
         for phrase in sorted(self._enum_phrases, key=len, reverse=True):
             n = len(phrase)
             for i in range(len(stems) - n + 1):

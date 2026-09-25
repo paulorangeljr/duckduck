@@ -77,6 +77,8 @@ class LogicalQueryPlan(_Strict):
     distinct: bool = False
     #: ``count``: the answer is how many rows (distinct ones when ``distinct``) — one number.
     aggregate: Optional[Literal["count"]] = None
+    #: With ``aggregate``: one count per value of these fields (GROUP BY).
+    group_by: List[FieldRef] = Field(default_factory=list)
     limit: int = Field(default=1000, ge=1, le=MAX_LIMIT)
 
     @model_validator(mode="after")
@@ -84,18 +86,20 @@ class LogicalQueryPlan(_Strict):
         if len(set(self.sources)) != len(self.sources):
             raise ValueError("each source can appear only once in 'sources'")
         declared = set(self.sources)
-        refs = list(self.select) + [f.field for f in self.filters]
+        refs = list(self.select) + list(self.group_by) + [f.field for f in self.filters]
         refs += [j.left for j in self.joins] + [j.right for j in self.joins]
         if self.time_range:
             refs.append(self.time_range.field)
+        if self.group_by and not self.aggregate:
+            raise ValueError("group_by needs an aggregate")
         for ref in refs:
             if ref.split(".")[0] not in declared:
                 raise ValueError(f"'{ref}' references a source not listed in 'sources'")
         return self
 
     def source_fields(self, source: str) -> List[str]:
-        """Every field of ``source`` the plan touches (select/filter/join/time), in first-use order."""
-        refs = list(self.select) + [f.field for f in self.filters]
+        """Every field of ``source`` the plan touches (select/group/filter/join/time), in first-use order."""
+        refs = list(self.select) + list(self.group_by) + [f.field for f in self.filters]
         refs += [ref for j in self.joins for ref in (j.left, j.right)]
         if self.time_range:
             refs.append(self.time_range.field)
