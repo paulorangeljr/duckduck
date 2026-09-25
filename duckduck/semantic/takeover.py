@@ -62,15 +62,33 @@ class TakenOver:
                 "how": self.how, "taken_at": self.taken_at.isoformat(timespec="seconds"), "sql": self.sql}
 
 
-def take_over(search: Any, result: Any, name: Optional[str] = None, full: bool = True,
-              now: Optional[datetime] = None) -> TakenOver:
-    """See the module docstring. Raises ``ValueError`` for an answer without rows or a bad name."""
-    duck = search.duck
-    if duck is None:
+def _check(search: Any, result: Any) -> None:
+    if search.duck is None:
         raise ValueError("take_over needs the DuckAPI the search reads from (SemanticSearch(..., duck))")
     if result.status != "ok" or result.results is None:
         raise ValueError(f"only an answer with rows can be taken over (this one is {result.status!r}"
                          f"{', a direct reply' if getattr(result, 'reply', None) else ''})")
+
+
+def proposal(search: Any, result: Any) -> Dict[str, Any]:
+    """
+    What taking ``result`` over would give, before doing it — the web app's
+    dialog: the suggested name, the rows and columns, and whether the answer
+    stopped at its row cap (``capped``: ``full`` would run it again whole).
+    """
+    _check(search, result)
+    plan = result.query_plan
+    rows = len(result.results)
+    return {"name": _name(search, None, result), "rows": rows, "columns": [str(c) for c in result.results.columns],
+            "capped": bool(plan is not None and rows >= plan.limit), "limit": plan.limit if plan is not None else None,
+            "question": result.question, "taken": sorted(search.taken_over)}
+
+
+def take_over(search: Any, result: Any, name: Optional[str] = None, full: bool = True,
+              now: Optional[datetime] = None) -> TakenOver:
+    """See the module docstring. Raises ``ValueError`` for an answer without rows or a bad name."""
+    _check(search, result)
+    duck = search.duck
     frame, how = result.results, "the rows of the answer"
     plan = result.query_plan
     if full and plan is not None and search.executor is not None and len(frame) >= plan.limit:

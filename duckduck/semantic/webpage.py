@@ -165,6 +165,34 @@ button.add { background: none; border: 1px dashed var(--border); border-radius: 
 #cfgform details.sect { margin: 6px 0; border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; }
 #cfgform details.sect > summary { font-weight: 600; color: var(--ink); }
 #cfgform details.sect > .hint { margin: 4px 0 8px; }
+/* take-over dialog */
+dialog.modal { border: 1px solid var(--border); border-radius: 14px; padding: 0; width: min(560px, calc(100vw - 32px));
+               background: var(--surface); color: var(--ink); box-shadow: 0 24px 60px rgba(0,0,0,.25); }
+dialog.modal::backdrop { background: rgba(10,10,10,.45); backdrop-filter: blur(2px); }
+dialog.modal[open] { animation: pop .18s ease-out both; }
+.modal .mhead { display: flex; gap: 12px; align-items: flex-start; padding: 20px 22px 6px; }
+.modal .mhead .ico { width: 28px; height: 28px; color: var(--accent); flex: none; margin-top: 2px; }
+.modal h2 { margin: 0; font-size: 18px; }
+.modal .sub { margin: 4px 0 0; color: var(--ink-2); font-size: 14px; }
+.modal .mbody { padding: 10px 22px 4px; }
+.modal .facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 10px 0 14px; }
+.modal .fact { background: var(--surface-2); border-radius: 10px; padding: 10px 12px; }
+.modal .fact .v { font-size: 20px; font-weight: 650; } .modal .fact .l { font-size: 12px; color: var(--ink-2); }
+.modal label.name { display: block; font-size: 13px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px; }
+.modal .namebox { display: flex; align-items: center; border: 1px solid var(--border); border-radius: 8px;
+                  background: var(--surface); padding-left: 10px; }
+.modal .namebox:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+.modal .namebox span { color: var(--muted); font-size: 13px; white-space: nowrap; }
+.modal .namebox input { border: 0; outline: 0; flex: 1; min-width: 0; padding: 9px 10px 9px 4px; background: none; }
+.modal .hint { font-size: 12.5px; color: var(--muted); margin-top: 5px; min-height: 18px; }
+.modal .hint.bad { color: var(--bad); }
+.modal .cols { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 4px; max-height: 96px; overflow: auto; }
+.modal .cols span { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--surface-2); color: var(--ink-2); }
+.modal .capped { margin-top: 12px; padding: 10px 12px; border-radius: 10px; border: 1px dashed var(--border); }
+.modal .err { color: var(--bad); font-size: 13.5px; margin: 10px 0 0; }
+.modal .mfoot { display: flex; gap: 8px; justify-content: flex-end; padding: 16px 22px 18px; flex-wrap: wrap; }
+.modal .mfoot .note { flex-basis: 100%; font-size: 12.5px; color: var(--muted); margin: 0 0 2px; }
+@media (max-width: 520px) { .modal .facts { grid-template-columns: 1fr 1fr; } }
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--ink);
          color: var(--page); padding: 8px 14px; border-radius: 8px; font-size: 14px; opacity: 0;
          transition: opacity .2s; pointer-events: none; }
@@ -346,6 +374,35 @@ button.add { background: none; border: 1px dashed var(--border); border-radius: 
     <div id="suggestions"></div>
   </section>
 </main>
+<dialog class="modal" id="takeover" aria-labelledby="takeovertitle">
+  <form method="dialog" id="takeoverform">
+    <div class="mhead">
+      <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M2 6h12M6 6v7.5"/><path d="M9.5 9.5l1.5 1.5 2.5-3"/></svg>
+      <div><h2 id="takeovertitle">Take over from here</h2>
+        <p class="sub">These rows become a table of their own — query it in the SQL tab: filter, aggregate, join it
+          with the other tables.</p></div>
+    </div>
+    <div class="mbody">
+      <div class="facts">
+        <div class="fact"><div class="v" id="tofrows">—</div><div class="l">rows</div></div>
+        <div class="fact"><div class="v" id="tofcols">—</div><div class="l">columns</div></div>
+        <div class="fact"><div class="v" id="tofwhere">memory</div><div class="l">kept until the server restarts</div></div>
+      </div>
+      <label class="name" for="toname">Table name</label>
+      <div class="namebox"><span>SELECT * FROM</span><input id="toname" autocomplete="off" spellcheck="false"
+        pattern="[a-z_][a-z0-9_]{0,62}" required></div>
+      <div class="hint" id="tohint">Letters, digits and _, starting with a letter. The same name replaces an earlier take-over.</div>
+      <div class="cols" id="tocols"></div>
+      <label class="check capped" id="tocapped" hidden><input type="checkbox" id="tofull" checked>
+        <span>Fetch every matching row — the answer stopped at <b id="tolimit"></b> rows; this runs its query again
+          without that cap</span></label>
+      <p class="err" id="toerr" hidden></p>
+    </div>
+    <div class="mfoot"><span class="note">It's a snapshot: querying it never calls the sources again.</span>
+      <button class="secondary" type="button" id="tocancel">Cancel</button>
+      <button class="primary" type="submit" id="togo">Create table &amp; open SQL</button></div>
+  </form>
+</dialog>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <script>
 const $ = (s, el = document) => el.querySelector(s);
@@ -641,16 +698,50 @@ function askFresh() {
 }
 
 // "Take over from here": the answer's rows become a table (in memory, on the server), then the SQL tab opens on it
+let TAKEOVER = null;  // {convId, proposal}
 async function takeOver(convId) {
-  const name = prompt("Name for the new table (letters, digits and _) — leave empty to let it choose:", "");
-  if (name === null) return;
+  let p;
+  try { p = await api("/api/takeover/proposal", {conversation_id: convId}); }
+  catch (err) { toast(err.message); return; }
+  TAKEOVER = {convId, proposal: p};
+  $("#toname").value = p.name; $("#tofrows").textContent = p.rows.toLocaleString();
+  $("#tofcols").textContent = p.columns.length;
+  $("#tocols").innerHTML = p.columns.slice(0, 40).map(c => `<span class="mono">${esc(c)}</span>`).join("") +
+    (p.columns.length > 40 ? `<span>+${p.columns.length - 40} more</span>` : "");
+  $("#tocapped").hidden = !p.capped; $("#tolimit").textContent = (p.limit || 0).toLocaleString(); $("#tofull").checked = true;
+  $("#toerr").hidden = true; $("#togo").disabled = false; $("#togo").textContent = "Create table & open SQL";
+  checkTakeoverName();
+  $("#takeover").showModal(); $("#toname").select();
+}
+function checkTakeoverName() {
+  const v = $("#toname").value.trim().toLowerCase(), ok = /^[a-z_][a-z0-9_]{0,62}$/.test(v);
+  const replaces = ok && (TAKEOVER?.proposal.taken || []).includes(v);
+  $("#tohint").className = "hint" + (ok || !v ? "" : " bad");
+  $("#tohint").textContent = !v ? "Letters, digits and _, starting with a letter." :
+    !ok ? "Only letters, digits and _, starting with a letter (no spaces or dashes)." :
+    replaces ? `Replaces your earlier “${v}” take-over.` : "Letters, digits and _, starting with a letter. The same name replaces an earlier take-over.";
+  $("#togo").disabled = !ok;
+  return ok;
+}
+$("#toname").addEventListener("input", () => { $("#toerr").hidden = true; checkTakeoverName(); });
+$("#tocancel").addEventListener("click", () => $("#takeover").close());
+$("#takeover").addEventListener("click", (e) => { if (e.target === $("#takeover")) $("#takeover").close(); });  // backdrop
+$("#takeoverform").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (!TAKEOVER || !checkTakeoverName()) return;
+  const full = !$("#tocapped").hidden && $("#tofull").checked;
+  $("#togo").disabled = true; $("#togo").textContent = full ? "Fetching every row…" : "Creating…";
   try {
-    const t = await api("/api/takeover", {conversation_id: convId, name: name.trim() || null});
-    toast(`${t.name}: ${t.rows} row${t.rows === 1 ? "" : "s"} — ${t.how}`);
+    const t = await api("/api/takeover", {conversation_id: TAKEOVER.convId, name: $("#toname").value.trim().toLowerCase(), full});
+    $("#takeover").close();
+    toast(`${t.name}: ${t.rows.toLocaleString()} row${t.rows === 1 ? "" : "s"} — ${t.how}`);
     $("#sqltext").value = `SELECT * FROM ${t.name} LIMIT 100`;
     openTab("sql"); await loadTables(); runSql();
-  } catch (err) { toast(err.message); }
-}
+  } catch (err) {
+    $("#toerr").textContent = err.message; $("#toerr").hidden = false;
+    $("#togo").disabled = false; $("#togo").textContent = "Create table & open SQL";
+  }
+});
 
 async function reply(convId, text) {
   try { render(await api("/api/answer", {conversation_id: convId, reply: text})); }

@@ -20,6 +20,7 @@ HTML page (``webpage.PAGE``) over a JSON API:
 ``GET  /api/meta``                           categories, answer kinds, tables (+ icon kind), entities, values
 ``POST /api/sql {sql}`` · ``GET /api/tables``  the SQL console (``allow_sql``, on by default; read-only, no files/network)
 ``POST /api/takeover {conversation_id, name, full}``  "take over from here": the answer's rows as a table for the SQL tab
+``POST /api/takeover/proposal {conversation_id}``  what that would give: suggested name, rows, columns, capped
 ``GET  /api/config``                         duckduck.json, secrets masked, + every option documented
 ``POST /api/config/validate {config}``       check an edited config without saving
 ``PUT  /api/config {config}``                save it (``allow_config_edit``; ``.bak`` kept) and reload
@@ -328,6 +329,17 @@ def create_app(
     @app.get("/api/tables")
     def tables():
         return dump(the_console().tables())
+
+    @app.post("/api/takeover/proposal")
+    def takeover_proposal(body: Dict[str, Any] = Body(...)):
+        from .takeover import proposal
+
+        the_console()
+        conv = conversation(str(body.get("conversation_id")))
+        try:
+            return dump(proposal(state["search"], conv.result))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
 
     @app.post("/api/takeover")
     def takeover(body: Dict[str, Any] = Body(...)):

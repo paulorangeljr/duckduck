@@ -930,9 +930,12 @@ python -m duckduck.semantic feedback-export    # what still fails, as a brief fo
     semantic search are untouched.
   - **Limits:** the first 1000 rows are shown, and a query is interrupted
     after 2 minutes.
-- **Take over from here.** On an answer, *Take over from here*
-  registers its rows as a table (you name it, or it's named after the
-  question) and opens the SQL tab on it. From there it's SQL: filter,
+- **Take over from here.** On an answer, *Take over from here* opens a
+  dialog showing the rows and columns you'd get, with a table name
+  suggested from the question. You can change the name; it's checked as
+  you type. When the answer stopped at its row cap, it offers to fetch
+  every matching row. Then it registers the table and opens the SQL tab
+  on it. From there it's SQL: filter,
   aggregate, join it with the source tables.
   - **The whole subset.** When the answer stopped at its row cap
     (`default_limit`, 1000), its plan runs again without it, so the table

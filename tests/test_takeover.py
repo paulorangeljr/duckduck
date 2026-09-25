@@ -75,3 +75,26 @@ def test_the_web_app(tmp_path):
     assert client.post("/api/takeover", json={"conversation_id": "nope"}).status_code == 404
     off = TestClient(create_app(lambda: search, store=None))
     assert off.post("/api/takeover", json={"conversation_id": conv}).status_code == 403
+
+
+def test_the_dialog_is_told_what_it_would_get():
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from duckduck.semantic import Catalog, SemanticSearch
+    from duckduck.semantic.admin import SQLConsole
+    from duckduck.semantic.server import create_app
+
+    from test_answer_shapes import CATALOG, _duck
+
+    search = SemanticSearch(Catalog.model_validate(CATALOG), _duck(), default_limit=2)
+    client = TestClient(create_app(lambda: search, store=None, console=SQLConsole(search.duck)))
+    conv = client.post("/api/ask", json={"question": "Show me the alerts with critical severity"}).json()
+    proposal = client.post("/api/takeover/proposal", json={"conversation_id": conv["conversation_id"]}).json()
+    assert proposal["rows"] == 2 and proposal["capped"] and proposal["limit"] == 2
+    assert proposal["columns"] == ["ip", "rule", "severity"] and proposal["name"] == "alerts_critical_severity"
+    taken = client.post("/api/takeover", json={"conversation_id": conv["conversation_id"],
+                                               "name": proposal["name"], "full": True}).json()
+    assert taken["rows"] == 3  # the whole subset
+    again = client.post("/api/takeover/proposal", json={"conversation_id": conv["conversation_id"]}).json()
+    assert again["taken"] == ["alerts_critical_severity"] and again["name"] == "alerts_critical_severity_2"
