@@ -46,7 +46,7 @@ DEPARTMENTS = {"quantos departamentos existem?": (
 
 def test_the_rules_reader_is_the_default_and_never_calls_the_llm():
     search, llm = _search(DEPARTMENTS)
-    assert search.readers == ["rules", "llm", "llm_decides"] and search.reader == "rules"
+    assert search.readers == ["rules", "llm", "llm_decides", "auto"] and search.reader == "rules"
     search.search("How many alerts per rule?")
     assert not llm.calls
 
@@ -151,7 +151,7 @@ def test_the_web_app(tmp_path):
     search, llm = _search(DEPARTMENTS)
     client = TestClient(create_app(lambda: search, store=None))
     meta = client.get("/api/meta").json()["readers"]
-    assert meta == {"available": ["rules", "llm", "llm_decides"], "default": "rules", "llm_unavailable": None}
+    assert meta == {"available": ["rules", "llm", "llm_decides", "auto"], "default": "rules", "llm_unavailable": None}
     preview = client.post("/api/preview", json={"question": "quantos departamentos existem?", "reader": "llm"}).json()
     assert preview["reading"]["answer"] == "count_values"
     answer = client.post("/api/ask", json={"question": "quantos departamentos existem?", "reader": "llm"}).json()

@@ -211,6 +211,17 @@ class ExtractorConfig(_Strict):
     translate: bool = True
 
 
+class RouterConfig(_Strict):
+    """The Auto mode: pick Paddle / Dive / Fly per question from how similar past questions went."""
+
+    #: How alike a past question must be to count (cosine over content words, 0-1).
+    min_similarity: float = 0.5
+    #: At most this many of the most similar past runs are weighed.
+    max_runs: int = 30
+    #: The mode used when the engine isn't sure (``thresholds.router``) or routing fails.
+    fallback: Literal["rules", "llm", "llm_decides"] = "rules"
+
+
 class ApiDocsConfig(_Strict):
     """Where one table's (or service's) API docs are: a file/URL, or the docs inline."""
 
@@ -325,8 +336,11 @@ class SemanticConfig(_Strict):
     #: what it's about, the decision engine settles ambiguity — or ``llm`` — an LLM reads the
     #: question first (``extractor.llm`` → ``default_llm``) and the engine decides between its
     #: reading and the rules' — or ``llm_decides`` — the LLM reads the question *and* makes every decision
-    #: the engine would (no Jev). The web app lets the user switch per question.
-    reader: Literal["rules", "llm", "llm_decides"] = "rules"
+    #: the engine would (no Jev) — or ``auto`` — a router picks one of those per question from how similar
+    #: questions went before (see ``router``). The web app lets the user switch per question.
+    reader: Literal["rules", "llm", "llm_decides", "auto"] = "rules"
+    #: ``auto``: how the router picks the mode from similar past runs (``router.ModeRouter``).
+    router: "RouterConfig" = Field(default_factory=lambda: RouterConfig())
     catalog_generation: CatalogGenerationConfig = Field(default_factory=CatalogGenerationConfig)
     thresholds: Thresholds = Field(default_factory=Thresholds)
     #: Override the questions asked back to the user (``clarify.DEFAULT_TEXTS`` keys) — e.g. in Portuguese.

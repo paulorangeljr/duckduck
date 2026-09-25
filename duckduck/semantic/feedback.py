@@ -72,7 +72,8 @@ CREATE TABLE IF NOT EXISTS searches (
     catalog_version VARCHAR,
     engine VARCHAR,
     reader VARCHAR,
-    usage VARCHAR
+    usage VARCHAR,
+    requested_reader VARCHAR
 );
 CREATE TABLE IF NOT EXISTS feedback (
     id VARCHAR PRIMARY KEY,
@@ -131,7 +132,7 @@ class FeedbackStore:
         self._lock = threading.Lock()
         self._conn = duckdb.connect(path)
         self._conn.execute(_SCHEMA)
-        for column in ("reader VARCHAR", "usage VARCHAR"):  # files written before the modes were recorded
+        for column in ("reader VARCHAR", "usage VARCHAR", "requested_reader VARCHAR"):  # files written before the modes were recorded
             self._conn.execute(f"ALTER TABLE searches ADD COLUMN IF NOT EXISTS {column}")
         #: Bumped on every write — lets readers (``CaseMemory``) cache until something changes.
         self.version = 0
@@ -158,6 +159,7 @@ class FeedbackStore:
             json.dumps(result.pinned, default=str), result.sql, rows, result.clarification,
             float(result.elapsed_ms or 0.0), catalog_version, engine,
             getattr(result, "reader", None), json.dumps(getattr(result, "usage", None) or {}),
+            getattr(result, "requested_reader", None),
         ]
         with self._lock:
             self._conn.execute(f"INSERT INTO searches ({', '.join(_SEARCH_COLUMNS)}) "
@@ -221,7 +223,7 @@ class FeedbackStore:
         return _nulls(self.query(f"""
             SELECT s.id, s.created_at, s.conversation_id, s.user_name, s.question, s.english_question,
                    s.status, s.answer_shape, s.entity, s.sources, s.rows, f.verdict, f.categories, f.reason,
-                   coalesce(s.reader, 'rules') AS reader, s.engine, s.elapsed_ms, {_USAGE_COLUMNS}
+                   coalesce(s.reader, 'rules') AS reader, s.requested_reader, s.engine, s.elapsed_ms, {_USAGE_COLUMNS}
             FROM searches s LEFT JOIN ({_LATEST_FEEDBACK}) f ON f.search_id = s.id {where}
             ORDER BY s.created_at DESC, s.rowid DESC LIMIT {int(limit)}""", [reader] if reader else None))
 
@@ -235,6 +237,45 @@ class FeedbackStore:
             SELECT s.*, f.verdict, f.categories, f.reason, f.expected, f.created_at AS rated_at
             FROM searches s JOIN ({_LATEST_FEEDBACK}) f ON f.search_id = s.id ORDER BY f.created_at""")
         return [_decode(row) for row in _nulls(df).to_dict(orient="records")]
+
+    def runs(self) -> List[Dict[str, Any]]:
+        """
+        Every conversation (or lone search) as one run — the Auto router's
+        history: the first round's question, template and mode, the last
+        round's status, the latest feedback on any round, how many rounds,
+        whether it asked back, and its time and calls in total. ``success``:
+        1, unless rated *not answered* (0) or *partly* (½), or its plan was
+        invalid (0) — no negative feedback counts as a success.
+        """
+        df = _nulls(self.query(f"""
+            WITH s AS (
+                SELECT s.*, coalesce(s.conversation_id, s.id) AS conv, f.verdict,
+                       row_number() OVER (ORDER BY s.created_at, s.rowid) AS seq,
+                       {_usage('engine_calls')} AS n_engine, {_usage('llm_calls')} AS n_llm
+                FROM searches s LEFT JOIN ({_LATEST_FEEDBACK}) f ON f.search_id = s.id)
+            SELECT conv, min(created_at) AS created_at, min(seq) AS first_seq,
+                   arg_min(question, seq) AS question, arg_min(english_question, seq) AS english_question,
+                   arg_min(template, seq) AS template, arg_min(coalesce(reader, 'rules'), seq) AS reader,
+                   arg_min(requested_reader, seq) AS requested_reader,
+                   arg_max(status, seq) AS status,
+                   arg_max(verdict, seq) FILTER (WHERE verdict IS NOT NULL) AS verdict,
+                   count(*) AS rounds, bool_or(status = 'needs_clarification') AS asked_back,
+                   sum(elapsed_ms) AS elapsed_ms, CAST(sum(n_engine) AS INTEGER) AS engine_calls,
+                   CAST(sum(n_llm) AS INTEGER) AS llm_calls
+            FROM s GROUP BY conv ORDER BY first_seq"""))
+        out = []
+        for row in df.to_dict(orient="records"):
+            verdict, status = row["verdict"], row["status"]
+            if verdict == "not_answered" or status == "invalid_plan":
+                row["success"], row["outcome"] = 0.0, "not answered" if verdict else "invalid plan"
+            elif verdict == "partial":
+                row["success"], row["outcome"] = 0.5, "partly answered"
+            else:
+                row["success"], row["outcome"] = 1.0, "answered" if verdict == "answered" else "no complaint"
+            row["asked_back"] = bool(row["asked_back"])
+            row.pop("first_seq", None)
+            out.append(row)
+        return out
 
     def reviews(self) -> Dict[str, str]:
         """``{suggestion_id: accepted|dismissed}`` — the latest review of each."""
@@ -299,9 +340,15 @@ class FeedbackStore:
         for col in ("searches", "rated", "answered", "partial", "not_answered", "previews",
                     "typing_engine_calls", "typing_llm_calls", "typing_llm_tokens"):
             by_reader[col] = by_reader[col].fillna(0).astype(int)
+        auto = self.query(f"""
+            SELECT coalesce(reader, 'rules') AS reader, count(*) AS searches, count(verdict) AS rated,
+                   count(*) FILTER (WHERE verdict = 'answered') AS answered,
+                   round(count(*) FILTER (WHERE verdict = 'answered') / nullif(count(verdict), 0), 3) AS answer_rate
+            FROM ({base}) WHERE requested_reader = 'auto' GROUP BY 1 ORDER BY searches DESC""")
         return {
             "overall": overall,
             "by_reader": by_reader,
+            "auto": auto,
             "by_answer_shape": breakdown("coalesce(answer_shape, '—')", f"({base})"),
             "by_source": breakdown("source", by_source),
             "by_category": by_category,
@@ -364,7 +411,7 @@ _LATEST_FEEDBACK = """
 
 _SEARCH_COLUMNS = ("id", "created_at", "conversation_id", "user_name", "question", "english_question", "template",
                    "status", "answer_shape", "entity", "activity", "sources", "decisions", "pinned", "sql", "rows",
-                   "clarification", "elapsed_ms", "catalog_version", "engine", "reader", "usage")
+                   "clarification", "elapsed_ms", "catalog_version", "engine", "reader", "usage", "requested_reader")
 
 
 def _usage(key: str) -> str:

@@ -81,15 +81,20 @@ def load_dataset(path: str) -> List[Dict[str, Any]]:
 def _measuring(search: SemanticSearch):
     """
     While measuring: nothing recorded as feedback searches, and no case
-    memory — it would hand the engine the very answers users confirmed,
-    and the numbers would flatter it.
+    memory or Auto-router history — they would hand the engine the very
+    answers users confirmed, and the numbers would flatter it.
     """
-    store, memory = search.feedback_store, search.interpreter.memory
+    router = getattr(search, "router", None)
+    store, memory, history = search.feedback_store, search.interpreter.memory, getattr(router, "store", None)
     search.feedback_store, search.interpreter.memory = None, None
+    if router is not None:
+        router.store = None  # nor the Auto router's history: it holds the answers being measured
     try:
         yield
     finally:
         search.feedback_store, search.interpreter.memory = store, memory
+        if router is not None:
+            router.store = history
 
 
 def evaluate(search: SemanticSearch, cases: List[Dict[str, Any]], execute: bool = True,

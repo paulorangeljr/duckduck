@@ -87,7 +87,7 @@ def test_the_modes_compared_on_the_same_questions():
     search, _ = _search()
     cases = [{"question": "how many departments are there?", "expected_answer_shape": "count_values"}]
     reports = compare_readers(search, cases)
-    assert list(reports) == ["rules", "llm", "llm_decides"]
+    assert list(reports) == ["rules", "llm", "llm_decides", "auto"]
     assert all(r.metrics["answer_shape_accuracy"] == 1.0 for r in reports.values())
     assert reports["rules"].metrics["mean_llm_calls"] == 0 and reports["llm_decides"].metrics["mean_engine_calls"] >= 1
 

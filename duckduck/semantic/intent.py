@@ -25,6 +25,9 @@ class Thresholds(BaseModel):
     out_of_scope: float = 0.20
     #: A free-text reply to a clarification must pick one option this surely.
     reply: float = 0.70
+    #: The Auto mode's choice of mode; below it, the router's fallback mode reads the question
+    #: (never a question to the user — which mode reads it is an internal choice).
+    router: float = 0.50
 
 
 class DecisionRecord(BaseModel):

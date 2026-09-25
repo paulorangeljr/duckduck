@@ -813,8 +813,8 @@ python -m duckduck.semantic feedback-export    # what still fails, as a brief fo
   value, missing data, too many questions) and say why. Optionally you say
   what would have been right: the tables, the kind of answer, what it
   asks about, or *"word X means field = value"*.
-- **Three ways to read a question: 🦆 Paddle, 🤿 Dive or 🪽 Fly.** A switch
-  next to the question picks the reader. Paddle skims the words on the surface: the
+- **Three ways to read a question: 🦆 Paddle, 🤿 Dive or 🪽 Fly — or 🧭 Auto
+  to pick one per question.** A switch next to the question picks the reader. Paddle skims the words on the surface: the
   `rules` reader. Dive goes under for what you meant: the `llm` reader. The
   API, CLI and config call them `rules` and `llm`. The **?** next to the
   switch explains both: how each reads, what it's good at, its limits, and
@@ -846,6 +846,32 @@ python -m duckduck.semantic feedback-export    # what still fails, as a brief fo
     the guarantees stay: a doubt is asked back, and SQL is written only by
     the compiler from a checked plan. It's the slowest and costs the most;
     thresholds calibrated for Jev may fit it less well.
+  - **Auto — `auto`.** Picks Paddle, Dive or Fly for each question from how
+    similar questions went before:
+    - **Past runs** (`FeedbackStore.runs()`): one per conversation, in the
+      mode that started it, with the last round's outcome. A run counts as
+      a success unless it was rated *not answered* (0) or *partly* (½), or
+      its plan was invalid: **no negative feedback counts as positive**.
+    - **Similar runs**: the question's template against each run's
+      (question or English reading, whichever is closer), at least
+      `router.min_similarity` (0.5); the `router.max_runs` (30) closest.
+    - **Evidence per mode**: similarity-weighted runs and successes, a
+      smoothed success rate ((ok + 1) / (runs + 2) — a mode with no similar
+      runs has no evidence, not a bad record), median time, calls, how often
+      it asked back, a few of the similar questions.
+    - **Jev decides**: one choice question with that evidence as facts
+      (the offline engine takes the best rate, the cheaper mode on a tie).
+      Below `thresholds.router` (0.5), or if routing fails, the
+      `router.fallback` mode (Paddle) reads it — a doubt here is never
+      asked back.
+    - The pick shows as a chip (*Auto picked Dive · llm: 2/2 similar ok*)
+      and as the first line of *How it was decided*; a conversation keeps
+      that mode for every round. The history marks it 🧭→, and the
+      dashboard's *Auto's picks* shows how each pick went.
+    - Limits: it needs rated history to learn anything; it costs one more
+      decision-engine call per question (and per preview); it only learns
+      about modes that have been used on similar questions. Evaluations
+      turn the history off, so they never read the answers they measure.
   - **Every search records how it ran:** its mode, the engine that decided,
     its time, decision-engine calls, LLM calls and tokens, and the cost
     where the provider reports it (the Decisions API does, per call).

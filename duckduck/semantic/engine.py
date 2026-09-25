@@ -24,8 +24,9 @@ import pandas as pd
 from .catalog import Catalog
 from .clarify import ClarificationTexts
 from .compiler import display_sql
-from .decisions import DecisionEngine, JEVAdapter, LexicalDecisionEngine, using_engine
+from .decisions import DecisionEngine, DecisionState, JEVAdapter, LexicalDecisionEngine, using_engine
 from .metering import metered
+from .router import ModeRouter
 from .executor import PlanExecutor, SourceFetch
 from .extraction import ValueExtractor
 from .graph import RelationshipGraph
@@ -115,6 +116,10 @@ class SearchResult:
     #: the data (``intent.answer_shape`` says which) — and example questions to try instead.
     #: How it was read and decided: ``rules`` / ``llm`` / ``llm_decides`` (see ``SemanticInterpreter``).
     reader: Optional[str] = None
+    #: What was asked for: the reader itself, or ``auto`` (the router picked ``reader`` — see ``route``).
+    requested_reader: Optional[str] = None
+    #: ``auto``: the mode it picked, the evidence per mode, the similar past questions.
+    route: Optional[Dict[str, Any]] = None
     #: What it cost: decision-engine and LLM calls, tokens, seconds, reported money (``metering.Usage``).
     usage: Dict[str, Any] = field(default_factory=dict)
     reply: Optional[str] = None
@@ -173,6 +178,8 @@ class SearchResult:
             "conversation_id": self.conversation_id,
             "only_sources": self.only_sources,
             "reader": self.reader,
+            "requested_reader": self.requested_reader,
+            "route": self.route,
             "usage": self.usage,
             "reply": self.reply,
             "suggestions": self.suggestions,
@@ -258,6 +265,8 @@ class SemanticSearch:
         reader: str = "rules",
         llm_reader: Any = None,
         llm_engine: Optional[DecisionEngine] = None,
+        router: Any = None,
+        router_options: Optional[Dict[str, Any]] = None,
     ):
         if isinstance(catalog, str):
             catalog = Catalog.load(catalog)
@@ -286,7 +295,10 @@ class SemanticSearch:
         #: The ``llm_decides`` reader's decision engine: the LLM answers every decision Jev would
         #: (``LLMDecisionBackend``). Default: one over the llm reader's own LLM.
         self._llm_engine = llm_engine
-        self.interpreter.reader = self.interpreter._check_reader(reader)
+        #: The Auto mode: picks a reader per question from how similar ones went (``router.ModeRouter``).
+        self.router = router if router is not None else ModeRouter(
+            feedback, threshold=self.thresholds.router, **(router_options or {}))
+        self.reader = reader
         self.planner = QueryPlanner(
             self.catalog, self.engine, graph=self.graph, thresholds=self.thresholds,
             allowed_sources=allowed_sources, default_limit=default_limit, texts=self.texts, shapes=self.shapes,
@@ -364,6 +376,7 @@ class SemanticSearch:
             kwargs["feedback"] = cfg.build_feedback()
         kwargs.update(overrides)
         reader = kwargs.pop("reader", cfg.reader)
+        kwargs.setdefault("router_options", cfg.router.model_dump())
         search = cls(cfg.path(cfg.catalog_path), duck, **kwargs)
         # built against the *available* catalog subset
         extractor = cfg.build_extractor(search.catalog, duck)
@@ -377,7 +390,7 @@ class SemanticSearch:
                     raise
                 search.llm_reader_error = f"{exc.__class__.__name__}: {exc}"  # the llm reader just isn't offered
                 logger.warning("semantic: the llm reader is unavailable (%s)", search.llm_reader_error)
-        search.interpreter.reader = search.interpreter._check_reader(reader)
+        search.reader = reader
         return search
 
     # ------------------------------------------------------------------
@@ -399,8 +412,8 @@ class SemanticSearch:
 
     @property
     def readers(self) -> List[str]:
-        """The readers this search can use: ``rules``, plus ``llm`` and ``llm_decides`` when it has an LLM."""
-        return ["rules"] + (["llm", "llm_decides"] if self.interpreter.llm_reader is not None else [])
+        """The readers this search can use: ``rules``, plus ``llm``, ``llm_decides`` and ``auto`` with an LLM."""
+        return ["rules"] + (["llm", "llm_decides", "auto"] if self.interpreter.llm_reader is not None else [])
 
     @property
     def llm_engine(self) -> Optional[DecisionEngine]:
@@ -424,11 +437,35 @@ class SemanticSearch:
 
     @property
     def reader(self) -> str:
-        return self.interpreter.reader
+        """The default reader: ``rules`` / ``llm`` / ``llm_decides`` / ``auto``."""
+        return self._reader
+
+    @reader.setter
+    def reader(self, reader: str) -> None:
+        if reader != "auto":
+            self.interpreter.reader = self.interpreter._check_reader(reader)
+        self._reader = reader
+
+    def check_reader(self, reader: Optional[str]) -> str:
+        """``reader`` (default: the search's), refused when unknown or unavailable — ``auto`` included."""
+        reader = reader or self.reader
+        if reader == "auto":
+            return reader
+        return self.interpreter._check_reader(reader)
+
+    def route(self, question: str) -> Any:
+        """The Auto mode's choice for ``question`` (a ``router.Route``) — asked of the configured engine."""
+        from .memory import question_template
+
+        literals = self.interpreter._preview_rules.extract(question, self.clock()).literals
+        state = DecisionState(query=question)
+        return self.router.route(self.engine, question, question_template(question, literals),
+                                 [r for r in self.readers if r != "auto"], state)
 
     def search(self, question: str, execute: bool = True, pinned: Optional[Dict[str, Any]] = None,
                conversation_id: Optional[str] = None, user: Optional[str] = None,
-               only_sources: Optional[Iterable[str]] = None, reader: Optional[str] = None) -> SearchResult:
+               only_sources: Optional[Iterable[str]] = None, reader: Optional[str] = None,
+               requested_reader: Optional[str] = None) -> SearchResult:
         """
         Answers ``question``. ``pinned``: decisions settled by the user's
         answers to earlier clarifications (``ClarificationOption.pins``) —
@@ -438,10 +475,22 @@ class SemanticSearch:
         result is recorded (``result.search_id``).
         """
         only = self._check_scope(only_sources)
-        reader = self.interpreter._check_reader(reader)
-        with scope.only_sources(only), using_engine(self.engine_for(reader)), metered() as usage:
-            result = self._search(question, execute, pinned, reader)
+        requested = self.check_reader(reader)
+        route = None
+        with scope.only_sources(only), metered() as usage:
+            if requested == "auto":  # which mode? from how similar questions went — the engine decides
+                route = self.route(question)
+            reader = route.reader if route is not None else requested
+            with using_engine(self.engine_for(reader)):
+                result = self._search(question, execute, pinned, reader)
+        if route is not None:
+            result.decisions.insert(0, route.record)
+            result.route = {"reader": route.reader, "evidence": route.evidence,
+                            "similar": [{"question": r.get("english_question") or r["question"],
+                                         "reader": r["reader"], "outcome": r["outcome"],
+                                         "similarity": r["similarity"]} for r in route.similar[:5]]}
         result.reader = reader
+        result.requested_reader = requested_reader or requested
         result.usage = usage.to_dict()
         result.conversation_id = conversation_id
         if only is not None:
@@ -480,15 +529,21 @@ class SemanticSearch:
         (the ``auto_register`` service), those judged relevant marked — what
         the web app's "Systems" chip lists.
         """
-        reader = self.interpreter._check_reader(reader)
-        key = reader + ":" + " ".join(question.lower().split())
+        requested = self.check_reader(reader)
+        key = requested + ":" + " ".join(question.lower().split())
         cached = self._previews.get(key)
         if cached is not None:
             self._previews.move_to_end(key)
             return cached
-        with using_engine(self.engine_for(reader)), metered() as usage:
-            seen = self.interpreter.preview(question, self.clock(), reader=reader)
+        with metered() as usage:
+            route = self.route(question) if requested == "auto" else None
+            reader = route.reader if route is not None else requested
+            with using_engine(self.engine_for(reader)):
+                seen = self.interpreter.preview(question, self.clock(), reader=reader)
         seen["usage"] = usage.to_dict()
+        if route is not None:  # the chip says which mode Auto picked, and why
+            seen["route"] = {"reader": reader, "probability": round(route.record.probability, 3),
+                             "why": route.record.subject, "evidence": route.evidence}
         if self.feedback_store is not None and usage.spent:  # the cost of typing, per mode
             try:
                 self.feedback_store.record_preview(reader, usage.to_dict())
@@ -974,7 +1029,9 @@ class Conversation:
 
         self.search = search
         #: How the question is read, every round (``rules`` / ``llm``; default: the search's).
-        self.reader = search.interpreter._check_reader(reader)
+        #: ``auto``: the router picks the mode on the first round, and every later round keeps it.
+        self.requested_reader = search.check_reader(reader)
+        self.reader = self.requested_reader
         self.question = question
         #: Ties every round's recorded search together (``SearchResult.conversation_id``).
         self.id = uuid.uuid4().hex[:16]
@@ -1026,9 +1083,11 @@ class Conversation:
         return self.result
 
     def _ask(self) -> SearchResult:
-        return self.search.search(self.question, execute=self.execute, pinned=self.pinned,
-                                  conversation_id=self.id, user=self.user, only_sources=self.only_sources,
-                                  reader=self.reader)
+        result = self.search.search(self.question, execute=self.execute, pinned=self.pinned,
+                                    conversation_id=self.id, user=self.user, only_sources=self.only_sources,
+                                    reader=self.reader, requested_reader=self.requested_reader)
+        self.reader = result.reader  # auto: the mode it picked, for every later round
+        return result
 
     def _interpret(self, reply: str, followup: Clarification) -> Optional[ClarificationOption]:
         """Free text → an option, by the decision engine (a choice question), when it's sure enough."""
