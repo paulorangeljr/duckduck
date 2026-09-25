@@ -569,6 +569,39 @@ question ─► RuleBasedExtractor (values: time, IPs, domains, enums, free text
 | `engine.py` | `SemanticSearch` — the pipeline; `search()` / `plan()` → `SearchResult` |
 | `evaluation.py` | Per-stage accuracy over a labeled dataset; threshold calibration |
 
+### The three decisions: Systems / About / Answer
+
+Every question is answered by deciding three things. The web app's chips show them, and every change must keep the chips, the pipeline and the pins describing the same three:
+
+| Chip | Question it answers | Internally |
+|---|---|---|
+| **Systems** | Where to look? | source relevance (retrieval + one yes/no per candidate table), the planner's primary table, the joins (`_preview_joins`) |
+| **About** | What is it about? | `intent.target_entity` (user, host…), or the field whose values the answer lists (`values_field`) |
+| **Answer** | What kind of answer? | `intent.answer_shape` (`shapes.ANSWER_SHAPES`) |
+
+Order in `interpret` → `plan`:
+1. **Answer first when the wording settles it.** `catalog`, `small_talk`, `browse` and a named field's `values` are decided before any engine call; the first three end interpretation.
+2. **About + Systems in one engine batch**: entity, activity and source relevance. The entity is skipped when a named, non-entity field decides the answer.
+3. **Planner**: primary table, entity/values field, joins, filters. Then validator → compiler (the only SQL writer) → executor.
+
+Any decision under its threshold asks back instead of executing.
+
+**The preview is the same decisions.** `SemanticSearch.preview` is step 2 run while typing: rule-based extraction, no LLM, nothing executed or recorded. A choice in a chip travels with the question as a pin and is taken as given, never asked again:
+
+| Chip choice | Sent as | Pin |
+|---|---|---|
+| tables | `only_sources` | scope |
+| entity | `entity` | `entity` |
+| field | `values_field` | `values_field` + `source:<t>` |
+| unticked join | `blocked_joins` | `join:<a>=<b>` False |
+
+A new decision the user should see or override belongs in one of the three chips, with its own pin. Keep the preview's and the search's rules shared (same helpers) so the chips predict the answer. They can still differ: the real search may use LLM extraction/translation and the preview doesn't, and the user's pinned choices win.
+
+**Decided but not shown as chips:**
+- filters: enum values, typed literals (IP, email), time range. They appear in the SQL and in "How it was decided".
+- the activity.
+- **About is empty** for `lookup`/`locate` (the subject is the value, e.g. `10.0.0.196`) and `browse` (the subject is the table). Filling it there ("About: 10.0.0.196 (ip address)", "About: table owners") was proposed to the user and isn't built yet.
+
 ### Invariants — don't break these
 
 - **Nothing upstream writes SQL.** Only `compiler.py` emits SQL, only from a validated `LogicalQueryPlan`. Identifiers come from the catalog (pattern-constrained, and quoted anyway); values always go through `render_literal`.
