@@ -248,3 +248,14 @@ def test_not_every_mention_of_a_table_is_browsing(question, shape):
 def test_a_pin_reads_it_the_usual_way():
     result = _search().search("show me table owners", pinned={"answer_shape": "list"})
     assert result.intent.answer_shape == "list"
+
+
+def test_a_named_field_answer_never_asks_what_it_is_about(monkeypatch):
+    search, jev = _jev_search(monkeypatch)
+    result = _answer(search, "show me the departments I have")
+    assert result.results["department"].tolist() == ["eng", "ops"]
+    assert "entity" not in jev.bodies[0]["questions"] and not [d for d in result.decisions if d.kind == "entity"]
+    preview = search.preview("show me the departments I have")
+    assert preview["field"] == "owners.department" and preview["entity"] is None
+    # the entity *is* the field: still asked ("the different users" = the users)
+    assert search.preview("Show me the different owners")["field"] is None

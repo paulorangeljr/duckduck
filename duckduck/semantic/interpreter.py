@@ -150,6 +150,8 @@ class SemanticInterpreter:
     def _entity_ask(self, intent: SemanticIntent, ex: Extraction, pins: Dict[str, Any]) -> Optional[Ask]:
         if not self.catalog.entities or "entity" in pins:
             return None
+        if self._values_of_named_field(intent, pins):
+            return None  # the field decides the answer, not the entity
         ruled_out = {k[11:] for k, v in pins.items() if k.startswith("not_entity:") and v}
         if ruled_out and not set(self.catalog.entities) - ruled_out:
             raise ClarificationNeeded("None of the kinds of things in the data is what the question asks for.")
@@ -353,8 +355,10 @@ class SemanticInterpreter:
             threshold = self.thresholds.critical if self.catalog.sources[name].critical else self.thresholds.source
             sources.append({"source": name, "probability": round(result.probability, 3),
                             "relevant": result.probability >= threshold})
+        field = self._values_of_named_field(intent, {})
         return {
             "question": question,
+            "field": field,
             "answer_shape": ({"choice": candidates[0], "probability": 1.0, "sure": True} if len(candidates) == 1 else
                              {"choice": shape.choice, "probability": round(shape.probability, 3),
                               "sure": shape.probability >= self.thresholds.answer_shape}),
@@ -529,22 +533,41 @@ class SemanticInterpreter:
         lists (an entity or its keywords — "which are the users…" stays a list).
         """
         head = self.shapes.named_head(question)
-        if not head:
-            return None
-        said = set(content_stems(head))
+        ref = self._field_named_in(head) if head else None
+        return ref.split(".", 1)[1] if ref else None
+
+    def _field_named_in(self, text: str) -> Optional[str]:
+        """``source.field`` of the in-scope field ``text`` names (all its words, longest name first) that
+        isn't one of the things the catalog lists (an entity or its keywords), or ``None``."""
+        said = set(content_stems(text))
         if not said:
             return None
         if getattr(self, "_entity_stems", None) is None:
             self._entity_stems = {st for name, ent in self.catalog.entities.items()
                                   for w in [name.replace("_", " "), *ent.keywords] for st in content_stems(w)}
+        named = []
         for name, src in self.catalog.sources.items():
             if not in_scope(name):
                 continue
             for field in src.fields:
                 tokens = {stem(t) for t in tokenize(field.replace("_", " "))}
                 if tokens and tokens <= said and not tokens & self._entity_stems:
-                    return field
-        return None
+                    named.append((len(tokens), f"{name}.{field}"))
+        return max(named, key=lambda n: n[0])[1] if named else None
+
+    def _values_of_named_field(self, intent: SemanticIntent, pins: Dict[str, Any]) -> Optional[str]:
+        """
+        "Show me the departments I have", "the different severities": the
+        answer is a field's values and the question names that field — which
+        thing it is "about" (the entity) doesn't matter, so it isn't asked.
+        """
+        shape = pins.get("answer_shape")
+        if shape is None:
+            candidates, _ = self._candidates(intent)
+            shape = candidates[0] if len(candidates) == 1 else None
+        if shape not in ("values", "count_values"):
+            return None
+        return self._field_named_in(intent.working_question)
 
     def _apply_shape(self, intent: SemanticIntent, result: Any, decisions: List[DecisionRecord],
                      pins: Dict[str, Any]) -> None:

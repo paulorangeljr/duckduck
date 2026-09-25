@@ -380,8 +380,12 @@ function drawChips() {
       const name = (pre.entity || e.choice).replace(/_/g, " ");
       chips.push(`<button class="chip ${pre.entity ? "mine" : ""}" type="button" data-open="entity" aria-expanded="${pre.open === "entity"}"><span class="dot"></span><span class="k">About</span> ${esc(name)}</button>`);
     }
-    if (shape && !["list", "catalog"].includes(shape) && d.answer_shape.sure)
-      chips.push(`<button class="chip" type="button" disabled><span class="dot"></span><span class="k">Answer</span> ${esc(SHAPE_WORDS[shape] || shape)}</button>`);
+    if (shape && !["list", "catalog"].includes(shape) && d.answer_shape.sure) {
+      // "the departments I have": the answer is that field's values — say which field, not an entity
+      const [src, fld] = (d.field || "").split(".");
+      const what = d.field ? `the different values of ${esc(fld.replace(/_/g, " "))} <span class="k">(${esc(src)})</span>` : esc(SHAPE_WORDS[shape] || shape);
+      chips.push(`<button class="chip" type="button" disabled title="${esc(d.field ? "the question names this field, so which thing it is about doesn't matter" : "")}"><span class="dot"></span><span class="k">Answer</span> ${what}</button>`);
+    }
   }
   if (pre.thinking) chips.push(`<span class="chip thinking"><span class="dot"></span>reading your question…</span>`);
   else if (pre.error) chips.push(`<span class="chip thinking" title="${esc(pre.error)}"><span class="dot"></span>couldn't read the question yet — it will still be answered</span>`);

@@ -364,6 +364,8 @@ class QueryPlanner:
 
     def _choose_primary(self, intent: SemanticIntent, activity: Optional[ActivityDef], refused: Set[str] = frozenset()) -> str:
         eligible = []
+        # "the departments I have": for a field's values, the table holding the field the question names comes first
+        words = set(content_stems(intent.working_question)) if intent.answer_shape in FIELD_SHAPES else set()
         for cand in intent.candidate_sources:
             if not self._is_allowed(cand.source):
                 continue
@@ -373,7 +375,9 @@ class QueryPlanner:
             if any(not self._usable_fields(cand.source, r.type, refused) for r in intent.resources):
                 continue
             supports = bool(intent.activity) and intent.activity in src.activities
-            eligible.append(((supports, cand.confidence, cand.retrieval_score), cand.source))
+            names_field = bool(words) and any(
+                (tokens := {stem(t) for t in tokenize(f.replace("_", " "))}) and tokens <= words for f in src.fields)
+            eligible.append(((names_field, supports, cand.confidence, cand.retrieval_score), cand.source))
         if not eligible:
             self._retry_value_type(intent, refused)
             needs = []
