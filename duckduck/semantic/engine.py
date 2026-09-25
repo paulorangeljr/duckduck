@@ -305,6 +305,11 @@ class SemanticSearch:
         )
         self.validator = QueryValidator(self.catalog, allowed_sources=allowed_sources)
         self._previews: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()  # preview() cache, per question text
+        #: Auto's pick per question text — made once, while typing or at the search, and used by both, so
+        #: the "Auto picked" chip is the mode that answers. Kept ``route_ttl`` seconds: then the history
+        #: (which may have grown) is read again.
+        self._routes: "OrderedDict[str, Tuple[float, Any]]" = OrderedDict()
+        self.route_ttl = 300.0
         self._table_labels: Optional[Dict[str, str]] = None
         #: ``FeedbackStore`` — every search is recorded (its decision trail, never its rows), and
         #: ``feedback()`` stores what the user said about it. ``None``: nothing recorded.
@@ -454,13 +459,30 @@ class SemanticSearch:
         return self.interpreter._check_reader(reader)
 
     def route(self, question: str) -> Any:
-        """The Auto mode's choice for ``question`` (a ``router.Route``) — asked of the configured engine."""
+        """
+        The Auto mode's choice for ``question`` (a ``router.Route``) — asked
+        of the configured engine once, then reused for ``route_ttl`` seconds:
+        the preview's pick is the search's, never a second, different one.
+        """
         from .memory import question_template
 
+        key = " ".join(question.lower().split())
+        hit = self._routes.get(key)
+        if hit is not None and time.monotonic() - hit[0] < self.route_ttl:
+            self._routes.move_to_end(key)
+            return hit[1]
         literals = self.interpreter._preview_rules.extract(question, self.clock()).literals
         state = DecisionState(query=question)
-        return self.router.route(self.engine, question, question_template(question, literals),
-                                 [r for r in self.readers if r != "auto"], state)
+        route = self.router.route(self.engine, question, question_template(question, literals),
+                                  [r for r in self.readers if r != "auto"], state)
+        self._routes[key] = (time.monotonic(), route)
+        while len(self._routes) > 256:
+            self._routes.popitem(last=False)
+        return route
+
+    def _route_is_fresh(self, question: str) -> bool:
+        hit = self._routes.get(" ".join(question.lower().split()))
+        return hit is not None and time.monotonic() - hit[0] < self.route_ttl
 
     def search(self, question: str, execute: bool = True, pinned: Optional[Dict[str, Any]] = None,
                conversation_id: Optional[str] = None, user: Optional[str] = None,
@@ -532,6 +554,8 @@ class SemanticSearch:
         requested = self.check_reader(reader)
         key = requested + ":" + " ".join(question.lower().split())
         cached = self._previews.get(key)
+        if cached is not None and requested == "auto" and not self._route_is_fresh(question):
+            cached = None  # Auto's pick expired: route again, so the chip shows what the search will use
         if cached is not None:
             self._previews.move_to_end(key)
             return cached

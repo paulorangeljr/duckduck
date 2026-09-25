@@ -147,3 +147,19 @@ def test_the_web_app():
     result = client.post("/api/ask", json={"question": Q, "reader": "auto"}).json()["result"]
     assert (result["reader"], result["requested_reader"]) == ("llm", "auto") and result["route"]["evidence"]
     assert client.get("/api/stats").json()["auto"][0]["reader"] == "llm"
+
+
+def test_the_chip_is_the_mode_that_answers():
+    # the preview picks a mode; the history then changes; the search still uses the preview's pick
+    store = FeedbackStore()
+    search, _ = _search(store)
+    _history(store, search, [("rules", "not_answered"), ("llm", "answered")])
+    assert search.preview(Q, reader="auto")["route"]["reader"] == "llm"
+    _history(store, search, [("llm", "not_answered")] * 3 + [("rules", "answered")] * 3)
+    result = search.search(Q, reader="auto")
+    assert result.reader == "llm" and result.decisions[0].kind == "route"
+    assert search.preview(Q, reader="auto")["route"]["reader"] == "llm"  # the cached preview agrees
+    search.route_ttl = 0  # the pick expired: preview and search read the history again, and agree
+    assert search.preview(Q, reader="auto")["route"]["reader"] == "rules"
+    search.route_ttl = 300
+    assert search.search(Q, reader="auto").reader == "rules"

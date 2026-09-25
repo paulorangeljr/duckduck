@@ -87,14 +87,19 @@ def _measuring(search: SemanticSearch):
     router = getattr(search, "router", None)
     store, memory, history = search.feedback_store, search.interpreter.memory, getattr(router, "store", None)
     search.feedback_store, search.interpreter.memory = None, None
+    routes = getattr(search, "_routes", None)
     if router is not None:
         router.store = None  # nor the Auto router's history: it holds the answers being measured
+    if routes is not None:
+        search._routes = type(routes)()  # nor Auto's picks made from it — and none made here leak out
     try:
         yield
     finally:
         search.feedback_store, search.interpreter.memory = store, memory
         if router is not None:
             router.store = history
+        if routes is not None:
+            search._routes = routes
 
 
 def evaluate(search: SemanticSearch, cases: List[Dict[str, Any]], execute: bool = True,
