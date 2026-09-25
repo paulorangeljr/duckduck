@@ -60,14 +60,15 @@ DEFAULT_TEXTS: Dict[str, str] = {
     "field_return.no": "that's not what I'm asking for",
     "answer_shape.question": "What kind of answer do you want?",
     "answer_shape.context": "“{question}” could be asking for more than one kind of answer.",
-    "answer_shape.list": "a list of what matches",
+    "answer_shape.context_about_me": "“{question}” could be about me — my setup — or about your data.",
+    "answer_shape.list": "a list of what matches, from the data",
     "answer_shape.count": "how many there are (one number)",
     "answer_shape.values": "the different values of something",
     "answer_shape.count_values": "how many different values something has",
     "answer_shape.count_by": "a count for each value of something (a breakdown)",
     "answer_shape.lookup": "everything about it, from every table that has it",
     "answer_shape.locate": "which tables have it",
-    "answer_shape.catalog": "what data I have access to",
+    "answer_shape.catalog": "about me: the systems I'm connected to and the data I have access to",
     "reply.out_of_scope": "I couldn't find anything about that in the data I have.",
     "reply.topics": "I can answer questions about {topics}.",
     "reply.examples": "For example:",
@@ -199,9 +200,11 @@ class ClarificationTexts:
         )
 
     def answer_shape(self, question: str, shapes: Iterable[str]) -> Clarification:
+        shapes = list(shapes)
         return Clarification(
             kind="answer_shape", question=self.t("answer_shape.question", question=question),
-            context=self.t("answer_shape.context", question=question),
+            context=self.t("answer_shape.context_about_me" if "catalog" in shapes else "answer_shape.context",
+                           question=question),
             options=[ClarificationOption(value=s, label=self.t(f"answer_shape.{s}", question=question),
                                          pins={"answer_shape": s}) for s in shapes],
         )

@@ -1192,13 +1192,24 @@ What it answers depends on the question's topic (`intent.catalog_topic`):
 
 | Topic | Example | Answer |
 |---|---|---|
+| systems | "Which systems are connected?", "quais sistemas estão conectados?" | each connected system (the `auto_register` service): what it is, how many tables it registered, how many the catalog describes, examples |
 | tables | "What kind of information do you have?", "show me your catalog" | each table, what it holds, an example question |
 | entities | "Quais entidades existem no seu catálogo?" | each entity: description, keywords, the tables and fields that hold it |
 | activities | "Which activities are there?" | each activity: description, keywords, what it's about, its tables |
 | fields | "What columns does alerts have?", "quais campos tem a tabela owners?" | the named table's fields (all tables if none is named): type, meaning, description, known values |
 | relationships | "How are the tables related?", "como as tabelas se relacionam?" | the joins: from, to, type, confidence |
 
-Only the tables you're allowed to see (`allowed_sources`) show up. Add
+Only the tables you're allowed to see (`allowed_sources`) show up.
+
+**About me, or about your data?** Some questions could be either: "which
+systems are connected?" could be about my setup, or about hosts connected
+to each other in your data. Wording like that (systems, sources,
+connectors or integrations near connected, configured or available, in
+English or Portuguese; `answer_shapes.catalog.maybe_wording`) puts both
+readings to the decision engine. If it isn't sure, the question comes
+back as *"… could be about me — my setup — or about your data"* with both
+options. A value in the question ("…connected to 10.0.0.5") makes it about
+the data. Add
 your own wording under `answer_shapes.catalog`; the topic is read from
 the words entity/activity/field/column/relationship (and their
 Portuguese forms).

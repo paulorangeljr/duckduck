@@ -474,7 +474,8 @@ class SemanticInterpreter:
         if pins.get("in_scope") is True:
             return None
         nothing = (not ex.terms and not ex.enum_matches and ex.time_range is None and best_retrieval <= 0
-                   and not any(lit.kind != "term" for lit in ex.literals))
+                   and not any(lit.kind != "term" for lit in ex.literals)
+                   and "catalog" not in self._candidates(intent)[0])  # "which systems are connected?" is about me
         return Ask(key="in_scope", question=self._IN_SCOPE_QUESTION, subject=self._scope_summary(),
                    criteria=CRITERIA["in_scope"],
                    state=intent.decision_state(terms=ex.terms, offline_prior=0.05 if nothing else 0.9))
@@ -550,7 +551,9 @@ class SemanticInterpreter:
         information for 10.0.0.196"), everything about that value
         (``lookup``) as an alternative to a list: the engine reads which.
         """
-        candidates, words = self.shapes.candidates(intent.working_question)
+        typed_value = any(lit.kind != "term" or lit.semantic_type for lit in intent.literals)
+        # "which systems are connected to 10.0.0.5" is about the data: only a value-less question may be about me
+        candidates, words = self.shapes.candidates(intent.working_question, about_me=not typed_value)
         if candidates == ["list"]:
             field = self._named_field(intent.working_question)
             if field is not None:  # "what are the severities of the events?" → severity's values

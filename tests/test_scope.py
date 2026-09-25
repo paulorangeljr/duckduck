@@ -169,3 +169,41 @@ def test_the_api(tmp_path):
 
     search.preview = broken
     assert client.post("/api/preview", json={"question": "Which owners work in eng"}).json()["error"] == "Jev is down"
+
+
+# ---------------------------------------------------------------------------
+# "Which systems are connected?" — about me, or about the data
+
+
+def test_a_question_that_may_be_about_me_asks_which_it_is():
+    search = _search()
+    first = search.conversation("Quais sistemas estão conectados?")
+    followup = first.result.followup
+    assert followup.kind == "answer_shape" and "about me" in followup.context
+    assert [o.value for o in followup.options] == ["catalog", "list"]
+    systems = first.answer("1")
+    assert systems.intent.catalog_topic == "systems"
+    assert systems.results.to_dict("records") == [
+        {"system": "cmdb", "kind": "test_answer_shapes", "tables": 1, "described": 1, "examples": "owners"},
+        {"system": "siem", "kind": "test_answer_shapes", "tables": 1, "described": 1, "examples": "alerts"}]
+
+
+def test_with_a_value_it_is_about_the_data():
+    result = _search().search("Which systems are connected to 10.0.0.1?")
+    assert result.intent.answer_shape == "locate"
+
+
+def test_a_sure_engine_answers_about_me_directly(monkeypatch):
+    from test_answer_shapes import _jev_search
+
+    search, jev = _jev_search(monkeypatch, shape={"catalog": 0.9, "list": 0.1})
+    search.duck.service_of.update({"alerts": "siem", "owners": "cmdb"})
+    result = search.search("Which systems are connected?")
+    assert result.status == "ok" and result.intent.catalog_topic == "systems"
+    assert set(result.results["system"]) == {"siem", "cmdb"}
+
+
+def test_systems_respect_allowed_sources():
+    result = _search(allowed_sources=["alerts"]).search("Which systems are connected?",
+                                                        pinned={"answer_shape": "catalog"})
+    assert result.results["system"].tolist() == ["siem"]

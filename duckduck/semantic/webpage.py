@@ -235,8 +235,9 @@ button.add { background: none; border: 1px dashed var(--border); border-radius: 
             <p><b>How it reads.</b> Skims the words on the surface: wording rules spot what you ask for ("how many",
               "per", "the different…", "show me table…"), and the decision engine (Jev) settles only what the wording
               leaves open.</p>
-            <p><b>Good at.</b> Fast: no LLM call while you type. Predictable: the same question is always read the
-              same way. Free, and works offline.</p>
+            <p><b>Good at.</b> Fast and cheap: no LLM call — only Jev, one small batch per pause while you type
+              and a few more when you ask (Jev is very cheap, not free). Predictable: the wording is always read the
+              same way. With the offline engine instead of Jev, nothing leaves your machine and nothing is paid.</p>
             <p><b>Limits.</b> It only knows the phrasings it has rules for. Unusual wording may come back as a plain
               list, or it asks you what you meant. Other languages depend on the translation step, if one is
               configured.</p>
@@ -248,9 +249,10 @@ button.add { background: none; border: 1px dashed var(--border); border-radius: 
               that reading against the rules'; a doubt is still asked back, never guessed.</p>
             <p><b>Good at.</b> Free phrasing, other languages, indirect questions ("the departments I have"), and
               picking the field or table you mean.</p>
-            <p><b>Limits.</b> Slower and not free: one LLM call per pause while typing (usually a second or two; the
-              reading is kept for 5 minutes, so asking doesn't call again). Needs an LLM configured. It can still
-              misread: the catalog and Jev check it, and <i>How it was decided</i> shows what it read.</p>
+            <p><b>Limits.</b> Slower and costs more: an LLM call per pause while typing (usually a second or two; the
+              reading is kept for 5 minutes, so asking doesn't call it again) — plus the same Jev calls as Paddle.
+              Needs an LLM configured. It can still misread: the catalog and Jev check it, and <i>How it was
+              decided</i> shows what it read.</p>
           </section>
         </div>
         <p class="muted small" style="margin:10px 0 0">Tip: Paddle for everyday questions, Dive when Paddle misreads

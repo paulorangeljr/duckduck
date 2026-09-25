@@ -732,6 +732,46 @@ class SemanticSearch:
                     return out
         return out
 
+    def _systems_answer(self, allowed: List[str]) -> pd.DataFrame:
+        """
+        "Which systems are connected?": one row per system (the ``auto_register``
+        service) with what it is, how many tables it registered and how many of
+        those the catalog describes (what can be asked about). With
+        ``allowed_sources``, only the systems behind allowed tables.
+        """
+        from .takeover import SERVICE as TAKEN_OVER
+
+        listed: Dict[str, Dict[str, Any]] = {}
+        if self.duck is not None and hasattr(self.duck, "list_tables"):
+            try:
+                listed = {r["name"]: r for r in self.duck.list_tables().to_dict(orient="records")}
+            except Exception:
+                listed = {}
+        service_of = getattr(self.duck, "service_of", {}) if self.duck is not None else {}
+        described = {(self.catalog.sources[n].table or "").lower(): n for n in allowed}
+        restricted = self.planner.allowed is not None
+        systems: Dict[str, Dict[str, Any]] = {}
+        for table, row in listed.items():
+            system = service_of.get(table) or "registered in code"
+            if system == TAKEN_OVER or (restricted and table not in described):
+                continue
+            entry = systems.setdefault(system, {"system": system, "kind": row.get("source") or "", "tables": 0,
+                                                "described": 0, "examples": []})
+            entry["tables"] += 1
+            if table in described:
+                entry["described"] += 1
+                if len(entry["examples"]) < 5:
+                    entry["examples"].append(described[table])
+        for name in allowed:  # native DuckDB relations: in the catalog, not registered anywhere
+            if self.catalog.sources[name].relation:
+                entry = systems.setdefault("DuckDB", {"system": "DuckDB", "kind": "DuckDB relation", "tables": 0,
+                                                      "described": 0, "examples": []})
+                entry["tables"] += 1
+                entry["described"] += 1
+                entry["examples"].append(name)
+        rows = [{**e, "examples": ", ".join(e["examples"])} for e in sorted(systems.values(), key=lambda e: e["system"])]
+        return pd.DataFrame(rows, columns=["system", "kind", "tables", "described", "examples"])
+
     def _catalog_answer(self, intent: SemanticIntent) -> pd.DataFrame:
         """A question about the catalog itself, by topic — never reads data."""
         topic = intent.catalog_topic or "tables"
@@ -767,6 +807,8 @@ class SemanticSearch:
                      "known_values": ", ".join(list(d.values)[:10]) + (" …" if len(d.values) > 10 else "")}
                     for s in named for f, d in cat.sources[s].fields.items()]
             return pd.DataFrame(rows, columns=["source", "field", "type", "meaning", "description", "known_values"])
+        if topic == "systems":
+            return self._systems_answer(allowed)
         if topic == "relationships":
             rows = [{"from": r.from_, "to": r.to, "type": r.type, "confidence": r.confidence}
                     for r in cat.relationships

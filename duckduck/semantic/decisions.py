@@ -116,7 +116,8 @@ CRITERIA: Dict[str, Dict[str, str]] = {
     },
     "in_scope": {
         "true": "The question asks for information these tables could hold — even partly, vaguely or in "
-                "another language — or about the data itself.",
+                "another language — or about the data itself, or about this assistant's setup: the systems "
+                "and tables it is connected to.",
         "false": "Small talk, general knowledge, advice, or a topic none of these tables are about "
                  "(weather, news, sports, writing code...).",
     },

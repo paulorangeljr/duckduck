@@ -33,7 +33,8 @@ ANSWER_SHAPES: Dict[str, str] = {
     "count_by": "a count for each value of an attribute — a breakdown (GROUP BY field)",
     "lookup": "everything the data holds about a given value, from every table that has it",
     "locate": "which tables contain a given value (or hold that kind of thing), not the rows themselves",
-    "catalog": "what data there is to ask about — the tables and what they hold, from the catalog (no data read)",
+    "catalog": "about this assistant itself: the systems it is connected to, its tables and what they hold "
+               "(from the catalog — no data read)",
     "small_talk": "a greeting, thanks or goodbye — nothing to look up",
     "browse": "the rows of the table the question names, every column (\"show me table owners\")",
     "out_of_scope": "nothing about the data in this catalog — a direct reply saying what can be asked instead",
@@ -68,7 +69,18 @@ DEFAULT_WORDING: Dict[str, Dict[str, List[str]]] = {
         "re:\\bhow are (the )?tables (related|connected|linked|joined)\\b",
         "re:\\b(quais|que|liste|mostre)( as| os| me)? (entidades|atividades|relacionamentos|rela[cç][oõ]es|campos|colunas|atributos)\\b",
         "re:\\bcomo (as )?tabelas se (relacionam|conectam|ligam)\\b",
-    ]},
+    ],
+        # could be about this assistant's setup ("which systems are connected?") or about the data (hosts connected
+        # somewhere): both go to the decision engine, and a doubt is asked back — never a guess
+        "maybe_wording": [
+            "re:\\b(systems?|services?|connectors?|integrations?|data ?sources?|sources?|databases?|apis?)\\b[^?.!]{0,30}"
+            "\\b(connected|configured|registered|available|integrated|plugged in|set up|hooked up)\\b",
+            "re:\\b(connected|configured|registered|integrated)\\s+(systems?|services?|connectors?|integrations?|"
+            "sources?|databases?|apis?)\\b",
+            "re:\\b(sistemas?|servi[cç]os?|conectores?|integra[cç](?:ão|ao|ões|oes)|fontes?|bases?|apis?)\\b[^?.!]{0,30}"
+            "\\b(conectad\\w*|configurad\\w*|dispon[ií]ve\\w*|integrad\\w*|cadastrad\\w*|ligad\\w*|plugad\\w*)",
+            "re:\\b(conectad\\w*|configurad\\w*|integrad\\w*)\\s+(sistemas?|servi[cç]os?|conectores?|fontes?|bases?)\\b",
+        ]},
     "count": {"wording": [
         "how many", "number of", "count of", "count the", "count all", "total number of", "re:^\\s*count\\b",
         "quantos", "quantas", "número de", "numero de", "contagem",
@@ -120,8 +132,8 @@ class AnswerShapes:
             if unknown:
                 raise ValueError(f"answer_shapes[{shape!r}]: unknown key(s) {sorted(unknown)}; "
                                  f"use wording, maybe_wording, description, replace")
-            if spec.get("maybe_wording") and shape != "count_by":
-                raise ValueError(f"answer_shapes[{shape!r}]: maybe_wording is only for count_by")
+            if spec.get("maybe_wording") and shape not in ("count_by", "catalog"):
+                raise ValueError(f"answer_shapes[{shape!r}]: maybe_wording is only for count_by and catalog")
             for key in ("wording", "maybe_wording"):
                 if key in spec:
                     extra = list(spec[key] or [])
@@ -138,13 +150,21 @@ class AnswerShapes:
         hits = [m for r in self._compiled.get((shape, key), []) for m in [r.search(question)] if m]
         return min(hits, key=lambda m: m.start()) if hits else None
 
-    def candidates(self, question: str) -> Tuple[List[str], str]:
-        """The shapes the wording allows, and the words that say so."""
+    def candidates(self, question: str, about_me: bool = True) -> Tuple[List[str], str]:
+        """
+        The shapes the wording allows, and the words that say so. ``about_me``
+        (the caller: no value in the question): wording that may be about this
+        assistant's setup ("which systems are connected?") makes ``catalog``
+        one candidate next to reading it as a question about the data.
+        """
         found = {s: self._find(question, s) for s in DEFAULT_WORDING if s != "small_talk"}
         maybe = self._find(question, "count_by", "maybe_wording")
-        words = ", ".join(f"'{m.group(0).strip()}'" for m in [*found.values(), maybe] if m)
+        meta = self._find(question, "catalog", "maybe_wording") if about_me else None
+        words = ", ".join(f"'{m.group(0).strip()}'" for m in [*found.values(), maybe, meta] if m)
         if found["catalog"]:
             return ["catalog"], words
+        if meta:  # about me, or about the data? (no value to locate or look up — a list of what matches)
+            return ["catalog", "list"], words
         if found["locate"]:
             return ["locate"], words
         if found["lookup"]:
@@ -298,6 +318,9 @@ _SMALL_TALK_FILLER = {stem(w) for w in (
 
 #: What a ``catalog`` question is about, by its wording (first match wins; default: the tables).
 CATALOG_TOPICS = [
+    ("systems", re.compile(r"\b(systems?|sistemas?|services?|servi[cç]os?|connectors?|conectores?|integrations?|"
+                           r"integra[cç](ão|ao|ões|oes)|data ?sources?|fontes? de dados|conex(ão|ao|ões|oes)|"
+                           r"connections?)\b", re.I)),
     ("relationships", re.compile(r"\b(relationships?|joins?|related|connected|linked|relacionament\w*|rela[cç](ão|ao|ões|oes)"
                                  r"|relacionam|conectam|ligam)\b", re.I)),
     ("fields", re.compile(r"\b(fields?|columns?|attributes?|campos?|colunas?|atributos?)\b", re.I)),
@@ -307,7 +330,8 @@ CATALOG_TOPICS = [
 
 
 def catalog_topic(question: str) -> str:
-    """``tables`` / ``entities`` / ``activities`` / ``fields`` / ``relationships`` — what a catalog question asks about."""
+    """``systems`` / ``tables`` / ``entities`` / ``activities`` / ``fields`` / ``relationships`` — what a catalog
+    question asks about."""
     return next((topic for topic, regex in CATALOG_TOPICS if regex.search(question)), "tables")
 
 
