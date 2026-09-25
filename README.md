@@ -714,11 +714,36 @@ print(conversation.transcript)                           # the question, each cl
 ```
 
 ```
-Which data should answer this?
-  1) proxy_logs — HTTP and HTTPS web proxy traffic, one row per request
-  2) dns_logs — DNS resolver logs, one row per lookup
+By “failed”, do you mean records whose result of the sign-in attempt is “failure”?
+In the identity provider sign-in logs, the result of the sign-in attempt (auth_logs.outcome) has a value “failure” that looks like what you wrote.
+  1) yes — only those records
+  2) no — “failed” means something else
 > 1
 ```
+
+Every question comes with a `context` line (why it's being asked) and
+yes/no options with a `detail` (what answering does). The texts use the
+catalog's own descriptions, so good descriptions make good questions.
+Technical names only appear in parentheses.
+
+**Your own wording or language.** Override any text in
+`semantic.clarification_texts` (the keys and placeholders are listed in
+`duckduck/semantic/clarify.py`). An unknown key or placeholder fails
+when the config loads:
+
+```json
+"clarification_texts": {
+  "yes": "sim", "no": "não",
+  "source.question": "Qual destes dados deve responder à sua pergunta?",
+  "source.context": "Nenhum dos dados pareceu claramente certo para “{question}”.",
+  "field_value.question": "Por “{term}”, você quer dizer registros em que {field} é “{value_label}”?",
+  "field_value.yes": "só esses registros",
+  "field_value.no": "“{term}” quer dizer outra coisa"
+}
+```
+
+Replies are matched against the option labels, so with the texts above
+the user can answer `sim` / `não`.
 
 | `followup.kind` | Asked when | Choosing pins |
 |---|---|---|

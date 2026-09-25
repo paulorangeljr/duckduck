@@ -21,6 +21,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Union
 import pandas as pd
 
 from .catalog import Catalog
+from .clarify import ClarificationTexts
 from .compiler import display_sql
 from .decisions import DecisionEngine, LexicalDecisionEngine
 from .executor import PlanExecutor, SourceFetch
@@ -165,6 +166,7 @@ class SemanticSearch:
         default_limit: int = 1000,
         clock: Callable[[], datetime] = _utcnow,
         strict: bool = False,
+        clarification_texts: Optional[Dict[str, str]] = None,
     ):
         if isinstance(catalog, str):
             catalog = Catalog.load(catalog)
@@ -174,12 +176,15 @@ class SemanticSearch:
         self.thresholds = thresholds or Thresholds()
         self.clock = clock
         self.graph = RelationshipGraph(self.catalog)
+        #: The questions asked back to the user (``clarify.DEFAULT_TEXTS`` + overrides).
+        self.texts = ClarificationTexts(clarification_texts)
         self.interpreter = SemanticInterpreter(
             self.catalog, self.engine, retriever=retriever, extractor=extractor, thresholds=self.thresholds,
+            texts=self.texts,
         )
         self.planner = QueryPlanner(
             self.catalog, self.engine, graph=self.graph, thresholds=self.thresholds,
-            allowed_sources=allowed_sources, default_limit=default_limit,
+            allowed_sources=allowed_sources, default_limit=default_limit, texts=self.texts,
         )
         self.validator = QueryValidator(self.catalog, allowed_sources=allowed_sources)
         self.executor = PlanExecutor(self.catalog, duck) if duck is not None else None
@@ -209,6 +214,7 @@ class SemanticSearch:
         kwargs = dict(
             engine=cfg.build_engine(duck),
             thresholds=cfg.thresholds,
+            clarification_texts=cfg.clarification_texts,
             allowed_sources=cfg.allowed_sources,
             default_limit=cfg.default_limit,
             strict=cfg.strict,

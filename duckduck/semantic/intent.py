@@ -77,6 +77,8 @@ class ClarificationOption(BaseModel):
 
     value: str
     label: str
+    #: What choosing it does, in plain words (yes/no questions).
+    detail: str = ""
     #: Decision key → value, passed back as ``search(..., pinned=...)``:
     #: ``entity``, ``activity``, ``value:<literal>``, ``value_term``,
     #: ``source:<name>``, ``field:<source.field>``, ``join:<a.x>=<b.y>``.
@@ -91,6 +93,8 @@ class Clarification(BaseModel):
     #: question or fix the catalog), which has no options.
     kind: str
     question: str
+    #: Why it's being asked, in plain words.
+    context: str = ""
     options: List[ClarificationOption] = Field(default_factory=list)
 
     def option(self, reply: str) -> Optional[ClarificationOption]:
@@ -99,14 +103,16 @@ class Clarification(BaseModel):
         if text.isdigit() and 1 <= int(text) <= len(self.options):
             return self.options[int(text) - 1]
         for opt in self.options:
-            if text in (opt.value.lower(), opt.label.lower()) or text == opt.label.split(" — ")[0].lower():
+            if text in (opt.value.lower(), opt.label.lower()):
                 return opt
         return None
 
     def render(self) -> str:
-        """The question and numbered options, ready to show."""
+        """The question, why it's asked, and the numbered options — ready to show."""
         lines = [self.question]
-        lines += [f"  {i}) {o.label}" for i, o in enumerate(self.options, 1)]
+        if self.context:
+            lines.append(self.context)
+        lines += [f"  {i}) {o.label}" + (f" — {o.detail}" if o.detail else "") for i, o in enumerate(self.options, 1)]
         return "\n".join(lines)
 
 

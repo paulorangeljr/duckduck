@@ -18,10 +18,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from .catalog import Catalog
 from .decisions import CRITERIA, Ask, DecisionEngine, DecisionState, ask_all
 from .extraction import Extraction, RuleBasedExtractor, ValueExtractor
+from .clarify import ClarificationTexts
 from .intent import (
-    Clarification,
     ClarificationNeeded,
-    ClarificationOption,
     DecisionRecord,
     ResourceFilter,
     ScoredSource,
@@ -44,6 +43,7 @@ class SemanticInterpreter:
         extractor: Optional[ValueExtractor] = None,
         thresholds: Optional[Thresholds] = None,
         top_k: int = 5,
+        texts: Optional[ClarificationTexts] = None,
     ):
         self.catalog = catalog
         self.engine = engine
@@ -51,6 +51,8 @@ class SemanticInterpreter:
         self.extractor = extractor or RuleBasedExtractor(catalog)
         self.thresholds = thresholds or Thresholds()
         self.top_k = top_k
+        #: The questions asked back to the user.
+        self.texts = texts or ClarificationTexts()
         self._entity_vocab = {
             name: vocabulary([name.replace("_", " "), *e.keywords])
             for name, e in catalog.entities.items()
@@ -198,11 +200,7 @@ class SemanticInterpreter:
             raise ClarificationNeeded(
                 f"Couldn't tell what you're asking for (best guess: '{result.choice}', "
                 f"{result.probability:.2f}).",
-                record, ranked,
-                Clarification(kind="entity", question="What are you asking for? The answer should list:", options=[
-                    ClarificationOption(value=e, label=_labelled(e, self.catalog.entities[e].description), pins={"entity": e})
-                    for e in ranked
-                ]),
+                record, ranked, self.texts.entity(intent.question, ranked, self.catalog),
             )
         intent.target_entity, intent.target_confidence = result.choice, result.probability
 
@@ -257,9 +255,7 @@ class SemanticInterpreter:
                     "More than one word could be the value to filter on: "
                     + ", ".join(repr(t.value) for t in free_text) + ". Quote the value you mean.",
                     options=[t.value for t in free_text],
-                    followup=Clarification(kind="value_term", question="Which of these is the value to look for?", options=[
-                        ClarificationOption(value=t.value, label=t.value, pins={"value_term": t.value}) for t in free_text
-                    ]),
+                    followup=self.texts.value_term(intent.question, [t.value for t in free_text]),
                 )
 
             pinned_type = pins.get(f"value:{lit.value}")
@@ -304,10 +300,7 @@ class SemanticInterpreter:
                 raise ClarificationNeeded(
                     f"Couldn't tell what {lit.value!r} refers to — name its type right "
                     f"before it (e.g. 'user {lit.value}', 'host {lit.value}').", record, ranked,
-                    Clarification(kind="value_type", question=f"What is {lit.value!r}?", options=[
-                        ClarificationOption(value=t, label=t.replace("_", " "), pins={f"value:{lit.value}": t})
-                        for t in ranked
-                    ]),
+                    self.texts.value_type(intent.question, lit.value, ranked),
                 )
 
     def _known_type(self, lit) -> Optional[str]:
@@ -368,14 +361,7 @@ class SemanticInterpreter:
             raise ClarificationNeeded(
                 "No data source looks relevant enough to answer this question.",
                 best, [d.subject for d in decisions if d.kind == "source_relevance"],
-                Clarification(
-                    kind="source", question="Which data should answer this?",
-                    options=[
-                        ClarificationOption(value=d.subject, label=_labelled(d.subject, self.catalog.sources[d.subject].description),
-                                            pins={f"source:{d.subject}": True})
-                        for d in asked
-                    ],
-                ) if asked else None,
+                self.texts.source(intent.question, [d.subject for d in asked], self.catalog) if asked else None,
             )
         scored.sort(key=lambda s: (s.confidence, s.retrieval_score), reverse=True)
         intent.candidate_sources = scored
@@ -387,8 +373,3 @@ def _by_user(kind: str, question: str, answer: Any, threshold: Optional[float], 
     return DecisionRecord(kind=kind, question=question, subject=subject, answer=answer, probability=probability,
                           threshold=threshold, decided_by="user")
 
-
-def _labelled(name: str, description: str) -> str:
-    """``name — first sentence of its description`` (just the name when there's none)."""
-    first = (description or "").strip().split(". ")[0].rstrip(".")
-    return f"{name} — {first}" if first else name

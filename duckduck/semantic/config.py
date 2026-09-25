@@ -257,6 +257,8 @@ class SemanticConfig(_Strict):
     extractor: ExtractorConfig = Field(default_factory=ExtractorConfig)
     catalog_generation: CatalogGenerationConfig = Field(default_factory=CatalogGenerationConfig)
     thresholds: Thresholds = Field(default_factory=Thresholds)
+    #: Override the questions asked back to the user (``clarify.DEFAULT_TEXTS`` keys) — e.g. in Portuguese.
+    clarification_texts: Dict[str, str] = Field(default_factory=dict)
     allowed_sources: Optional[List[str]] = None
     default_limit: int = 1000
     strict: bool = False
@@ -295,6 +297,9 @@ class SemanticConfig(_Strict):
                 f"semantic.decision_engine.ai_provider refers to {engine_ref!r}, which the top-level "
                 f"'ai_providers' section doesn't declare (declared: {declared})"
             )
+        from .clarify import ClarificationTexts
+
+        ClarificationTexts(self.clarification_texts)  # unknown keys/placeholders fail at load
         cg = self.catalog_generation
         if cg.auto_refresh and cg.output_path and self.path(cg.output_path) != self.path(self.catalog_path):
             raise ValueError(

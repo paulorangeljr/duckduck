@@ -19,7 +19,8 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from .catalog import ActivityDef, Catalog
 from .decisions import CRITERIA, Ask, DecisionEngine, DecisionState, ask_all
 from .graph import Path, RelationshipGraph
-from .intent import Clarification, ClarificationNeeded, ClarificationOption, DecisionRecord, SemanticIntent, Thresholds
+from .clarify import ClarificationTexts
+from .intent import Clarification, ClarificationNeeded, DecisionRecord, SemanticIntent, Thresholds
 from .plan import Filter, Join, LogicalQueryPlan, TimeRangeFilter
 
 #: Prior for "a field whose semantic_type matches exactly is the right one".
@@ -38,6 +39,7 @@ class QueryPlanner:
         allowed_sources: Optional[Iterable[str]] = None,
         default_limit: int = 1000,
         max_hops: int = 3,
+        texts: Optional[ClarificationTexts] = None,
     ):
         self.catalog = catalog
         self.engine = engine
@@ -46,6 +48,8 @@ class QueryPlanner:
         self.allowed: Optional[Set[str]] = set(allowed_sources) if allowed_sources is not None else None
         self.default_limit = default_limit
         self.max_hops = max_hops
+        #: The questions asked back to the user.
+        self.texts = texts or ClarificationTexts()
 
     def plan(self, intent: SemanticIntent,
              pinned: Optional[Dict[str, Any]] = None) -> Tuple[LogicalQueryPlan, List[DecisionRecord]]:
@@ -64,8 +68,10 @@ class QueryPlanner:
             fname = self._pick_field(primary, res.type, activity.resource_role if activity else None)
             ref = f"{primary}.{fname}"
             only_one = len(self.catalog.fields_by_semantic_type(primary, res.type)) == 1
-            checks.append(self._field_check(intent, ref, f"filtering on {res.value!r} ({res.type})", _SEMANTIC_MATCH_PRIOR,
-                                            len(checks), settled=only_one))
+            checks.append(self._field_check(
+                intent, ref, f"filtering on {res.value!r} ({res.type})", _SEMANTIC_MATCH_PRIOR, len(checks),
+                settled=only_one, followup=self.texts.field_filter(intent.question, ref, res.value, self.catalog),
+            ))
             fdef = self.catalog.field(ref)
             operator = "eq" if res.literal_kind in ("ip_address", "email") else (fdef.match or "eq")
             filters.append(Filter(field=ref, operator=operator, value=res.value))
@@ -85,7 +91,7 @@ class QueryPlanner:
                 # the catalog lists the stored value — ask about that exact reading
                 question=f"Does {term!r} in the question mean {match.field} = {match.value!r}?",
                 failure=f"Not confident that {term!r} means {match.field} = {match.value!r}.",
-                ask_user=f"By {term!r}, do you mean {match.field} = {match.value!r}?",
+                followup=self.texts.field_value(intent.question, match.field, term, match.value, self.catalog),
             ))
             filters.append(Filter(field=match.field, operator="eq", value=match.value))
 
@@ -119,7 +125,7 @@ class QueryPlanner:
                 intent, ref, f"identifying the requested {intent.target_entity}", prior, len(checks),
                 settled=len(choices) == 1,
                 question=f"Does {ref} hold the {intent.target_entity} the question asks for ({label})?",
-                ask_user=f"Should the answer list {ref} (as the {intent.target_entity})?",
+                followup=self.texts.field_return(intent.question, ref, intent.target_entity, self.catalog),
             ))
             select = [ref]
             distinct = True
@@ -228,7 +234,7 @@ class QueryPlanner:
 
     def _field_check(self, intent: SemanticIntent, ref: str, purpose: str, prior: float, n: int,
                      question: Optional[str] = None, failure: Optional[str] = None, settled: bool = False,
-                     ask_user: Optional[str] = None) -> tuple:
+                     followup: Optional[Clarification] = None) -> tuple:
         """
         A field confirmation for the batch. ``settled``: the catalog leaves no
         choice (the only field of that type in the source) — recorded as a
@@ -242,7 +248,7 @@ class QueryPlanner:
             state=DecisionState(query=intent.question, prior=prior, facts={"field": ref}),
         )
         settled = settled and prior >= self.thresholds.field  # a weak catalog link still gets asked
-        followup = _yes_no("field", ask_user or f"Should I use {ref} for {purpose}?", f"field:{ref}")
+        followup = followup or self.texts.field_filter(intent.question, ref, purpose, self.catalog)
         return ask, "field_relevance", ref, self.thresholds.field, \
             failure or f"Not confident that {ref} is the right field for {purpose}.", followup, settled
 
@@ -258,10 +264,7 @@ class QueryPlanner:
                     subject=f"{edge.left} {edge.type} {edge.right}", criteria=CRITERIA["relationship"],
                     state=DecisionState(query=intent.question, prior=edge.confidence, facts={"relationship": edge.type}),
                 )
-                followup = _yes_no(
-                    "join", f"Should I connect {edge.left.split('.')[0]} to {edge.right_source} through "
-                            f"{edge.left} = {edge.right}?", f"join:{edge.left}={edge.right}",
-                )
+                followup = self.texts.join(intent.question, edge.left, edge.right, self.catalog)
                 checks.append((ask, "relationship_relevance", f"{edge.left} = {edge.right}", self.thresholds.relationship,
                                f"Not confident enough in joining {edge.left} = {edge.right}", followup, False))
                 sources.append(edge.right_source)
@@ -310,9 +313,3 @@ class QueryPlanner:
     def _is_allowed(self, source: str) -> bool:
         return self.allowed is None or source in self.allowed
 
-
-def _yes_no(kind: str, question: str, key: str) -> Clarification:
-    return Clarification(kind=kind, question=question, options=[
-        ClarificationOption(value="yes", label="yes", pins={key: True}),
-        ClarificationOption(value="no", label="no", pins={key: False}),
-    ])
