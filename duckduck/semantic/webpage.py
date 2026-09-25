@@ -495,9 +495,11 @@ function drawChips() {
       chips.push(`<button class="chip" type="button" disabled><span class="dot"></span><span class="k">Answer</span> ${esc(SHAPE_WORDS[shape] || shape)}</button>`);
     }
   }
-  if (d && d.reading && READER === "llm") {
-    const r = d.reading, about = r.about ? ` · about ${esc(r.about_kind)} ${esc(r.about)}` : "", grp = r.group_by ? ` · per ${esc(r.group_by)}` : "";
-    chips.push(`<span class="chip" title="${esc(d.english_question ? "read as: " + d.english_question : "")}"><span class="dot"></span><span class="k">Dive found</span> ${esc(SHAPE_WORDS[r.answer] || r.answer || "—")}${about}${grp}</span>`);
+  if (d && d.reading && READER === "llm") {  // only what survived the catalog check; nothing left → no chip
+    const r = d.reading;
+    const parts = [r.answer ? esc(SHAPE_WORDS[r.answer] || r.answer) : "",
+                   r.about ? `about ${esc(r.about_kind)} ${esc(r.about)}` : "", r.group_by ? `per ${esc(r.group_by)}` : ""].filter(Boolean);
+    if (parts.length) chips.push(`<span class="chip" title="${esc(d.english_question ? "read as: " + d.english_question : "")}"><span class="dot"></span><span class="k">Dive found</span> ${parts.join(" · ")}</span>`);
   }
   if (pre.thinking) chips.push(`<span class="chip thinking"><span class="dot"></span><span class="txt">${esc(quip())}</span></span>`);
   else if (pre.error) chips.push(`<span class="chip thinking" title="${esc(pre.error)}"><span class="dot"></span>couldn't read the question yet — it will still be answered</span>`);

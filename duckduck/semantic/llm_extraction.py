@@ -122,6 +122,10 @@ class LLMExtractionWithReading(LLMExtractionOutput):
     reading: Optional[LLMReading] = None
 
 
+#: Answer kinds the reading never gives: whether a question is about the data is the decision engine's
+#: ``in_scope`` question, small talk the rules' — an LLM's "not about the data" would only mislead them.
+NOT_READ = ("small_talk", "out_of_scope")
+
 #: Appended when the reading is asked for (``extract(..., reading=True)``); {kinds} = the answer kinds.
 READING_INSTRUCTIONS = """
 Also return reading: how you read the question, using only names from the
@@ -136,6 +140,9 @@ catalog summary.
   itself ("show me table owners"); "value" + the value as written when it
   asks about a given value ("everything about 10.0.0.5"); "none" otherwise.
 - group_by: source.field for a count per group ("per rule"), else empty.
+Assume the question is about this data, and pick the closest kind even when
+it is phrased loosely: "my", "our", "I have" mean the data in these tables
+("what are my departments" asks for a field's values), not something personal.
 """
 
 
@@ -166,9 +173,11 @@ class LLMExtractor:
         }
         from .shapes import ANSWER_SHAPES
 
-        self._answer_kinds = [k for k in ANSWER_SHAPES]
+        # whether the question is about the data at all is the decision engine's call (its in_scope question),
+        # and small talk the rules' — the reading only says which kind of answer, assuming it is about the data
+        self._answer_kinds = [k for k in ANSWER_SHAPES if k not in NOT_READ]
         self._reading_prompt = READING_INSTRUCTIONS.format(
-            kinds="\n".join(f"  {k}: {d}" for k, d in ANSWER_SHAPES.items()))
+            kinds="\n".join(f"  {k}: {d}" for k, d in ANSWER_SHAPES.items() if k not in NOT_READ))
         self._tables = json.dumps({
             name: {"about": (src.description or "").strip().split(". ")[0], "fields": list(src.fields)}
             for name, src in catalog.sources.items()
@@ -275,7 +284,8 @@ class LLMExtractor:
             logger.info("llm extraction: dropped reading about %s %r (not in the catalog/question)", kind, about)
         out.group_by = self._field_ref((raw.group_by or "").strip())
         if raw.answer and out.answer is None:
-            logger.info("llm extraction: dropped unknown answer kind %r", raw.answer)
+            logger.info("llm extraction: dropped answer kind %r (%s)", raw.answer,
+                        "not the reading's call" if answer in NOT_READ else "unknown")
         return out if (out.answer or out.about or out.group_by) else None
 
     def _field_ref(self, text: str) -> Optional[str]:

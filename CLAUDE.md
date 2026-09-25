@@ -608,7 +608,7 @@ Both readers produce the same three decisions. What differs is who proposes them
 
 - **`rules`** (`SemanticSearch(reader="rules")`, the default, `semantic.reader`): the configured `extractor`; wording rules propose; Jev settles ambiguity.
 - **`llm`**: `interpreter.llm_reader` is an `LLMExtractor`, called with `extract(..., reading=True)`.
-  - **The call.** One LLM call returns `LLMExtractionWithReading.reading` (`READING_INSTRUCTIONS`, prompt adds "Tables and their fields"). `LLMExtractor._reading` checks every name against the catalog (answer ∈ `ANSWER_SHAPES`; entity / `source.field` via `_field_ref`, which resolves a unique bare field name / table / a value present in the question) → `extraction.Reading`.
+  - **The call.** One LLM call returns `LLMExtractionWithReading.reading` (`READING_INSTRUCTIONS`, prompt adds "Tables and their fields"). `LLMExtractor._reading` checks every name against the catalog (answer ∈ `ANSWER_SHAPES` minus `NOT_READ` = small_talk/out_of_scope — whether a question is about the data is the engine's `in_scope` call, and an LLM's "not about the data" fed to it as a fact would mislead it ("what are my departments"); the prompt also says "my/our/I have" mean this data; entity / `source.field` via `_field_ref`, which resolves a unique bare field name / table / a value present in the question) → `extraction.Reading`.
   - **The cache.** `extract` caches per (normalized question, reading) for `cache_ttl` (300s), fallbacks excluded, so the preview and the search share one call.
   - **How the reading is used.** Evidence, never a decision:
     - `intent.reading`; `intent.decision_state()` adds `facts.llm_reading` to every engine question;

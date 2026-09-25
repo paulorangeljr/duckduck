@@ -158,3 +158,15 @@ def test_the_web_app(tmp_path):
 
     rules_only = TestClient(create_app(lambda: SemanticSearch(Catalog.model_validate(CATALOG), _duck()), store=None))
     assert rules_only.get("/api/meta").json()["readers"]["llm_unavailable"].startswith("no LLM configured")
+
+
+def test_the_reading_never_says_not_about_the_data():
+    """Whether a question is about the data is the engine's in_scope call — an LLM's "out of scope" would mislead it."""
+    search, llm = _search({"what are my departments": (None, LLMReading(answer="out_of_scope", about_kind="none"))})
+    result = search.search("what are my departments", reader="llm")
+    assert result.results.to_dict("records") == [{"department": "eng"}, {"department": "ops"}]
+    assert result.intent.reading is None  # nothing usable left
+    assert "no reading" in result.decisions[0].subject
+    assert "out_of_scope" not in llm.systems[0] and "small_talk" not in llm.systems[0]
+    assert '"my", "our", "I have"' in llm.systems[0]
+    assert search.preview("what are my departments", reader="llm")["reading"] is None
