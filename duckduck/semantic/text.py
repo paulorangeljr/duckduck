@@ -22,6 +22,8 @@ STOPWORDS: Set[str] = {
     "on", "or", "our", "over", "please", "show", "that", "the", "their",
     "them", "there", "these", "this", "those", "to", "was", "were", "what",
     "when", "where", "which", "while", "with", "within", "you",
+    # pronouns — "how many departments do we have?" isn't about someone called "we"
+    "we", "us", "they", "them", "he", "she", "him", "her", "your", "yours", "mine", "ours", "i'm", "we're",
 }
 
 

@@ -191,6 +191,25 @@ class AnswerShapes:
                 return phrase or None
         return None
 
+    @staticmethod
+    def asked_head(question: str) -> Optional[str]:
+        """What a "which <X> …" / "what <X> …" question asks for (looser than ``named_head``: the caller
+        checks the phrase *starts* with a field), or ``None``."""
+        m = re.match(r"^\s*(?:and\s+)?(?:which|what)\s+(?!are\b|were\b|is\b|was\b)(?P<p>.+)", question, re.I)
+        if not m:
+            return None
+        return _HEAD_END.split(m.group("p"), maxsplit=1)[0].strip() or None
+
+    @staticmethod
+    def counted_head(question: str) -> Optional[str]:
+        """What a "how many <X> …" / "number of <X>" / "quantos <X>" question counts, or ``None``."""
+        for opener in _COUNT_OPENERS:
+            m = opener.search(question)
+            if m:
+                phrase = _HEAD_END.split(m.group("p"), maxsplit=1)[0].strip()
+                return phrase or None
+        return None
+
     def group_words(self, question: str) -> List[Tuple[int, int]]:
         """Where the count_by wording (sure or maybe) sits — the group is the word right after."""
         spans = []
@@ -226,6 +245,14 @@ _HEAD_OPENERS = [re.compile(p, re.I) for p in (
     r"^\s*(?:please\s+)?(?:list|show|give|get|display)(?:\s+me)?(?:\s+all)?(?:\s+the)?\s+(?P<p>.+)",
     r"^\s*(?:quais|qual)(?:\s+s[aã]o|\s+[eé])?(?:\s+(?:os|as|o|a))?\s+(?P<p>.+)",
     r"^\s*(?:me\s+)?(?:liste|listar|mostre|mostrar|traga|trazer)(?:\s+me)?(?:\s+(?:todos|todas))?(?:\s+(?:os|as))?\s+(?P<p>.+)",
+)]
+#: "how many <X> …", "number of <X>", "quantos <X> …": what a count counts.
+_COUNT_OPENERS = [re.compile(p, re.I) for p in (
+    r"\bhow\s+many\s+(?:different\s+|distinct\s+|unique\s+)?(?:of\s+)?(?:the\s+)?(?P<p>.+)",
+    r"\b(?:the\s+)?(?:total\s+)?number\s+of\s+(?:different\s+|distinct\s+|unique\s+)?(?:the\s+)?(?P<p>.+)",
+    r"^\s*count\s+(?:of\s+|all\s+)?(?:the\s+)?(?P<p>.+)",
+    r"\bquant[oa]s\s+(?:diferentes\s+)?(?P<p>.+)",
+    r"\bn[uú]mero\s+de\s+(?P<p>.+)",
 )]
 #: Where the head phrase ends ("the severities | of the events").
 _HEAD_END = re.compile(r"\b(of|for|from|in|on|with|that|which|where|who|by|per|de|do|da|dos|das|em|no|na|nos|nas|"

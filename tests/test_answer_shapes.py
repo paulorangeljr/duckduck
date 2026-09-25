@@ -283,3 +283,17 @@ def test_the_web_app_sends_the_chosen_field():
     result = client.post("/api/ask", json=body).json()["result"]
     assert [r["rule"] for r in result["results"]] == ["brute_force", "exfil", "malware"]
     assert client.post("/api/ask", json={**body, "values_field": "alerts.nope"}).status_code == 400
+
+
+@pytest.mark.parametrize("question, shape, rows", [
+    ("how many departments I have", "count_values", [{"count": 2}]),       # the field, not the users
+    ("how many departments do we have?", "count_values", [{"count": 2}]),  # "we" isn't a value
+    ("number of rules", "count_values", [{"count": 3}]),
+    ("count the severities", "count_values", [{"count": 3}]),
+    ("How many hosts have a rule?", "count", [{"count": 3}]),              # counts hosts: "rule" isn't the head
+    ("how many alerts?", "count", [{"count": 6}]),
+    ("Which departments do they have?", "values", [{"department": "eng"}, {"department": "ops"}]),
+])
+def test_counting_or_asking_for_a_named_field(question, shape, rows):
+    result = _answer(_search(), question)
+    assert result.intent.answer_shape == shape and result.results.to_dict("records") == rows

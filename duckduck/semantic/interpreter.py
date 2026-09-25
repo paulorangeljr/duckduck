@@ -529,6 +529,11 @@ class SemanticInterpreter:
             field = self._named_field(intent.working_question)
             if field is not None:  # "what are the severities of the events?" → severity's values
                 return ["values"], f"'{field}' names a field, not a thing to list"
+        if candidates == ["count"]:
+            head = self.shapes.counted_head(intent.working_question)
+            ref = self._field_at_head(head) if head else None
+            if ref is not None:  # "how many departments do we have?" → how many different departments
+                return ["count_values"], f"'{ref.split('.', 1)[1]}' names a field, not a thing to count"
         if candidates == ["list"] and any(lit.kind != "term" or lit.semantic_type for lit in intent.literals):
             return ["list", "lookup"], words
         return candidates, words
@@ -541,6 +546,9 @@ class SemanticInterpreter:
         """
         head = self.shapes.named_head(question)
         ref = self._field_named_in(head) if head else None
+        if ref is None:  # "which departments do they have?": the field must be the head noun
+            head = self.shapes.asked_head(question)
+            ref = self._field_at_head(head) if head else None
         return ref.split(".", 1)[1] if ref else None
 
     def _field_named_in(self, text: str) -> Optional[str]:
@@ -561,6 +569,19 @@ class SemanticInterpreter:
                 if tokens and tokens <= said and not tokens & self._entity_stems:
                     named.append((len(tokens), f"{name}.{field}"))
         return max(named, key=lambda n: n[0])[1] if named else None
+
+    def _field_at_head(self, phrase: str) -> Optional[str]:
+        """
+        Like ``_field_named_in``, but the field must be what the phrase starts
+        with ("departments I have" → department) — "how many hosts have a
+        rule…" counts hosts, not rules, though it mentions ``rule``.
+        """
+        ref = self._field_named_in(phrase)
+        if ref is None:
+            return None
+        first = content_stems(phrase)
+        tokens = {stem(t) for t in tokenize(ref.split(".", 1)[1].replace("_", " "))}
+        return ref if set(first[:len(tokens)]) == tokens else None
 
     def _values_of_named_field(self, intent: SemanticIntent, pins: Dict[str, Any]) -> Optional[str]:
         """
