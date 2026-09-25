@@ -78,6 +78,10 @@ class SemanticIntent(BaseModel):
     catalog_topic: Optional[str] = None
     #: For ``small_talk``: greeting / thanks / goodbye.
     small_talk: Optional[str] = None
+    #: For ``browse``: the catalog source the question names ("show me table owners") and how many
+    #: rows it asked for ("the first 20 rows"), if it said.
+    browse_source: Optional[str] = None
+    row_limit: Optional[int] = None
     target_entity: Optional[str] = None
     target_confidence: float = 0.0
     activity: Optional[str] = None

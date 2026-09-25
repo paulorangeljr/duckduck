@@ -213,3 +213,38 @@ def test_named_head():
     assert head("Quais são as severidades dos eventos?") == "severidades"
     assert head("me mostre as regras de 10.0.0.1") == "regras"
     assert head("Which hosts have critical alerts?") is None
+
+
+@pytest.mark.parametrize("question, rows", [
+    ("show me table owners", 3), ("show me the owners table", 3), ("mostre a tabela owners", 3),
+    ("Show me the table `owners`", 3), ("preview owners", 3), ("abra a tabela de owners", 3),
+])
+def test_naming_a_table_shows_it_whole(question, rows):
+    result = _answer(_search(), question)
+    assert result.intent.answer_shape == "browse" and result.intent.browse_source == "owners"
+    assert list(result.results.columns) == ["ip", "owner", "department"] and len(result.results) == rows
+    assert [d.answer for d in result.decisions] == ["browse"]  # nothing else asked
+
+
+def test_browsing_keeps_what_else_the_question_says():
+    search = _search()
+    assert _answer(search, "first 2 rows of the alerts table").results.shape == (2, 3)
+    for_ip = _answer(search, "show table alerts for 10.0.0.3").results
+    assert for_ip["ip"].unique().tolist() == ["10.0.0.3"] and len(for_ip) == 3
+    critical = _answer(search, "table alerts with critical severity").results
+    assert critical["severity"].unique().tolist() == ["critical"]
+    assert search.preview("show me table owners")["answer_shape"]["choice"] == "browse"
+
+
+@pytest.mark.parametrize("question, shape", [
+    ("show me the owners", "list"),                      # no "table": the owners, one per row
+    ("Which tables contain 10.0.0.1?", "locate"),
+    ("What columns does the alerts table have?", "catalog"),
+])
+def test_not_every_mention_of_a_table_is_browsing(question, shape):
+    assert _answer(_search(), question).intent.answer_shape == shape
+
+
+def test_a_pin_reads_it_the_usual_way():
+    result = _search().search("show me table owners", pinned={"answer_shape": "list"})
+    assert result.intent.answer_shape == "list"

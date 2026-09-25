@@ -1196,6 +1196,19 @@ reply.** No plan, no follow-up question:
 `reply.thanks`, `reply.goodbye`, `reply.out_of_scope`, `reply.topics`
 with `{topics}`, `reply.examples`, `reply.ask_anyway`).
 
+**Naming a table shows it.** "show me table owners", "the alerts
+table", "mostre a tabela owners", "preview owners" or "abra a tabela de
+owners" answers with **that table's rows, every column**, without asking
+anything. The table can be named by its catalog name, by the table it's
+bound to, or with spaces for `_` ("the proxy logs table"), when *table /
+tabela / dataset* is next to it or the question starts with *preview /
+browse / open / abra*. Anything else the question says that fits the
+table still applies: its known values ("table alerts with critical
+severity"), a value of a type it has ("show table alerts for 10.0.0.3"),
+the time range, and a row count ("first 20 rows of…", "últimas 5
+linhas…"; otherwise `default_limit`). "Show me the owners" (no *table*)
+is still the list of owners. Pin `answer_shape` to read it the usual way.
+
 **A question that names a field asks for its values.** "What are the
 severities of the events?" / "Quais são as severidades…?" / "List the
 severities" has none of the *different/distinct* wording, but what it asks

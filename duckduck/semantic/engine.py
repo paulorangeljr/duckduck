@@ -548,7 +548,9 @@ class SemanticSearch:
                 return result
             if intent.answer_shape == "lookup" and not intent.resources:
                 intent.answer_shape = "list"  # "tell me about the alerts": no value to look up — list them
-            if intent.answer_shape not in ACROSS_SHAPES:
+            if intent.answer_shape == "browse":  # "show me table owners": that table, every column
+                plan, plan_decisions = self.planner.plan_browse(intent), []
+            elif intent.answer_shape not in ACROSS_SHAPES:
                 try:
                     plan, plan_decisions = self.planner.plan(intent, pinned, evidence=prober)
                 except TrivialAnswer as trivial:

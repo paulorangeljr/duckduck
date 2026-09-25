@@ -31,7 +31,7 @@ from .intent import (
 from .retrieval import CatalogRetriever, LexicalRetriever
 from .memory import as_fact, question_template
 from .scope import in_scope
-from .shapes import ACROSS_SHAPES, AnswerShapes, catalog_topic
+from .shapes import ACROSS_SHAPES, AnswerShapes, browse_target, catalog_topic
 from .clarify import first_sentence
 from .text import content_stems, stem, tokenize, vocabulary
 
@@ -99,6 +99,8 @@ class SemanticInterpreter:
             return intent, decisions  # nothing to decide about the data — no entity, activity or tables to ask about
         if self._small_talk(intent, decisions, pins):
             return intent, decisions  # "hi", "thanks" — nothing to look up
+        if self._browse(intent, decisions, pins):
+            return intent, decisions  # "show me table owners" — the question already says which table
         try:
             refused = {k[7:] for k, v in pins.items() if k.startswith("source:") and v is False}
             refused |= {n for n in self.catalog.sources if not in_scope(n)}  # the user narrowed the tables
@@ -330,6 +332,10 @@ class SemanticInterpreter:
         if candidates == ["catalog"]:
             return {"question": question, "answer_shape": {"choice": "catalog", "probability": 1.0, "sure": True},
                     "catalog_topic": catalog_topic(question), "entity": None, "sources": []}
+        browse = browse_target(question, self._table_names())
+        if browse:  # "show me table owners": that table, nothing to ask
+            return {"question": question, "answer_shape": {"choice": "browse", "probability": 1.0, "sure": True},
+                    "entity": None, "sources": [{"source": browse[0], "probability": 1.0, "relevant": True}]}
         ranked = self.retriever.search(question, self.top_k)
         names = [n for n, _ in ranked][: self.top_k]
         for case in intent.similar_cases:
@@ -372,6 +378,41 @@ class SemanticInterpreter:
         intent.answer_shape, intent.small_talk = "small_talk", kind
         decisions.append(DecisionRecord(kind="answer_shape", question=self._SHAPE_QUESTION, answer="small_talk",
                                         probability=0.99, decided_by="deterministic", subject=kind))
+        return True
+
+    def _table_names(self) -> Dict[str, str]:
+        """Every way to write a table in scope → its source: the source name, its bound table, ``_`` as spaces."""
+        names: Dict[str, str] = {}
+        for name, src in self.catalog.sources.items():
+            if not in_scope(name) or name.startswith("_"):
+                continue
+            for n in (name, src.table or ""):
+                if n and re.fullmatch(r"[\w.]+", n):
+                    names.setdefault(n.lower(), name)
+                    names.setdefault(n.lower().replace("_", " "), name)
+        return names
+
+    def _browse(self, intent: SemanticIntent, decisions: List[DecisionRecord], pins: Dict[str, Any]) -> bool:
+        """
+        "Show me table owners", "the alerts table", "mostre a tabela owners",
+        "preview owners": the question names a table — its rows, every column,
+        decided before anything else (no entity/activity/table question).
+        Pin ``answer_shape`` to anything else to read it the usual way.
+        """
+        if pins.get("answer_shape") not in (None, "browse"):
+            return False
+        names = self._table_names()
+        found = None
+        for text in dict.fromkeys(t for t in (intent.question, intent.english_question) if t):
+            found = browse_target(text, names)
+            if found:
+                break
+        if found is None:
+            return False
+        intent.answer_shape, intent.browse_source, intent.row_limit = "browse", found[0], found[1]
+        decisions.append(DecisionRecord(kind="answer_shape", question=self._SHAPE_QUESTION, answer="browse",
+                                        probability=0.99, decided_by="deterministic",
+                                        subject=f"the question names the table '{found[0]}'"))
         return True
 
     def _scope_summary(self) -> str:

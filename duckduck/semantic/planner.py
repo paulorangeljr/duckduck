@@ -244,6 +244,39 @@ class QueryPlanner:
                     out.append(SourcePlan(source=name, field=fname, value=res.value, plan=plan))
         return out
 
+    def plan_browse(self, intent: SemanticIntent) -> LogicalQueryPlan:
+        """
+        ``browse``: every column of the table the question names, with what
+        else it says that the table can take — its enumerated values, a value
+        of a type the table has (an IP, an email…), the time range — and the
+        row count it asked for (else ``default_limit``).
+        """
+        from .plan import MAX_LIMIT
+
+        name = intent.browse_source
+        if name not in self.catalog.sources or not self._is_allowed(name):
+            raise ValueError(f"browse: unknown or not allowed table {name!r}")
+        src = self.catalog.sources[name]
+        filters = [Filter(field=m.field, operator="eq", value=m.value)
+                   for m in intent.value_filters if m.field.split(".")[0] == name]
+        typed: Dict[str, str] = {}
+        for fname, fdef in src.fields.items():
+            if fdef.semantic_type:
+                typed.setdefault(fdef.semantic_type, fname)
+        for lit in intent.literals:
+            kind = lit.semantic_type or (lit.kind if lit.kind != "term" else None)
+            if kind in typed:
+                filters.append(Filter(field=f"{name}.{typed[kind]}",
+                                      operator="eq" if lit.kind in ("ip_address", "email") else
+                                      (src.fields[typed[kind]].match or "eq"), value=lit.value))
+        time_range = None
+        if intent.time_range and src.resolved_time_field:
+            tr = intent.time_range
+            time_range = TimeRangeFilter(field=f"{name}.{src.resolved_time_field}", last_hours=tr.last_hours,
+                                         start=tr.start, end=tr.end)
+        return LogicalQueryPlan(select=[f"{name}.{f}" for f in src.fields], sources=[name], filters=filters,
+                                time_range=time_range, limit=min(intent.row_limit or self.default_limit, MAX_LIMIT))
+
     def _value_filter(self, source: str, fname: str, res) -> Filter:
         fdef = self.catalog.sources[source].fields[fname]
         operator = "eq" if res.literal_kind in ("ip_address", "email") else (fdef.match or "eq")

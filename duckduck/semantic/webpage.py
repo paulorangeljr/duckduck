@@ -503,7 +503,8 @@ function table(rows, max = 500) {
 
 const SHAPE_WORDS = {list: "a list", count: "a count", values: "the different values", count_values: "a count of values",
                      count_by: "a count per group", lookup: "everything about the value", locate: "where the value is",
-                     catalog: "what data there is", small_talk: "small talk", out_of_scope: "not about the data"};
+                     catalog: "what data there is", small_talk: "small talk", out_of_scope: "not about the data",
+                     browse: "the table itself"};
 
 function render(c) {
   const r = c.result, box = $("#conversation");

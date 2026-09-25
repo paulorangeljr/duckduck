@@ -35,6 +35,7 @@ ANSWER_SHAPES: Dict[str, str] = {
     "locate": "which tables contain a given value (or hold that kind of thing), not the rows themselves",
     "catalog": "what data there is to ask about — the tables and what they hold, from the catalog (no data read)",
     "small_talk": "a greeting, thanks or goodbye — nothing to look up",
+    "browse": "the rows of the table the question names, every column (\"show me table owners\")",
     "out_of_scope": "nothing about the data in this catalog — a direct reply saying what can be asked instead",
 }
 #: The shapes that need to know which field they're about.
@@ -229,6 +230,37 @@ _HEAD_OPENERS = [re.compile(p, re.I) for p in (
 #: Where the head phrase ends ("the severities | of the events").
 _HEAD_END = re.compile(r"\b(of|for|from|in|on|with|that|which|where|who|by|per|de|do|da|dos|das|em|no|na|nos|nas|"
                        r"para|que|com|por)\b|[?,.;:!]", re.I)
+
+
+#: "the first 20 rows", "top 5", "10 linhas" — how many rows a ``browse`` question asks for.
+_ROW_COUNT = re.compile(r"\b(?:first|top|last|primeir[oa]s|[uú]ltim[oa]s)\s+(\d{1,6})\b|"
+                        r"\b(\d{1,6})\s+(?:rows?|lines?|records?|entries|linhas?|registros?)\b", re.I)
+
+
+def browse_target(question: str, names: Dict[str, str]) -> Optional[Tuple[str, Optional[int]]]:
+    """
+    The table a "show me table owners" / "the alerts table" / "mostre a tabela
+    owners" / "preview owners" question names — ``names`` maps every way to
+    write a table (source name, its bound table, with spaces for ``_``;
+    lowercase) to its source — and the row count it asked for.
+    """
+    if not names:
+        return None
+    alts = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
+    name = rf"[\"'`]?(?P<n>{alts})[\"'`]?"
+    patterns = (
+        rf"\b(?:table|tabela|dataset)\s+(?:de\s+|do\s+|da\s+|called\s+|named\s+|chamada\s+)?{name}(?![\w-])",
+        rf"(?<![\w-]){name}\s+(?:table|tabela|dataset)\b",
+        rf"^\s*(?:please\s+|me\s+)?(?:preview|browse|open|peek(?:\s+at)?|sample|abra|abrir|visualize|visualizar)"
+        rf"(?:\s+me)?(?:\s+(?:the|a|o))?\s+{name}(?![\w-])",
+    )
+    for p in patterns:
+        m = re.search(p, question, re.I)
+        if m:
+            count = _ROW_COUNT.search(question)
+            rows = int(count.group(1) or count.group(2)) if count else None
+            return names[m.group("n").lower()], rows or None
+    return None
 
 
 #: Words that don't turn small talk into a question ("thanks a lot", "valeu pessoal").
