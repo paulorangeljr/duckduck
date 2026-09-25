@@ -61,6 +61,8 @@ class ResourceFilter(BaseModel):
 
 class SemanticIntent(BaseModel):
     question: str
+    #: ``list`` the matching things, or ``count`` them ("how many ...").
+    answer_shape: str = "list"
     target_entity: Optional[str] = None
     target_confidence: float = 0.0
     activity: Optional[str] = None

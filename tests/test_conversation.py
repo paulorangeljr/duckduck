@@ -173,7 +173,8 @@ def test_an_unreachable_entity_offers_the_ones_that_can_be_answered():
     result = search.search("Which owners have critical alerts?",
                            pinned={"source:alerts": True, "source:owners": False, "entity": "user"})
     fu = result.followup
-    assert fu.kind == "entity" and fu.context.startswith("I can't find a person starting from the security alerts")
+    assert fu.kind == "entity" and fu.context.startswith(
+        "I couldn't find a person in the security alerts raised per IP, or in anything connected to it.")
     assert [o.value for o in fu.options] == ["ip_address", "none"]
     again = search.search("Which owners have critical alerts?", pinned={**result.pinned, **fu.options[0].pins})
     assert again.status == "ok" and list(again.results.iloc[:, 0]) == ["10.0.0.1"]
@@ -294,3 +295,23 @@ def test_texts_from_the_config(tmp_path):
     cfg.write_text(json.dumps(data))
     with pytest.raises(ValueError, match="unknown key"):
         SemanticConfig.load(duck, str(cfg))
+
+
+
+def test_sentence_like_generated_descriptions_become_names_inside_questions():
+    """What an LLM-drafted catalog looked like: whole sentences, which don't fit mid-sentence."""
+    from duckduck.semantic import Catalog
+    from duckduck.semantic.clarify import ClarificationTexts
+
+    catalog = Catalog.model_validate({
+        "sources": {
+            "alerts": {"table": "alerts", "fields": {"ip": {"semantic_type": "ip_address"}},
+                       "description": "Each row represents a security alert triggered by a detection rule for a given IP address."},
+        },
+        "entities": {"host": {"description": "IP address value associated with the traffic or host that triggered a security alert."},
+                     "ip_address": {"description": "IP address that has been assigned to a known owner."}},
+    })
+    fu = ClarificationTexts().entity_reachable("How many hosts?", "host", "alerts", ["ip_address"], catalog)
+    assert fu.context == ("I couldn't find host in the alerts, or in anything connected to it. "
+                          "From there, the answer can list:")
+    assert fu.options[0].label == "IP address that has been assigned to a known owner (ip_address)"  # labels keep it all

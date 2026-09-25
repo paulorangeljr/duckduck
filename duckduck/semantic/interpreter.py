@@ -12,6 +12,7 @@ the chosen entity/activity is declared by sources lexical retrieval
 didn't propose (the question used words the catalog doesn't).
 """
 
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -29,6 +30,13 @@ from .intent import (
 )
 from .retrieval import CatalogRetriever, LexicalRetriever
 from .text import vocabulary
+
+#: "How many ...": the answer is a count, not a list (English and Portuguese wording).
+_COUNT_RE = re.compile(
+    r"\b(how many|number of|count of|count the|count all|total number of)\b|^\s*count\b"
+    r"|\bquant[oa]s\b|\bn[uú]mero de\b|\bcontagem\b",
+    re.IGNORECASE,
+)
 
 #: Shape-recognized literal kinds → the semantic type they denote.
 _SHAPE_TYPES = {"ip_address": "ip_address", "domain": "domain", "email": "email"}
@@ -93,6 +101,7 @@ class SemanticInterpreter:
 
             self._apply_entity(intent, answers.get("entity"), decisions, pins)
             self._apply_activity(intent, answers.get("activity"), decisions, pins)
+            self._apply_shape(intent, decisions, pins)
             self._apply_resources(intent, extraction, answers, decisions, pins)
 
             # sources that declare what was decided, but that lexical retrieval missed
@@ -266,6 +275,19 @@ class SemanticInterpreter:
         # name no activity — sources are still chosen by relevance.
         if record.passed:
             intent.activity, intent.activity_confidence = result.choice, result.probability
+
+    def _apply_shape(self, intent: SemanticIntent, decisions: List[DecisionRecord], pins: Dict[str, Any]) -> None:
+        """A list of things, or how many of them ("how many hosts ...") — read off the wording, no model."""
+        question = "Does the question ask for a list or for how many?"
+        if pins.get("answer_shape") in ("list", "count"):
+            intent.answer_shape = pins["answer_shape"]
+            decisions.append(_by_user("answer_shape", question, intent.answer_shape, None))
+            return
+        match = _COUNT_RE.search(intent.question)
+        if match:
+            intent.answer_shape = "count"
+            decisions.append(DecisionRecord(kind="answer_shape", question=question, answer="count", probability=0.99,
+                                            decided_by="deterministic", subject=f"'{match.group(0).strip()}'"))
 
     def _apply_resources(self, intent: SemanticIntent, ex: Extraction, answers, decisions: List[DecisionRecord],
                          pins: Dict[str, Any]) -> None:

@@ -19,6 +19,7 @@ asked) and options; yes/no options carry a ``detail`` (what answering it
 does).
 """
 
+import re
 import string
 from typing import Any, Dict, Iterable, Optional
 
@@ -34,7 +35,8 @@ DEFAULT_TEXTS: Dict[str, str] = {
     "value_type.question": "What is “{value}”?",
     "value_type.context": "I don't know what kind of information “{value}” is, so I don't know where to look for it.",
     "value_type.context_retry": "You said “{value}” isn't the {field}, and none of the other data that fits your question has that kind of field.",
-    "entity.context_reachable": "I can't find {entity} starting from the {source}. From there, the answer can list:",
+    "entity.context_reachable": "I couldn't find {entity} in the {source}, or in anything connected to it. "
+                                "From there, the answer can list:",
     "ignore_term.question": "Should I answer without “{term}”, then?",
     "ignore_term.context": "I couldn't find another meaning for “{term}” in the data.",
     "ignore_term.yes": "answer without filtering on it",
@@ -72,6 +74,20 @@ def human(name: str) -> str:
 
 def first_sentence(text: str) -> str:
     return (text or "").strip().split(". ")[0].rstrip(".").strip()
+
+
+def phrase(description: str, name: str, max_words: int = 6) -> str:
+    """
+    How to name something inside a sentence: its description when that's a
+    short noun phrase ("web proxy traffic"), else its humanized name —
+    generated descriptions are often whole sentences ("Each row represents
+    a security alert triggered by…") that don't fit mid-sentence.
+    """
+    text = short(description)
+    words = text.split()
+    if not words or len(words) > max_words or re.match(r"(?i)^(each|every|one|a single)\b.*\brows?\b", first_sentence(description)):
+        return human(name)
+    return _lower_first(text)
 
 
 def short(text: str) -> str:
@@ -120,8 +136,8 @@ class ClarificationTexts:
         edef = catalog.entities.get(entity)
         context = self.t(
             "entity.context_reachable", question=question, entity_name=entity, source_name=source,
-            entity=_lower_first(short(edef.description)) if edef and edef.description else human(entity),
-            source=_lower_first(short(catalog.sources[source].description)) or human(source),
+            entity=phrase(edef.description if edef else "", entity),
+            source=phrase(catalog.sources[source].description, source),
         )
         return self.entity(question, reachable, catalog, context=_upper_first(context))
 
@@ -171,7 +187,7 @@ class ClarificationTexts:
     def field_return(self, question: str, ref: str, entity: str, catalog: Catalog) -> Clarification:
         edef = catalog.entities.get(entity)
         values = self._field_values(question, ref, catalog, entity_name=entity,
-                                    entity=_lower_first(short(edef.description)) if edef and edef.description else human(entity))
+                                    entity=phrase(edef.description if edef else "", entity))
         return self._yes_no("field", "field_return", f"field:{ref}", values)
 
     def join(self, question: str, left: str, right: str, catalog: Catalog) -> Clarification:
@@ -186,8 +202,8 @@ class ClarificationTexts:
         source_name, field_name = ref.split(".", 1)
         src = catalog.sources[source_name]
         fdef = src.fields.get(field_name)
-        field = short(fdef.description) if fdef and fdef.description else human(field_name)
-        source = short(src.description) or human(source_name)
+        field = phrase(fdef.description if fdef else "", field_name)
+        source = phrase(src.description, source_name)
         return {"question": question, "field": _lower_first(field), "field_name": ref,
                 "source": _lower_first(source), "source_name": source_name, **extra}
 

@@ -165,6 +165,7 @@ class QueryPlanner:
         plan = LogicalQueryPlan(
             select=select, sources=sources, joins=joins, filters=filters,
             time_range=time_range, distinct=distinct, limit=self.default_limit,
+            aggregate="count" if intent.answer_shape == "count" else None,
         )
         return plan, decisions
 

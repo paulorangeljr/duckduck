@@ -770,6 +770,13 @@ among the candidates. Other details:
   automatically. Repeated questions in a session come from a cache, and
   the cost the API reports is logged per call, with a session total.
 
+**Lists and counts.** "Which hosts…" answers with the list; "How many
+hosts…" (also "number of", "count", "quantos", "número de") answers with
+one number, the count of the distinct things the list would have held, or
+of the records for "how many failed sign-ins". It's read off the wording,
+not by a model, and shows up as an `answer_shape` decision. Pin
+`answer_shape` (`"list"` / `"count"`) to force either.
+
 **Asking the user back.** When a decision falls below its threshold,
 the result is `needs_clarification`. It carries a `followup`: a question
 for the user plus options, built from templates and the catalog (no

@@ -306,3 +306,45 @@ def test_to_json_handles_dates_and_results_only(search):
     assert full["results"][0]["seen_at"] == "2026-09-24T10:00:00"
     rows = json.loads(result.to_json(results_only=True))
     assert rows == full["results"] and all(isinstance(r, dict) for r in rows)
+
+
+
+# ---------------------------------------------------------------------------
+# "how many": a count, not a list
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("question, expected", [
+    ("How many users accessed github in the last 24hrs?", 2),      # distinct entities
+    ("How many failed authentication events?", 2),                 # records
+    ("Count the denied connections", 3),
+])
+def test_how_many_answers_with_a_count(search, question, expected):
+    result = search.search(question)
+    assert result.status == "ok", result.report()
+    assert list(result.results.columns) == ["count"] and result.results["count"].tolist() == [expected]
+    assert result.query_plan.aggregate == "count"
+    shape = next(d for d in result.decisions if d.kind == "answer_shape")
+    assert shape.answer == "count" and shape.decided_by == "deterministic"
+
+
+def test_the_count_matches_the_list(search):
+    listed = search.search("Which users accessed github in the last 24hrs?").results
+    counted = search.search("How many users accessed github in the last 24hrs?").results
+    assert counted["count"].tolist() == [listed["username"].nunique()]
+
+
+def test_a_count_counts_distinct_things_and_never_limits_at_the_source(search):
+    result = search.search("How many users accessed github in the last 24hrs?")
+    assert 'SELECT COUNT(*) AS "count" FROM (\n  SELECT DISTINCT' in result.sql and "LIMIT" not in result.sql
+    assert not any(f.limit_pushed for f in result.fetches)
+
+
+def test_a_list_question_stays_a_list(search):
+    result = search.search("Which users accessed github in the last 24hrs?")
+    assert result.query_plan.aggregate is None and "answer_shape" not in [d.kind for d in result.decisions]
+
+
+def test_the_shape_can_be_pinned(search):
+    result = search.search("Which users accessed github in the last 24hrs?", pinned={"answer_shape": "count"})
+    assert result.results["count"].tolist() == [2]

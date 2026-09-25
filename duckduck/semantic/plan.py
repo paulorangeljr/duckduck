@@ -75,6 +75,8 @@ class LogicalQueryPlan(_Strict):
     filters: List[Filter] = Field(default_factory=list)
     time_range: Optional[TimeRangeFilter] = None
     distinct: bool = False
+    #: ``count``: the answer is how many rows (distinct ones when ``distinct``) — one number.
+    aggregate: Optional[Literal["count"]] = None
     limit: int = Field(default=1000, ge=1, le=MAX_LIMIT)
 
     @model_validator(mode="after")

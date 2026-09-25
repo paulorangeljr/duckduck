@@ -131,6 +131,13 @@ def compile_plan(
         )
 
     sql = "WITH " + ",\n".join(ctes)
+    if plan.aggregate == "count":
+        if plan.distinct:  # how many distinct things: count the distinct answer
+            sql += (f"\nSELECT COUNT(*) AS \"count\" FROM (\n  SELECT DISTINCT {', '.join(select_items)}"
+                    f"\n  FROM {from_clause}\n) AS _answer")
+        else:  # how many records
+            sql += f"\nSELECT COUNT(*) AS \"count\"\nFROM {from_clause}"
+        return sql
     sql += f"\nSELECT {'DISTINCT ' if plan.distinct else ''}{', '.join(select_items)}"
     sql += f"\nFROM {from_clause}"
     order = default_order(plan, catalog)
@@ -141,7 +148,9 @@ def compile_plan(
 
 
 def default_order(plan: LogicalQueryPlan, catalog: Catalog) -> str:
-    """Deterministic output: distinct lists sorted; row lists newest first."""
+    """Deterministic output: distinct lists sorted; row lists newest first; a count has no order."""
+    if plan.aggregate:
+        return ""
     if plan.distinct:
         return ", ".join(str(i + 1) for i in range(len(plan.select)))
     primary = plan.sources[0]

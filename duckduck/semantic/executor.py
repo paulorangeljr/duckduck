@@ -159,10 +159,11 @@ class PlanExecutor:
 
         # Capping rows at the source is only equivalent to the final LIMIT when
         # nothing downstream can drop, merge or reorder rows: one source, no
-        # DISTINCT, every filter already applied server-side, and no ORDER BY
-        # (the API's first N rows aren't the newest N).
+        # DISTINCT, no count (it needs every row), every filter already
+        # applied server-side, and no ORDER BY (the API's first N rows aren't
+        # the newest N).
         if (
-            len(plan.sources) == 1 and not plan.distinct and not fetch.residual_filters
+            len(plan.sources) == 1 and not plan.distinct and not plan.aggregate and not fetch.residual_filters
             and not default_order(plan, self.catalog) and "limit" in params
         ):
             fetch.kwargs["limit"] = plan.limit
