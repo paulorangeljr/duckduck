@@ -1041,15 +1041,18 @@ function columnPanel(r) {
   const suggested = opts.filter(o => o.suggested), rest = opts.filter(o => !o.suggested && !o.asked), asked = opts.filter(o => o.asked);
   const distinct = r.query_plan.distinct;
   return `<div class="colpanel" id="colpanel">
-    <h4>Show more of these rows</h4>
+    <div class="jobhead"><h4 style="margin:0">Show more of these rows</h4><span class="grow"></span>
+      ${rest.length || suggested.length ? `<button type="button" class="secondary" data-colall style="padding:2px 10px;font-size:13px"
+        title="Every column of ${esc(r.query_plan.sources.join(", "))}">All columns</button>` : ""}
+      ${(r.added_columns || []).length ? `<button type="button" class="secondary" data-colreset style="padding:2px 10px;font-size:13px"
+        title="Back to the columns the question asked for">Clear</button>` : ""}</div>
     <div class="fbchips">${asked.map(chip).join("")}</div>
     ${suggested.length ? `<h4>Used by the question <button type="button" class="secondary" data-colsuggested
-        style="padding:1px 8px;font-size:12px;margin-left:6px">add all</button></h4><div class="fbchips">${suggested.map(chip).join("")}</div>` : ""}
+        style="padding:1px 8px;font-size:12px;margin-left:6px" title="Add the columns the question filtered on">add these</button></h4><div class="fbchips">${suggested.map(chip).join("")}</div>` : ""}
     ${rest.length ? `<h4>Other columns</h4><div class="fbchips">${rest.map(chip).join("")}</div>` : ""}
     <div class="colstatus" id="colstatus" role="status">${r.reused_data === true ? "✓ From the rows already read — nothing fetched again."
       : r.reused_data === false ? "Read the data again (the rows read before didn't have those columns)." : ""}</div>
-    <div class="muted small">Same question, same filters — only the columns change.${distinct ? " One row per distinct combination." : ""}
-      ${(r.added_columns || []).length ? ` <a href="#" data-colreset>Back to the original columns</a>` : ""}</div>
+    <div class="muted small">Same question, same filters — only the columns change.${distinct ? " One row per distinct combination." : ""}</div>
   </div>`;
 }
 
@@ -1087,7 +1090,14 @@ function wireColumns(c) {
     });
     send(chosen());
   });
-  panel.querySelector("[data-colreset]")?.addEventListener("click", (e) => { e.preventDefault(); send([]); });
+  panel.querySelector("[data-colall]")?.addEventListener("click", () => {
+    panel.querySelectorAll(".colchip:not([disabled])").forEach(b => b.setAttribute("aria-pressed", "true"));
+    send(chosen());
+  });
+  panel.querySelector("[data-colreset]")?.addEventListener("click", () => {
+    panel.querySelectorAll(".colchip:not([disabled])").forEach(b => b.setAttribute("aria-pressed", "false"));
+    send([]);
+  });
 }
 
 // ---- feedback ----------------------------------------------------------

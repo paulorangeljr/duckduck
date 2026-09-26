@@ -507,8 +507,8 @@ How a question is read — rules find, the decision engine (Jev) decides:
   again.
 - **More columns after the answer.** An answer that is rows has a
   **＋ Columns** button: the other fields of the tables it read, the ones
-  the question filtered on (and the time field) first — "add all" shows
-  them in one tap. Each pick runs **the same plan** again with that column
+  the question filtered on (and the time field) first — *add these* shows
+  them in one tap, *All columns* every column, *Clear* goes back. Each pick runs **the same plan** again with that column
   next to what was asked: nothing is decided again (no Jev or LLM call),
   the filters stay, and *Take over from here* takes what's on screen. In
   Python: `search.with_columns(result, ["nvd_cves.severity",
