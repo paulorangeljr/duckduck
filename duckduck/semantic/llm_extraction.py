@@ -66,7 +66,8 @@ Return:
   ("users", "hosts") or the activity ("accessed", "logged in").
 - enum_values: words that correspond to a stored value of an enumerated
   field; use the exact source.field and the exact stored value from the
-  catalog summary.
+  catalog summary. negated=true when the question excludes it ("CVEs not
+  in KEV", "alertas não críticos") — the value stays the stored one.
 - time_range: the time window, as last_hours for relative windows ("last
   24hrs" -> 24) or start/end as ISO-8601 UTC timestamps for absolute ones;
   null if the question gives none. start is inclusive, end exclusive, and a
@@ -87,6 +88,8 @@ class LLMEnumValue(BaseModel):
     field: str = Field(description="source.field from the catalog summary")
     value: str = Field(description="exact stored value")
     term: str = Field(description="the words in the question that matched")
+    negated: bool = Field(False, description="true when the question excludes this value "
+                                             "('not in KEV', 'não crítico', 'without MFA')")
 
 
 class LLMTimeRange(BaseModel):
@@ -352,7 +355,8 @@ class LLMExtractor:
             if not self.catalog.has_field(e.field) or e.value not in self.catalog.field(e.field).values:
                 logger.info("llm extraction: dropped enum %s=%r (not in catalog)", e.field, e.value)
                 continue
-            enum_matches.append(EnumMatch(term=e.term or e.value, field=e.field, value=e.value))
+            enum_matches.append(EnumMatch(term=e.term or e.value, field=e.field, value=e.value,
+                                          negated=bool(getattr(e, "negated", False))))
         if enum_matches or not base.enum_matches:
             result.enum_matches = enum_matches
 

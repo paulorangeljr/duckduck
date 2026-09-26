@@ -141,14 +141,16 @@ class QueryPlanner:
             match, path = self._locate_enum(primary, term, matches, blocked, intent)
             if path.edges:
                 paths.append(path)
+            op, sign = ("neq", "<>") if match.negated else ("eq", "=")
+            said = f"not {term!r}" if match.negated else repr(term)
             checks.append(self._field_check(
                 intent, match.field, f"the value {term!r}", _ENUM_MATCH_PRIOR, len(checks),
                 # the catalog lists the stored value — ask about that exact reading
-                question=f"Does {term!r} in the question mean {match.field} = {match.value!r}?",
-                failure=f"Not confident that {term!r} means {match.field} = {match.value!r}.",
+                question=f"Does {said} in the question mean {match.field} {sign} {match.value!r}?",
+                failure=f"Not confident that {said} means {match.field} {sign} {match.value!r}.",
                 followup=self.texts.field_value(intent.question, match.field, term, match.value, self.catalog),
             ))
-            filters.append(Filter(field=match.field, operator="eq", value=self._stored(match.field, match.value)))
+            filters.append(Filter(field=match.field, operator=op, value=self._stored(match.field, match.value)))
 
         # 3. time range, always on the primary source's event time
         time_range = None
@@ -239,7 +241,8 @@ class QueryPlanner:
                     continue
                 for fname in self.catalog.fields_by_semantic_type(name, res.type):
                     filters = [self._value_filter(name, fname, res)]
-                    filters += [Filter(field=m.field, operator="eq", value=self._stored(m.field, m.value))
+                    filters += [Filter(field=m.field, operator="neq" if m.negated else "eq",
+                                       value=self._stored(m.field, m.value))
                                 for m in intent.value_filters if m.field.split(".")[0] == name]
                     time_range = None
                     if intent.time_range:
@@ -268,7 +271,7 @@ class QueryPlanner:
         if name not in self.catalog.sources or not self._is_allowed(name):
             raise ValueError(f"browse: unknown or not allowed table {name!r}")
         src = self.catalog.sources[name]
-        filters = [Filter(field=m.field, operator="eq", value=self._stored(m.field, m.value))
+        filters = [Filter(field=m.field, operator="neq" if m.negated else "eq", value=self._stored(m.field, m.value))
                    for m in intent.value_filters if m.field.split(".")[0] == name]
         typed: Dict[str, str] = {}
         for fname, fdef in src.fields.items():

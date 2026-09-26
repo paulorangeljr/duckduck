@@ -29,7 +29,7 @@ import sqlglot
 import sqlglot.expressions as exp
 
 from .logs import get_logger, set_verbose, short, verbose_from_env
-from .pushdown import Condition, assign_conditions, blocker_of, map_conditions, parse_like
+from .pushdown import Condition, assign_conditions, blocker_of, conditions_to_sql, map_conditions, parse_like
 
 logger = get_logger("core")
 
@@ -232,12 +232,18 @@ class DuckAPI:
     correctness even when the API returns extra data.
     """
 
-    def __init__(self, database: str = ":memory:", verbose=None):
+    def __init__(self, database: str = ":memory:", verbose=None, stream_pages: bool = True):
         """
         Parameters
         ----------
         database : str
             DuckDB database (default in-memory).
+        stream_pages : bool
+            In ``sql()``: a table whose LIMIT can't go to the source and that
+            has a streaming function is read page by page, each page filtered
+            by the WHERE conditions that are its own and cut to the columns
+            the query uses — the whole API result is never one DataFrame
+            (see ``_materialize_pages``). ``False``: always fetch it whole.
         verbose : bool or str, optional
             ``True``/``"info"``: log, per query, how each table was called,
             which WHERE/LIMIT went to the source (and why not, when not),
@@ -256,6 +262,7 @@ class DuckAPI:
         self.service_of: Dict[str, str] = {}
         self._streaming_functions: Dict[str, Any] = {}
         self._table_counter = 0
+        self.stream_pages = stream_pages
 
     # ------------------------------------------------------------------
     # Function registration
@@ -1030,6 +1037,95 @@ class DuckAPI:
         self.conn.register(table_name, df)
         return table_name, list(df.columns)
 
+    def _pages_instead(self, fn_name: str, kwargs: Dict[str, Any]) -> bool:
+        """Read this table page by page: streaming on, a streaming function, and no LIMIT reached the source."""
+        return self.stream_pages and "limit" not in kwargs and fn_name in self._streaming_functions
+
+    def _materialize_pages(
+        self,
+        fn_name: str,
+        pushdown: PushDownContext,
+        explicit: Dict[str, Any],
+        names: set,
+        parsed: Optional[exp.Expression],
+        fallback_columns: Optional[List[str]] = None,
+    ) -> tuple:
+        """
+        ``_materialize`` page by page, through the table's streaming
+        function (whose own signature decides what reaches the API; it
+        never takes a limit). Each page keeps only:
+
+        - the rows that pass this table's own WHERE conditions — the ANDed
+          simple ones qualified with its name/alias, or unqualified on a
+          column the page has (an unqualified column of the other table
+          isn't in this page's columns, and one in both would be ambiguous
+          SQL anyway). DuckDB applies them exactly, LIKE patterns included,
+          and re-applies the whole WHERE afterwards regardless;
+        - the columns the query uses from it (every column under ``*``).
+
+        A single-table query whose LIMIT can't change the answer
+        (``limit_safe``, a complete WHERE, every condition applied here)
+        stops asking for pages once it has ``LIMIT`` rows.
+
+        Returns ``(table_name, df_columns, kwargs)``.
+        """
+        iter_fn = self._streaming_functions[fn_name]
+        kwargs, report = self._plan_call(iter_fn, pushdown, explicit, names, allow_limit=False)
+        self._log_call(f"{fn_name} (page by page)", kwargs, report)
+        conditions = [c for c in pushdown.conditions if c.table is None or c.table in names]
+        star = parsed is None or parsed.find(exp.Star) is not None
+        used = {c.lower() for c in (fallback_columns or [])}
+        tables = len(list(parsed.find_all(exp.Table))) if parsed is not None else 2
+        stop_at = (pushdown.limit if pushdown.limit is not None and pushdown.limit_safe and pushdown.complete
+                   and tables == 1 else None)
+
+        validated = self._validate_arguments(fn_name, iter_fn, kwargs)
+        started = time.perf_counter()
+        kept: List[pd.DataFrame] = []
+        count = pages = scanned = 0
+        last_columns: List[str] = []
+        pages_iter = iter_fn(**validated)
+        try:
+            for page in pages_iter:
+                df = self._to_dataframe(page, fn_name, allow_empty=True)
+                if df.empty:
+                    continue
+                pages += 1
+                scanned += len(df)
+                columns = list(df.columns) if star else ([c for c in df.columns if c.lower() in used]
+                                                         or list(df.columns[:1]))
+                last_columns = columns
+                where = conditions_to_sql(conditions, df.columns)
+                every = all(c.column.lower() in {x.lower() for x in df.columns} for c in conditions)
+                self._table_counter += 1
+                view = f"_page_{fn_name}_{self._table_counter}"
+                self.conn.register(view, df)
+                try:
+                    select = ", ".join('"' + c.replace('"', '""') + '"' for c in columns)
+                    out = self.conn.sql(f"SELECT {select} FROM {view}" + (f" WHERE {where}" if where else "")).df()
+                finally:
+                    self.conn.unregister(view)
+                if len(out):
+                    kept.append(out)
+                    count += len(out)
+                if stop_at is not None and every and count >= stop_at:
+                    break  # enough rows for the answer: no more pages asked
+        finally:
+            close = getattr(pages_iter, "close", None)
+            if close is not None:
+                close()
+        if kept:
+            df = pd.concat(kept, ignore_index=True)
+        else:
+            columns = last_columns or list(fallback_columns or []) or [self.EMPTY_PLACEHOLDER_COLUMN]
+            df = pd.DataFrame({c: pd.Series(dtype="object") for c in columns})
+        logger.info("  %s: kept %s of %s rows from %s page(s), %s column(s), in %.2fs", fn_name, f"{count:,}",
+                    f"{scanned:,}", pages, len(df.columns), time.perf_counter() - started)
+        self._table_counter += 1
+        table_name = f"_api_{fn_name}_{self._table_counter}"
+        self.conn.register(table_name, df)
+        return table_name, list(df.columns), kwargs
+
     #: Sole column of an empty result when neither the source nor the query
     #: says which columns there are (``SELECT *`` over zero rows).
     EMPTY_PLACEHOLDER_COLUMN = "_no_rows"
@@ -1352,9 +1448,13 @@ class DuckAPI:
                 explicit = self._parse_kwargs(m.group(1))
                 names = {fn_name, self._alias_at(rewritten, m.end())} - {None}
                 kwargs, report = self._plan_call(fn, pushdown, explicit, names)
-                self._log_call(fn_name, kwargs, report)
                 fallback = self._referenced_columns(parsed, names, self._structural_names(fn, explicit))
-                tname, df_cols = self._materialize(fn_name, fn, kwargs, fallback)
+                if self._pages_instead(fn_name, kwargs):
+                    tname, df_cols, kwargs = self._materialize_pages(fn_name, pushdown, explicit, names, parsed,
+                                                                     fallback)
+                else:
+                    self._log_call(fn_name, kwargs, report)
+                    tname, df_cols = self._materialize(fn_name, fn, kwargs, fallback)
                 sources += 1
                 # WHERE filters that reached the function but aren't result columns
                 structural_used.update(
@@ -1372,9 +1472,12 @@ class DuckAPI:
             while m := bare_pat.search(rewritten):
                 names = {fn_name, self._alias_at(rewritten, m.end())} - {None}
                 kwargs, report = self._plan_call(fn, pushdown, {}, names)
-                self._log_call(fn_name, kwargs, report)
                 fallback = self._referenced_columns(parsed, names, self._structural_names(fn, {}))
-                tname, df_cols = self._materialize(fn_name, fn, kwargs, fallback)
+                if self._pages_instead(fn_name, kwargs):
+                    tname, df_cols, kwargs = self._materialize_pages(fn_name, pushdown, {}, names, parsed, fallback)
+                else:
+                    self._log_call(fn_name, kwargs, report)
+                    tname, df_cols = self._materialize(fn_name, fn, kwargs, fallback)
                 sources += 1
                 structural_used.update(
                     k for k in pushdown.filters

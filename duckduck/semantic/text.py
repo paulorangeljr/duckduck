@@ -8,6 +8,7 @@ what JEV / embeddings replace.
 """
 
 import re
+import unicodedata
 from typing import Iterable, List, Set
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -50,9 +51,14 @@ def stem(word: str) -> str:
     return w
 
 
+def fold(text: str) -> str:
+    """Lowercased, accents removed — "Não", "crítico" → "nao", "critico" (both sides of every match go through it)."""
+    return "".join(c for c in unicodedata.normalize("NFKD", text.lower()) if not unicodedata.combining(c))
+
+
 def tokenize(text: str) -> List[str]:
-    """Lowercased alphanumeric tokens, in order, stopwords included."""
-    return _TOKEN_RE.findall(text.lower())
+    """Lowercased alphanumeric tokens, accents folded, in order, stopwords included."""
+    return _TOKEN_RE.findall(fold(text))
 
 
 def content_stems(text: str) -> List[str]:

@@ -17,7 +17,11 @@ Describe the table and every column worth querying:
   destination IP). Use match "contains" for values people refer to by
   fragment (domains, URLs, titles), else "eq". For low-cardinality
   status-like columns, list the stored values with the words people use
-  for them (e.g. DENY -> denied, blocked).
+  for them (e.g. DENY -> denied, blocked). For a true/false column, list
+  the stored value "true" with the words people use when it is set
+  (in_kev -> in kev, cisa kev, known exploited, exploited in the wild;
+  mfa_enabled -> mfa, with mfa); "false" only when there are words for it
+  other than a negation ("not in KEV" is read as the opposite of true).
 - time_field: the column holding when the row happened, if any.
 - entities: the kinds of things this table can answer "which X?" about —
   only ones one of its fields holds (that field's semantic_type is the

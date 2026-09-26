@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Protocol, Set, Tuple
 from pydantic import BaseModel, Field
 
 from .catalog import Catalog
-from .text import STOPWORDS, stem, tokenize, vocabulary
+from .text import STOPWORDS, fold, stem, tokenize, vocabulary
 from .timeparse import find_window
 
 
@@ -53,6 +53,8 @@ class EnumMatch(BaseModel):
     field: str
     #: The stored value to filter on.
     value: str
+    #: The question excludes it ("not in KEV", "não crítico", "without MFA") → ``field <> value``.
+    negated: bool = False
 
 
 class Reading(BaseModel):
@@ -116,16 +118,40 @@ _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 _DOMAIN_RE = re.compile(r"\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}\b", re.IGNORECASE)
 
 #: Extra words that are never a filter value on their own.
-_NON_VALUE_WORDS = {
+_NON_VALUE_WORDS = {fold(w) for w in {
     "many", "much", "most", "least", "some", "who", "whose", "whom",
     # Portuguese function words — never a value on their own
     "o", "a", "os", "as", "um", "uma", "de", "do", "da", "dos", "das", "em", "no", "na", "nos", "nas", "e",
     "que", "qual", "quais", "para", "com", "por", "pelo", "pela", "este", "esta", "esse", "essa", "isso",
     "me", "mostre", "mostra", "liste", "tem", "têm", "há", "foi", "foram", "é", "são",
-}
+}}
+#: Words that turn the value right after them into an exclusion ("not critical", "sem MFA"). Not "no": in
+#: Portuguese it's "in the" ("no catálogo KEV").
+_NEGATIONS = {"not", "never", "without", "non", "excluding", "except", "isn", "aren", "wasn", "weren", "don",
+              "doesn", "didn", "nao", "sem", "nunca", "nenhum", "nenhuma", "exceto", "nem"}
+
+
+def _negation_at(tokens: List[str], start: int) -> Optional[int]:
+    """Where a negation right before ``tokens[start]`` is, with only function words between ("not in the KEV")."""
+    for k in range(start - 1, max(start - 5, -1), -1):
+        if tokens[k] in _NEGATIONS:
+            return k
+        if tokens[k] not in STOPWORDS and tokens[k] not in _NON_VALUE_WORDS and tokens[k] != "t":
+            return None
+    return None
+
+
+#: Nouns that only say a value is a list/catalog of things ("in the KEV catalog", "na lista KEV") — part of
+#: the value they sit next to, never a value of their own.
+_CONTAINER_NOUNS = {fold(w) for w in {
+    "catalog", "catalogue", "list", "database", "registry", "feed",
+    "catálogo", "catalogo", "lista", "cadastro", "registro",
+}}
+
+
 #: Words that say what kind of answer is wanted (count, different values, per group) —
 #: never a value to filter on, never the thing asked for.
-_SHAPE_WORDS = {
+_SHAPE_WORDS = {fold(w) for w in {
     "count", "number", "total", "per", "each", "every", "different", "distinct", "unique", "types", "kinds",
     "sorts", "values", "breakdown", "grouped", "group", "broken", "split", "exist", "exists",
     "quantos", "quantas", "numero", "número", "contagem", "por", "cada", "diferente", "diferentes", "distinto",
@@ -136,7 +162,7 @@ _SHAPE_WORDS = {
     "find", "found", "know", "tell", "everything", "details", "information", "info", "investigate",
     "tabelas", "tabela", "fontes", "bases", "contém", "contem", "aparece", "aparecem", "encontro", "encontrar",
     "tudo", "sobre", "detalhes", "informações", "informacoes", "investigue", "investigar", "onde",
-}
+}}
 
 
 def _shape(value: str) -> str:
@@ -176,6 +202,19 @@ class RuleBasedExtractor:
             for fname, f in src.fields.items():
                 texts += [fname, f.semantic_type or ""]
         self.vocabulary: Set[str] = vocabulary(texts)
+
+    @staticmethod
+    def _consume_container(tokens: List[str], consumed: List[bool], start: int, end: int) -> None:
+        """"KEV catalog" / "catálogo do KEV": the container noun next to a matched value belongs to it."""
+        if end < len(tokens) and tokens[end] in _CONTAINER_NOUNS:
+            consumed[end] = True
+            return
+        for k in range(start - 1, max(start - 4, -1), -1):
+            if tokens[k] in _CONTAINER_NOUNS:
+                consumed[k] = True
+                return
+            if tokens[k] not in STOPWORDS and tokens[k] not in _NON_VALUE_WORDS:
+                return
 
     def extract(self, question: str, now: datetime) -> Extraction:
         out = Extraction()
@@ -220,10 +259,13 @@ class RuleBasedExtractor:
             for i in range(len(stems) - n + 1):
                 if tuple(stems[i:i + n]) == phrase and not any(consumed[i:i + n]):
                     term = " ".join(tokens[i:i + n])
+                    negation = _negation_at(tokens, i)
                     for field_ref, stored in self._enum_phrases[phrase]:
-                        out.enum_matches.append(EnumMatch(term=term, field=field_ref, value=stored))
-                    for j in range(i, i + n):
+                        out.enum_matches.append(EnumMatch(term=term, field=field_ref, value=stored,
+                                                          negated=negation is not None))
+                    for j in range(i if negation is None else negation, i + n):
                         consumed[j] = True
+                    self._consume_container(tokens, consumed, i, i + n)
 
         # Consecutive unknown words form one phrase; remember the catalog
         # term right before each phrase as a type hint.

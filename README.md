@@ -219,6 +219,15 @@ for chunk in duck.stream("SELECT * FROM assets WHERE severity = 'critical'"):
 Note `WHERE`/`LIMIT` in `stream()` apply per page, not globally — see
 `CLAUDE.md` for the full list of limitations.
 
+`sql()` itself (and the web page's SQL tab) also reads a table with a
+streaming function page by page when its `LIMIT` can't be sent to the API:
+each page is filtered by DuckDB as it arrives and only the matching rows
+and the referenced columns are kept (every column for `SELECT *`), so a
+filter the API doesn't take never holds the whole API result in memory. A
+single-table query with a `LIMIT` and nothing that needs every row (ORDER
+BY, aggregates, DISTINCT…) stops asking for pages once it has enough.
+`DuckAPI(stream_pages=False)` turns it off.
+
 ## Bootstrapping everything at once: `auto_register`
 
 Instead of instantiating each wrapper and calling `register_api_function`
@@ -471,6 +480,16 @@ How a question is read — rules find, the decision engine (Jev) decides:
   and only matching rows (and only the columns used) are kept — the whole
   API result is never held in memory. A plain list stops asking for pages
   once it has enough rows. `semantic.stream: false` turns it off.
+- **"not" excludes.** "alerts that are *not* critical" filters
+  `severity <> 'critical'` ("não", "sem", "never", "without"… too); accents
+  never stop a match ("críticos" = "criticos").
+- **Yes/no columns get words.** Catalog generation gives every boolean
+  field words for its `true` value — from its name (`in_kev` → "in kev",
+  "kev"; `mfa_enabled` → "mfa") plus what the LLM adds ("cisa kev", "known
+  exploited") — so "CVEs in the KEV catalog" becomes `in_kev = true` and
+  "not in KEV" `in_kev <> true`. A catalog drafted before this needs the
+  table redrafted (Config → Semantic catalog → Redraft) or the words added
+  by hand: `in_kev: {values: {"true": [kev, cisa kev, known exploited]}}`.
 
 ```bash
 pip install -e ".[semantic]"

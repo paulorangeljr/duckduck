@@ -22,7 +22,7 @@ settled without a model, several go to the engine, none means a list:
 import re
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-from .text import stem, tokenize
+from .text import fold, stem, tokenize
 
 #: The kinds of answer a question can ask for → what each one returns (also what the engine reads).
 ANSWER_SHAPES: Dict[str, str] = {
@@ -319,7 +319,7 @@ def browse_target(question: str, names: Dict[str, str]) -> Optional[Tuple[str, O
 
 
 #: Words that don't turn small talk into a question ("thanks a lot", "valeu pessoal").
-_SMALL_TALK_FILLER = {stem(w) for w in (
+_SMALL_TALK_FILLER = {stem(fold(w)) for w in (
     "lot", "much", "very", "so", "again", "all", "everyone", "guys", "folks", "team", "friend", "mate", "bot",
     "duckduck", "there", "today", "muito", "mesmo", "pessoal", "gente", "todos", "amigo", "time", "hoje", "ai", "aí",
 )}

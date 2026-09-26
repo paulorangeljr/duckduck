@@ -73,7 +73,11 @@ Describe the table and every column worth querying:
   destination IP). Use match "contains" for values people refer to by
   fragment (domains, URLs, titles), else "eq". For low-cardinality
   status-like columns, list the stored values with the words people use
-  for them (e.g. DENY -> denied, blocked).
+  for them (e.g. DENY -> denied, blocked). For a true/false column, list
+  the stored value "true" with the words people use when it is set
+  (in_kev -> in kev, cisa kev, known exploited, exploited in the wild;
+  mfa_enabled -> mfa, with mfa); "false" only when there are words for it
+  other than a negation ("not in KEV" is read as the opposite of true).
 - time_field: the column holding when the row happened, if any.
 - entities: the kinds of things this table can answer "which X?" about —
   only ones one of its fields holds (that field's semantic_type is the
@@ -853,6 +857,7 @@ class CatalogGenerator:
                     fields[f.name]["notes"] = kept_note
                 self._apply_profile(fields[f.name], (stats or {}).get(name, ({}, 0))[0].get(f.name))
                 _apply_docs(fields[f.name], documented.get(name, {}).get("fields", {}).get(f.name))
+                _flag_values(fields[f.name], f.name)
             if not fields:
                 warnings.append(f"{name}: no usable fields — source dropped")
                 continue
@@ -1026,6 +1031,47 @@ def _add_keywords(entity: Dict[str, Any], words: List[str]) -> None:
             keywords.append(w)
             seen.add(w.lower())
     entity["keywords"] = keywords
+
+
+_FLAG_PREFIXES = {"is", "has", "have", "was", "can", "in"}
+_FLAG_SUFFIXES = {"flag", "enabled", "set"}
+
+
+def _flag_words(name: str) -> List[str]:
+    """Words for a true/false column being set, from its name: in_kev → in kev, kev; mfa_enabled → mfa enabled, mfa."""
+    parts = [p for p in re.split(r"[_\W]+", name.lower()) if p]
+    words = [" ".join(parts)] if parts else []
+    core = list(parts)
+    while len(core) > 1 and core[0] in _FLAG_PREFIXES:
+        core.pop(0)
+    while len(core) > 1 and core[-1] in _FLAG_SUFFIXES:
+        core.pop()
+    if core and core != parts:
+        words.append(" ".join(core))
+    return [w for w in dict.fromkeys(words) if len(w) > 1]
+
+
+def _flag_values(field: Dict[str, Any], name: str) -> None:
+    """
+    A boolean field's value list, so a question can name the flag: stored
+    values normalized to ``"true"``/``"false"`` (the LLM may write True / yes),
+    and ``"true"`` always present, with words from the column's own name
+    added to whatever the LLM gave ("in the KEV catalog" → in_kev = true;
+    "not in KEV" is the extractor's negation of that).
+    """
+    if field.get("type") != "boolean":
+        return
+    normalized: Dict[str, List[str]] = {}
+    for stored, synonyms in (field.get("values") or {}).items():
+        text = str(stored).strip().lower()
+        key = "true" if text in ("true", "yes", "1", "t", "y") else "false" if text in ("false", "no", "0", "f", "n") \
+            else None
+        if key is not None:
+            normalized.setdefault(key, [])
+            normalized[key] += [s for s in synonyms or [] if s not in normalized[key]]
+    normalized.setdefault("true", [])
+    normalized["true"] += [w for w in _flag_words(name) if w not in normalized["true"]]
+    field["values"] = normalized
 
 
 def _is_identifier(name: str) -> bool:
