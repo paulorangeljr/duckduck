@@ -489,8 +489,11 @@ How a question is read — rules find, the decision engine (Jev) decides:
 - **A quick sample first, every row on request.** Next to *Ask*, pick how
   many rows an answer shows first (10 · 50 · 100 · 500 · 1,000 · all;
   remembered per browser). The question stops reading as soon as it has
-  them (one more, to know whether there are more): a big API is read page by
-  page only until then. When there are more, **Get all rows** fetches them
+  them (one more, to know whether there are more): a big API gets one
+  request of that size when it can apply every filter itself, or is read
+  page by page only until then — even for "which/different …" answers,
+  whose de-duplication and order then apply to the sample (the full, sorted
+  answer is *Get all rows*). When there are more, **Get all rows** fetches them
   as a background job, with the same steps, pause and cancel — instantly,
   without reading again, when what was read was already everything the
   filters let through. In Python: `search.search(q, sample=100)` (or

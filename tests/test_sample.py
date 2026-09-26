@@ -136,3 +136,53 @@ def test_the_web_app():
     assert client.post("/api/ask", json={"question": "hi", "sample": 0}).status_code == 400
     everything = client.post("/api/ask", json={"question": "Which hosts have critical alerts?", "sample": None}).json()
     assert everything["result"]["sample"] is None and len(everything["result"]["results"]) == 30
+
+
+def test_a_distinct_sample_stops_reading_too():
+    """"Which hosts…" is DISTINCT and sorted: a sample still stops once it has enough different hosts."""
+    search, calls = _search(pages=True)
+    result = search.search("Which hosts have critical alerts?", sample=5)
+    assert len(result.results) == 5 and result.has_more and calls["pages"] == 2 and not result.data.complete
+    everything = search.fetch_all(result)  # the full answer, sorted over every row
+    assert len(everything.results) == 30 and list(everything.results["ip"]) == sorted(everything.results["ip"])
+
+
+def test_a_sample_of_a_big_api_is_one_request():
+    """The NVD case: "Give me a sample of vulnerabilities" must not page through every CVE (6 s apart)."""
+    from test_flags_and_negation import NOW, SilentLLM
+    from test_public_apis import LOG4SHELL, FakeNVD
+
+    from duckduck import NVD
+    from duckduck.semantic import CatalogGenerator
+
+    items = [{"cve": {**LOG4SHELL["cve"], "id": f"CVE-2026-{n:04d}"}} for n in range(300)]
+    nvd = NVD(sleep=lambda s: None)
+    fake = FakeNVD(items)
+    nvd.session.get = fake
+    duck = DuckAPI()
+    duck.register_api_function("nvd_cves", nvd.cves)
+    duck.register_streaming_function("nvd_cves", nvd.iter_cves)
+    catalog = CatalogGenerator(SilentLLM(), duck, clock=lambda: NOW).generate().catalog
+    fake.urls.clear()
+    search = SemanticSearch(catalog, duck, clock=lambda: NOW)
+    result = search.search("Give me a sample of vulnerabilities", sample=10)
+    assert result.status == "ok", result.report()
+    assert len(result.results) == 10 and result.has_more and result.sql.rstrip().endswith("LIMIT 10")
+    assert len(fake.urls) == 1 and "resultsPerPage=11" in fake.urls[0]
+
+
+def test_a_rate_limit_wait_stops_for_a_cancel():
+    from duckduck.progress import Cancelled, Progress, tracking, wait
+
+    slept, progress = [], Progress()
+
+    def sleep(s):
+        slept.append(s)
+        if len(slept) == 3:
+            progress.cancel()
+
+    with tracking(progress), pytest.raises(Cancelled):
+        wait(6.0, sleep)
+    assert len(slept) == 3  # 0.75 s of the 6, not all of it
+    wait(1.0, slept.append)  # no progress in context: one plain sleep
+    assert slept[-1] == 1.0

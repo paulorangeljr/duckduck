@@ -165,10 +165,15 @@ class PlanExecutor:
         result, sql, fetches, _ = self._execute(plan, now, keep=False)
         return result, sql, fetches
 
-    def execute_kept(self, plan: LogicalQueryPlan,
-                     now: datetime) -> Tuple[pd.DataFrame, str, List[SourceFetch], Materialized]:
-        """``execute``, keeping what was read (``Materialized``) — the caller ``release``s it."""
-        return self._execute(plan, now, keep=True)
+    def execute_kept(self, plan: LogicalQueryPlan, now: datetime,
+                     sample: bool = False) -> Tuple[pd.DataFrame, str, List[SourceFetch], Materialized]:
+        """
+        ``execute``, keeping what was read (``Materialized``) — the caller
+        ``release``s it. ``sample``: ``plan.limit`` rows are a sample — any
+        rows that pass will do, so reading stops as soon as there are enough
+        even under DISTINCT or the default order.
+        """
+        return self._execute(plan, now, keep=True, sample=sample)
 
     def run_on(self, data: Materialized, plan: LogicalQueryPlan) -> Tuple[pd.DataFrame, str]:
         """``plan`` over data read before (``data.covers(plan)``) — no source is read again."""
@@ -176,8 +181,8 @@ class PlanExecutor:
         sql = compile_plan(plan, self.catalog, data.relations, data.now)
         return self.duck.conn.sql(sql).df(), sql
 
-    def _execute(self, plan: LogicalQueryPlan, now: datetime,
-                 keep: bool) -> Tuple[pd.DataFrame, str, List[SourceFetch], Optional[Materialized]]:
+    def _execute(self, plan: LogicalQueryPlan, now: datetime, keep: bool,
+                 sample: bool = False) -> Tuple[pd.DataFrame, str, List[SourceFetch], Optional[Materialized]]:
         relations: Dict[str, str] = {}
         columns: Dict[str, Optional[set]] = {}
         fetches: List[SourceFetch] = []
@@ -193,7 +198,7 @@ class PlanExecutor:
                     fetches.append(SourceFetch(source=source, scan=src.relation))
                     continue
                 progress.step("fetching", f"Reading {source} ({src.table})")
-                df, fetch, table = self._fetch(plan, source, now, keep=keep)
+                df, fetch, table = self._fetch(plan, source, now, keep=keep, sample=sample)
                 progress.note_item("fetched", source, {"table": src.table, "rows": fetch.rows, "pages": fetch.pages,
                                                        "rows_scanned": fetch.rows_scanned,
                                                        "pushed": fetch.pushed_filters})
@@ -215,7 +220,9 @@ class PlanExecutor:
             ok = True
         finally:
             if keep and ok:
-                complete = not any(f.limit_pushed or f.stopped_early for f in fetches)
+                # a pushed limit only cut something when it came back full
+                complete = not any((f.limit_pushed and f.rows >= f.kwargs.get("limit", 0)) or f.stopped_early
+                                   for f in fetches)
                 return result, sql, fetches, Materialized(
                     relations=relations, columns=columns, complete=complete, now=now, key=reading_key(plan),
                     tables=tables, views=registered)
@@ -247,8 +254,8 @@ class PlanExecutor:
             return Condition(column, "ilike", pattern)
         return None  # neq / in: no parameter convention for them
 
-    def _fetch(self, plan: LogicalQueryPlan, source: str, now: datetime,
-               keep: bool = False) -> Tuple[Optional[pd.DataFrame], SourceFetch, Optional[str]]:
+    def _fetch(self, plan: LogicalQueryPlan, source: str, now: datetime, keep: bool = False,
+               sample: bool = False) -> Tuple[Optional[pd.DataFrame], SourceFetch, Optional[str]]:
         src = self.catalog.sources[source]
         fn = self.duck.functions.get(src.table.lower())
         if fn is None:
@@ -291,16 +298,18 @@ class PlanExecutor:
         # DISTINCT, no count (it needs every row), every filter already
         # applied server-side, and no ORDER BY (the API's first N rows aren't
         # the newest N).
+        # A *sample* (``sample=True``) only needs some rows that pass: DISTINCT and the implicit order
+        # then apply to the rows read (the full, sorted answer is ``fetch_all``).
         if (
-            len(plan.sources) == 1 and not plan.distinct and not plan.aggregate and not fetch.residual_filters
-            and not default_order(plan, self.catalog) and "limit" in params
+            len(plan.sources) == 1 and not plan.aggregate and not fetch.residual_filters and "limit" in params
+            and (sample or (not plan.distinct and not default_order(plan, self.catalog)))
         ):
             fetch.kwargs["limit"] = plan.limit
             fetch.limit_pushed = True
 
         iter_fn = self.duck.streaming_function(src.table) if self.stream else None
         if iter_fn is not None and not fetch.limit_pushed:
-            return None, fetch, self._stream(plan, source, iter_fn, conditions, fetch, now, keep=keep)
+            return None, fetch, self._stream(plan, source, iter_fn, conditions, fetch, now, keep=keep, sample=sample)
 
         logger.info(
             "▶ %s ← %s(%s) · pushed: %s · DuckDB: %s · limit %s",
@@ -324,7 +333,7 @@ class PlanExecutor:
         return df, fetch, None
 
     def _stream(self, plan: LogicalQueryPlan, source: str, iter_fn: Any, conditions: List[Tuple[str, Condition]],
-                fetch: SourceFetch, now: datetime, keep: bool = False) -> str:
+                fetch: SourceFetch, now: datetime, keep: bool = False, sample: bool = False) -> str:
         """
         The source page by page: its conditions pushed to the streaming
         function where it takes them, each page filtered by DuckDB with the
@@ -351,8 +360,11 @@ class PlanExecutor:
             for f, fdef in src.fields.items():
                 kept_columns.setdefault(src.physical_column(f), fdef.type)
         where = source_conditions(plan, self.catalog, source, now)
-        enough = (plan.limit if len(plan.sources) == 1 and not plan.distinct and not plan.aggregate
-                  and not default_order(plan, self.catalog) else None)
+        enough = (plan.limit if len(plan.sources) == 1 and not plan.aggregate
+                  and (sample or (not plan.distinct and not default_order(plan, self.catalog))) else None)
+        # DISTINCT: what counts is how many different answers the kept rows give
+        counted = ", ".join(quote_ident(src.physical_column(r.split(".")[1])) for r in plan.select) \
+            if plan.distinct and enough is not None else None
         table = f"_sem_{source}_{next(self._ids)}_stream"
         conn = self.duck.conn
         conn.execute(f"CREATE TEMP TABLE {table} ("
@@ -365,7 +377,7 @@ class PlanExecutor:
         )
         seen = set()
         try:
-            self._read_pages(src, fetch, table, kept_columns, where, enough, seen)
+            self._read_pages(src, fetch, table, kept_columns, where, enough, seen, counted)
         except BaseException:  # cancelled (or failed) mid-way: the half-filled table goes
             conn.execute(f"DROP TABLE IF EXISTS {table}")
             raise
@@ -385,7 +397,7 @@ class PlanExecutor:
         return table
 
     def _read_pages(self, src: Any, fetch: SourceFetch, table: str, needed: Dict[str, str], where: List[str],
-                    enough: Optional[int], seen: set) -> None:
+                    enough: Optional[int], seen: set, counted: Optional[str] = None) -> None:
         """Appends each page's kept rows to ``table``; a pause or cancel takes effect between pages."""
         conn = self.duck.conn
         kept = 0
@@ -405,6 +417,8 @@ class PlanExecutor:
             kept = conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
             progress.update(f"Reading {src.table} page by page: page {fetch.pages} · "
                             f"{fetch.rows_scanned:,} rows read · {kept:,} kept")
+            if enough is not None and counted and kept >= enough:
+                kept = conn.execute(f"SELECT count(*) FROM (SELECT DISTINCT {counted} FROM {table})").fetchone()[0]
             if enough is not None and kept >= enough:
                 fetch.stopped_early = True
                 break  # enough rows for the answer: no more pages asked

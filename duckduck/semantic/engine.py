@@ -406,7 +406,8 @@ class SemanticSearch:
             frame, _ = self.executor.run_on(data, run)
             result.reused_data = True
         else:
-            frame, _, result.fetches, data = self.executor.execute_kept(run, now)
+            progress.note(sql=display_sql(shown, self.catalog, now))  # what a pause shows: the SQL that runs
+            frame, _, result.fetches, data = self.executor.execute_kept(run, now, sample=sampled)
             result.reused_data = False if again else None
             self._keep(data)
         result.data = data
@@ -414,8 +415,8 @@ class SemanticSearch:
         result.query_plan = shown
         result.sql = display_sql(shown, self.catalog, data.now)
         result.sample = sample if sampled else None
-        if sampled:
-            result.has_more = len(frame) > sample
+        if sampled:  # more than the sample came back — or reading stopped before the end
+            result.has_more = len(frame) > sample or not data.complete
             frame = frame.head(sample)
         else:
             result.has_more = plan.aggregate is None and len(frame) >= plan.limit

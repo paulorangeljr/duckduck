@@ -57,6 +57,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 import pandas as pd
 import requests
 
+from . import progress
 from .logs import PageProgress, get_logger, instrument_session
 
 logger = get_logger("nvd")
@@ -141,7 +142,7 @@ class NVD:
         if self._last_request is not None and self.request_interval > 0:
             wait = self.request_interval - (time.monotonic() - self._last_request)
             if wait > 0:
-                self._sleep(wait)
+                progress.wait(wait, self._sleep)  # a paused / cancelled question stops here, not after it
 
     def _get(self, params: List[Tuple[str, Optional[str]]]) -> Dict[str, Any]:
         """One request (after the pause NVD asks for), retried on a rate limit or overload."""
@@ -154,7 +155,7 @@ class NVD:
             self._last_request = time.monotonic()
             if response.status_code in _RETRY_STATUS and attempt < self.max_retries:
                 logger.info("NVD answered %s — retrying in %.0fs", response.status_code, delay)
-                self._sleep(delay)
+                progress.wait(delay, self._sleep)
                 self._last_request = None  # the backoff was the pause
                 delay *= 2
                 continue

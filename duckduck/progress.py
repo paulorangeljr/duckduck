@@ -163,3 +163,17 @@ def checkpoint() -> None:
     p = _current.get()
     if p is not None:
         p.checkpoint()
+
+
+def wait(seconds: float, sleep: Any = time.sleep, step: float = 0.25) -> None:
+    """``sleep(seconds)`` in slices, so a pause or cancel doesn't wait out a rate limit's delay first."""
+    p = _current.get()
+    if p is None:
+        sleep(seconds)
+        return
+    left = seconds
+    while left > 0:
+        p.checkpoint()
+        sleep(min(step, left))
+        left -= step
+    p.checkpoint()
