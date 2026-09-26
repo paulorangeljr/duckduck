@@ -21,6 +21,7 @@ them.
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 
+from .. import progress
 from .intent import DecisionRecord
 
 
@@ -41,6 +42,7 @@ def column_options(catalog: Any, result: Any) -> List[Dict[str, Any]]:
     Every field of the answer's tables, one entry each: ``ref``, ``source``,
     ``field``, ``description``, ``type``, ``selected`` (already shown),
     ``asked`` (part of what the question asked for — can't be removed),
+    ``kept`` (in the rows already read: adding it reads nothing again),
     ``suggested`` with ``why`` (filtered on, the time field). Suggested
     first, then in the catalog's order. Empty when columns can't be added.
     """
@@ -57,6 +59,14 @@ def column_options(catalog: Any, result: Any) -> List[Dict[str, Any]]:
         tf = catalog.sources[source].time_field
         if tf:
             why.setdefault(f"{source}.{tf}", "when it happened")
+    data = getattr(result, "data", None)
+
+    def kept(source: str, name: str) -> bool:
+        if data is None or data.released:
+            return False
+        cols = data.columns.get(source, set())
+        return cols is None or catalog.sources[source].physical_column(name) in cols
+
     options: List[Dict[str, Any]] = []
     for source in plan.sources:
         for name, fdef in catalog.sources[source].fields.items():
@@ -65,6 +75,7 @@ def column_options(catalog: Any, result: Any) -> List[Dict[str, Any]]:
                 "ref": ref, "source": source, "field": name, "description": fdef.description or "",
                 "type": fdef.type, "selected": ref in shown, "asked": ref in base,
                 "suggested": ref in why and ref not in base, "why": why.get(ref, ""),
+                "kept": kept(source, name),
             })
     options.sort(key=lambda o: (not o["asked"], not o["suggested"]))
     return options
@@ -93,14 +104,13 @@ def with_columns(search: Any, result: Any, columns: Iterable[str], now: Optional
         if ref not in base and ref not in extra:
             extra.append(ref)
     started = time.perf_counter()
-    now = now or search.clock()
     new_plan = search.validator.validate(plan.model_copy(update={"select": base + extra}))
     widened = copy.copy(result)
-    widened.query_plan, widened.added_columns = new_plan, extra
-    from .compiler import display_sql
-
-    widened.sql = display_sql(new_plan, search.catalog, now)
-    widened.results, _, widened.fetches = search.executor.execute(new_plan, now)
+    widened.added_columns = extra
+    progress.step("columns", "Adding " + (", ".join(extra) or "no columns — back to the original ones"))
+    cap = result.plan_limit or new_plan.limit  # the plan's own row cap; the sample stays the sample
+    search._answer_rows(widened, new_plan.model_copy(update={"limit": cap}), now or search.clock(), result.sample,
+                        data=result.data, again=True)
     widened.decisions = [d for d in result.decisions if d.kind != "columns"]
     if extra:
         widened.decisions.append(DecisionRecord(

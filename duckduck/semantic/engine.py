@@ -9,8 +9,10 @@ decision comes back as ``status="needs_clarification"`` (never executed
 on a guess), an invalid plan as ``status="invalid_plan"``.
 """
 
+import contextvars
 import inspect
 import logging
+import threading
 from collections import OrderedDict
 import os
 import time
@@ -33,7 +35,7 @@ from .extraction import ValueExtractor
 from .graph import RelationshipGraph
 from .intent import Clarification, ClarificationNeeded, ClarificationOption, DecisionRecord, ScoredSource, SemanticIntent, Thresholds
 from .interpreter import SemanticInterpreter
-from .plan import LogicalQueryPlan
+from .plan import MAX_LIMIT, LogicalQueryPlan
 from .planner import QueryPlanner, SourcePlan, TrivialAnswer
 from .retrieval import CatalogRetriever
 from . import scope
@@ -41,6 +43,19 @@ from .shapes import ACROSS_SHAPES, AnswerShapes, load_answer_shapes
 from .validator import PlanValidationError, QueryValidator
 
 logger = logging.getLogger("duckduck.semantic")
+
+
+_DEFAULT: Any = object()
+#: The sample size of the search running in this context (``search(sample=)``).
+_SAMPLE: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar("duckduck_sample", default=None)
+
+
+def _check_sample(sample: Optional[int]) -> Optional[int]:
+    if sample is None:
+        return None
+    if isinstance(sample, bool) or not isinstance(sample, int) or not 1 <= sample <= MAX_LIMIT:
+        raise ValueError(f"sample: a number of rows from 1 to {MAX_LIMIT:,}, or None for every row")
+    return sample
 
 
 def _utcnow() -> datetime:
@@ -125,6 +140,16 @@ class SearchResult:
     hypotheses: List[Dict[str, Any]] = field(default_factory=list)
     #: Fields the user added to the answer after it came back (``SemanticSearch.with_columns``).
     added_columns: List[str] = field(default_factory=list)
+    #: The answer is a sample of at most this many rows (``search(sample=)``); ``None``: not sampled.
+    sample: Optional[int] = None
+    #: The plan's own row cap (``query_plan.limit`` is the sample when the answer was sampled).
+    plan_limit: Optional[int] = None
+    #: There are more rows than shown — the sample, or the plan's row cap, was reached (``fetch_all``).
+    has_more: bool = False
+    #: Answered again from the rows read before (``with_columns`` / ``fetch_all``) — no source read.
+    reused_data: Optional[bool] = None
+    #: The sources read for this answer, kept in DuckDB (``PlanExecutor.Materialized``; not serialized).
+    data: Any = field(default=None, repr=False, compare=False)
     route: Optional[Dict[str, Any]] = None
     #: What it cost: decision-engine and LLM calls, tokens, seconds, reported money (``metering.Usage``).
     usage: Dict[str, Any] = field(default_factory=dict)
@@ -188,6 +213,10 @@ class SearchResult:
             "route": self.route,
             "hypotheses": self.hypotheses,
             "added_columns": self.added_columns,
+            "sample": self.sample,
+            "has_more": self.has_more,
+            "reused_data": self.reused_data,
+            "data_complete": bool(self.data is not None and self.data.complete),
             "usage": self.usage,
             "reply": self.reply,
             "suggestions": self.suggestions,
@@ -277,9 +306,18 @@ class SemanticSearch:
         router_options: Optional[Dict[str, Any]] = None,
         hypotheses: Union[bool, Dict[str, Any], Any] = True,
         stream: bool = True,
+        sample: Optional[int] = None,
+        keep_answers: int = 20,
     ):
         if isinstance(catalog, str):
             catalog = Catalog.load(catalog)
+        #: Answers that are rows show at most this many (``search(sample=)`` per question); ``None``: every row
+        #: up to the plan's cap. More can be fetched afterwards (``fetch_all``).
+        self.sample = _check_sample(sample)
+        #: How many answers keep the data they read (for ``with_columns`` / ``fetch_all``); older ones release it.
+        self.keep_answers = keep_answers
+        self._kept: "OrderedDict[int, Any]" = OrderedDict()
+        self._kept_lock = threading.Lock()
         self.duck = duck
         self.catalog = self._available_subset(catalog, duck, strict) if duck is not None else catalog
         self.engine = engine or LexicalDecisionEngine()
@@ -350,6 +388,74 @@ class SemanticSearch:
         self.taken_over: Dict[str, Any] = {}
         #: Why the ``llm`` reader couldn't be built (``from_config``), when it couldn't.
         self.llm_reader_error: Optional[str] = None
+
+    # -- the rows of an answer: a sample, the data kept, all of them -----------------------------
+
+    def _answer_rows(self, result: "SearchResult", plan: LogicalQueryPlan, now: datetime,
+                     sample: Optional[int], data: Any = None, again: bool = False) -> None:
+        """
+        Runs ``plan`` for ``result`` — over ``data`` (rows read before) when
+        it covers the plan, else reading the sources and keeping what was
+        read. An answer that is rows asks for one more than ``sample`` (so
+        paging stops early and ``has_more`` is known) and shows ``sample``.
+        """
+        sampled = sample is not None and plan.aggregate is None and sample < plan.limit
+        shown = plan.model_copy(update={"limit": sample}) if sampled else plan
+        run = plan.model_copy(update={"limit": sample + 1}) if sampled else plan
+        if data is not None and data.covers(run, self.catalog) and (data.complete or not self._needs_more(result, run)):
+            frame, _ = self.executor.run_on(data, run)
+            result.reused_data = True
+        else:
+            frame, _, result.fetches, data = self.executor.execute_kept(run, now)
+            result.reused_data = False if again else None
+            self._keep(data)
+        result.data = data
+        result.plan_limit = plan.limit
+        result.query_plan = shown
+        result.sql = display_sql(shown, self.catalog, data.now)
+        result.sample = sample if sampled else None
+        if sampled:
+            result.has_more = len(frame) > sample
+            frame = frame.head(sample)
+        else:
+            result.has_more = plan.aggregate is None and len(frame) >= plan.limit
+        result.results = frame.reset_index(drop=True)
+
+    @staticmethod
+    def _needs_more(result: "SearchResult", run: LogicalQueryPlan) -> bool:
+        """Kept rows that were cut short only answer a plan asking for no more rows than before."""
+        before = result.query_plan.limit + (1 if result.sample else 0) if result.query_plan else 0
+        return run.limit > before
+
+    def _keep(self, data: Any) -> None:
+        with self._kept_lock:
+            self._kept[id(data)] = data
+            while len(self._kept) > max(0, self.keep_answers):
+                _, old = self._kept.popitem(last=False)
+                old.release(self.duck.conn)
+            if self.keep_answers <= 0:
+                data.release(self.duck.conn)
+
+    def fetch_all(self, result: "SearchResult") -> "SearchResult":
+        """
+        ``result`` without its sample or row cap (up to ``plan.MAX_LIMIT``
+        rows): from the data already read when that was everything the
+        filters let through, else reading the sources again. A new result;
+        decisions, ids and added columns stay.
+        """
+        import copy
+
+        if result.query_plan is None or result.status != "ok":
+            raise ValueError("only an answer with a plan has more rows to fetch")
+        if self.executor is None:
+            raise RuntimeError("SemanticSearch was built without a DuckAPI instance — pass duck=.")
+        started = time.perf_counter()
+        full = copy.copy(result)
+        progress.step("fetching", "Getting every row of the answer")
+        self._answer_rows(full, result.query_plan.model_copy(update={"limit": MAX_LIMIT}),
+                          self.clock(), None, data=result.data, again=True)
+        full.elapsed_ms = (time.perf_counter() - started) * 1000
+        return full
 
     def column_options(self, result: "SearchResult") -> List[Dict[str, Any]]:
         """The fields ``result``'s answer could also show — see ``columns.column_options``."""
@@ -436,6 +542,7 @@ class SemanticSearch:
         kwargs.setdefault("router_options", cfg.router.model_dump())
         kwargs.setdefault("hypotheses", cfg.hypotheses.model_dump())
         kwargs.setdefault("stream", cfg.stream)
+        kwargs.setdefault("sample", cfg.sample)
         search = cls(cfg.path(cfg.catalog_path), duck, **kwargs)
         # built against the *available* catalog subset
         extractor = cfg.build_extractor(search.catalog, duck)
@@ -456,14 +563,15 @@ class SemanticSearch:
 
     def conversation(self, question: str, execute: bool = True, max_rounds: int = 5,
                      user: Optional[str] = None, only_sources: Optional[Iterable[str]] = None,
-                     pinned: Optional[Dict[str, Any]] = None, reader: Optional[str] = None) -> "Conversation":
+                     pinned: Optional[Dict[str, Any]] = None, reader: Optional[str] = None,
+                     sample: Any = _DEFAULT) -> "Conversation":
         """
         Asks ``question`` and keeps the thread: while the result needs
         clarification, ``conversation.answer(reply)`` pins the chosen option
         and asks again — each round settles one decision, so it ends.
         """
         return Conversation(self, question, execute=execute, max_rounds=max_rounds, user=user,
-                            only_sources=only_sources, pinned=pinned, reader=reader)
+                            only_sources=only_sources, pinned=pinned, reader=reader, sample=sample)
 
     def plan(self, question: str) -> SearchResult:
         """Interprets and plans ``question`` without executing anything."""
@@ -541,16 +649,29 @@ class SemanticSearch:
     def search(self, question: str, execute: bool = True, pinned: Optional[Dict[str, Any]] = None,
                conversation_id: Optional[str] = None, user: Optional[str] = None,
                only_sources: Optional[Iterable[str]] = None, reader: Optional[str] = None,
-               requested_reader: Optional[str] = None) -> SearchResult:
+               requested_reader: Optional[str] = None, sample: Any = _DEFAULT) -> SearchResult:
         """
         Answers ``question``. ``pinned``: decisions settled by the user's
         answers to earlier clarifications (``ClarificationOption.pins``) —
         ``conversation()`` keeps track of them for you. ``only_sources``: the
         tables the user chose for this question (``preview()`` offers them) —
-        nothing else is used, joins included. With a feedback store, the
-        result is recorded (``result.search_id``).
+        nothing else is used, joins included. ``sample``: an answer that is
+        rows shows at most this many (default: the search's ``sample``;
+        ``None``: every row up to the plan's cap) — ``result.has_more`` says
+        there are more, ``fetch_all(result)`` gets them. With a feedback
+        store, the result is recorded (``result.search_id``).
         """
         only = self._check_scope(only_sources)
+        token = _SAMPLE.set(self.sample if sample is _DEFAULT else _check_sample(sample))
+        try:
+            return self._search_sampled(question, execute, pinned, conversation_id, user, only, reader,
+                                        requested_reader)
+        finally:
+            _SAMPLE.reset(token)
+
+    def _search_sampled(self, question: str, execute: bool, pinned: Optional[Dict[str, Any]],
+                        conversation_id: Optional[str], user: Optional[str], only: Optional[frozenset],
+                        reader: Optional[str], requested_reader: Optional[str]) -> SearchResult:
         requested = self.check_reader(reader)
         route = None
         with scope.only_sources(only), metered() as usage:
@@ -847,7 +968,7 @@ class SemanticSearch:
         if execute:
             if self.executor is None:
                 raise RuntimeError("SemanticSearch was built without a DuckAPI instance — use plan() or pass duck=.")
-            result.results, _, result.fetches = self.executor.execute(result.query_plan, now)
+            self._answer_rows(result, result.query_plan, now, _SAMPLE.get())
             result.status = "ok"
         result.elapsed_ms = (time.perf_counter() - started) * 1000
         return result
@@ -1154,10 +1275,13 @@ class Conversation:
 
     def __init__(self, search: "SemanticSearch", question: str, execute: bool = True, max_rounds: int = 5,
                  user: Optional[str] = None, only_sources: Optional[Iterable[str]] = None,
-                 pinned: Optional[Dict[str, Any]] = None, reader: Optional[str] = None):
+                 pinned: Optional[Dict[str, Any]] = None, reader: Optional[str] = None,
+                 sample: Any = _DEFAULT):
         import uuid
 
         self.search = search
+        #: The rows an answer shows, every round (default: the search's ``sample``).
+        self.sample = search.sample if sample is _DEFAULT else _check_sample(sample)
         #: How the question is read, every round (``rules`` / ``llm``; default: the search's).
         #: ``auto``: the router picks the mode on the first round, and every later round keeps it.
         self.requested_reader = search.check_reader(reader)
@@ -1174,6 +1298,11 @@ class Conversation:
         #: One entry per reply: what was asked, the reply, the option it picked (or None).
         self.history: List[Dict[str, Any]] = []
         self.result: SearchResult = self._ask()
+
+    def fetch_all(self) -> SearchResult:
+        """The latest answer with every row — ``SemanticSearch.fetch_all``; it becomes the latest."""
+        self.result = self.search.fetch_all(self.result)
+        return self.result
 
     def with_columns(self, columns: Iterable[str]) -> SearchResult:
         """The latest answer with more columns — ``SemanticSearch.with_columns``; it becomes the latest."""
@@ -1220,7 +1349,8 @@ class Conversation:
     def _ask(self) -> SearchResult:
         result = self.search.search(self.question, execute=self.execute, pinned=self.pinned,
                                     conversation_id=self.id, user=self.user, only_sources=self.only_sources,
-                                    reader=self.reader, requested_reader=self.requested_reader)
+                                    reader=self.reader, requested_reader=self.requested_reader,
+                                    sample=self.sample)
         self.reader = result.reader  # auto: the mode it picked, for every later round
         return result
 

@@ -53,6 +53,10 @@ input, textarea, select { font: inherit; color: var(--ink); background: var(--su
 .ask .reader { align-self: center; flex: none; }
 .ask .reader button[disabled] { opacity: .45; cursor: not-allowed; }
 #askbtn { min-width: 92px; }
+#sample { width: auto; flex: none; }
+.morebar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 8px 0; padding: 8px 12px;
+  border-radius: 10px; background: var(--surface-2); font-size: 14px; }
+.colstatus { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; min-height: 20px; }
 button.help { flex: none; align-self: center; width: 26px; height: 26px; border-radius: 50%; padding: 0;
               border: 1px solid var(--border); background: var(--surface-2); color: var(--ink-2); cursor: pointer;
               font: inherit; font-size: 13px; font-weight: 600; }
@@ -320,6 +324,10 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
         <button type="button" class="help" id="readerhelpbtn" aria-expanded="false" aria-controls="readerhelp"
           title="What do Paddle and Dive do?">?</button>
         <input id="question" placeholder="Ask about your data — e.g. Which hosts have critical alerts?" autocomplete="off">
+        <select id="sample" aria-label="Rows to show first" title="How many rows an answer shows at first — a quick sample. You can get every row afterwards.">
+          <option value="10">10 rows</option><option value="50">50 rows</option><option value="100" selected>100 rows</option>
+          <option value="500">500 rows</option><option value="1000">1,000 rows</option><option value="all">All rows</option>
+        </select>
         <button class="primary" type="submit" id="askbtn">Ask</button>
       </form>
       <div class="panel readerhelp" id="readerhelp" hidden>
@@ -779,12 +787,27 @@ $("#askform").addEventListener("submit", (e) => {
   if (stale) runPreview();  // asked before the pause: the box catches up with this question
 });
 async function ask(q, extra = {}) {
-  const body = {question: q, user: user(), reader: READER, ...extra};
+  const body = {question: q, user: user(), reader: READER, sample: sampleSize(), ...extra};
   if (pre.chosen) body.only_sources = [...pre.chosen];
   if (pre.entity) body.entity = pre.entity;
   if (pre.field) body.values_field = pre.field;
   if (pre.blocked.size) body.blocked_joins = [...pre.blocked].map(k => k.split("="));
   runJob("/api/ask", body, q);
+}
+
+// ---- the sample: how many rows an answer shows first (every row afterwards, on request) ----
+function sampleSize() { const v = $("#sample").value; return v === "all" ? null : +v; }
+try { const v = localStorage.getItem("duckduck-sample"); if (v && [...$("#sample").options].some(o => o.value === v)) $("#sample").value = v; } catch {}
+$("#sample").addEventListener("change", () => { try { localStorage.setItem("duckduck-sample", $("#sample").value); } catch {} });
+
+function moreBar(c) {
+  const r = c.result, n = (r.results || []).length;
+  if (!r.has_more) return "";
+  const what = r.sample ? `Showing a sample of ${n.toLocaleString()} rows — there are more.`
+                        : `Stopped at ${n.toLocaleString()} rows — there may be more.`;
+  const how = r.data_complete ? "instant: every row was already read" : "reads the data again, in the background — you can pause or cancel";
+  return `<div class="morebar"><span>${what}</span><button class="secondary" type="button" data-fetchall>Get all rows</button>
+    <span class="muted small">${how}</span></div>`;
 }
 
 // ---- live progress: what the question is doing now; pause to look, cancel if it makes no sense ----
@@ -969,12 +992,13 @@ function render(c) {
     html += `<div class="card"><div class="row"><span class="pill">${esc(SHAPE_WORDS[shape] || shape)}</span>
       ${r.only_sources ? `<span class="pill" title="you chose these tables">only: ${esc(r.only_sources.join(", "))}</span>` : ""}
       ${tables.map(s => `<span class="pill">${icon(META?.source_icons?.[s])}${esc(s)}</span>`).join("")}
-      <span class="muted small">${n} row${n === 1 ? "" : "s"}${c.truncated ? " (first 500 shown)" : ""}</span>
+      <span class="muted small">${n.toLocaleString()} row${n === 1 ? "" : "s"}${r.sample && r.has_more ? " (sample)" : ""}${c.truncated ? " (first 500 shown)" : ""}</span>
       ${runPill(r)}
       ${(c.result.column_options || []).length ? `<button class="secondary" type="button" data-columns aria-expanded="${COLS_OPEN.has(c.conversation_id)}"
         style="margin-left:auto;padding:4px 10px;font-size:13px" title="Show more of these rows: other columns of the same tables">＋ Columns${(r.added_columns || []).length ? ` (${r.added_columns.length})` : ""}</button>` : ""}
       ${META?.features?.sql && n ? `<button class="secondary" type="button" data-takeover style="${(c.result.column_options || []).length ? "" : "margin-left:auto;"}padding:4px 10px;font-size:13px"
         title="Register these rows as a table and continue in the SQL tab">Take over from here</button>` : ""}</div>
+      ${moreBar(c)}
       ${COLS_OPEN.has(c.conversation_id) ? columnPanel(r) : ""}
       ${table(r.results)}
       ${r.summary ? `<details><summary>Where it was looked for</summary>${table(r.summary)}</details>` : ""}
@@ -995,6 +1019,8 @@ function render(c) {
   box.querySelector("[data-runsql]")?.addEventListener("click", () => { $("#sqltext").value = r.sql; openTab("sql"); });
   box.querySelector("[data-takeover]")?.addEventListener("click", () => takeOver(c.conversation_id));
   wireColumns(c);
+  box.querySelector("[data-fetchall]")?.addEventListener("click", () =>
+    runJob("/api/all", {conversation_id: c.conversation_id}, r.question));
   box.querySelectorAll("[data-suggest]").forEach(b => b.addEventListener("click", () => {
     $("#question").value = b.dataset.suggest; askFresh(); }));
   box.querySelector("[data-anyway]")?.addEventListener("click", () => ask(r.question, {in_scope: true}));
@@ -1010,7 +1036,7 @@ let colsTimer = null;
 function columnPanel(r) {
   const opts = r.column_options || [];
   const chip = o => `<button type="button" class="colchip" data-col="${esc(o.ref)}" aria-pressed="${o.selected}"
-      ${o.asked ? "disabled" : ""} title="${esc(o.description || o.ref)}${o.asked ? " — what the question asked for" : ""}">${esc(
+      ${o.asked ? "disabled" : ""} title="${esc(o.description || o.ref)}${o.asked ? " — what the question asked for" : o.kept ? " — already read: instant" : " — needs reading the data again"}">${esc(
       r.query_plan.sources.length > 1 ? o.ref : o.field)}${o.why ? ` <span class="why">· ${esc(o.why)}</span>` : ""}</button>`;
   const suggested = opts.filter(o => o.suggested), rest = opts.filter(o => !o.suggested && !o.asked), asked = opts.filter(o => o.asked);
   const distinct = r.query_plan.distinct;
@@ -1020,6 +1046,8 @@ function columnPanel(r) {
     ${suggested.length ? `<h4>Used by the question <button type="button" class="secondary" data-colsuggested
         style="padding:1px 8px;font-size:12px;margin-left:6px">add all</button></h4><div class="fbchips">${suggested.map(chip).join("")}</div>` : ""}
     ${rest.length ? `<h4>Other columns</h4><div class="fbchips">${rest.map(chip).join("")}</div>` : ""}
+    <div class="colstatus" id="colstatus" role="status">${r.reused_data === true ? "✓ From the rows already read — nothing fetched again."
+      : r.reused_data === false ? "Read the data again (the rows read before didn't have those columns)." : ""}</div>
     <div class="muted small">Same question, same filters — only the columns change.${distinct ? " One row per distinct combination." : ""}
       ${(r.added_columns || []).length ? ` <a href="#" data-colreset>Back to the original columns</a>` : ""}</div>
   </div>`;
@@ -1038,8 +1066,15 @@ function wireColumns(c) {
   const send = (cols) => {
     clearTimeout(colsTimer);
     colsTimer = setTimeout(async () => {
+      const kept = cols.every(ref => (c.result.column_options || []).some(o => o.ref === ref && (o.kept || o.selected)));
+      if (!kept) {  // not in the rows read: read again, showing each step (pause / cancel)
+        runJob("/api/columns", {conversation_id: c.conversation_id, columns: cols}, c.result.question); return;
+      }
+      const st = panel.querySelector("#colstatus");
+      if (st) st.innerHTML = `<span class="spin" aria-hidden="true"></span> Updating from the rows already read…`;
+      panel.querySelectorAll(".colchip").forEach(b => b.disabled = true);
       try { render(await api("/api/columns", {conversation_id: c.conversation_id, columns: cols})); }
-      catch (err) { toast(err.message); }
+      catch (err) { toast(err.message); render(c); }
     }, 350);  // a few quick taps → one run
   };
   panel.querySelectorAll(".colchip:not([disabled])").forEach(b => b.addEventListener("click", () => {

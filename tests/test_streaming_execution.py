@@ -87,6 +87,12 @@ def test_a_column_the_catalog_expects_but_no_page_has_is_an_error():
 
 def test_no_temp_table_is_left_behind():
     search, _ = _search()
+    tables = lambda: search.duck.conn.sql("SELECT table_name FROM duckdb_tables() WHERE table_name LIKE '_sem_%'").df()
+    search.keep_answers = 1  # the latest answer keeps what it read (for more columns / every row) ...
     search.search("How many critical alerts are there?")
-    left = search.duck.conn.sql("SELECT table_name FROM duckdb_tables() WHERE table_name LIKE '_sem_%'").df()
-    assert left.empty
+    assert len(tables()) == 1
+    search.search("How many critical alerts are there?")
+    assert len(tables()) == 1  # ... and releases it when a newer one takes its place
+    search.keep_answers = 0
+    search.search("How many critical alerts are there?")
+    assert tables().empty

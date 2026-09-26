@@ -12,6 +12,7 @@ HTML page (``webpage.PAGE``) over a JSON API:
 ``POST /api/ask {..., background: true}``  the same, as a job → 202 ``{job_id}`` (also ``/api/answer``)
 ``GET  /api/jobs/{id}?since=n``              what it's doing: steps from n, what it has so far (decisions, SQL, rows read), the result
 ``POST /api/jobs/{id}/pause|resume|cancel``  stop at the next step / go on / give up (answers at once with what was done)
+``POST /api/all {conversation_id, background}``  the latest answer with every row, not just its sample (a job with ``background``)
 ``POST /api/columns {conversation_id, columns}``  the latest answer again with these extra fields (``column_options``)
 ``POST /api/feedback {search_id, verdict, categories, reason, expected, user, feedback_id}``
 ``GET  /api/searches``, ``/api/searches/{id}``  history / one search's decision trail
@@ -263,6 +264,10 @@ def create_app(
             only = body.get("only_sources")
             search._check_scope(list(only) if only is not None else None)
             search.check_reader(body.get("reader") or None)
+            if "sample" in body:
+                from .engine import _check_sample
+
+                _check_sample(body["sample"])
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         return pins
@@ -270,9 +275,10 @@ def create_app(
     def start_conversation(body: Dict[str, Any], question: str, search: Any, pins: Dict[str, Any]) -> Any:
         only = body.get("only_sources")
         try:
+            extra = {"sample": body["sample"]} if "sample" in body else {}
             conv = search.conversation(question, user=body.get("user") or None,
                                        only_sources=list(only) if only is not None else None,
-                                       pinned=pins or None, reader=body.get("reader") or None)
+                                       pinned=pins or None, reader=body.get("reader") or None, **extra)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         with lock:
@@ -314,11 +320,32 @@ def create_app(
         wanted = body.get("columns") or []
         if not isinstance(wanted, list):
             raise HTTPException(400, "columns: a list of source.field names")
-        try:
-            conv.with_columns([str(c) for c in wanted])
-        except ValueError as exc:
-            raise HTTPException(400, str(exc))
-        return dump(payload(conv))
+
+        def run() -> Any:
+            try:
+                conv.with_columns([str(c) for c in wanted])
+            except ValueError as exc:
+                raise HTTPException(400, str(exc))
+            return conv
+
+        if body.get("background"):  # the rows aren't kept any more: read again, with its steps shown
+            return start_job(run)
+        return dump(payload(run()))
+
+    @app.post("/api/all")
+    def fetch_all(body: Dict[str, Any] = Body(...)):
+        conv = conversation(str(body.get("conversation_id")))
+
+        def run() -> Any:
+            try:
+                conv.fetch_all()
+            except ValueError as exc:
+                raise HTTPException(400, str(exc))
+            return conv
+
+        if body.get("background"):
+            return start_job(run)
+        return dump(payload(run()))
 
     @app.post("/api/feedback")
     def feedback(body: Dict[str, Any] = Body(...)):

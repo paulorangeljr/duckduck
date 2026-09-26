@@ -486,6 +486,22 @@ How a question is read — rules find, the decision engine (Jev) decides:
   Python: `with duckduck.progress.tracking(p := Progress()): search.search(q)`
   from a thread, and `p.pause()` / `p.resume()` / `p.cancel()` (raises
   `duckduck.progress.Cancelled` in the search) from another.
+- **A quick sample first, every row on request.** Next to *Ask*, pick how
+  many rows an answer shows first (10 · 50 · 100 · 500 · 1,000 · all;
+  remembered per browser). The question stops reading as soon as it has
+  them (one more, to know whether there are more): a big API is read page by
+  page only until then. When there are more, **Get all rows** fetches them
+  as a background job, with the same steps, pause and cancel — instantly,
+  without reading again, when what was read was already everything the
+  filters let through. In Python: `search.search(q, sample=100)` (or
+  `SemanticSearch(sample=…)`, `semantic.sample`), `result.has_more`,
+  `search.fetch_all(result)`.
+- **What was read is kept.** The rows each table contributed (every catalog
+  column, after its filters) stay in DuckDB for the latest answers
+  (`keep_answers`, 20): *＋ Columns* and *Get all rows* answer from them
+  (the panel says "From the rows already read — nothing fetched again");
+  when they aren't there anymore, the page shows the steps of reading
+  again.
 - **More columns after the answer.** An answer that is rows has a
   **＋ Columns** button: the other fields of the tables it read, the ones
   the question filtered on (and the time field) first — "add all" shows

@@ -368,6 +368,9 @@ class SemanticConfig(_Strict):
     #: Read a source page by page (its streaming function) when it can't be capped at the source,
     #: keeping only the rows its filters let through — never the whole API result in memory.
     stream: bool = True
+    #: Answers that are rows show at most this many (a sample; the web page lets each person pick);
+    #: ``None``: every row up to ``default_limit``. More can be fetched afterwards (``fetch_all``).
+    sample: Optional[int] = Field(default=None, ge=1, le=100_000)
     catalog_generation: CatalogGenerationConfig = Field(default_factory=CatalogGenerationConfig)
     thresholds: Thresholds = Field(default_factory=Thresholds)
     #: Override the questions asked back to the user (``clarify.DEFAULT_TEXTS`` keys) — e.g. in Portuguese.

@@ -87,7 +87,7 @@ def proposal(search: Any, result: Any) -> Dict[str, Any]:
     plan = result.query_plan
     rows = len(result.results)
     return {"name": _name(search, None, result), "rows": rows, "columns": [str(c) for c in result.results.columns],
-            "capped": bool(plan is not None and rows >= plan.limit), "limit": plan.limit if plan is not None else None,
+            "capped": bool(plan is not None and (result.has_more or rows >= plan.limit)), "limit": plan.limit if plan is not None else None,
             "question": result.question, "taken": sorted(search.taken_over)}
 
 
@@ -98,9 +98,11 @@ def take_over(search: Any, result: Any, name: Optional[str] = None, full: bool =
     duck = search.duck
     frame, how = result.results, "the rows of the answer"
     plan = result.query_plan
-    if full and plan is not None and search.executor is not None and len(frame) >= plan.limit:
-        frame, _, _ = search.executor.execute(plan.model_copy(update={"limit": MAX_LIMIT}), now or search.clock())
-        how = f"its plan run again without the {plan.limit}-row cap"
+    if full and plan is not None and search.executor is not None and (result.has_more or len(frame) >= plan.limit):
+        whole = search.fetch_all(result)
+        frame = whole.results
+        how = (f"every row of its plan (the answer showed {len(result.results):,})" if whole.reused_data
+               else f"its plan run again without the {plan.limit}-row cap")
     name = _name(search, name, result)
     snapshot = frame.reset_index(drop=True).copy()
 

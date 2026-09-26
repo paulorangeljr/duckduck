@@ -32,7 +32,7 @@ def test_an_answer_cut_at_its_row_cap_runs_again_whole():
     result = search.search("Show me the alerts with critical severity")
     assert len(result.results) == 2  # capped
     whole = search.take_over(result, "critical_alerts")
-    assert whole.rows == 3 and "without the 2-row cap" in whole.how
+    assert whole.rows == 3 and "every row of its plan (the answer showed 2)" in whole.how  # from the rows read
     shown = search.take_over(result, "critical_alerts", full=False)  # same name: replaced
     assert shown.rows == 2 and len(search.duck.sql("SELECT * FROM critical_alerts").df()) == 2
 
