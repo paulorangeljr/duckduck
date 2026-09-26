@@ -1075,6 +1075,32 @@ class DuckAPI:
         logger.info("  %s: %s rows in %.2fs", name, f"{len(df):,}", time.perf_counter() - started)
         return df
 
+    def streaming_function(self, name: str):
+        """The generator registered for ``name`` with ``register_streaming_function``, or ``None``."""
+        return self._streaming_functions.get(name.lower())
+
+    def fetch_pages(self, name: str, **kwargs):
+        """
+        ``fetch`` page by page: calls the table's streaming function with
+        explicit ``kwargs`` and yields each page as a DataFrame (normalized
+        like ``fetch``; empty pages skipped). Only one page is in memory at
+        a time — for callers that filter as they go (the semantic executor).
+        """
+        iter_fn = self.streaming_function(name)
+        if iter_fn is None:
+            raise KeyError(f"No streaming function registered for '{name}'.")
+        validated = self._validate_arguments(name, iter_fn, kwargs)
+        pages = iter_fn(**validated)
+        try:
+            for page in pages:
+                df = self._to_dataframe(page, name, allow_empty=True)
+                if not df.empty:
+                    yield df
+        finally:
+            close = getattr(pages, "close", None)
+            if close is not None:  # stopped early (enough rows): let the connector stop paging
+                close()
+
     def _strip_where_conditions(self, query: str, keys: set) -> str:
         """
         Removes WHERE conditions that reference columns in ``keys``.

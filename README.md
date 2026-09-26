@@ -445,6 +445,33 @@ join). Questions go through independent, probability-scored decisions,
 then a validated logical plan, and only then SQL. Low-confidence
 decisions come back as a clarification request and never execute.
 
+How a question is read — rules find, the decision engine (Jev) decides:
+
+- **Rules extract** what can be read exactly: values (IPs, e-mails,
+  domains, quoted text), known values from the catalog (`critical`,
+  `failed`), time windows (`in the last year`, `entre ontem e hoje`), and
+  what the wording suggests (a count? a list? a question about the
+  catalog?).
+- **The engine decides**, in one batch per question: what the question
+  is about — **the data, this assistant, or neither** (so "…in the CISA
+  KEV catalog" is about CVEs, not about this assistant's catalog) —, what
+  it asks for, which tables, fields and joins. The rules' findings are
+  facts it reads, not decisions.
+- **Before asking you, it judges whole plans.** When a decision is in
+  doubt, every reading the question allows is planned **in parallel**
+  (no data read), described in plain words, and judged side by side in
+  one batch: *which of these answers the question?* and, for each, *does
+  it answer exactly what was asked?*. A clear winner runs (the answer
+  shows *Readings considered*); otherwise you get the question, as
+  before. `semantic.hypotheses` tunes it (`max_hypotheses`, `depth`,
+  `threshold`, `margin`, `check`, `enabled`).
+- **Big sources are read page by page.** When a source can't be capped
+  at the API (a filter it doesn't take, a join, a count), and its table
+  has a streaming function, each page is filtered by DuckDB as it arrives
+  and only matching rows (and only the columns used) are kept — the whole
+  API result is never held in memory. A plain list stops asking for pages
+  once it has enough rows. `semantic.stream: false` turns it off.
+
 ```bash
 pip install -e ".[semantic]"
 python examples/semantic/demo.py   # the 6 MVP questions against sample data

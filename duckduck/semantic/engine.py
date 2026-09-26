@@ -272,6 +272,7 @@ class SemanticSearch:
         router: Any = None,
         router_options: Optional[Dict[str, Any]] = None,
         hypotheses: Union[bool, Dict[str, Any], Any] = True,
+        stream: bool = True,
     ):
         if isinstance(catalog, str):
             catalog = Catalog.load(catalog)
@@ -338,7 +339,9 @@ class SemanticSearch:
             memory = memory if isinstance(memory, CaseMemory) else CaseMemory(
                 feedback, **(memory if isinstance(memory, dict) else {}))
             self.interpreter.memory = memory
-        self.executor = PlanExecutor(self.catalog, duck) if duck is not None else None
+        #: ``stream``: a source that can't be capped at the source is read page by page when its table
+        #: has a streaming function, keeping only the rows its filters let through (see ``executor``).
+        self.executor = PlanExecutor(self.catalog, duck, stream=stream) if duck is not None else None
         #: Answers registered as tables of their own (``take_over``), by name.
         self.taken_over: Dict[str, Any] = {}
         #: Why the ``llm`` reader couldn't be built (``from_config``), when it couldn't.
@@ -409,6 +412,7 @@ class SemanticSearch:
         reader = kwargs.pop("reader", cfg.reader)
         kwargs.setdefault("router_options", cfg.router.model_dump())
         kwargs.setdefault("hypotheses", cfg.hypotheses.model_dump())
+        kwargs.setdefault("stream", cfg.stream)
         search = cls(cfg.path(cfg.catalog_path), duck, **kwargs)
         # built against the *available* catalog subset
         extractor = cfg.build_extractor(search.catalog, duck)

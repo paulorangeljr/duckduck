@@ -23,6 +23,17 @@ only what's provably safe for that source:
 
 Native ``relation:`` sources aren't fetched at all: the compiled CTE scans
 them in place and DuckDB does its own filter/projection push-down.
+
+**Streaming** (``stream=True``, the default): when a source can't be capped
+at the source (its LIMIT wasn't pushed — a filter stayed with DuckDB, a
+join, an aggregate, an order) and its table has a streaming function
+(``register_streaming_function`` / the registry's ``streaming_tables``),
+its pages are read one at a time: each page goes through DuckDB with that
+source's own conditions and only the columns the plan uses, and only the
+rows that pass are kept — in a typed DuckDB temp table, never a whole
+DataFrame of everything the API returned. A single-source plan without
+DISTINCT, aggregate or ORDER BY stops paging once it has ``limit`` rows.
+The final query then runs over that table as over any other.
 """
 
 import inspect
@@ -36,7 +47,7 @@ import pandas as pd
 from ..logs import get_logger
 from ..pushdown import Condition, blocker_of, map_conditions
 from .catalog import Catalog
-from .compiler import compile_plan, default_order, display_relation
+from .compiler import compile_plan, default_order, display_relation, quote_ident, source_conditions
 from .plan import LogicalQueryPlan
 
 logger = get_logger("semantic")
@@ -66,19 +77,32 @@ class SourceFetch:
     residual_filters: List[str] = field(default_factory=list)
     limit_pushed: bool = False
     rows: int = 0
+    #: Read page by page (``stream``): how many pages, how many rows the API returned in all
+    #: (``rows`` is what was kept after this source's own filters).
+    streamed: bool = False
+    pages: int = 0
+    rows_scanned: int = 0
+
+
+#: A catalog field type → the DuckDB column type a streamed source's rows are kept as.
+_DUCK_TYPES = {"string": "VARCHAR", "integer": "BIGINT", "float": "DOUBLE", "boolean": "BOOLEAN",
+               "datetime": "TIMESTAMP", "date": "DATE"}
 
 
 class PlanExecutor:
     _ids = itertools.count(1)
 
-    def __init__(self, catalog: Catalog, duck):
+    def __init__(self, catalog: Catalog, duck, stream: bool = True):
         self.catalog = catalog
         self.duck = duck
+        #: Read a source page by page when it can't be capped at the source (see the module docstring).
+        self.stream = stream
 
     def execute(self, plan: LogicalQueryPlan, now: datetime) -> Tuple[pd.DataFrame, str, List[SourceFetch]]:
         relations: Dict[str, str] = {}
         fetches: List[SourceFetch] = []
         registered: List[str] = []
+        tables: List[str] = []
         try:
             for source in plan.sources:
                 src = self.catalog.sources[source]
@@ -86,11 +110,15 @@ class PlanExecutor:
                     relations[source] = src.relation
                     fetches.append(SourceFetch(source=source, scan=src.relation))
                     continue
-                df, fetch = self._fetch(plan, source, now)
-                tmp = f"_sem_{source}_{next(self._ids)}"
-                self.duck.conn.register(tmp, df)
-                registered.append(tmp)
-                relations[source] = tmp
+                df, fetch, table = self._fetch(plan, source, now)
+                if table is not None:  # streamed: the kept rows are already in a DuckDB table
+                    tables.append(table)
+                    relations[source] = table
+                else:
+                    tmp = f"_sem_{source}_{next(self._ids)}"
+                    self.duck.conn.register(tmp, df)
+                    registered.append(tmp)
+                    relations[source] = tmp
                 fetches.append(fetch)
 
             sql = compile_plan(plan, self.catalog, relations, now)
@@ -99,6 +127,11 @@ class PlanExecutor:
             for tmp in registered:
                 try:
                     self.duck.conn.unregister(tmp)
+                except Exception:
+                    pass
+            for table in tables:
+                try:
+                    self.duck.conn.execute(f"DROP TABLE IF EXISTS {table}")
                 except Exception:
                     pass
         return result, sql, fetches
@@ -119,7 +152,8 @@ class PlanExecutor:
             return Condition(column, "ilike", pattern)
         return None  # neq / in: no parameter convention for them
 
-    def _fetch(self, plan: LogicalQueryPlan, source: str, now: datetime) -> Tuple[pd.DataFrame, SourceFetch]:
+    def _fetch(self, plan: LogicalQueryPlan, source: str,
+               now: datetime) -> Tuple[Optional[pd.DataFrame], SourceFetch, Optional[str]]:
         src = self.catalog.sources[source]
         fn = self.duck.functions.get(src.table.lower())
         if fn is None:
@@ -169,6 +203,10 @@ class PlanExecutor:
             fetch.kwargs["limit"] = plan.limit
             fetch.limit_pushed = True
 
+        iter_fn = self.duck.streaming_function(src.table) if self.stream else None
+        if iter_fn is not None and not fetch.limit_pushed:
+            return None, fetch, self._stream(plan, source, iter_fn, conditions, fetch, now)
+
         logger.info(
             "▶ %s ← %s(%s) · pushed: %s · DuckDB: %s · limit %s",
             source, src.table, ", ".join(f"{k}={v!r}" for k, v in fetch.kwargs.items()),
@@ -188,4 +226,68 @@ class PlanExecutor:
                 )
             # No rows → nothing to infer columns from; use the catalog's schema.
             df = pd.DataFrame({c: pd.Series(dtype=_EMPTY_DTYPES[t]) for c, t in needed.items()})
-        return df, fetch
+        return df, fetch, None
+
+    def _stream(self, plan: LogicalQueryPlan, source: str, iter_fn: Any, conditions: List[Tuple[str, Condition]],
+                fetch: SourceFetch, now: datetime) -> str:
+        """
+        The source page by page: its conditions pushed to the streaming
+        function where it takes them, each page filtered by DuckDB with the
+        source's own conditions, the kept rows (only the plan's columns,
+        typed as the catalog says) appended to a temp table — its name.
+        """
+        src = self.catalog.sources[source]
+        # the generator's own signature decides what reaches the API (it takes no limit)
+        fetch.kwargs = dict(src.args)
+        fetch.pushed_filters, fetch.limit_pushed, fetch.streamed = [], False, True
+        residual = list(fetch.residual_filters)
+        fetch.residual_filters = []
+        params = set(inspect.signature(iter_fn).parameters)
+        pushed, consumed = map_conditions(params - set(fetch.kwargs), [c for _, c in conditions], blocker_of(iter_fn))
+        fetch.kwargs.update(pushed)
+        for ref in dict.fromkeys(ref for ref, _ in conditions):
+            all_pushed = all(c in consumed for r, c in conditions if r == ref)
+            (fetch.pushed_filters if all_pushed else fetch.residual_filters).append(ref)
+        fetch.residual_filters += [r for r in residual if r not in fetch.residual_filters + fetch.pushed_filters]
+
+        needed = {src.physical_column(f): src.fields[f].type for f in plan.source_fields(source)}
+        where = source_conditions(plan, self.catalog, source, now)
+        enough = (plan.limit if len(plan.sources) == 1 and not plan.distinct and not plan.aggregate
+                  and not default_order(plan, self.catalog) else None)
+        table = f"_sem_{source}_{next(self._ids)}_stream"
+        conn = self.duck.conn
+        conn.execute(f"CREATE TEMP TABLE {table} ("
+                     + ", ".join(f"{quote_ident(c)} {_DUCK_TYPES.get(t, 'VARCHAR')}" for c, t in needed.items()) + ")")
+        logger.info(
+            "▶ %s ← %s(%s), page by page · pushed: %s · DuckDB, per page: %s%s",
+            source, src.table, ", ".join(f"{k}={v!r}" for k, v in fetch.kwargs.items()),
+            ", ".join(fetch.pushed_filters) or "—", ", ".join(fetch.residual_filters) or "—",
+            f" · stops at {enough} rows" if enough else "",
+        )
+        seen = set()
+        for page in self.duck.fetch_pages(src.table, **fetch.kwargs):
+            fetch.pages += 1
+            fetch.rows_scanned += len(page)
+            seen.update(page.columns)
+            view = f"_sem_page_{next(self._ids)}"
+            conn.register(view, page)
+            try:
+                cols = ", ".join(f"TRY_CAST({quote_ident(c)} AS {_DUCK_TYPES.get(t, 'VARCHAR')})" for c, t in needed.items())
+                absent = "".join(f", NULL AS {quote_ident(c)}" for c in needed if c not in page.columns)
+                conn.execute(f"INSERT INTO {table} SELECT {cols} FROM (SELECT *{absent} FROM {view}) AS page"
+                             + (" WHERE " + " AND ".join(where) if where else ""))
+            finally:
+                conn.unregister(view)
+            if enough is not None and conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] >= enough:
+                break  # enough rows for the answer: no more pages asked
+        missing = [c for c in needed if c not in seen]
+        if missing and fetch.rows_scanned:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            raise ExecutionError(
+                f"source '{source}' ({src.table}) returned no column(s) {missing} — "
+                f"the catalog is out of sync with the data (got: {sorted(seen)})"
+            )
+        fetch.rows = conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+        logger.info("  %s: kept %s of %s rows from %s page(s)", source, f"{fetch.rows:,}",
+                    f"{fetch.rows_scanned:,}", fetch.pages)
+        return table

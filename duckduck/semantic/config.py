@@ -365,6 +365,9 @@ class SemanticConfig(_Strict):
     router: "RouterConfig" = Field(default_factory=lambda: RouterConfig())
     #: Parallel readings judged by the engine before asking the user (see ``hypotheses``).
     hypotheses: "HypothesesConfig" = Field(default_factory=lambda: HypothesesConfig())
+    #: Read a source page by page (its streaming function) when it can't be capped at the source,
+    #: keeping only the rows its filters let through — never the whole API result in memory.
+    stream: bool = True
     catalog_generation: CatalogGenerationConfig = Field(default_factory=CatalogGenerationConfig)
     thresholds: Thresholds = Field(default_factory=Thresholds)
     #: Override the questions asked back to the user (``clarify.DEFAULT_TEXTS`` keys) — e.g. in Portuguese.
