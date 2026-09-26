@@ -206,6 +206,11 @@ class PageProgress:
     def page(self, rows: int, total_pages: Optional[int] = None, total_rows: Optional[int] = None) -> None:
         self.pages += 1
         self.rows += rows
+        from . import progress
+
+        progress.checkpoint()  # a paused or cancelled question stops between pages
+        progress.update(f"{self.what}: page {self.pages}{f'/{total_pages}' if total_pages else ''}"
+                        f" · {self.rows:,} rows")
         if not self.logger.isEnabledFor(logging.INFO):
             return
         try:

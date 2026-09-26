@@ -9,6 +9,9 @@ HTML page (``webpage.PAGE``) over a JSON API:
 ``POST /api/preview {question, reader}``    while typing: entity, answer kind, relevant tables by system
 ``POST /api/ask {question, user, reader, only_sources, entity, values_field, blocked_joins, in_scope}``  starts a conversation → its first result
 ``POST /api/answer {conversation_id, reply}`` answers the open clarification → next result
+``POST /api/ask {..., background: true}``  the same, as a job → 202 ``{job_id}`` (also ``/api/answer``)
+``GET  /api/jobs/{id}?since=n``              what it's doing: steps from n, what it has so far (decisions, SQL, rows read), the result
+``POST /api/jobs/{id}/pause|resume|cancel``  stop at the next step / go on / give up (answers at once with what was done)
 ``POST /api/columns {conversation_id, columns}``  the latest answer again with these extra fields (``column_options``)
 ``POST /api/feedback {search_id, verdict, categories, reason, expected, user, feedback_id}``
 ``GET  /api/searches``, ``/api/searches/{id}``  history / one search's decision trail
@@ -41,6 +44,7 @@ import logging
 import os
 import secrets
 import threading
+import uuid
 from collections import OrderedDict
 from typing import Any, Callable, Dict, Optional
 
@@ -49,6 +53,7 @@ logger = logging.getLogger("duckduck.semantic.server")
 #: Rows sent to the page per table (the full result stays available through the Python API).
 MAX_ROWS = 500
 MAX_CONVERSATIONS = 500
+MAX_JOBS = 100
 
 
 def create_app(
@@ -160,14 +165,84 @@ def create_app(
             "token_required": bool(token),
         })
 
+    # -- questions as jobs: live steps, pause, cancel ---------------------------------------------
+
+    from ..progress import Cancelled, Progress, tracking
+
+    ask_jobs: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+
+    def start_job(run: Callable[[], Any]) -> Any:
+        progress = Progress()
+        job = {"id": uuid.uuid4().hex[:16], "progress": progress, "conv": None, "error": None, "finished": False}
+
+        def work() -> None:
+            with tracking(progress):
+                try:
+                    job["conv"] = run()
+                except Cancelled:
+                    pass
+                except HTTPException as exc:
+                    job["error"] = {"status": exc.status_code, "message": str(exc.detail)}
+                except ValueError as exc:
+                    job["error"] = {"status": 400, "message": str(exc)}
+                except Exception as exc:  # shown on the page, like a failed synchronous ask
+                    logger.exception("question failed")
+                    job["error"] = {"status": 500, "message": f"{type(exc).__name__}: {exc}"}
+                finally:
+                    job["finished"] = True
+
+        with lock:
+            ask_jobs[job["id"]] = job
+            while len(ask_jobs) > MAX_JOBS:
+                ask_jobs.popitem(last=False)
+        threading.Thread(target=work, name=f"duckduck-ask-{job['id']}", daemon=True).start()
+        return dump({"job_id": job["id"]}, status=202)
+
+    def the_job(job_id: str) -> Dict[str, Any]:
+        with lock:
+            job = ask_jobs.get(job_id)
+        if job is None:
+            raise HTTPException(404, "job not found (the server restarted?) — ask again")
+        return job
+
+    def job_view(job: Dict[str, Any], since: int = 0) -> Dict[str, Any]:
+        view = {"job_id": job["id"], **job["progress"].to_dict(since)}
+        if job["progress"].cancelled:
+            view["state"] = "cancelled"
+        elif job["finished"]:
+            view["state"] = "failed" if job["error"] else "done"
+            if job["conv"] is not None:
+                view["result"] = payload(job["conv"])
+            view["error"] = job["error"]
+        return view
+
+    @app.get("/api/jobs/{job_id}")
+    def job_status(job_id: str, since: int = 0):
+        return dump(job_view(the_job(job_id), since))
+
+    @app.post("/api/jobs/{job_id}/{action}")
+    def job_action(job_id: str, action: str):
+        job = the_job(job_id)
+        if action not in ("pause", "resume", "cancel"):
+            raise HTTPException(404, f"unknown action {action!r}: pause, resume or cancel")
+        if not job["finished"]:
+            getattr(job["progress"], action)()
+        return dump(job_view(job))
+
     @app.post("/api/ask")
     def ask(body: Dict[str, Any] = Body(...)):
         question = str(body.get("question") or "").strip()
         if not question:
             raise HTTPException(400, "empty question")
-        only = body.get("only_sources")
-        entity = body.get("entity")
         search = state["search"]
+        pins = checked_pins(body, search)
+        if body.get("background"):
+            return start_job(lambda: start_conversation(body, question, search, pins))
+        return dump(payload(start_conversation(body, question, search, pins)))
+
+    def checked_pins(body: Dict[str, Any], search: Any) -> Dict[str, Any]:
+        """The choices sent with the question as pins — checked before anything runs (400 otherwise)."""
+        entity = body.get("entity")
         if entity is not None and entity not in search.catalog.entities:
             raise HTTPException(400, f"unknown entity {entity!r}")
         try:
@@ -185,6 +260,16 @@ def create_app(
                         or not all(isinstance(r, str) and search.catalog.has_field(r) for r in pair)):
                     raise ValueError(f"blocked_joins: {pair!r} isn't a pair of source.field names")
                 pins[f"join:{pair[0]}={pair[1]}"] = False
+            only = body.get("only_sources")
+            search._check_scope(list(only) if only is not None else None)
+            search.check_reader(body.get("reader") or None)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        return pins
+
+    def start_conversation(body: Dict[str, Any], question: str, search: Any, pins: Dict[str, Any]) -> Any:
+        only = body.get("only_sources")
+        try:
             conv = search.conversation(question, user=body.get("user") or None,
                                        only_sources=list(only) if only is not None else None,
                                        pinned=pins or None, reader=body.get("reader") or None)
@@ -195,7 +280,7 @@ def create_app(
             convs[conv.id] = conv
             while len(convs) > MAX_CONVERSATIONS:
                 convs.popitem(last=False)
-        return dump(payload(conv))
+        return conv
 
     @app.post("/api/preview")
     def preview(body: Dict[str, Any] = Body(...)):
@@ -213,7 +298,14 @@ def create_app(
         conv = conversation(str(body.get("conversation_id")))
         if conv.done:
             raise HTTPException(409, "nothing to answer: this conversation has no open question")
-        conv.answer(str(body.get("reply") or ""))
+        reply = str(body.get("reply") or "")
+        if body.get("background"):
+            def run() -> Any:
+                conv.answer(reply)
+                return conv
+
+            return start_job(run)
+        conv.answer(reply)
         return dump(payload(conv))
 
     @app.post("/api/columns")

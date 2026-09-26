@@ -44,6 +44,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from .. import progress
 from ..logs import get_logger
 from ..pushdown import Condition, blocker_of, map_conditions
 from .catalog import Catalog
@@ -110,7 +111,11 @@ class PlanExecutor:
                     relations[source] = src.relation
                     fetches.append(SourceFetch(source=source, scan=src.relation))
                     continue
+                progress.step("fetching", f"Reading {source} ({src.table})")
                 df, fetch, table = self._fetch(plan, source, now)
+                progress.note_item("fetched", source, {"table": src.table, "rows": fetch.rows, "pages": fetch.pages,
+                                                       "rows_scanned": fetch.rows_scanned,
+                                                       "pushed": fetch.pushed_filters})
                 if table is not None:  # streamed: the kept rows are already in a DuckDB table
                     tables.append(table)
                     relations[source] = table
@@ -122,6 +127,7 @@ class PlanExecutor:
                 fetches.append(fetch)
 
             sql = compile_plan(plan, self.catalog, relations, now)
+            progress.step("combining", "Filtering and combining the rows in DuckDB")
             result = self.duck.conn.sql(sql).df()
         finally:
             for tmp in registered:
@@ -265,6 +271,28 @@ class PlanExecutor:
             f" · stops at {enough} rows" if enough else "",
         )
         seen = set()
+        try:
+            self._read_pages(src, fetch, table, needed, where, enough, seen)
+        except BaseException:  # cancelled (or failed) mid-way: the half-filled table goes
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            raise
+        missing = [c for c in needed if c not in seen]
+        if missing and fetch.rows_scanned:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            raise ExecutionError(
+                f"source '{source}' ({src.table}) returned no column(s) {missing} — "
+                f"the catalog is out of sync with the data (got: {sorted(seen)})"
+            )
+        fetch.rows = conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+        logger.info("  %s: kept %s of %s rows from %s page(s)", source, f"{fetch.rows:,}",
+                    f"{fetch.rows_scanned:,}", fetch.pages)
+        return table
+
+    def _read_pages(self, src: Any, fetch: SourceFetch, table: str, needed: Dict[str, str], where: List[str],
+                    enough: Optional[int], seen: set) -> None:
+        """Appends each page's kept rows to ``table``; a pause or cancel takes effect between pages."""
+        conn = self.duck.conn
+        kept = 0
         for page in self.duck.fetch_pages(src.table, **fetch.kwargs):
             fetch.pages += 1
             fetch.rows_scanned += len(page)
@@ -278,16 +306,9 @@ class PlanExecutor:
                              + (" WHERE " + " AND ".join(where) if where else ""))
             finally:
                 conn.unregister(view)
-            if enough is not None and conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] >= enough:
+            kept = conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+            progress.update(f"Reading {src.table} page by page: page {fetch.pages} · "
+                            f"{fetch.rows_scanned:,} rows read · {kept:,} kept")
+            if enough is not None and kept >= enough:
                 break  # enough rows for the answer: no more pages asked
-        missing = [c for c in needed if c not in seen]
-        if missing and fetch.rows_scanned:
-            conn.execute(f"DROP TABLE IF EXISTS {table}")
-            raise ExecutionError(
-                f"source '{source}' ({src.table}) returned no column(s) {missing} — "
-                f"the catalog is out of sync with the data (got: {sorted(seen)})"
-            )
-        fetch.rows = conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
-        logger.info("  %s: kept %s of %s rows from %s page(s)", source, f"{fetch.rows:,}",
-                    f"{fetch.rows_scanned:,}", fetch.pages)
-        return table
+            progress.checkpoint()

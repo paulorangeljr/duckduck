@@ -25,6 +25,7 @@ from .catalog import Catalog
 from .clarify import ClarificationTexts
 from .compiler import display_sql
 from .decisions import DecisionEngine, DecisionState, JEVAdapter, LexicalDecisionEngine, using_engine
+from .. import progress
 from .metering import metered
 from .router import ModeRouter
 from .executor import PlanExecutor, SourceFetch
@@ -554,6 +555,7 @@ class SemanticSearch:
         route = None
         with scope.only_sources(only), metered() as usage:
             if requested == "auto":  # which mode? from how similar questions went — the engine decides
+                progress.step("route", "Picking the mode from how similar questions went")
                 route = self.route(question)
             reader = route.reader if route is not None else requested
             with using_engine(self.engine_for(reader)):
@@ -593,7 +595,15 @@ class SemanticSearch:
         reading is sure enough (see ``hypotheses``).
         """
         base = dict(pinned or {})
-        readings = self.hypotheses.readings(lambda pins: self._search(question, False, pins, reader), base, first)
+        options = len(first.followup.options) if first.followup else 0
+        progress.step("hypotheses", f"In doubt ({first.followup.kind if first.followup else 'unclear'}): planning "
+                                    f"{options} reading{'s' if options != 1 else ''} in parallel before asking you")
+
+        def plan_reading(pins: Dict[str, Any]) -> SearchResult:
+            with progress.quiet():  # one line for all of them, not every step of each
+                return self._search(question, False, pins, reader)
+
+        readings = self.hypotheses.readings(plan_reading, base, first)
         if not readings:
             return first
         state = first.intent.decision_state() if first.intent is not None else DecisionState(query=question)
@@ -605,6 +615,7 @@ class SemanticSearch:
             if record is not None:
                 first.decisions.append(record)  # why it still asks: no reading was sure enough
             return first
+        progress.step("hypotheses", f"Running the reading the engine chose: {winner.label}")
         final = self._search(question, execute, {**base, **winner.pins}, reader)
         before = {(d.kind, str(d.answer)) for d in first.decisions if d.decided_by == "user"}
         for d in final.decisions:  # what the winner's pins settled was the engine's judgment, not the user's
@@ -779,6 +790,8 @@ class SemanticSearch:
             intent, decisions = self.interpreter.interpret(question, now, pinned, evidence=prober, reader=reader)
             result.intent = intent
             result.decisions.extend(decisions)
+            progress.note(decisions=[d.model_dump(mode="json") for d in result.decisions],
+                          answer_shape=intent.answer_shape)
             if intent.answer_shape in ("small_talk", "out_of_scope"):  # a direct reply, nothing to look up
                 self._reply(result, intent)
                 result.elapsed_ms = (time.perf_counter() - started) * 1000
@@ -790,6 +803,7 @@ class SemanticSearch:
                 return result
             if intent.answer_shape == "lookup" and not intent.resources:
                 intent.answer_shape = "list"  # "tell me about the alerts": no value to look up — list them
+            progress.step("planning", "Laying out the plan: which table, fields and joins")
             if intent.answer_shape == "browse":  # "show me table owners": that table, every column
                 plan, plan_decisions = self.planner.plan_browse(intent), []
             elif intent.answer_shape not in ACROSS_SHAPES:
@@ -807,8 +821,10 @@ class SemanticSearch:
                 result.elapsed_ms = (time.perf_counter() - started) * 1000
                 return result
             result.decisions.extend(plan_decisions)
+            progress.step("sql", "Checking the plan and writing the SQL")
             result.query_plan = self.validator.validate(plan)
             result.sql = display_sql(plan, self.catalog, now)
+            progress.note(sql=result.sql, decisions=[d.model_dump(mode="json") for d in result.decisions])
         except ClarificationNeeded as exc:
             # everything decided before it stopped, then the decision that stopped it
             for d in [*getattr(exc, "decisions", []), *([exc.decision] if exc.decision is not None else [])]:
@@ -865,6 +881,7 @@ class SemanticSearch:
                           checked=[label(sp) for sp in parts],
                           sql="\n\n".join(display_sql(sp.plan, self.catalog, now) for sp in parts))
             result.sections.append(sec)
+            progress.note(sql="\n\n".join(f"-- {x.source}\n{x.sql}" for x in result.sections))
             if not execute:
                 continue
             if self.executor is None:

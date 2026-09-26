@@ -474,6 +474,18 @@ How a question is read — rules find, the decision engine (Jev) decides:
   shows *Readings considered*); otherwise you get the question, as
   before. `semantic.hypotheses` tunes it (`max_hypotheses`, `depth`,
   `threshold`, `margin`, `check`, `enabled`).
+- **You see what it's doing, and can stop it.** While a question runs,
+  the page lists each step as it happens — reading the question, finding
+  the tables, asking the decision engine (and what about), laying out the
+  plan, writing the SQL, reading each table (page by page, with rows read
+  and kept). **⏸ Pause** stops at the next step and shows what it has so
+  far: the SQL, the tables read, the decisions — *Open in the SQL tab* to
+  take it from there — then **▶ Continue**. **✕ Cancel** gives up at once
+  and shows the same. A call already in flight (to Jev, an LLM or an API)
+  finishes first; pages of a big table are the natural stopping points. In
+  Python: `with duckduck.progress.tracking(p := Progress()): search.search(q)`
+  from a thread, and `p.pause()` / `p.resume()` / `p.cancel()` (raises
+  `duckduck.progress.Cancelled` in the search) from another.
 - **More columns after the answer.** An answer that is rows has a
   **＋ Columns** button: the other fields of the tables it read, the ones
   the question filtered on (and the time field) first — "add all" shows

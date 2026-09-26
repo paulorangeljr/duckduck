@@ -34,6 +34,7 @@ import contextvars
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 
+from .. import progress
 from .metering import record_engine, submit_in_context
 from concurrent.futures import TimeoutError as FutureTimeout
 from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Protocol, Union, runtime_checkable
@@ -152,10 +153,30 @@ class Ask(BaseModel):
 Answer = Union[BinaryDecision, Classification]
 
 
+_ASK_WORDS = [("subject", "whether it's about the data"), ("entity", "what it's about"),
+              ("activity", "the activity"), ("answer_shape", "the kind of answer"), ("reading", "which reading"),
+              ("check:", "whether each plan answers it"), ("source:", "which tables"), ("field:", "which fields"),
+              ("join:", "how to join"), ("value", "what the values are")]
+
+
+def _asks_text(engine: Any, asks: List[Ask]) -> str:
+    topics: List[str] = []
+    for key, words in _ASK_WORDS:
+        n = sum(1 for a in asks if a.key.startswith(key))
+        if n and words not in topics:
+            topics.append(f"{words} ({n})" if key.endswith(":") and n > 1 else words)
+    rest = len(asks) - sum(1 for a in asks if any(a.key.startswith(k) for k, _ in _ASK_WORDS))
+    if rest > 0:
+        topics.append(f"{rest} more")
+    who = "the decision engine" if not isinstance(engine, LexicalDecisionEngine) else "the offline rules"
+    return f"Asking {who} {len(asks)} question{'s' if len(asks) != 1 else ''}: {', '.join(topics)}"
+
+
 def ask_all(engine: Any, asks: List[Ask]) -> Dict[str, Answer]:
     """Every question answered — in one batch when the engine supports it."""
     if not asks:
         return {}
+    progress.step("deciding", _asks_text(engine, asks))
     batch = getattr(engine, "ask_batch", None)
     if batch is not None:
         return batch(asks)

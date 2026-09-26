@@ -91,6 +91,17 @@ button.verdict.pop { animation: fbpop .28s ease; }
 .colchip[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
 .colchip[disabled] { cursor: default; opacity: .7; }
 .colchip .why { opacity: .75; font-size: 12px; }
+.jobhead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.jobhead .grow { flex: 1; }
+.steps { list-style: none; margin: 10px 0 0; padding: 0; }
+.steps li { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; font-size: 14px; }
+.steps li .mark { width: 16px; flex: none; text-align: center; color: var(--muted); }
+.steps li.done { color: var(--muted); }
+.steps li.done .mark { color: var(--good, var(--accent)); }
+.steps li.now { font-weight: 600; }
+.steps li.now .spin { display: inline-block; vertical-align: -2px; }
+.steps li .at { margin-left: auto; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.jobnote { font-size: 13px; color: var(--muted); margin-top: 8px; }
 .colpanel { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
 .colpanel h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
 .fbok { color: var(--good-ink); font-weight: 600; } .fberr { color: var(--bad); }
@@ -773,9 +784,89 @@ async function ask(q, extra = {}) {
   if (pre.entity) body.entity = pre.entity;
   if (pre.field) body.values_field = pre.field;
   if (pre.blocked.size) body.blocked_joins = [...pre.blocked].map(k => k.split("="));
-  $("#conversation").innerHTML = `<div class="card muted">Thinking…</div>`;
-  try { render(await api("/api/ask", body)); }
-  catch (err) { $("#conversation").innerHTML = `<div class="card error">${esc(err.message)}</div>`; }
+  runJob("/api/ask", body, q);
+}
+
+// ---- live progress: what the question is doing now; pause to look, cancel if it makes no sense ----
+let JOB = null;  // {id, question, events, state, partial, elapsed, timer}
+const JOB_STATE = {running: "Working on it…", pausing: "Pausing after the current step…", paused: "Paused",
+                   cancelled: "Cancelled"};
+
+async function runJob(path, body, question) {
+  if (JOB) { const old = JOB; JOB = null; clearTimeout(old.timer);  // a new question replaces the one running
+             api(`/api/jobs/${old.id}/cancel`, {}).catch(() => {}); }
+  const job = {id: null, question, events: [], state: "running", partial: {}, elapsed: 0, timer: null};
+  JOB = job; drawJob(job);
+  let started;
+  try { started = await api(path, {...body, background: true}); }
+  catch (err) { if (JOB === job) { JOB = null; $("#conversation").innerHTML = `<div class="card error">${esc(err.message)}</div>`; } return; }
+  if (JOB !== job) { api(`/api/jobs/${started.job_id}/cancel`, {}).catch(() => {}); return; }
+  job.id = started.job_id; pollAskJob(job);
+}
+
+function takeJob(job, v) {
+  for (const e of v.events || []) job.events[e.i] = e;  // the step still running comes back with new counts
+  job.state = v.state; job.partial = v.partial || {}; job.elapsed = v.elapsed_ms || 0;
+}
+
+async function pollAskJob(job) {
+  let v;
+  try { v = await api(`/api/jobs/${job.id}?since=${job.events.length}`); }
+  catch (err) { if (JOB === job) { JOB = null; $("#conversation").innerHTML = `<div class="card error">Lost track of the question: ${esc(err.message)}</div>`; } return; }
+  if (JOB !== job) return;  // cancelled or replaced meanwhile
+  takeJob(job, v);
+  if (v.state === "done") { JOB = null; render(v.result); return; }
+  if (v.state === "failed") { JOB = null; $("#conversation").innerHTML = `<div class="card error">${esc(v.error?.message || "it failed")}</div>`; return; }
+  if (v.state === "cancelled") { JOB = null; drawJob(job); return; }
+  drawJob(job);
+  job.timer = setTimeout(() => pollAskJob(job), v.state === "paused" ? 1000 : 350);
+}
+
+async function jobAction(action) {
+  const job = JOB; if (!job || !job.id) return;
+  if (action === "cancel") { JOB = null; clearTimeout(job.timer); }
+  try { takeJob(job, await api(`/api/jobs/${job.id}/${action}`, {})); }
+  catch (err) { toast(err.message); }
+  if (action === "cancel") job.state = "cancelled";
+  drawJob(job);
+}
+
+function jobSoFar(job) {
+  const p = job.partial || {}, parts = [];
+  if (p.sql) parts.push(`<details open><summary>SQL so far</summary><pre>${esc(p.sql)}</pre>${META?.features?.sql
+    ? `<button class="secondary" type="button" data-jobsql>Open in the SQL tab</button>` : ""}</details>`);
+  const read = Object.entries(p.fetched || {});
+  if (read.length) parts.push(`<details open><summary>Tables read</summary>${table(read.map(([s, f]) => ({
+    table: s, rows: f.rows, "rows read": f.rows_scanned, pages: f.pages || null, "filters sent to the source": (f.pushed || []).join(", ") || "—"})))}</details>`);
+  if ((p.decisions || []).length) parts.push(`<details${p.sql ? "" : " open"}><summary>Decided so far</summary>${table(p.decisions.map(d => ({
+    decision: d.kind, about: d.subject, answer: typeof d.answer === "object" ? JSON.stringify(d.answer) : d.answer,
+    probability: Math.round(d.probability * 100) / 100, by: d.decided_by})))}</details>`);
+  return parts.length ? parts.join("") : `<p class="jobnote">Nothing decided yet — it was still reading the question.</p>`;
+}
+
+function drawJob(job) {
+  const st = job.state, live = st === "running" || st === "pausing", steps = job.events.filter(Boolean);
+  const secs = (ms) => ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
+  const html = `<div class="card"><div class="q">${esc(job.question || "")}</div></div>
+  <div class="card" aria-live="polite">
+    <div class="jobhead">${live ? `<span class="spin" aria-hidden="true"></span>` : ""}
+      <strong>${esc(JOB_STATE[st] || st)}</strong><span class="muted small">${job.elapsed ? secs(job.elapsed) : ""}</span>
+      <span class="grow"></span>
+      ${st === "running" ? `<button class="secondary" type="button" data-job="pause" title="Stop at the next step and show what it has so far">⏸ Pause</button>` : ""}
+      ${st === "paused" || st === "pausing" ? `<button class="secondary" type="button" data-job="resume">▶ Continue</button>` : ""}
+      ${st !== "cancelled" && job.id ? `<button class="secondary" type="button" data-job="cancel" title="Stop here: this isn't going where you meant">✕ Cancel</button>` : ""}
+    </div>
+    <ol class="steps">${steps.map((e, k) => {
+      const now = k === steps.length - 1 && live;
+      return `<li class="${now ? "now" : "done"}"><span class="mark">${now ? `<span class="spin" aria-hidden="true"></span>` : "✓"}</span>
+        <span>${esc(e.text)}</span><span class="at">${secs(e.ms)}</span></li>`; }).join("") || `<li class="now"><span class="mark"><span class="spin"></span></span><span>Starting…</span></li>`}</ol>
+    ${st === "pausing" ? `<p class="jobnote">A call already in flight (to the decision engine or a data source) finishes first — then it stops.</p>` : ""}
+    ${st === "paused" || st === "cancelled" ? `<div style="margin-top:10px">${st === "cancelled"
+      ? `<p class="jobnote">Stopped. This is what it had done — edit the SQL in the SQL tab, or rephrase the question.</p>` : ""}${jobSoFar(job)}</div>` : ""}
+  </div>`;
+  const box = $("#conversation"); box.innerHTML = html;
+  box.querySelectorAll("[data-job]").forEach(b => b.addEventListener("click", () => jobAction(b.dataset.job)));
+  box.querySelector("[data-jobsql]")?.addEventListener("click", () => { $("#sqltext").value = job.partial.sql; openTab("sql"); });
 }
 
 // a question put in the box by a click (a suggested question): its own suggestions, not the last one's
@@ -832,8 +923,7 @@ $("#takeoverform").addEventListener("submit", async (e) => {
 });
 
 async function reply(convId, text) {
-  try { render(await api("/api/answer", {conversation_id: convId, reply: text})); }
-  catch (err) { toast(err.message); }
+  runJob("/api/answer", {conversation_id: convId, reply: text}, LAST_QUESTION);
 }
 
 function table(rows, max = 500) {
@@ -849,8 +939,10 @@ const SHAPE_WORDS = {list: "a list", count: "a count", values: "the different va
                      catalog: "what data there is", small_talk: "small talk", out_of_scope: "not about the data",
                      browse: "the table itself"};
 
+let LAST_QUESTION = "";
 function render(c) {
   const r = c.result, box = $("#conversation");
+  LAST_QUESTION = r.question;
   let html = `<div class="card"><div class="q">${esc(r.question)}</div>`;
   if (r.intent && r.intent.english_question) html += `<div class="muted small">read as: ${esc(r.intent.english_question)}</div>`;
   if (c.history.length) html += `<div class="thread">${c.history.map(h =>

@@ -16,6 +16,7 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+from .. import progress
 from .catalog import Catalog
 from .decisions import CRITERIA, Ask, DecisionEngine, DecisionState, ask_all, engine_in_use
 from .extraction import Extraction, RuleBasedExtractor, ValueExtractor
@@ -96,6 +97,8 @@ class SemanticInterpreter:
         """
         pins = dict(pinned or {})
         reader = self._check_reader(reader)
+        progress.step("reading", "Reading the question with the LLM" if reader in self.LLM_READERS
+                      else "Reading the question: values, time range, known words")
         extraction = (self.llm_reader.extract(question, now, reading=True) if reader in self.LLM_READERS
                       else self.extractor.extract(question, now))
         english = getattr(extraction, "english_question", None)
@@ -124,8 +127,10 @@ class SemanticInterpreter:
         try:
             refused = {k[7:] for k, v in pins.items() if k.startswith("source:") and v is False}
             refused |= {n for n in self.catalog.sources if not in_scope(n)}  # the user narrowed the tables
+            progress.step("retrieval", "Finding the tables that may hold the answer")
             ranked = self.retriever.search(intent.working_question, self.top_k + len(refused))
             retrieved = dict([(n, sc) for n, sc in ranked if n not in refused][: self.top_k])
+            progress.update("Finding the tables that may hold the answer: " + (", ".join(retrieved) or "none by name"))
             for key, value in pins.items():  # a source the user picked is a candidate whatever retrieval said
                 if key.startswith("source:") and value and key[7:] in self.catalog.sources and in_scope(key[7:]):
                     retrieved.setdefault(key[7:], 0.0)
