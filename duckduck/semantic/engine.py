@@ -122,6 +122,8 @@ class SearchResult:
     #: The readings planned and judged when the question was ambiguous (``hypotheses``): each one's
     #: label, pins, plain-words plan, SQL, and the engine's probability — best first.
     hypotheses: List[Dict[str, Any]] = field(default_factory=list)
+    #: Fields the user added to the answer after it came back (``SemanticSearch.with_columns``).
+    added_columns: List[str] = field(default_factory=list)
     route: Optional[Dict[str, Any]] = None
     #: What it cost: decision-engine and LLM calls, tokens, seconds, reported money (``metering.Usage``).
     usage: Dict[str, Any] = field(default_factory=dict)
@@ -184,6 +186,7 @@ class SearchResult:
             "requested_reader": self.requested_reader,
             "route": self.route,
             "hypotheses": self.hypotheses,
+            "added_columns": self.added_columns,
             "usage": self.usage,
             "reply": self.reply,
             "suggestions": self.suggestions,
@@ -346,6 +349,25 @@ class SemanticSearch:
         self.taken_over: Dict[str, Any] = {}
         #: Why the ``llm`` reader couldn't be built (``from_config``), when it couldn't.
         self.llm_reader_error: Optional[str] = None
+
+    def column_options(self, result: "SearchResult") -> List[Dict[str, Any]]:
+        """The fields ``result``'s answer could also show — see ``columns.column_options``."""
+        from .columns import column_options
+
+        return column_options(self.catalog, result)
+
+    def with_columns(self, result: "SearchResult", columns: Iterable[str]) -> "SearchResult":
+        """
+        A step back after the answer: the same plan, run again with
+        ``columns`` (``source.field``) shown next to what the question asked
+        for — no decision taken again. ``[]`` goes back to the original
+        columns. See ``columns``.
+        """
+        from .columns import with_columns
+
+        if self.executor is None:
+            raise RuntimeError("SemanticSearch was built without a DuckAPI instance — pass duck=.")
+        return with_columns(self, result, columns)
 
     def take_over(self, result: "SearchResult", name: Optional[str] = None, full: bool = True,
                   user: Optional[str] = None) -> Any:
@@ -1135,6 +1157,11 @@ class Conversation:
         #: One entry per reply: what was asked, the reply, the option it picked (or None).
         self.history: List[Dict[str, Any]] = []
         self.result: SearchResult = self._ask()
+
+    def with_columns(self, columns: Iterable[str]) -> SearchResult:
+        """The latest answer with more columns — ``SemanticSearch.with_columns``; it becomes the latest."""
+        self.result = self.search.with_columns(self.result, columns)
+        return self.result
 
     def take_over(self, name: Optional[str] = None, full: bool = True) -> Any:
         """The latest answer as a table of its own — ``SemanticSearch.take_over``."""

@@ -474,6 +474,15 @@ How a question is read — rules find, the decision engine (Jev) decides:
   shows *Readings considered*); otherwise you get the question, as
   before. `semantic.hypotheses` tunes it (`max_hypotheses`, `depth`,
   `threshold`, `margin`, `check`, `enabled`).
+- **More columns after the answer.** An answer that is rows has a
+  **＋ Columns** button: the other fields of the tables it read, the ones
+  the question filtered on (and the time field) first — "add all" shows
+  them in one tap. Each pick runs **the same plan** again with that column
+  next to what was asked: nothing is decided again (no Jev or LLM call),
+  the filters stay, and *Take over from here* takes what's on screen. In
+  Python: `search.with_columns(result, ["nvd_cves.severity",
+  "nvd_cves.published"])` (or `conversation.with_columns(...)`;
+  `search.column_options(result)` lists what can be added; `[]` goes back).
 - **Big sources are read page by page.** When a source can't be capped
   at the API (a filter it doesn't take, a join, a count), and its table
   has a streaming function, each page is filtered by DuckDB as it arrives

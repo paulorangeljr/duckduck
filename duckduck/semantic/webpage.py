@@ -85,6 +85,14 @@ button.verdict.pop { animation: fbpop .28s ease; }
           border: 1px solid var(--border); background: var(--surface-2); color: var(--ink-2); }
 .fbchip:hover { border-color: var(--accent); }
 .fbchip[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+.colchip { font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text); }
+.colchip:hover { border-color: var(--accent); }
+.colchip[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+.colchip[disabled] { cursor: default; opacity: .7; }
+.colchip .why { opacity: .75; font-size: 12px; }
+.colpanel { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
+.colpanel h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
 .fbok { color: var(--good-ink); font-weight: 600; } .fberr { color: var(--bad); }
 button.verdict.sm { padding: 4px 9px; gap: 0; } button.verdict.sm .e { font-size: 15px; }
 .row.fbmini { gap: 4px; flex-wrap: nowrap; } td.hfb { min-width: 136px; }
@@ -871,8 +879,11 @@ function render(c) {
       ${tables.map(s => `<span class="pill">${icon(META?.source_icons?.[s])}${esc(s)}</span>`).join("")}
       <span class="muted small">${n} row${n === 1 ? "" : "s"}${c.truncated ? " (first 500 shown)" : ""}</span>
       ${runPill(r)}
-      ${META?.features?.sql && n ? `<button class="secondary" type="button" data-takeover style="margin-left:auto;padding:4px 10px;font-size:13px"
+      ${(c.result.column_options || []).length ? `<button class="secondary" type="button" data-columns aria-expanded="${COLS_OPEN.has(c.conversation_id)}"
+        style="margin-left:auto;padding:4px 10px;font-size:13px" title="Show more of these rows: other columns of the same tables">＋ Columns${(r.added_columns || []).length ? ` (${r.added_columns.length})` : ""}</button>` : ""}
+      ${META?.features?.sql && n ? `<button class="secondary" type="button" data-takeover style="${(c.result.column_options || []).length ? "" : "margin-left:auto;"}padding:4px 10px;font-size:13px"
         title="Register these rows as a table and continue in the SQL tab">Take over from here</button>` : ""}</div>
+      ${COLS_OPEN.has(c.conversation_id) ? columnPanel(r) : ""}
       ${table(r.results)}
       ${r.summary ? `<details><summary>Where it was looked for</summary>${table(r.summary)}</details>` : ""}
       ${(r.sections || []).filter(s => s.results && s.results.length).map(s =>
@@ -891,11 +902,65 @@ function render(c) {
   box.querySelectorAll("button.option").forEach(b => b.addEventListener("click", () => reply(c.conversation_id, b.dataset.reply)));
   box.querySelector("[data-runsql]")?.addEventListener("click", () => { $("#sqltext").value = r.sql; openTab("sql"); });
   box.querySelector("[data-takeover]")?.addEventListener("click", () => takeOver(c.conversation_id));
+  wireColumns(c);
   box.querySelectorAll("[data-suggest]").forEach(b => b.addEventListener("click", () => {
     $("#question").value = b.dataset.suggest; askFresh(); }));
   box.querySelector("[data-anyway]")?.addEventListener("click", () => ask(r.question, {in_scope: true}));
   $("#freeform")?.addEventListener("submit", (e) => { e.preventDefault(); const t = $("#freetext").value.trim(); if (t) reply(c.conversation_id, t); });
   wireFeedback(r);
+}
+
+// ---- more columns: a step back after the answer --------------------------
+// The same plan runs again with the fields picked here next to what was asked (no new decision).
+const COLS_OPEN = new Set();
+let colsTimer = null;
+
+function columnPanel(r) {
+  const opts = r.column_options || [];
+  const chip = o => `<button type="button" class="colchip" data-col="${esc(o.ref)}" aria-pressed="${o.selected}"
+      ${o.asked ? "disabled" : ""} title="${esc(o.description || o.ref)}${o.asked ? " — what the question asked for" : ""}">${esc(
+      r.query_plan.sources.length > 1 ? o.ref : o.field)}${o.why ? ` <span class="why">· ${esc(o.why)}</span>` : ""}</button>`;
+  const suggested = opts.filter(o => o.suggested), rest = opts.filter(o => !o.suggested && !o.asked), asked = opts.filter(o => o.asked);
+  const distinct = r.query_plan.distinct;
+  return `<div class="colpanel" id="colpanel">
+    <h4>Show more of these rows</h4>
+    <div class="fbchips">${asked.map(chip).join("")}</div>
+    ${suggested.length ? `<h4>Used by the question <button type="button" class="secondary" data-colsuggested
+        style="padding:1px 8px;font-size:12px;margin-left:6px">add all</button></h4><div class="fbchips">${suggested.map(chip).join("")}</div>` : ""}
+    ${rest.length ? `<h4>Other columns</h4><div class="fbchips">${rest.map(chip).join("")}</div>` : ""}
+    <div class="muted small">Same question, same filters — only the columns change.${distinct ? " One row per distinct combination." : ""}
+      ${(r.added_columns || []).length ? ` <a href="#" data-colreset>Back to the original columns</a>` : ""}</div>
+  </div>`;
+}
+
+function wireColumns(c) {
+  const box = $("#conversation");
+  box.querySelector("[data-columns]")?.addEventListener("click", () => {
+    COLS_OPEN.has(c.conversation_id) ? COLS_OPEN.delete(c.conversation_id) : COLS_OPEN.add(c.conversation_id);
+    render(c);
+  });
+  const panel = box.querySelector("#colpanel");
+  if (!panel) return;
+  const chosen = () => [...panel.querySelectorAll(".colchip:not([disabled])")]
+    .filter(b => b.getAttribute("aria-pressed") === "true").map(b => b.dataset.col);
+  const send = (cols) => {
+    clearTimeout(colsTimer);
+    colsTimer = setTimeout(async () => {
+      try { render(await api("/api/columns", {conversation_id: c.conversation_id, columns: cols})); }
+      catch (err) { toast(err.message); }
+    }, 350);  // a few quick taps → one run
+  };
+  panel.querySelectorAll(".colchip:not([disabled])").forEach(b => b.addEventListener("click", () => {
+    b.setAttribute("aria-pressed", b.getAttribute("aria-pressed") === "true" ? "false" : "true");
+    send(chosen());
+  }));
+  panel.querySelector("[data-colsuggested]")?.addEventListener("click", () => {
+    panel.querySelectorAll(".colchip:not([disabled])").forEach(b => {
+      if ((c.result.column_options || []).some(o => o.ref === b.dataset.col && o.suggested)) b.setAttribute("aria-pressed", "true");
+    });
+    send(chosen());
+  });
+  panel.querySelector("[data-colreset]")?.addEventListener("click", (e) => { e.preventDefault(); send([]); });
 }
 
 // ---- feedback ----------------------------------------------------------
@@ -1013,9 +1078,12 @@ function feedbackForm(r) {
     <div class="row fbverdicts">${fbVerdicts()}</div>
     <div class="fbmore" hidden></div></div>`;
 }
-let FB = null;  // the Ask page's widget
+let FB = null, FB_EL = null, FB_ID = null;  // the Ask page's widget, its element, the answer it rates
 function wireFeedback(r) {
   const fb = $("#fb"); if (!fb) { FB = null; return; }
+  // the same answer drawn again (columns added): keep the widget, and what was already saved with it
+  if (FB && FB_EL && FB_ID === r.search_id) { fb.replaceWith(FB_EL); return; }
+  FB_EL = fb; FB_ID = r.search_id;
   FB = feedbackWidget({search_id: r.search_id}, {verdicts: fb.querySelector(".fbverdicts"),
     status: fb.querySelector(".fbstatus"), more: fb.querySelector(".fbmore")}, {thanks: true});
 }

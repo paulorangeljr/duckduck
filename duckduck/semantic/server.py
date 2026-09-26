@@ -9,6 +9,7 @@ HTML page (``webpage.PAGE``) over a JSON API:
 ``POST /api/preview {question, reader}``    while typing: entity, answer kind, relevant tables by system
 ``POST /api/ask {question, user, reader, only_sources, entity, values_field, blocked_joins, in_scope}``  starts a conversation → its first result
 ``POST /api/answer {conversation_id, reply}`` answers the open clarification → next result
+``POST /api/columns {conversation_id, columns}``  the latest answer again with these extra fields (``column_options``)
 ``POST /api/feedback {search_id, verdict, categories, reason, expected, user, feedback_id}``
 ``GET  /api/searches``, ``/api/searches/{id}``  history / one search's decision trail
 ``GET  /api/stats``                          the dashboard numbers
@@ -110,6 +111,7 @@ def create_app(
 
     def payload(conv: Any) -> Dict[str, Any]:
         data = conv.result.to_dict()
+        data["column_options"] = conv.search.column_options(conv.result)
         data["results"], truncated = data["results"][:MAX_ROWS], len(data["results"]) > MAX_ROWS
         for sec in data.get("sections") or []:
             if sec.get("results"):
@@ -212,6 +214,18 @@ def create_app(
         if conv.done:
             raise HTTPException(409, "nothing to answer: this conversation has no open question")
         conv.answer(str(body.get("reply") or ""))
+        return dump(payload(conv))
+
+    @app.post("/api/columns")
+    def columns(body: Dict[str, Any] = Body(...)):
+        conv = conversation(str(body.get("conversation_id")))
+        wanted = body.get("columns") or []
+        if not isinstance(wanted, list):
+            raise HTTPException(400, "columns: a list of source.field names")
+        try:
+            conv.with_columns([str(c) for c in wanted])
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
         return dump(payload(conv))
 
     @app.post("/api/feedback")
