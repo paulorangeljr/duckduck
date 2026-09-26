@@ -56,7 +56,35 @@ def test_what_is_connected_shows_the_failed_system():
     assert world["tables"] == 0 and "failed to start" in world["kind"] and "authentication" in world["problem"]
 
 
-def test_the_page_is_told():
+def test_every_catalog_table_with_its_connection():
+    search, _ = _search()
+    status = {r["source"]: r for r in search.source_status()}
+    assert set(status) == {"alerts", "owners", "countries"}  # the catalog as written, not just what's usable
+    assert status["alerts"]["connected"] and status["alerts"]["system"] == "siem" and status["alerts"]["reason"] is None
+    assert not status["countries"]["connected"] and status["countries"]["system"] == "world"
+    assert "failed to start" in status["countries"]["reason"]
+    assert not status["owners"]["connected"] and "did you mean 'owner'" in status["owners"]["reason"]
+    assert [r["connected"] for r in search.source_status()] == [False, False, True]  # the problems first
+
+
+def test_a_test_reads_one_row_now():
+    search, _ = _search()
+    ok = search.check_source("alerts")
+    assert ok["ok"] and ok["columns"] == 3 and ok["rows"] == 1
+    assert search.check_source("countries") == {"source": "countries", "ok": False, "ms": 0,
+                                                "error": search.unavailable_sources["countries"]["reason"]}
+
+    def broken(limit=None):
+        raise ConnectionError("401 Unauthorized: bad key")
+
+    search.duck.register_api_function("alerts", broken)  # registered, but the API refuses it
+    bad = search.check_source("alerts")
+    assert not bad["ok"] and "401 Unauthorized" in bad["error"]
+    with pytest.raises(KeyError):
+        search.check_source("nope")
+
+
+def test_the_config_page_is_told_and_the_ask_page_is_not():
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
@@ -64,9 +92,9 @@ def test_the_page_is_told():
 
     search, _ = _search()
     client = TestClient(create_app(lambda: search, store=None))
-    meta = client.get("/api/meta").json()
-    assert {u["source"] for u in meta["unavailable_sources"]} == {"owners", "countries"}
+    status = client.get("/api/catalog").json()["status"]
+    assert {r["source"]: r["connected"] for r in status} == {"alerts": True, "owners": False, "countries": False}
+    assert client.post("/api/catalog/check", json={"source": "alerts"}).json()["ok"] is True
+    assert client.post("/api/catalog/check", json={"source": "nope"}).status_code == 404
     preview = client.post("/api/preview", json={"question": "Which hosts have critical alerts?"}).json()
-    assert {u["source"] for u in preview["unavailable"]} == {"owners", "countries"}
-    catalog = client.get("/api/catalog").json()
-    assert {u["source"] for u in catalog["unavailable"]} == {"owners", "countries"}
+    assert "unavailable" not in preview  # the Ask page stays about the question

@@ -505,13 +505,12 @@ How a question is read — rules find, the decision engine (Jev) decides:
   (the panel says "From the rows already read — nothing fetched again");
   when they aren't there anymore, the page shows the steps of reading
   again.
-- **A table in the catalog that can't be used is shown, with why.** If a
-  connector failed to start (a missing API key, say) or a catalog `table:`
-  doesn't match a registered name, the source is left out of answers — and
-  the Systems panel and the catalog card list it under *Not available*
-  with the reason ("its service 'world' failed to start — …", "did you
-  mean 'world_countries'?"). "Which systems are connected?" shows the
-  failed system too.
+- **Config → Catalog connections.** Every table of the catalog, its
+  system, and whether it's connected — and when it isn't, why ("its service
+  'world' failed to start — …", "did you mean 'world_countries'?"): such a
+  table is left out of answers until that's fixed. *Test* reads one row
+  now, since a registered source can still refuse (a bad key, the network).
+  "Which systems are connected?" shows a failed system too.
 - **More columns after the answer.** An answer that is rows has a
   **＋ Columns** button: the other fields of the tables it read, the ones
   the question filtered on (and the time field) first — *add these* shows

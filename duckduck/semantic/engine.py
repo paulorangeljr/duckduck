@@ -321,6 +321,8 @@ class SemanticSearch:
         self.duck = duck
         #: Catalog sources left out because their table can't be used — name → {table, reason} (``_unusable``).
         self.unavailable_sources: Dict[str, Dict[str, str]] = {}
+        #: The catalog as written, unavailable sources included (``source_status``).
+        self.full_catalog = catalog
         self.catalog = self._available_subset(catalog, duck, strict, self.unavailable_sources) \
             if duck is not None else catalog
         self.engine = engine or LexicalDecisionEngine()
@@ -797,7 +799,6 @@ class SemanticSearch:
                 logger.warning("feedback: couldn't record the preview's usage (%s)", exc)
         seen["joins"] = self._preview_joins(seen)
         seen["systems"] = self._systems({s["source"]: s for s in seen["sources"]})
-        seen["unavailable"] = self.unavailable()
         self._previews[key] = seen
         while len(self._previews) > 256:
             self._previews.popitem(last=False)
@@ -876,6 +877,71 @@ class SemanticSearch:
         allowed = self.planner.allowed
         return [{"source": n, **p} for n, p in sorted(self.unavailable_sources.items())
                 if allowed is None or n in allowed]
+
+    def source_status(self) -> List[Dict[str, Any]]:
+        """
+        Every source of the catalog as written: ``source``, ``description``,
+        ``table``, ``args``, ``system`` (the ``auto_register`` service, or the
+        failed one), ``connected`` and, when not, ``reason`` (``_unusable``).
+        Connected means registered and usable — ``check_source`` reads it.
+        """
+        failed = getattr(self.duck, "failed_services", None) or {}
+        service_of = getattr(self.duck, "service_of", {}) if self.duck is not None else {}
+        rows = []
+        for name, src in self.full_catalog.sources.items():
+            table = src.table or ""
+            problem = self.unavailable_sources.get(name)
+            system = service_of.get(table.lower()) or ("DuckDB" if src.relation else None)
+            if system is None:
+                system = next((s for s, f in failed.items()
+                               if table.lower().startswith((f.get("prefix") or "").lower() + "_")), None)
+            rows.append({
+                "source": name, "description": (src.description or "").strip().split("\n")[0][:200],
+                "table": table or None, "relation": bool(src.relation), "args": dict(src.args),
+                "system": system, "icon": self.source_icon(name) if problem is None else "api",
+                "connected": problem is None, "reason": problem["reason"] if problem else None,
+            })
+        rows.sort(key=lambda r: (r["connected"], r["system"] or "", r["source"]))
+        return rows
+
+    def check_source(self, name: str, timeout: float = 30.0) -> Dict[str, Any]:
+        """
+        Reads one row of ``name`` (``limit=1`` when its table takes it), with
+        a ``timeout`` — whether the source really answers now: ``ok``, ``ms``,
+        ``columns``, or ``error``. A source that isn't connected isn't called.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+        from concurrent.futures import TimeoutError as FutureTimeout
+
+        src = self.full_catalog.sources.get(name)
+        if src is None:
+            raise KeyError(f"no source {name!r} in the catalog")
+        if name in self.unavailable_sources:
+            return {"source": name, "ok": False, "ms": 0, "error": self.unavailable_sources[name]["reason"]}
+        started = time.perf_counter()
+
+        def read() -> pd.DataFrame:
+            if src.relation:
+                return self.duck.conn.sql(f"SELECT * FROM {src.relation} LIMIT 1").df()
+            fn = self.duck.functions[src.table.lower()]
+            kwargs = dict(src.args)
+            if "limit" in inspect.signature(fn).parameters:
+                kwargs["limit"] = 1
+            return self.duck.fetch(src.table, **kwargs)
+
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
+            frame = pool.submit(read).result(timeout=timeout)
+            return {"source": name, "ok": True, "ms": round((time.perf_counter() - started) * 1000),
+                    "columns": len(frame.columns), "rows": min(len(frame), 1)}
+        except FutureTimeout:
+            return {"source": name, "ok": False, "ms": round(timeout * 1000),
+                    "error": f"no answer in {timeout:g} s"}
+        except Exception as exc:
+            return {"source": name, "ok": False, "ms": round((time.perf_counter() - started) * 1000),
+                    "error": f"{type(exc).__name__}: {exc}"[:500]}
+        finally:
+            pool.shutdown(wait=False)
 
     def source_icon(self, name: str) -> str:
         """The kind of source behind a catalog source — sharepoint, database, servicenow, files, … (``admin.SOURCE_KINDS``)."""

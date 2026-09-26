@@ -106,8 +106,11 @@ button.verdict.pop { animation: fbpop .28s ease; }
 .steps li.now .spin { display: inline-block; vertical-align: -2px; }
 .steps li .at { margin-left: auto; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .jobnote { font-size: 13px; color: var(--muted); margin-top: 8px; }
-.srcrow.unavail { opacity: .85; }
-.srcrow.unavail .desc { color: var(--bad, #b3261e); }
+.conntable td { vertical-align: top; }
+.connok { color: var(--good-ink); font-weight: 600; white-space: nowrap; }
+.connbad { color: var(--bad); font-weight: 600; white-space: nowrap; }
+.connwhy { color: var(--bad); font-size: 12.5px; margin-top: 2px; }
+.conncheck { font-size: 12.5px; margin-top: 2px; }
 .colpanel { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
 .colpanel h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
 .fbok { color: var(--good-ink); font-weight: 600; } .fberr { color: var(--bad); }
@@ -436,6 +439,14 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
       </div>
       <details id="cattables"><summary id="catcount">Tables</summary><div id="catlist"></div></details>
     </div>
+    <div class="card" id="conncard">
+      <div class="cfghead"><h3>Catalog connections</h3><span class="muted small" id="conncount"></span></div>
+      <p class="muted small" style="margin:6px 0 10px">Each table of the catalog and whether its system is connected.
+        A table that isn't can't be used in answers until the reason below is fixed. <em>Test</em> reads one row now.</p>
+      <div class="row"><button class="secondary" type="button" id="conntestall" title="Read one row of every connected table, one after another">Test all</button>
+        <span class="small muted" id="connnote"></span></div>
+      <div id="connlist"></div>
+    </div>
     <div class="cfggrid">
       <div class="card"><div class="cfghead"><h3>duckduck.json <span class="muted small mono" id="cfgpath"></span></h3>
           <div class="seg" role="group" aria-label="Edit as">
@@ -728,9 +739,6 @@ function drawPanel() {
           <span class="mono">${esc(j.left)} = ${esc(j.right)}</span>
           <span class="rel" title="confidence ${Math.round(j.confidence * 100)}%"><span style="width:${Math.round(j.confidence * 100)}%"></span></span>
           <span class="desc">to find the ${esc(String(j.for).replace(/_/g, " "))} · ${esc(j.type.replace(/_/g, " "))}</span></label>`).join("") : "") +
-      ((d.unavailable || []).length ? `<h4>⚠ Not available <span class="label">in the catalog, but their table can't be used right now</span></h4>` +
-        d.unavailable.map(u => `<div class="srcrow unavail"><span>—</span><span><strong>${esc(u.source)}</strong> <span class="mono muted">${esc(u.table)}</span></span>
-          <span></span><span class="desc">${esc(u.reason)}</span></div>`).join("") : "") +
       `<div class="foot"><button class="secondary" type="button" id="useall">Let it choose</button>
         <button class="primary" type="button" id="paneldone">Done</button></div>`;
     panel.querySelectorAll("[data-source]").forEach(cb => cb.addEventListener("change", () => {
@@ -1479,12 +1487,12 @@ async function loadCatalog() {
   $("#catnote").textContent = off ? off : (info.max_age ? `Update drafts new tables and those older than ${info.max_age}` : "Update drafts the tables not in the catalog yet")
     + (info.max_tables ? ` · at most ${info.max_tables} per run` : "") + (off ? "" : ".");
   drawCatalogTables(!!off || running);
+  drawConnections();
   if (CAT.job && (!CATJOB || CATJOB.id !== CAT.job.id)) watchJob(CAT.job);  // a job started elsewhere, or before a reload
 }
 function drawCatalogTables(disabled) {
-  const src = CAT.sources || [], missing = CAT.not_in_catalog || [], unavail = CAT.unavailable || [];
-  $("#catcount").textContent = `Tables — ${src.length} in the catalog` + (unavail.length ? ` · ${unavail.length} not available` : "")
-    + (missing.length ? ` · ${missing.length} not yet` : "");
+  const src = CAT.sources || [], missing = CAT.not_in_catalog || [];
+  $("#catcount").textContent = `Tables — ${src.length} in the catalog` + (missing.length ? ` · ${missing.length} not yet` : "");
   const btn = (label, attr, title) => `<button class="secondary" type="button" ${attr} title="${esc(title)}" style="padding:3px 10px;font-size:12.5px" ${disabled ? "disabled" : ""}>${label}</button>`;
   $("#catlist").innerHTML = `<div class="tablewrap"><table><thead><tr><th>table</th><th>reads</th><th class="num">fields</th><th>drafted</th><th></th></tr></thead><tbody>
     ${src.map(t => `<tr><td><strong>${esc(t.name)}</strong>${t.notes ? ` <span class="muted small" title="has your notes — kept when redrafted">✎ notes</span>` : ""}
@@ -1493,14 +1501,49 @@ function drawCatalogTables(disabled) {
       <td class="num">${t.fields}</td>
       <td class="small">${t.generated_at ? `${esc(ago(t.generated_at))}<div class="muted">${esc(t.generated_by || "")}</div>` : `<span class="muted">written by hand</span>`}</td>
       <td>${t.relation ? "" : btn("Redraft", `data-redraft="${esc(t.name)}"`, t.generated_at ? "Draft this table again" : "Replace the hand-written description with a draft (your notes are kept)")}</td></tr>`).join("")}
-    ${unavail.map(u => `<tr><td><strong>${esc(u.source)}</strong> <span class="pill" style="color:var(--bad, #b3261e)">not available</span>
-        <div class="small" style="color:var(--bad, #b3261e)">${esc(u.reason)}</div></td><td class="mono">${esc(u.table)}</td><td></td><td></td><td></td></tr>`).join("")}
     ${missing.map(n => `<tr><td><span class="muted">${esc(n)}</span> <span class="pill">not in the catalog</span></td><td class="mono">${esc(n)}</td><td></td><td></td>
       <td>${btn("Add", `data-add="${esc(n)}"`, "Draft this table into the catalog")}</td></tr>`).join("")}
     </tbody></table></div>`;
   $("#catlist").querySelectorAll("[data-redraft]").forEach(b => b.addEventListener("click", () => startGeneration({force: [b.dataset.redraft]})));
   $("#catlist").querySelectorAll("[data-add]").forEach(b => b.addEventListener("click", () => startGeneration({only: [b.dataset.add]})));
 }
+// ---- catalog connections: is each table's system connected, and why not ----
+const CONN_CHECKS = {};  // source → the last Test result
+function drawConnections() {
+  const rows = CAT?.status || [], bad = rows.filter(r => !r.connected).length;
+  $("#conncount").textContent = rows.length ? `${rows.length - bad} connected` + (bad ? ` · ${bad} not connected` : "") : "";
+  if (!rows.length) { $("#connlist").innerHTML = `<p class="muted small">The catalog has no tables yet.</p>`; return; }
+  const check = r => {
+    const c = CONN_CHECKS[r.source]; if (!c) return "";
+    if (c.running) return `<div class="conncheck muted"><span class="spin" aria-hidden="true"></span> reading one row…</div>`;
+    return c.ok ? `<div class="conncheck connok">✓ answered in ${c.ms.toLocaleString()} ms · ${c.columns} columns</div>`
+                : `<div class="conncheck connwhy">✗ ${esc(c.error)}</div>`;
+  };
+  $("#connlist").innerHTML = `<div class="tablewrap"><table class="conntable"><thead><tr><th>table</th><th>system</th><th>reads</th><th>status</th><th></th></tr></thead><tbody>
+    ${rows.map(r => `<tr><td><strong>${esc(r.source)}</strong>${r.description ? `<div class="muted small">${esc(r.description)}</div>` : ""}</td>
+      <td>${r.system ? `${icon(r.icon)} ${esc(r.system)}` : `<span class="muted">—</span>`}</td>
+      <td class="mono small">${r.relation ? "DuckDB relation" : esc(r.table || "") + (Object.keys(r.args || {}).length ? `(${esc(Object.entries(r.args).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", "))})` : "")}</td>
+      <td>${r.connected ? `<span class="connok">✓ Connected</span>` : `<span class="connbad">✗ Not connected</span><div class="connwhy">${esc(r.reason || "")}</div>`}${check(r)}</td>
+      <td>${r.connected ? `<button class="secondary" type="button" data-conntest="${esc(r.source)}" style="padding:3px 10px;font-size:12.5px"
+          ${CONN_CHECKS[r.source]?.running ? "disabled" : ""}>Test</button>` : ""}</td></tr>`).join("")}
+  </tbody></table></div>`;
+  $("#connlist").querySelectorAll("[data-conntest]").forEach(b => b.addEventListener("click", () => testConnection(b.dataset.conntest)));
+  $("#conntestall").disabled = !rows.some(r => r.connected) || Object.values(CONN_CHECKS).some(c => c.running);
+}
+async function testConnection(source) {
+  CONN_CHECKS[source] = {running: true}; drawConnections();
+  try { CONN_CHECKS[source] = await api("/api/catalog/check", {source}); }
+  catch (err) { CONN_CHECKS[source] = {ok: false, error: err.message}; }
+  drawConnections();
+}
+$("#conntestall").addEventListener("click", async () => {
+  const todo = (CAT?.status || []).filter(r => r.connected).map(r => r.source);
+  $("#connnote").textContent = `testing ${todo.length} table${todo.length === 1 ? "" : "s"}…`;
+  for (const s of todo) await testConnection(s);  // one at a time: rate-limited APIs (NVD) stay happy
+  const failed = todo.filter(s => !CONN_CHECKS[s]?.ok).length;
+  $("#connnote").textContent = failed ? `${failed} didn't answer — see below` : "every connected table answered";
+});
+
 async function startGeneration(body) {
   try { watchJob(await api("/api/catalog/generate", body)); }
   catch (err) { $("#catnote").innerHTML = `<span class="msg bad">✗ ${esc(err.message)}</span>`; }

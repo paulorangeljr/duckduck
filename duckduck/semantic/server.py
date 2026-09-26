@@ -29,7 +29,8 @@ HTML page (``webpage.PAGE``) over a JSON API:
 ``GET  /api/config``                         duckduck.json, secrets masked, + every option documented
 ``POST /api/config/validate {config}``       check an edited config without saving
 ``PUT  /api/config {config}``                save it (``allow_config_edit``; ``.bak`` kept) and reload
-``GET  /api/catalog``                        the semantic catalog: its tables, their age, the tables not in it yet
+``GET  /api/catalog``                        the semantic catalog: its tables, their age, the tables not in it yet, each source's connection (``status``)
+``POST /api/catalog/check {source}``         read one row of that source now: does it answer?
 ``POST /api/catalog/generate {force, only}``  draft it with the LLM, as a job (``allow_config_edit``) → 202
 ``GET  /api/catalog/jobs/{id}?since=n``      that job: running / done / failed, its log from line n, the result
 ==========================================  ==============================================
@@ -572,6 +573,13 @@ def create_app(
                     "with --edit-config (serve(allow_config_edit=True)) to do it from here")
         return None
 
+    @app.post("/api/catalog/check")
+    def catalog_check(body: Dict[str, Any] = Body(...)):
+        try:
+            return dump(state["search"].check_source(str(body.get("source") or "")))
+        except KeyError as exc:
+            raise HTTPException(404, str(exc.args[0]))
+
     @app.get("/api/catalog")
     def catalog_status():
         search = state["search"]
@@ -599,7 +607,7 @@ def create_app(
             except Exception as exc:
                 info = {"error": f"{type(exc).__name__}: {exc}"}
         latest = jobs.latest() if jobs else None
-        return dump({"sources": sources, "not_in_catalog": missing, "unavailable": search.unavailable(),
+        return dump({"sources": sources, "not_in_catalog": missing, "status": search.source_status(),
                      "info": info, "off": generation_off(),
                      "job": latest.to_dict() if latest else None})
 
