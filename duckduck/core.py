@@ -260,6 +260,8 @@ class DuckAPI:
         self.functions: Dict[str, Any] = {}
         #: Registered table name (lowercase) → the auto_register service that registered it.
         self.service_of: Dict[str, str] = {}
+        #: ``auto_register(on_error="warn")`` services that failed: name → {error, prefix, connector}.
+        self.failed_services: Dict[str, Dict[str, str]] = {}
         self._streaming_functions: Dict[str, Any] = {}
         self._table_counter = 0
         self.stream_pages = stream_pages
@@ -502,6 +504,7 @@ class DuckAPI:
 
         for name, raw_config in services.items():
             try:
+                self.failed_services.pop(name, None)
                 config = dict(raw_config)
                 connector = config.pop("connector", name)
                 spec = SERVICE_REGISTRY.get(connector)
@@ -578,6 +581,12 @@ class DuckAPI:
                     # connector). Force this one to always display regardless of
                     # what's already in __warningregistry__ or the caller's own
                     # filters.
+                    raw = raw_config if isinstance(raw_config, dict) else {}
+                    self.failed_services[name] = {
+                        "error": f"{exc.__class__.__name__}: {exc}",
+                        "prefix": str(raw.get("table_prefix", name)),
+                        "connector": str(raw.get("connector", name)),
+                    }
                     with warnings.catch_warnings():
                         warnings.simplefilter("always", RuntimeWarning)
                         warnings.warn(

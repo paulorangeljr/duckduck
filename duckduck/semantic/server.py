@@ -149,6 +149,7 @@ def create_app(
                          "config_edit": bool(config_path and allow_config_edit),
                          "catalog_generation": bool(catalog_runner is not None and allow_config_edit)},
             "source_icons": {n: search.source_icon(n) for n in cat.sources},
+            "unavailable_sources": search.unavailable(),
             "texts": {"ask_anyway": search.texts.t("reply.ask_anyway")},
             "readers": {"available": search.readers, "default": search.reader,
                         "llm_unavailable": None if "llm" in search.readers else (
@@ -598,7 +599,8 @@ def create_app(
             except Exception as exc:
                 info = {"error": f"{type(exc).__name__}: {exc}"}
         latest = jobs.latest() if jobs else None
-        return dump({"sources": sources, "not_in_catalog": missing, "info": info, "off": generation_off(),
+        return dump({"sources": sources, "not_in_catalog": missing, "unavailable": search.unavailable(),
+                     "info": info, "off": generation_off(),
                      "job": latest.to_dict() if latest else None})
 
     @app.post("/api/catalog/generate")

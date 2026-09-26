@@ -319,7 +319,10 @@ class SemanticSearch:
         self._kept: "OrderedDict[int, Any]" = OrderedDict()
         self._kept_lock = threading.Lock()
         self.duck = duck
-        self.catalog = self._available_subset(catalog, duck, strict) if duck is not None else catalog
+        #: Catalog sources left out because their table can't be used — name → {table, reason} (``_unusable``).
+        self.unavailable_sources: Dict[str, Dict[str, str]] = {}
+        self.catalog = self._available_subset(catalog, duck, strict, self.unavailable_sources) \
+            if duck is not None else catalog
         self.engine = engine or LexicalDecisionEngine()
         self.thresholds = thresholds or Thresholds()
         self.clock = clock
@@ -794,6 +797,7 @@ class SemanticSearch:
                 logger.warning("feedback: couldn't record the preview's usage (%s)", exc)
         seen["joins"] = self._preview_joins(seen)
         seen["systems"] = self._systems({s["source"]: s for s in seen["sources"]})
+        seen["unavailable"] = self.unavailable()
         self._previews[key] = seen
         while len(self._previews) > 256:
             self._previews.popitem(last=False)
@@ -866,6 +870,12 @@ class SemanticSearch:
             g["relevant"] = any(s["relevant"] for s in g["sources"])
         out.sort(key=lambda g: (not g["relevant"], g["system"]))
         return out
+
+    def unavailable(self) -> List[Dict[str, str]]:
+        """Catalog sources left out (allowed ones only): ``source``, ``table``, ``reason`` — see ``_unusable``."""
+        allowed = self.planner.allowed
+        return [{"source": n, **p} for n, p in sorted(self.unavailable_sources.items())
+                if allowed is None or n in allowed]
 
     def source_icon(self, name: str) -> str:
         """The kind of source behind a catalog source — sharepoint, database, servicenow, files, … (``admin.SOURCE_KINDS``)."""
@@ -1116,8 +1126,21 @@ class SemanticSearch:
                 entry["tables"] += 1
                 entry["described"] += 1
                 entry["examples"].append(name)
-        rows = [{**e, "examples": ", ".join(e["examples"])} for e in sorted(systems.values(), key=lambda e: e["system"])]
-        return pd.DataFrame(rows, columns=["system", "kind", "tables", "described", "examples"])
+        for service, failure in sorted((getattr(self.duck, "failed_services", None) or {}).items()):
+            systems.setdefault(service, {"system": service, "kind": f"{failure.get('connector')} — failed to start",
+                                         "tables": 0, "described": 0, "examples": [],
+                                         "problem": failure.get("error", "")})
+        for row in self.unavailable():  # in the catalog, but its table can't be used
+            system = next((s for s, f in (getattr(self.duck, "failed_services", None) or {}).items()
+                           if row["table"].lower().startswith((f.get("prefix") or "").lower() + "_")), None)
+            if system in systems and not systems[system].get("problem"):
+                systems[system]["problem"] = row["reason"]
+        rows = [{**e, "examples": ", ".join(e["examples"]), "problem": e.get("problem", "")}
+                for e in sorted(systems.values(), key=lambda e: e["system"])]
+        columns = ["system", "kind", "tables", "described", "examples"]
+        if any(r["problem"] for r in rows):  # only when something is wrong: why a system has no tables
+            columns.append("problem")
+        return pd.DataFrame(rows, columns=columns)
 
     def _catalog_answer(self, intent: SemanticIntent) -> pd.DataFrame:
         """A question about the catalog itself, by topic — never reads data."""
@@ -1208,20 +1231,29 @@ class SemanticSearch:
         return pd.DataFrame(rows, columns=["source", "fields", "description"])
 
     @staticmethod
-    def _available_subset(catalog: Catalog, duck: Any, strict: bool) -> Catalog:
-        """Drops (or, with ``strict``, rejects) sources whose DuckAPI table isn't usable."""
+    def _available_subset(catalog: Catalog, duck: Any, strict: bool,
+                          report: Optional[Dict[str, Dict[str, str]]] = None) -> Catalog:
+        """
+        Drops (or, with ``strict``, rejects) sources whose DuckAPI table isn't
+        usable; ``report`` gets each one's table and the reason, in words a
+        person can act on (``_unusable``).
+        """
         problems: Dict[str, str] = {}
         for name, src in catalog.sources.items():
             if not src.table:
                 continue
             fn = duck.functions.get(src.table.lower())
             if fn is None:
-                problems[name] = f"table '{src.table}' is not registered in DuckAPI"
+                problems[name] = _unusable(src.table, duck)
+                if report is not None:
+                    report[name] = {"table": src.table, "reason": problems[name]}
                 continue
             params = inspect.signature(fn).parameters
             unknown = [a for a in src.args if a not in params]
             if unknown:
                 problems[name] = f"'{src.table}' doesn't accept args {unknown}"
+                if report is not None:
+                    report[name] = {"table": src.table, "reason": problems[name]}
         if not problems:
             return catalog
         if strict:
@@ -1242,6 +1274,24 @@ class SemanticSearch:
         return Catalog.model_construct(
             sources=keep, entities=catalog.entities, activities=catalog.activities, relationships=rels,
         )
+
+
+def _unusable(table: str, duck: Any) -> str:
+    """Why ``table`` isn't registered: its service failed to start, a near name, or nothing registers it."""
+    import difflib
+
+    low = table.lower()
+    for service, failure in (getattr(duck, "failed_services", None) or {}).items():
+        prefix = (failure.get("prefix") or "").lower()
+        if (prefix and low.startswith(prefix + "_")) or (not prefix and low):
+            return (f"table '{table}' is not registered: its service '{service}' "
+                    f"(connector {failure.get('connector')}) failed to start — {failure.get('error')}")
+    near = difflib.get_close_matches(low, list(getattr(duck, "functions", {})), n=3, cutoff=0.6)
+    if near:
+        return (f"table '{table}' is not registered — did you mean {', '.join(repr(n) for n in near)}? "
+                f"Fix `table:` in the catalog (registered names are {{service}}_{{table}}).")
+    return (f"table '{table}' is not registered in DuckAPI — no configured service registers it: "
+            f"add the service to duckduck.json, or fix `table:` in the catalog")
 
 
 def _auto_refresh(cfg: Any, duck: Any) -> None:

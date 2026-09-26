@@ -106,6 +106,8 @@ button.verdict.pop { animation: fbpop .28s ease; }
 .steps li.now .spin { display: inline-block; vertical-align: -2px; }
 .steps li .at { margin-left: auto; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .jobnote { font-size: 13px; color: var(--muted); margin-top: 8px; }
+.srcrow.unavail { opacity: .85; }
+.srcrow.unavail .desc { color: var(--bad, #b3261e); }
 .colpanel { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
 .colpanel h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
 .fbok { color: var(--good-ink); font-weight: 600; } .fberr { color: var(--bad); }
@@ -726,6 +728,9 @@ function drawPanel() {
           <span class="mono">${esc(j.left)} = ${esc(j.right)}</span>
           <span class="rel" title="confidence ${Math.round(j.confidence * 100)}%"><span style="width:${Math.round(j.confidence * 100)}%"></span></span>
           <span class="desc">to find the ${esc(String(j.for).replace(/_/g, " "))} · ${esc(j.type.replace(/_/g, " "))}</span></label>`).join("") : "") +
+      ((d.unavailable || []).length ? `<h4>⚠ Not available <span class="label">in the catalog, but their table can't be used right now</span></h4>` +
+        d.unavailable.map(u => `<div class="srcrow unavail"><span>—</span><span><strong>${esc(u.source)}</strong> <span class="mono muted">${esc(u.table)}</span></span>
+          <span></span><span class="desc">${esc(u.reason)}</span></div>`).join("") : "") +
       `<div class="foot"><button class="secondary" type="button" id="useall">Let it choose</button>
         <button class="primary" type="button" id="paneldone">Done</button></div>`;
     panel.querySelectorAll("[data-source]").forEach(cb => cb.addEventListener("change", () => {
@@ -1477,8 +1482,9 @@ async function loadCatalog() {
   if (CAT.job && (!CATJOB || CATJOB.id !== CAT.job.id)) watchJob(CAT.job);  // a job started elsewhere, or before a reload
 }
 function drawCatalogTables(disabled) {
-  const src = CAT.sources || [], missing = CAT.not_in_catalog || [];
-  $("#catcount").textContent = `Tables — ${src.length} in the catalog` + (missing.length ? ` · ${missing.length} not yet` : "");
+  const src = CAT.sources || [], missing = CAT.not_in_catalog || [], unavail = CAT.unavailable || [];
+  $("#catcount").textContent = `Tables — ${src.length} in the catalog` + (unavail.length ? ` · ${unavail.length} not available` : "")
+    + (missing.length ? ` · ${missing.length} not yet` : "");
   const btn = (label, attr, title) => `<button class="secondary" type="button" ${attr} title="${esc(title)}" style="padding:3px 10px;font-size:12.5px" ${disabled ? "disabled" : ""}>${label}</button>`;
   $("#catlist").innerHTML = `<div class="tablewrap"><table><thead><tr><th>table</th><th>reads</th><th class="num">fields</th><th>drafted</th><th></th></tr></thead><tbody>
     ${src.map(t => `<tr><td><strong>${esc(t.name)}</strong>${t.notes ? ` <span class="muted small" title="has your notes — kept when redrafted">✎ notes</span>` : ""}
@@ -1487,6 +1493,8 @@ function drawCatalogTables(disabled) {
       <td class="num">${t.fields}</td>
       <td class="small">${t.generated_at ? `${esc(ago(t.generated_at))}<div class="muted">${esc(t.generated_by || "")}</div>` : `<span class="muted">written by hand</span>`}</td>
       <td>${t.relation ? "" : btn("Redraft", `data-redraft="${esc(t.name)}"`, t.generated_at ? "Draft this table again" : "Replace the hand-written description with a draft (your notes are kept)")}</td></tr>`).join("")}
+    ${unavail.map(u => `<tr><td><strong>${esc(u.source)}</strong> <span class="pill" style="color:var(--bad, #b3261e)">not available</span>
+        <div class="small" style="color:var(--bad, #b3261e)">${esc(u.reason)}</div></td><td class="mono">${esc(u.table)}</td><td></td><td></td><td></td></tr>`).join("")}
     ${missing.map(n => `<tr><td><span class="muted">${esc(n)}</span> <span class="pill">not in the catalog</span></td><td class="mono">${esc(n)}</td><td></td><td></td>
       <td>${btn("Add", `data-add="${esc(n)}"`, "Draft this table into the catalog")}</td></tr>`).join("")}
     </tbody></table></div>`;
