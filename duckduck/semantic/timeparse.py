@@ -28,7 +28,9 @@ and a window is built from periods:
 - a period alone → that period. The current one (today, this week…) has no
   end: "logins today" means so far today.
 - ``last 3 days`` / ``últimos 3 dias`` / ``nas últimas 24 horas`` → a
-  window ending now.
+  window ending now; so does ``the last week / month / year`` (rolling: "in
+  the last year" is the past 365 days). The calendar ones are ``this year``,
+  ``ano passado``, ``semana passada``, a month's or a year's name.
 
 Times are naive and in the same clock as ``now`` (UTC by default: "today"
 is the UTC day).
@@ -57,6 +59,7 @@ _UNITS = {
     "day": 24, "days": 24, "d": 24, "dia": 24, "dias": 24,
     "week": 168, "weeks": 168, "w": 168, "semana": 168, "semanas": 168,
     "month": 720, "months": 720, "mês": 720, "mes": 720, "meses": 720,
+    "year": 8760, "years": 8760, "yr": 8760, "yrs": 8760, "ano": 8760, "anos": 8760,
 }
 
 

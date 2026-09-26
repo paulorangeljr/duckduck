@@ -583,8 +583,12 @@ class SemanticInterpreter:
         (``lookup``) as an alternative to a list: the engine reads which.
         """
         typed_value = any(lit.kind != "term" or lit.semantic_type for lit in intent.literals)
-        # "which systems are connected to 10.0.0.5" is about the data: only a value-less question may be about me
-        candidates, words = self.shapes.candidates(intent.working_question, about_me=not typed_value)
+        # "which systems are connected to 10.0.0.5" is about the data: only a value-less question may be about me;
+        # and a question that filters on something (a time window, a known value) is about the data, whatever
+        # its words ("… published in the last year that are in the CISA KEV catalog")
+        about_data = typed_value or intent.time_range is not None or bool(intent.value_filters)
+        candidates, words = self.shapes.candidates(intent.working_question, about_me=not typed_value,
+                                                   about_data=about_data)
         if candidates == ["list"]:
             field = self._named_field(intent.working_question)
             if field is not None:  # "what are the severities of the events?" → severity's values
@@ -602,11 +606,13 @@ class SemanticInterpreter:
         """
         The ``llm`` reader: the LLM's answer kind joins the rules' — when they
         agree nothing changes; when they don't, both go to the engine (it sees
-        the reading as a fact) and a doubt is asked back. The rules' catalog
-        reading stays final (it answers before anything is asked).
+        the reading as a fact) and a doubt is asked back — the rules' catalog
+        reading included: an LLM that read a question about the data where
+        the wording said "catalog" makes it the engine's choice, not the
+        wording's.
         """
         r = intent.reading
-        if r is None or not r.answer or r.answer in ("small_talk", "out_of_scope") or candidates == ["catalog"]:
+        if r is None or not r.answer or r.answer in ("small_talk", "out_of_scope"):
             return candidates, words
         if r.answer == "browse" and not (r.about_kind == "table" and r.about):
             return candidates, words  # a table to show, but which? the rules' reading stands

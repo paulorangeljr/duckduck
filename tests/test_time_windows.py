@@ -36,6 +36,10 @@ NOW = D(2026, 9, 25, 15, 0)  # a Friday
     ("in the last 24 hours", None, None, 24.0),
     ("nas últimas 24 horas", None, None, 24.0),
     ("últimos 7 dias", None, None, 168.0),
+    ("CVEs published in the last year", None, None, 8760.0),                                # rolling, like last week
+    ("nos últimos 2 anos", None, None, 17520.0),
+    ("logins this year", D(2026, 1, 1), None, None),                                         # calendar
+    ("logins do ano passado", D(2025, 1, 1), D(2026, 1, 1), None),
 ])
 def test_windows(question, start, end, hours):
     window, _, _ = find_window(question, NOW)

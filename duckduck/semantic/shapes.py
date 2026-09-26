@@ -63,7 +63,9 @@ DEFAULT_WORDING: Dict[str, Dict[str, List[str]]] = {
         "re:\\b(voc[eê]|vc) tem acesso\\b", "o que você sabe", "o que voce sabe", "o que posso perguntar",
         "re:\\bquais (dados|tabelas|fontes|bases) (existem|est[aã]o dispon[ií]veis|h[aá])\\b",
         # the catalog's parts: entities, activities, fields, relationships
-        "re:\\bcat[aá]log(o|ue)?\\b",
+        # "your catalog", "the catalog" — not "the CISA KEV catalog" or "a product catalog": those are data
+        "re:\\b(your|the|this|my|our|seu|sua|teu|tua|o|do|no|neste|nesse)\\s+((semantic|data|sem[aâ]ntico)\\s+)?"
+        "cat[aá]log(o|ue)?\\b(?!\\s+(of|de|do|da)\\b)",
         "re:\\b(which|what|list( the| all)?|show( me)?( the| all)?) (entities|activities|relationships|joins)\\b",
         "re:\\b(which|what) (fields|columns|attributes)\\b",
         "re:\\bhow are (the )?tables (related|connected|linked|joined)\\b",
@@ -150,16 +152,22 @@ class AnswerShapes:
         hits = [m for r in self._compiled.get((shape, key), []) for m in [r.search(question)] if m]
         return min(hits, key=lambda m: m.start()) if hits else None
 
-    def candidates(self, question: str, about_me: bool = True) -> Tuple[List[str], str]:
+    def candidates(self, question: str, about_me: bool = True, about_data: bool = False) -> Tuple[List[str], str]:
         """
         The shapes the wording allows, and the words that say so. ``about_me``
         (the caller: no value in the question): wording that may be about this
         assistant's setup ("which systems are connected?") makes ``catalog``
         one candidate next to reading it as a question about the data.
+        ``about_data`` (the caller: the question filters on something — a
+        time window, a known value, a typed value): catalog wording in it is
+        part of the data's words ("critical CVEs published last year that are
+        in the CISA KEV catalog"), never a question about this assistant.
         """
         found = {s: self._find(question, s) for s in DEFAULT_WORDING if s != "small_talk"}
         maybe = self._find(question, "count_by", "maybe_wording")
-        meta = self._find(question, "catalog", "maybe_wording") if about_me else None
+        meta = self._find(question, "catalog", "maybe_wording") if about_me and not about_data else None
+        if about_data and found["catalog"]:
+            found["catalog"] = None
         words = ", ".join(f"'{m.group(0).strip()}'" for m in [*found.values(), maybe, meta] if m)
         if found["catalog"]:
             return ["catalog"], words

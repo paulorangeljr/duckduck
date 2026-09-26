@@ -148,7 +148,7 @@ class QueryPlanner:
                 failure=f"Not confident that {term!r} means {match.field} = {match.value!r}.",
                 followup=self.texts.field_value(intent.question, match.field, term, match.value, self.catalog),
             ))
-            filters.append(Filter(field=match.field, operator="eq", value=match.value))
+            filters.append(Filter(field=match.field, operator="eq", value=self._stored(match.field, match.value)))
 
         # 3. time range, always on the primary source's event time
         time_range = None
@@ -239,7 +239,7 @@ class QueryPlanner:
                     continue
                 for fname in self.catalog.fields_by_semantic_type(name, res.type):
                     filters = [self._value_filter(name, fname, res)]
-                    filters += [Filter(field=m.field, operator="eq", value=m.value)
+                    filters += [Filter(field=m.field, operator="eq", value=self._stored(m.field, m.value))
                                 for m in intent.value_filters if m.field.split(".")[0] == name]
                     time_range = None
                     if intent.time_range:
@@ -268,7 +268,7 @@ class QueryPlanner:
         if name not in self.catalog.sources or not self._is_allowed(name):
             raise ValueError(f"browse: unknown or not allowed table {name!r}")
         src = self.catalog.sources[name]
-        filters = [Filter(field=m.field, operator="eq", value=m.value)
+        filters = [Filter(field=m.field, operator="eq", value=self._stored(m.field, m.value))
                    for m in intent.value_filters if m.field.split(".")[0] == name]
         typed: Dict[str, str] = {}
         for fname, fdef in src.fields.items():
@@ -287,6 +287,25 @@ class QueryPlanner:
                                          start=tr.start, end=tr.end)
         return LogicalQueryPlan(select=[f"{name}.{f}" for f in src.fields], sources=[name], filters=filters,
                                 time_range=time_range, limit=min(intent.row_limit or self.default_limit, MAX_LIMIT))
+
+    _TRUE, _FALSE = ("true", "yes", "1", "sim", "y", "t"), ("false", "no", "0", "não", "nao", "n", "f")
+
+    def _stored(self, ref: str, value: Any) -> Any:
+        """
+        An enumerated value as the field stores it: the catalog lists values
+        as text (``in_kev: {values: {"true": [kev, known exploited]}}``), a
+        boolean or numeric field compares with a boolean or a number.
+        """
+        ftype = self.catalog.field(ref).type if self.catalog.has_field(ref) else "string"
+        text = str(value).strip().lower()
+        if ftype == "boolean" and not isinstance(value, bool):
+            return True if text in self._TRUE else False if text in self._FALSE else value
+        if ftype in ("integer", "float") and isinstance(value, str):
+            try:
+                return int(text) if ftype == "integer" else float(text)
+            except ValueError:
+                return value
+        return value
 
     def _value_filter(self, source: str, fname: str, res) -> Filter:
         fdef = self.catalog.sources[source].fields[fname]
