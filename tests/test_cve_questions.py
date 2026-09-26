@@ -76,12 +76,15 @@ def test_a_question_that_filters_on_the_data_is_about_the_data():
     assert any("pubStartDate=2025-09-26" in u for u in urls)  # the year went to NVD, cut into its windows
 
 
-def test_the_llm_reading_makes_catalog_the_engine_s_choice():
-    from duckduck.semantic.extraction import Reading
+def test_what_it_is_about_is_asked_of_the_engine_with_the_wording_as_a_fact():
+    from duckduck.semantic.extraction import Extraction, Reading
     from duckduck.semantic.intent import SemanticIntent
 
     search, _ = _search()
     intent = SemanticIntent(question="Show me your catalog",
                             reading=Reading(answer="list", about_kind="entity", about="vulnerability"))
-    candidates, _ = search.interpreter._candidates(intent)
-    assert candidates == ["catalog", "list"]  # the engine decides, it doesn't stay the wording's
+    assert search.interpreter._candidates(intent)[0] == ["list"]  # answer kinds about the data only
+    ask = search.interpreter._subject_ask(intent, Extraction(), 0.0, {})
+    assert set(ask.options) == {"data", "assistant", "other"}
+    assert "your catalog" in ask.state.facts["wording_about_this_assistant"]
+    assert ask.state.default == "assistant"  # the offline engine's reading; Jev reads the question itself

@@ -42,7 +42,8 @@ class FakeBackend:
 
     def ask(self, state, questions):
         self.requests.append((state, questions))
-        return {k: ({"user": 0.9, "host": 0.1} if q["type"] == "choice" else 0.8) for k, q in questions.items()}
+        return {k: ({"data": 0.95, "assistant": 0.03, "other": 0.02} if k == "subject" else {"user": 0.9, "host": 0.1} if q["type"] == "choice" else 0.8)
+                for k, q in questions.items()}
 
 
 def test_adapter_sends_a_mixed_batch_as_one_request():
@@ -101,7 +102,8 @@ def _jev(monkeypatch, answer=None):
         bodies.append(body)
         r = MagicMock(status_code=200, ok=True)
         r.json.return_value = answer(body) if answer else {
-            "answers": {k: ({"type": "choice", "probabilities": {c: 1 for c in q["criteria"]}} if q["type"] == "choice"
+            "answers": {k: ({"type": "choice", "probabilities": {"data": 0.95, "assistant": 0.03, "other": 0.02}} if k == "subject" else
+                            {"type": "choice", "probabilities": {c: 1 for c in q["criteria"]}} if q["type"] == "choice"
                             else {"type": "noul", "noul": 0.9}) for k, q in body["questions"].items()},
             "usage": {"input_tokens": 400, "cost": 0.00002},
         }
@@ -170,7 +172,7 @@ class CountingJev:
         answers = {}
         for key, q in body["questions"].items():
             if q["type"] == "choice":
-                wanted = "user" if "entity" in q["instructions"] else "authentication"
+                wanted = "data" if key == "subject" else "user" if "entity" in q["instructions"] else "authentication"
                 answers[key] = {"probabilities": {c: (0.96 if c == wanted else 0.01) for c in q["criteria"]}}
             else:
                 subject = body["state"].get("items", {}).get(key, {}).get("subject", "")
@@ -232,7 +234,7 @@ def test_a_clarification_keeps_every_decision_made_before_it(monkeypatch):
     search.thresholds.source = 0.999
     result = search.search("Which users accessed github in the last 24hrs?")
     assert result.status == "needs_clarification"
-    kinds = [d.kind for d in result.decisions if d.kind != "in_scope"]  # "about the data?" is checked first
+    kinds = [d.kind for d in result.decisions if d.kind != "subject"]  # "about the data?" is decided first
     assert kinds[:2] == ["entity", "activity"] and "source_relevance" in kinds
 
 
@@ -360,7 +362,7 @@ def test_which_hosts_have_brute_force_alerts(monkeypatch):
             answers = {}
             for key, q in body["questions"].items():
                 if q["type"] == "choice":
-                    wanted = "ip_address" if "entity" in q["instructions"] else "security_alert"
+                    wanted = "data" if key == "subject" else "ip_address" if "entity" in q["instructions"] else "security_alert"
                     answers[key] = {"probabilities": {c: (0.9 if c == wanted else 0.05) for c in q["criteria"]}}
                 elif key.startswith("source:"):
                     answers[key] = {"noul": 0.94 if key == "source:alerts" else 0.67}

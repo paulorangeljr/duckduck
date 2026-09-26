@@ -132,11 +132,13 @@ def test_preview_is_one_batch_records_nothing_and_is_cached(monkeypatch):
     assert search.preview("which  hosts have critical alerts") is first and len(jev.bodies) == 1  # same text: cached
 
 
-def test_preview_of_a_catalog_question_asks_nothing(monkeypatch):
-    search, jev = _jev_search(monkeypatch)
+def test_preview_of_a_catalog_question_is_the_engine_s_call(monkeypatch):
+    search, jev = _jev_search(monkeypatch, subject={"assistant": 0.95, "data": 0.04, "other": 0.01})
     preview = search.preview("Quais entidades existem no seu catalogo")
     assert preview["answer_shape"]["choice"] == "catalog" and preview["catalog_topic"] == "entities"
-    assert not jev.bodies
+    assert preview["answer_shape"]["sure"] and preview["sources"] == []
+    asked = jev.bodies[0]["questions"]["subject"]  # the wording is a fact for Jev, not the decision
+    assert set(asked["criteria"]) == {"data", "assistant", "other"}
 
 
 # ---------------------------------------------------------------------------

@@ -201,7 +201,7 @@ class Decider(Reader):
             for key, j in body["judgments"].items():
                 if j["type"] == "choice":
                     opts = list(j.get("options") or {})
-                    want = self.choices.get(key)
+                    want = self.choices.get(key) or ("data" if key == "subject" else None)
                     answers.append(_Answer(key=key, option_probabilities=[
                         _Scored(key=o, probability=0.9 if o == want else 0.1 / max(len(opts) - 1, 1)) for o in opts]))
                 else:

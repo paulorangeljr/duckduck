@@ -119,6 +119,9 @@ class SearchResult:
     #: What was asked for: the reader itself, or ``auto`` (the router picked ``reader`` — see ``route``).
     requested_reader: Optional[str] = None
     #: ``auto``: the mode it picked, the evidence per mode, the similar past questions.
+    #: The readings planned and judged when the question was ambiguous (``hypotheses``): each one's
+    #: label, pins, plain-words plan, SQL, and the engine's probability — best first.
+    hypotheses: List[Dict[str, Any]] = field(default_factory=list)
     route: Optional[Dict[str, Any]] = None
     #: What it cost: decision-engine and LLM calls, tokens, seconds, reported money (``metering.Usage``).
     usage: Dict[str, Any] = field(default_factory=dict)
@@ -180,6 +183,7 @@ class SearchResult:
             "reader": self.reader,
             "requested_reader": self.requested_reader,
             "route": self.route,
+            "hypotheses": self.hypotheses,
             "usage": self.usage,
             "reply": self.reply,
             "suggestions": self.suggestions,
@@ -267,6 +271,7 @@ class SemanticSearch:
         llm_engine: Optional[DecisionEngine] = None,
         router: Any = None,
         router_options: Optional[Dict[str, Any]] = None,
+        hypotheses: Union[bool, Dict[str, Any], Any] = True,
     ):
         if isinstance(catalog, str):
             catalog = Catalog.load(catalog)
@@ -299,6 +304,13 @@ class SemanticSearch:
         self.router = router if router is not None else ModeRouter(
             feedback, threshold=self.thresholds.router, **(router_options or {}))
         self.reader = reader
+        #: When a question would be asked back: plan every reading in parallel and let the engine judge
+        #: the plans (``hypotheses.HypothesisJudge``; ``False``: ask back at once, as before).
+        from .hypotheses import HypothesisJudge
+
+        self.hypotheses = (hypotheses if isinstance(hypotheses, HypothesisJudge)
+                           else HypothesisJudge(**hypotheses) if isinstance(hypotheses, dict)
+                           else HypothesisJudge(enabled=bool(hypotheses)))
         self.planner = QueryPlanner(
             self.catalog, self.engine, graph=self.graph, thresholds=self.thresholds,
             allowed_sources=allowed_sources, default_limit=default_limit, texts=self.texts, shapes=self.shapes,
@@ -396,6 +408,7 @@ class SemanticSearch:
         kwargs.update(overrides)
         reader = kwargs.pop("reader", cfg.reader)
         kwargs.setdefault("router_options", cfg.router.model_dump())
+        kwargs.setdefault("hypotheses", cfg.hypotheses.model_dump())
         search = cls(cfg.path(cfg.catalog_path), duck, **kwargs)
         # built against the *available* catalog subset
         extractor = cfg.build_extractor(search.catalog, duck)
@@ -519,6 +532,8 @@ class SemanticSearch:
             reader = route.reader if route is not None else requested
             with using_engine(self.engine_for(reader)):
                 result = self._search(question, execute, pinned, reader)
+                if result.status == "needs_clarification" and self.hypotheses.active(self.interpreter.engine):
+                    result = self._explore(question, execute, pinned, reader, result)
         if route is not None:
             result.decisions.insert(0, route.record)
             result.route = {"reader": route.reader, "evidence": route.evidence,
@@ -542,6 +557,37 @@ class SemanticSearch:
             except Exception as exc:  # recording must never cost the user their answer
                 logger.warning("feedback: couldn't record the search (%s)", exc)
         return result
+
+    def _explore(self, question: str, execute: bool, pinned: Optional[Dict[str, Any]], reader: Optional[str],
+                 first: SearchResult) -> SearchResult:
+        """
+        The search stopped to ask: plan each reading the question offers (its
+        options' pins) in parallel, let the engine judge the plans in one
+        batch, and run the winner — or ask, as ``first`` does, when no
+        reading is sure enough (see ``hypotheses``).
+        """
+        base = dict(pinned or {})
+        readings = self.hypotheses.readings(lambda pins: self._search(question, False, pins, reader), base, first)
+        if not readings:
+            return first
+        state = first.intent.decision_state() if first.intent is not None else DecisionState(query=question)
+        winner, record, ranked = self.hypotheses.judge(self.interpreter.engine, question, readings, self.catalog,
+                                                       state)
+        seen = [h.to_dict() for h in ranked]
+        if winner is None:
+            first.hypotheses = seen
+            if record is not None:
+                first.decisions.append(record)  # why it still asks: no reading was sure enough
+            return first
+        final = self._search(question, execute, {**base, **winner.pins}, reader)
+        before = {(d.kind, str(d.answer)) for d in first.decisions if d.decided_by == "user"}
+        for d in final.decisions:  # what the winner's pins settled was the engine's judgment, not the user's
+            if d.decided_by == "user" and (d.kind, str(d.answer)) not in before:
+                d.decided_by = "hypothesis"
+        final.decisions.insert(0, record)
+        final.hypotheses = seen
+        final.pinned = base
+        return final
 
     def _check_scope(self, only_sources: Optional[Iterable[str]]) -> Optional[frozenset]:
         if only_sources is None:

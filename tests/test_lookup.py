@@ -235,13 +235,14 @@ def test_neighbours_keep_their_shape(question, shape):
     assert AnswerShapes().candidates(question)[0] == [shape]
 
 
-def test_a_catalog_question_asks_nothing_and_reads_no_data():
+def test_a_catalog_question_asks_nothing_back_and_reads_no_data():
     duck = _duck()
     duck.fetch = lambda *a, **k: (_ for _ in ()).throw(AssertionError("no data read"))
     search = SemanticSearch(Catalog.model_validate(CATALOG), duck)
     result = search.search("Que tipo de informações você tem acesso")
     assert result.status == "ok"
-    assert [(d.kind, d.answer, d.decided_by) for d in result.decisions] == [("answer_shape", "catalog", "deterministic")]
+    # what it's about is the engine's call (offline: the wording's reading), and nothing else is decided
+    assert [(d.kind, d.answer, d.decided_by) for d in result.decisions] == [("subject", "assistant", "engine")]
     assert result.results.to_dict("records") == [
         {"source": "alerts", "description": "Security alerts raised about IP addresses.",
          "about": "ip address, security alert", "example_question": ""},

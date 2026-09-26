@@ -34,8 +34,8 @@ class ScopeJev(Jev):
     def __call__(self, url, data, timeout):
         response = super().__call__(url, data, timeout)
         answers = response.json.return_value["answers"]
-        if "in_scope" in answers:
-            answers["in_scope"] = {"noul": self.in_scope}
+        if "subject" in answers:  # about the data with this probability; the rest is "neither"
+            answers["subject"] = {"probabilities": {"data": self.in_scope, "assistant": 0.0, "other": 1 - self.in_scope}}
         return response
 
 
@@ -67,12 +67,18 @@ def test_a_greeting_gets_a_reply_and_examples_thanks_just_a_reply():
     assert "You're welcome!" in thanks.report() and thanks.to_dict()["reply"] == "You're welcome!"
 
 
+def search_threshold():
+    from duckduck.semantic.intent import Thresholds
+
+    return Thresholds().out_of_scope
+
+
 def test_out_of_scope_says_what_can_be_asked():
     result = _search().search("How is the weather in Lisbon?")
     assert result.status == "ok" and result.intent.answer_shape == "out_of_scope" and result.results is None
     assert "ip address, security alert and user" in result.reply and result.suggestions
-    record = next(d for d in result.decisions if d.kind == "in_scope")
-    assert record.probability < record.threshold
+    record = next(d for d in result.decisions if d.kind == "subject")
+    assert record.answer == "other" and record.probability > 1 - search_threshold()
 
 
 def test_small_talk_never_calls_the_engine(monkeypatch):
@@ -85,7 +91,7 @@ def test_the_engine_decides_what_is_out_of_scope_in_the_same_batch(monkeypatch):
     search, jev = _jev(monkeypatch, in_scope=0.05)
     result = search.search("Who won the world cup?")  # "who" is a catalog word: offline wouldn't catch it
     assert result.intent.answer_shape == "out_of_scope" and len(jev.bodies) == 1
-    assert "in_scope" in jev.bodies[0]["questions"] and len(jev.bodies[0]["questions"]) > 1
+    assert "subject" in jev.bodies[0]["questions"] and len(jev.bodies[0]["questions"]) > 1
 
 
 def test_in_doubt_it_tries_the_data(monkeypatch):
@@ -98,8 +104,8 @@ def test_try_anyway_pins_it_and_never_asks_again(monkeypatch):
     search, jev = _jev(monkeypatch, in_scope=0.01)
     result = search.search("Which hosts have critical alerts?", pinned={"in_scope": True})
     assert result.status == "ok" and result.reply is None
-    assert "in_scope" not in jev.bodies[0]["questions"]
-    assert [d.decided_by for d in result.decisions if d.kind == "in_scope"] == ["user"]
+    assert "subject" not in jev.bodies[0]["questions"]
+    assert [(d.answer, d.decided_by) for d in result.decisions if d.kind == "subject"] == [("data", "user")]
     assert search.search("hi", pinned={"in_scope": True}).intent.answer_shape != "small_talk"
 
 

@@ -878,6 +878,8 @@ function render(c) {
       ${(r.sections || []).filter(s => s.results && s.results.length).map(s =>
           `<details><summary>${esc(s.source)} — ${s.rows} row${s.rows === 1 ? "" : "s"}</summary>${table(s.results)}</details>`).join("")}
       ${r.sql ? `<details><summary>SQL</summary><pre>${esc(r.sql)}</pre>${META?.features?.sql && r.query_plan ? `<button class="secondary" type="button" data-runsql>Open in the SQL tab</button>` : ""}</details>` : ""}
+      ${(r.hypotheses || []).length > 1 ? `<details><summary>Readings considered (${r.hypotheses.length}, judged side by side)</summary>${table(r.hypotheses.map(h => ({
+          reading: h.label, plan: h.description, "chosen by the engine": h.probability, "answers the question": h.answers})))}</details>` : ""}
       <details><summary>How it was decided</summary>${table((r.decisions || []).map(d => ({
           decision: d.kind, about: d.subject, answer: typeof d.answer === "object" ? JSON.stringify(d.answer) : d.answer,
           probability: Math.round(d.probability * 100) / 100, by: d.decided_by})))}</details>

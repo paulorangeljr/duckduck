@@ -225,6 +225,25 @@ class RouterConfig(_Strict):
     tie_margin: float = Field(0.05, ge=0, le=1)
 
 
+class HypothesesConfig(_Strict):
+    """When a question would be asked back: plan every reading in parallel and let the engine judge the plans."""
+
+    #: Off: ask the user at once, as before. (The offline lexical engine never judges plans either way.)
+    enabled: bool = True
+    #: At most this many readings planned per question.
+    max_hypotheses: int = Field(6, ge=1, le=20)
+    #: Levels of choices expanded (a reading that needs another choice is expanded once more at 2).
+    depth: int = Field(2, ge=1, le=3)
+    #: Readings planned at the same time.
+    workers: int = Field(6, ge=1, le=20)
+    #: The winner's probability must reach this…
+    threshold: float = Field(0.6, ge=0, le=1)
+    #: …lead the runner-up by this…
+    margin: float = Field(0.15, ge=0, le=1)
+    #: …and the engine must say it answers the question at least this surely.
+    check: float = Field(0.5, ge=0, le=1)
+
+
 class ApiDocsConfig(_Strict):
     """Where one table's (or service's) API docs are: a file/URL, or the docs inline."""
 
@@ -344,6 +363,8 @@ class SemanticConfig(_Strict):
     reader: Literal["rules", "llm", "llm_decides", "auto"] = "rules"
     #: ``auto``: how the router picks the mode from similar past runs (``router.ModeRouter``).
     router: "RouterConfig" = Field(default_factory=lambda: RouterConfig())
+    #: Parallel readings judged by the engine before asking the user (see ``hypotheses``).
+    hypotheses: "HypothesesConfig" = Field(default_factory=lambda: HypothesesConfig())
     catalog_generation: CatalogGenerationConfig = Field(default_factory=CatalogGenerationConfig)
     thresholds: Thresholds = Field(default_factory=Thresholds)
     #: Override the questions asked back to the user (``clarify.DEFAULT_TEXTS`` keys) — e.g. in Portuguese.

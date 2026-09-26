@@ -258,6 +258,8 @@ class ScriptedJEV:
     def classify(self, state, question, options):
         wanted = {"What entity is the user asking for?": "user",
                   "What activity is being investigated?": "authentication"}.get(question)
+        if "data" in options and "assistant" in options:  # what the question is about
+            wanted = "data"
         return {label: (0.97 if label == wanted else 0.01) for label in options}
 
 

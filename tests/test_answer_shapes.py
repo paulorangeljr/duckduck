@@ -126,8 +126,11 @@ def test_group_by_needs_an_aggregate():
 class Jev:
     """Fake Decisions API: answers the shape and field questions as told; confident elsewhere."""
 
-    def __init__(self, shape=None, field=None):
+    def __init__(self, shape=None, field=None, subject=None):
         self.shape, self.field, self.bodies = shape or {}, field or {}, []
+        # what the question is about: given, or (older tests) the catalog's share of the shape answer
+        self.subject = subject or ({"assistant": self.shape["catalog"], "data": 1 - self.shape["catalog"], "other": 0.0}
+                                   if "catalog" in self.shape else {"data": 0.95, "assistant": 0.03, "other": 0.02})
 
     def __call__(self, url, data, timeout):
         body = json.loads(data)
@@ -138,7 +141,9 @@ class Jev:
                 answers[key] = {"noul": 0.95}
                 continue
             opts = list(q["criteria"])
-            if key == "answer_shape":
+            if key == "subject":
+                probs = dict(self.subject)
+            elif key == "answer_shape":
                 probs = {o: self.shape.get(o, 0.0) for o in opts}
             elif "field" in q["instructions"].lower() and self.field:
                 probs = {o: self.field.get(o, 0.01) for o in opts}

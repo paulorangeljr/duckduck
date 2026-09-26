@@ -23,6 +23,10 @@ class Thresholds(BaseModel):
     #: "Is this about the data at all?" below this probability → a direct out-of-scope reply
     #: (low on purpose: in doubt, the question goes through the normal path).
     out_of_scope: float = 0.20
+    #: The question's subject (the data / this assistant / neither): below it, not sure. It's about the
+    #: data unless "this assistant" still has at least ``subject_doubt`` — then it's asked back.
+    subject: float = 0.60
+    subject_doubt: float = 0.25
     #: A free-text reply to a clarification must pick one option this surely.
     reply: float = 0.70
     #: The Auto mode's choice of mode; below it, the router's fallback mode reads the question

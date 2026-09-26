@@ -163,7 +163,7 @@ class RoutingJev:
         answers = {}
         for key, q in body["questions"].items():
             if q["type"] == "choice":
-                wanted = "user" if "entity" in q["instructions"] else "authentication"
+                wanted = "data" if key == "subject" else "user" if "entity" in q["instructions"] else "authentication"
                 answers[key] = {"probabilities": {c: (0.96 if c == wanted else 0.01) for c in q["criteria"]}}
             else:
                 answers[key] = {"noul": 0.97 if "auth_logs" in q["instructions"] or "catalog_prior_probability" in body["state"]

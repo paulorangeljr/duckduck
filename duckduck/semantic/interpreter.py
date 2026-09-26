@@ -114,8 +114,9 @@ class SemanticInterpreter:
             decisions.append(self._reading_record(intent))
         if self.memory is not None:
             intent.similar_cases = self.memory.similar(question_template(intent.working_question, intent.literals))
-        if self._about_the_catalog(intent, decisions, pins):
-            return intent, decisions  # nothing to decide about the data — no entity, activity or tables to ask about
+        if self._subject_pinned(pins) == "assistant":  # the user said it's about me: answered from the catalog
+            self._apply_subject(intent, None, decisions, pins)
+            return intent, decisions
         if self._small_talk(intent, decisions, pins):
             return intent, decisions  # "hi", "thanks" — nothing to look up
         if self._browse(intent, decisions, pins):
@@ -140,13 +141,13 @@ class SemanticInterpreter:
                                 self._shape_ask(intent, pins)) if a]
             asks += self._value_asks(intent, extraction, pins, live)
             asks += self._source_asks(intent, extraction, [n for n in retrieved if f"source:{n}" not in pins], live)
-            scope_ask = self._in_scope_ask(intent, extraction, max((sc for _, sc in ranked), default=0.0), pins)
-            if scope_ask is not None:
-                asks.append(scope_ask)
+            subject_ask = self._subject_ask(intent, extraction, max((sc for _, sc in ranked), default=0.0), pins)
+            if subject_ask is not None:
+                asks.append(subject_ask)
             self._reading_defaults(intent, asks)
             answers = ask_all(self.engine, asks)
-            if self._out_of_scope(intent, answers.get("in_scope"), decisions, pins):
-                return intent, decisions  # not about the data: a direct reply, no questions back
+            if self._apply_subject(intent, answers.get("subject"), decisions, pins):
+                return intent, decisions  # about me (answered from the catalog) or about nothing here (a reply)
 
             self._apply_shape(intent, answers.get("answer_shape"), decisions, pins)
             if intent.answer_shape in ("catalog", "browse"):  # chosen over the rules' reading: nothing else to decide
@@ -387,10 +388,8 @@ class SemanticInterpreter:
             return {**base, "answer_shape": {"choice": "small_talk", "probability": 1.0, "sure": True},
                     "entity": None, "sources": []}
         candidates, _ = self._candidates(intent)
-        if candidates == ["catalog"]:
-            return {**base, "answer_shape": {"choice": "catalog", "probability": 1.0, "sure": True},
-                    "catalog_topic": catalog_topic(wq), "entity": None, "sources": []}
-        browse = next((b for b in (browse_target(t, self._table_names()) for t in (question, english) if t) if b), None)
+        browse = None if self._wording(intent)[0] == ["catalog"] else next(
+            (b for b in (browse_target(t, self._table_names()) for t in (question, english) if t) if b), None)
         if browse:  # "show me table owners": that table, nothing to ask
             return {**base, "answer_shape": {"choice": "browse", "probability": 1.0, "sure": True},
                     "entity": None, "sources": [{"source": browse[0], "probability": 1.0, "relevant": True}]}
@@ -399,10 +398,17 @@ class SemanticInterpreter:
         for case in intent.similar_cases:
             names += [n for n in case.get("sources") or [] if n in self.catalog.sources and n not in names]
         names += [n for n in self._reading_sources(intent) if n not in names]
-        asks = [a for a in (self._entity_ask(intent, ex, {}), self._shape_ask(intent, {})) if a]
+        asks = [a for a in (self._entity_ask(intent, ex, {}), self._shape_ask(intent, {}),
+                            self._subject_ask(intent, ex, max((sc for _, sc in ranked), default=0.0), {})) if a]
         asks += self._source_asks(intent, ex, names)
         self._reading_defaults(intent, asks)
         answers = ask_all(self.engine, asks)
+        subject = answers.get("subject")
+        verdict = self._subject_verdict(subject)
+        if verdict in ("assistant", "ask"):  # about me (or maybe): the Answer chip says so, nothing else to show
+            return {**base, "answer_shape": {"choice": "catalog", "probability": round(subject.probability, 3),
+                                             "sure": verdict == "assistant"},
+                    "catalog_topic": catalog_topic(wq), "entity": None, "sources": []}
         entity = answers.get("entity")
         shape = answers.get("answer_shape")
         sources = []
@@ -434,8 +440,6 @@ class SemanticInterpreter:
             },
             "sources": sources,
         }
-
-    _IN_SCOPE_QUESTION = "Is the question about the data these tables hold?"
 
     def _small_talk(self, intent: SemanticIntent, decisions: List[DecisionRecord], pins: Dict[str, Any]) -> bool:
         if pins.get("in_scope") is True:
@@ -469,6 +473,8 @@ class SemanticInterpreter:
         """
         if pins.get("answer_shape") not in (None, "browse"):
             return False
+        if pins.get("answer_shape") is None and self._wording(intent)[0] == ["catalog"]:
+            return False  # "what columns does the alerts table have?" asks about the table, not for its rows
         names = self._table_names()
         found = None
         for text in dict.fromkeys(t for t in (intent.question, intent.english_question) if t):
@@ -494,53 +500,125 @@ class SemanticInterpreter:
                              + (f" Activities: {activities}." if activities else ""))
         return self._summary
 
-    def _in_scope_ask(self, intent: SemanticIntent, ex: Extraction, best_retrieval: float,
-                      pins: Dict[str, Any]) -> Optional[Ask]:
+    #: "What is the question about?" — the first decision, asked of the engine in the same batch as the rest.
+    SUBJECT_OPTIONS = {
+        "data": "About the records in the connected data — things, events or values its tables hold (users, "
+                "hosts, logins, vulnerabilities…), answered by querying them; even when its words mention a "
+                "catalog, a list, a table or a system that is part of that data.",
+        "assistant": "About this assistant itself: which systems, tables, fields, entities or relationships it "
+                     "has, or what can be asked — answered from its own catalog, without reading any data.",
+        "other": "Neither: small talk, general knowledge, advice, or a topic none of these tables are about "
+                 "(weather, news, sports, writing code…).",
+    }
+    _SUBJECT_QUESTION = "What is the question about: the data, this assistant, or neither?"
+
+    def _subject_pinned(self, pins: Dict[str, Any]) -> Optional[str]:
+        """What the user already settled: a ``subject`` pin, or one implied by an answer they picked."""
+        if pins.get("subject") in self.SUBJECT_OPTIONS:
+            return pins["subject"]
+        if pins.get("answer_shape") == "catalog":
+            return "assistant"
+        if pins.get("answer_shape") in self.shapes.descriptions or pins.get("in_scope") is True:
+            return "data"
+        return None
+
+    def _data_signals(self, intent: SemanticIntent, ex: Extraction) -> List[str]:
+        """What in the question points at the data — evidence for the engine, never a decision by itself."""
+        signals = []
+        if intent.time_range is not None:
+            signals.append("a time window")
+        signals += [f"'{m.term}' is a known value of {m.field}" for m in intent.value_filters][:5]
+        signals += [f"'{lit.text or lit.value}' is a {lit.semantic_type or lit.kind}"
+                    for lit in intent.literals if lit.kind != "term" or lit.semantic_type][:5]
+        words = [t for t in ex.terms if any(t in v for v in self._entity_vocab.values())]
+        if words:
+            signals.append(f"names things the data holds: {', '.join(sorted(set(words))[:5])}")
+        return signals
+
+    def _subject_ask(self, intent: SemanticIntent, ex: Extraction, best_retrieval: float,
+                     pins: Dict[str, Any]) -> Optional[Ask]:
         """
-        "Is this about the data at all?" — one yes/no in the same batch. The
-        offline engine reads a deterministic rule instead (``offline_prior``):
-        no catalog word, value shape, known value, time range or retrieval
-        hit means no.
+        The question's subject — the data, this assistant, or neither — as
+        one choice in the batch. The wording rules ("which tables are
+        available", "your catalog") and the data signals (a time window, a
+        known value, an entity named) are facts for the engine; for the
+        offline lexical engine they are its default, and wording that could
+        go either way ("which systems are connected?") leaves it undecided,
+        so the question is asked back.
         """
-        if pins.get("in_scope") is True:
+        if self._subject_pinned(pins) is not None:
             return None
+        wording, words = self._wording(intent)
+        signals = self._data_signals(intent, ex)
         nothing = (not ex.terms and not ex.enum_matches and ex.time_range is None and best_retrieval <= 0
-                   and not any(lit.kind != "term" for lit in ex.literals)
-                   and "catalog" not in self._candidates(intent)[0])  # "which systems are connected?" is about me
-        return Ask(key="in_scope", question=self._IN_SCOPE_QUESTION, subject=self._scope_summary(),
-                   criteria=CRITERIA["in_scope"],
-                   state=intent.decision_state(terms=ex.terms, offline_prior=0.05 if nothing else 0.9))
+                   and not any(lit.kind != "term" for lit in ex.literals))
+        if wording == ["catalog"]:
+            default = "assistant"
+        elif "catalog" in wording:
+            default = None  # about me, or about the data: the engine reads it; offline, it's asked back
+        elif nothing:
+            default = "other"
+        else:
+            default = "data"
+        r = intent.reading
+        if default is None and r is not None and r.answer:
+            default = "assistant" if r.answer == "catalog" else "data"
+        facts: Dict[str, Any] = {"tables_hold": self._scope_summary()}
+        if "catalog" in wording and words:
+            facts["wording_about_this_assistant"] = words
+        if signals:
+            facts["points_at_the_data"] = signals
+        return Ask(key="subject", question=self._SUBJECT_QUESTION, options=dict(self.SUBJECT_OPTIONS),
+                   state=intent.decision_state(terms=[], facts=facts, default=default))
 
-    def _out_of_scope(self, intent: SemanticIntent, result: Any, decisions: List[DecisionRecord],
-                      pins: Dict[str, Any]) -> bool:
-        if pins.get("in_scope") is True:
-            decisions.append(_by_user("in_scope", self._IN_SCOPE_QUESTION, True, None))
-            return False
+    def _subject_verdict(self, result: Any) -> str:
+        """``data`` / ``assistant`` / ``other`` / ``ask`` (about me or about the data? not sure — ask back)."""
         if result is None:
-            return False
-        record = DecisionRecord(kind="in_scope", question=self._IN_SCOPE_QUESTION, answer=result.answer,
-                                probability=result.probability, threshold=self.thresholds.out_of_scope)
-        decisions.append(record)
-        if result.probability >= self.thresholds.out_of_scope:
-            return False  # about the data, or not sure: the normal path
-        intent.answer_shape = "out_of_scope"
-        return True
+            return "data"
+        probs = result.probabilities
+        if probs.get("other", 0.0) > 1 - self.thresholds.out_of_scope:
+            return "other"
+        if result.choice == "assistant" and result.probability >= self.thresholds.subject:
+            return "assistant"
+        if result.choice == "data" and result.probability >= self.thresholds.subject:
+            return "data"
+        if probs.get("assistant", 0.0) >= self.thresholds.subject_doubt:
+            return "ask"
+        return "data"  # not sure, but not about me: the normal path (it asks back on what it can't settle)
 
-    def _about_the_catalog(self, intent: SemanticIntent, decisions: List[DecisionRecord], pins: Dict[str, Any]) -> bool:
-        """"What kind of information do you have?" — answered from the catalog, before any other decision."""
-        if pins.get("answer_shape") not in (None, "catalog"):
+    def _apply_subject(self, intent: SemanticIntent, result: Any, decisions: List[DecisionRecord],
+                       pins: Dict[str, Any]) -> bool:
+        """True when there's nothing to decide about the data: about me (the catalog answers) or about neither."""
+        pinned = self._subject_pinned(pins)
+        if pinned is not None:
+            if "subject" in pins or pins.get("in_scope") is True:
+                decisions.append(_by_user("subject", self._SUBJECT_QUESTION, pinned, None))
+            elif pinned == "assistant":
+                decisions.append(_by_user("answer_shape", self._SHAPE_QUESTION, "catalog", None))
+            verdict = pinned
+        elif result is None:
             return False
-        candidates, words = self._candidates(intent)
-        if pins.get("answer_shape") != "catalog" and candidates != ["catalog"]:
-            return False
-        intent.answer_shape = "catalog"
-        intent.catalog_topic = catalog_topic(intent.working_question)
-        words = f"{words}, topic: {intent.catalog_topic}" if words else f"topic: {intent.catalog_topic}"
-        decisions.append(
-            _by_user("answer_shape", self._SHAPE_QUESTION, "catalog", None) if pins.get("answer_shape") == "catalog"
-            else DecisionRecord(kind="answer_shape", question=self._SHAPE_QUESTION, answer="catalog", probability=0.99,
-                                decided_by="deterministic", subject=words))
-        return True
+        else:
+            record = DecisionRecord(kind="subject", question=self._SUBJECT_QUESTION, answer=result.choice,
+                                    probability=result.probability, threshold=self.thresholds.subject,
+                                    alternatives=result.ranked()[1:3], subject=self._wording(intent)[1] or "")
+            decisions.append(record)
+            verdict = self._subject_verdict(result)
+            if verdict == "ask":
+                shapes = ["catalog", "list"]
+                raise ClarificationNeeded(
+                    f"Not sure whether the question is about me or about the data (best guess {result.choice}, "
+                    f"{result.probability:.2f} < {self.thresholds.subject:.2f}).", record, shapes,
+                    self.texts.answer_shape(intent.question, shapes),
+                )
+        if verdict == "assistant":
+            intent.answer_shape = "catalog"
+            intent.catalog_topic = catalog_topic(intent.working_question)
+            return True
+        if verdict == "other":
+            intent.answer_shape = "out_of_scope"
+            return True
+        return False
 
     def _without_shape_words(self, questions: List[Optional[str]], literals: list) -> list:
         """The answer-shape wording ("which tables", "tudo sobre") is never a value to filter on."""
@@ -575,20 +653,25 @@ class SemanticInterpreter:
                    options={c: self.shapes.descriptions[c] for c in candidates},
                    state=intent.decision_state(facts=facts, default=default))
 
-    def _candidates(self, intent: SemanticIntent) -> Tuple[List[str], str]:
-        """
-        The wording's candidates — plus, when nothing in the wording says
-        what kind of answer and the question carries a value ("bring me
-        information for 10.0.0.196"), everything about that value
-        (``lookup``) as an alternative to a list: the engine reads which.
-        """
+    def _wording(self, intent: SemanticIntent) -> Tuple[List[str], str]:
+        """What the wording rules read (``catalog`` included) — evidence for the subject decision."""
         typed_value = any(lit.kind != "term" or lit.semantic_type for lit in intent.literals)
         # "which systems are connected to 10.0.0.5" is about the data: only a value-less question may be about me;
         # and a question that filters on something (a time window, a known value) is about the data, whatever
         # its words ("… published in the last year that are in the CISA KEV catalog")
         about_data = typed_value or intent.time_range is not None or bool(intent.value_filters)
-        candidates, words = self.shapes.candidates(intent.working_question, about_me=not typed_value,
-                                                   about_data=about_data)
+        return self.shapes.candidates(intent.working_question, about_me=not typed_value, about_data=about_data)
+
+    def _candidates(self, intent: SemanticIntent) -> Tuple[List[str], str]:
+        """
+        The kinds of answer about the data the wording allows (whether it's
+        about the data at all is the subject decision) — plus, when nothing
+        in the wording says what kind of answer and the question carries a
+        value ("bring me information for 10.0.0.196"), everything about that
+        value (``lookup``) as an alternative to a list: the engine reads which.
+        """
+        candidates, words = self._wording(intent)
+        candidates = [c for c in candidates if c != "catalog"] or ["list"]
         if candidates == ["list"]:
             field = self._named_field(intent.working_question)
             if field is not None:  # "what are the severities of the events?" → severity's values
@@ -612,8 +695,8 @@ class SemanticInterpreter:
         wording's.
         """
         r = intent.reading
-        if r is None or not r.answer or r.answer in ("small_talk", "out_of_scope"):
-            return candidates, words
+        if r is None or not r.answer or r.answer in ("small_talk", "out_of_scope", "catalog"):
+            return candidates, words  # about me or not: the subject decision's evidence, not an answer kind
         if r.answer == "browse" and not (r.about_kind == "table" and r.about):
             return candidates, words  # a table to show, but which? the rules' reading stands
         if r.answer in candidates:

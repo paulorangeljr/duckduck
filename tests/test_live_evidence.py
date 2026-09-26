@@ -101,6 +101,7 @@ class Jev:
         body = json.loads(data)
         self.bodies.append(body)
         wanted = {"user", "web_access", "domain"}
+        wanted |= {"data"}  # what a question about hosts and users is about
         answers = {k: ({"probabilities": {c: (0.9 if c in wanted else 0.01) for c in q["criteria"]}}
                        if q["type"] == "choice" else {"noul": 0.95})
                    for k, q in body["questions"].items()}
