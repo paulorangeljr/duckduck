@@ -319,6 +319,8 @@ class SemanticSearch:
         self._kept: "OrderedDict[int, Any]" = OrderedDict()
         self._kept_lock = threading.Lock()
         self.duck = duck
+        #: Set when there's no catalog to answer from (``without_catalog``): reason, catalog_path, message.
+        self.setup: Optional[Dict[str, str]] = None
         #: Catalog sources left out because their table can't be used — name → {table, reason} (``_unusable``).
         self.unavailable_sources: Dict[str, Dict[str, str]] = {}
         #: The catalog as written, unavailable sources included (``source_status``).
@@ -463,6 +465,27 @@ class SemanticSearch:
         full.elapsed_ms = (time.perf_counter() - started) * 1000
         return full
 
+    @classmethod
+    def without_catalog(cls, duck: Any, missing: "CatalogUnavailable", **kwargs: Any) -> "SemanticSearch":
+        """
+        A search that can't answer yet — no catalog (``missing``): its catalog
+        is empty and ``setup`` says why and how to get one. Everything that
+        doesn't need the catalog keeps working around it (the web app's SQL
+        tab, Config, drafting the catalog); asking raises ``missing`` again.
+        """
+        search = cls(Catalog.model_validate({"sources": {}}), duck, **kwargs)
+        search.setup = {"reason": missing.reason, "catalog_path": missing.path, "message": str(missing)}
+        return search
+
+    @property
+    def ready(self) -> bool:
+        """It has a catalog to answer from (see ``without_catalog``)."""
+        return self.setup is None
+
+    def _check_ready(self) -> None:
+        if self.setup is not None:
+            raise CatalogUnavailable(self.setup["catalog_path"], self.setup["reason"])
+
     def column_options(self, result: "SearchResult") -> List[Dict[str, Any]]:
         """The fields ``result``'s answer could also show — see ``columns.column_options``."""
         from .columns import column_options
@@ -527,8 +550,18 @@ class SemanticSearch:
         from .config import SemanticConfig
 
         cfg = SemanticConfig.load(duck, config_path, section)
+        catalog_file = cfg.path(cfg.catalog_path)
         if cfg.catalog_generation.auto_refresh:
-            _auto_refresh(cfg, duck)
+            try:
+                _auto_refresh(cfg, duck)
+            except Exception as exc:  # no catalog yet, and drafting one failed
+                raise CatalogUnavailable(catalog_file, f"drafting the catalog at {catalog_file} failed ({exc})") from exc
+        if not os.path.isfile(catalog_file):
+            raise CatalogUnavailable(catalog_file, f"there's no semantic catalog at {catalog_file} yet")
+        try:
+            catalog = Catalog.load(catalog_file)
+        except Exception as exc:  # YAML/JSON that doesn't parse, or a catalog that doesn't validate
+            raise CatalogUnavailable(catalog_file, f"the semantic catalog at {catalog_file} can't be used: {exc}") from exc
         kwargs = dict(
             engine=cfg.build_engine(duck),
             thresholds=cfg.thresholds,
@@ -549,7 +582,7 @@ class SemanticSearch:
         kwargs.setdefault("hypotheses", cfg.hypotheses.model_dump())
         kwargs.setdefault("stream", cfg.stream)
         kwargs.setdefault("sample", cfg.sample)
-        search = cls(cfg.path(cfg.catalog_path), duck, **kwargs)
+        search = cls(catalog, duck, **kwargs)
         # built against the *available* catalog subset
         extractor = cfg.build_extractor(search.catalog, duck)
         if extractor is not None and "extractor" not in overrides:
@@ -667,6 +700,7 @@ class SemanticSearch:
         there are more, ``fetch_all(result)`` gets them. With a feedback
         store, the result is recorded (``result.search_id``).
         """
+        self._check_ready()
         only = self._check_scope(only_sources)
         token = _SAMPLE.set(self.sample if sample is _DEFAULT else _check_sample(sample))
         try:
@@ -775,6 +809,7 @@ class SemanticSearch:
         (the ``auto_register`` service), those judged relevant marked — what
         the web app's "Systems" chip lists.
         """
+        self._check_ready()
         requested = self.check_reader(reader)
         key = requested + ":" + " ".join(question.lower().split())
         cached = self._previews.get(key)
@@ -1358,6 +1393,23 @@ def _unusable(table: str, duck: Any) -> str:
                 f"Fix `table:` in the catalog (registered names are {{service}}_{{table}}).")
     return (f"table '{table}' is not registered in DuckAPI — no configured service registers it: "
             f"add the service to duckduck.json, or fix `table:` in the catalog")
+
+
+class CatalogUnavailable(RuntimeError):
+    """
+    No semantic catalog to answer from: the file isn't there yet, or can't be
+    read. ``path`` and ``reason``; the message says how to get one. Ask needs
+    it; the virtualization layer (and the web app's SQL tab) doesn't.
+    """
+
+    def __init__(self, path: str, reason: str):
+        self.path, self.reason = path, reason
+        super().__init__(
+            f"{reason}. Ask needs a semantic catalog — what your tables and fields mean. Draft one from your "
+            f"connected tables with an LLM: `python -m duckduck.semantic generate-catalog` (or Config → Semantic "
+            f"catalog in the web app), or write it by hand (see examples/semantic/catalog.yaml). Meanwhile the "
+            f"web app's SQL tab queries every connected table."
+        )
 
 
 def _auto_refresh(cfg: Any, duck: Any) -> None:

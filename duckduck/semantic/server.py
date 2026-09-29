@@ -141,12 +141,22 @@ def create_app(
     def page() -> str:
         return PAGE
 
+    def needs_catalog() -> Any:
+        """The search, or 409 with how to get a catalog when there isn't one yet (a first run)."""
+        search = state["search"]
+        if getattr(search, "setup", None):
+            raise HTTPException(409, search.setup["message"])
+        return search
+
     @app.get("/api/meta")
     def meta():
         search = state["search"]
         cat = search.catalog
         return dump({
-            "features": {"sql": state["console"] is not None, "config": bool(config_path),
+            # no catalog yet (a first run): Ask explains; SQL, Config and drafting the catalog work
+            "setup": getattr(search, "setup", None),
+            "features": {"ask": not getattr(search, "setup", None),
+                         "sql": state["console"] is not None, "config": bool(config_path),
                          "config_edit": bool(config_path and allow_config_edit),
                          "catalog_generation": bool(catalog_runner is not None and allow_config_edit)},
             "source_icons": {n: search.source_icon(n) for n in cat.sources},
@@ -237,7 +247,7 @@ def create_app(
         question = str(body.get("question") or "").strip()
         if not question:
             raise HTTPException(400, "empty question")
-        search = state["search"]
+        search = needs_catalog()
         pins = checked_pins(body, search)
         if body.get("background"):
             return start_job(lambda: start_conversation(body, question, search, pins))
@@ -293,7 +303,7 @@ def create_app(
     @app.post("/api/preview")
     def preview(body: Dict[str, Any] = Body(...)):
         question = str(body.get("question") or "").strip()
-        if len(question) < 3:
+        if len(question) < 3 or getattr(state["search"], "setup", None):
             return dump({"question": question, "systems": [], "sources": [], "entity": None})
         try:
             return dump(state["search"].preview(question, reader=body.get("reader") or None))
@@ -427,6 +437,7 @@ def create_app(
         dataset = store.to_evaluation()
         if not dataset:
             return dump({"size": 0, "note": "no rated questions yet"})
+        needs_catalog()
         search = state["factory"]()  # its own instance: calibration sets thresholds to 0 for a while
         readers = [r for r in ((body or {}).get("readers") or []) if r in search.readers]
         report = evaluate(search, dataset, execute=False)

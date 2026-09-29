@@ -314,6 +314,15 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
 </header>
 <main>
   <section id="tab-ask">
+    <div class="card setupcard" id="setupcard" hidden>
+      <h3 style="margin:0 0 6px">Ask needs a semantic catalog first</h3>
+      <p class="context" style="margin:0 0 6px">It's what your tables and fields mean — how a question in plain language
+        finds the right table and field. <span class="muted small mono" id="setuppath"></span></p>
+      <p style="margin:0 0 10px">Your systems are connected already: the <b>SQL</b> tab queries every table now.
+        <span id="setuphow"></span></p>
+      <div class="row"><button class="primary" type="button" id="setupsql">Open the SQL tab</button>
+        <button class="secondary" type="button" id="setupconfig">Set up the catalog</button></div>
+    </div>
     <div class="card">
       <form class="ask" id="askform">
         <div class="seg reader" role="group" aria-label="How the question is read">
@@ -597,7 +606,7 @@ const previewable = (q) => q.length >= 8 && q.split(/\s+/).length >= 2;
 // Ask waits for the question to be read: disabled while the preview is pending or running (Enter queues the ask).
 const busy = () => !!pre.timer || pre.thinking;
 function updateAsk() {
-  const b = $("#askbtn"); b.disabled = busy(); b.textContent = busy() ? (READER_BUSY[READER] || "Reading…") : "Ask";
+  const b = $("#askbtn"); b.disabled = busy() || !!META?.setup; b.textContent = busy() ? (READER_BUSY[READER] || "Reading…") : "Ask";
   b.title = busy() ? "Reading the question — press Enter and it's asked as soon as the duck surfaces" : "";
 }
 function setReader(r, rerun = true) {
@@ -1887,10 +1896,24 @@ $("#optfilter").addEventListener("input", () => {
 
 function showFeatures() {
   showReaders();
+  // no catalog yet (a first run): Ask says what's missing; SQL and Config work
+  const setup = META?.setup, gen = !!META?.features?.catalog_generation;
+  $("#setupcard").hidden = !setup;
+  $("#setuppath").textContent = setup ? setup.catalog_path : "";
+  $("#setuphow").textContent = !setup ? "" : gen
+    ? "Set up the catalog drafts it from your connected tables with your LLM (Config → Semantic catalog → Update catalog)."
+    : META?.features?.config
+      ? "To draft it from here, start the server with --edit-config; or run: python -m duckduck.semantic generate-catalog"
+      : "Draft it with: python -m duckduck.semantic generate-catalog — or write it by hand (examples/semantic/catalog.yaml).";
+  $("#setupconfig").hidden = !(setup && META?.features?.config);
+  $("#askform").querySelectorAll("input, button, select").forEach(el => { if (setup) el.disabled = true; else if (el.dataset.setupOff) el.disabled = false; if (setup) el.dataset.setupOff = "1"; });
+  if (!setup) $("#askform").querySelectorAll("[data-setup-off]").forEach(el => delete el.dataset.setupOff);
   const sql = !!META?.features?.sql;  // the tab is always there; off, it says how to turn it on
   $("#sqloff").hidden = sql; $("#sqlon").hidden = !sql;
   document.querySelector('nav button[data-tab="config"]').hidden = !META?.features?.config;
 }
+$("#setupsql").addEventListener("click", () => openTab("sql"));
+$("#setupconfig").addEventListener("click", () => openTab("config"));
 api("/api/meta").then(m => { META = m; showFeatures(); }).catch(err => toast(err.message));
 </script>
 </body>

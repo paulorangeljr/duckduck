@@ -469,9 +469,9 @@ class SemanticConfig(_Strict):
     def from_file_data(cls, data: Dict[str, Any], path: str = "", section: str = "semantic") -> "SemanticConfig":
         """From a parsed config file: its ``section`` plus the top-level ``ai_providers``."""
         where = f"config file '{path}'" if path else "the config"
-        if section not in data:
-            raise ValueError(f"{where} has no '{section}' section")
-        semantic = data[section]
+        # No section yet (a first run: only services configured) → every default. Ask then needs a catalog
+        # (``SemanticSearch.from_config`` says so); the web app still starts and its SQL tab works.
+        semantic = data.get(section) or {}
         if "llms" in data or "llms" in semantic:
             raise ValueError(
                 f"{where}: 'llms' is now 'ai_providers', at the top level of the file (next to 'services') — "

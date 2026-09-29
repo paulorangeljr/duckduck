@@ -942,6 +942,16 @@ python -m duckduck.semantic feedback-export    # what still fails, as a brief fo
 }
 ```
 
+**First run, no catalog yet.** The web page starts with only `services`
+in `duckduck.json` — no `semantic` section and no catalog file needed.
+The **SQL** tab queries every connected table right away; the **Ask**
+tab says what's missing and points to *Config → Semantic catalog*
+(with `--edit-config`), which drafts the catalog from your tables with
+your LLM — Ask then works without a restart. The CLI says the same
+(`ask` exits with code 2 and the way forward, not a traceback). In
+Python, `SemanticSearch.from_config` raises `CatalogUnavailable` (its
+`path` and `reason`).
+
 **The web page** (`serve()`) has four tabs:
 
 - **Ask.** The follow-up questions show up as buttons, or you can answer

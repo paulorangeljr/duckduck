@@ -20,6 +20,7 @@ import argparse
 import json
 import sys
 
+from .engine import CatalogUnavailable
 from .commands import (ask, calibrate, feedback_export, feedback_report, feedback_suggest, feedback_to_eval,
                        generate_catalog, jev_check, serve)
 
@@ -188,7 +189,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
-    return args.fn(args)
+    try:
+        return args.fn(args)
+    except CatalogUnavailable as missing:  # a first run: say how to get a catalog, not a traceback
+        print(missing, file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

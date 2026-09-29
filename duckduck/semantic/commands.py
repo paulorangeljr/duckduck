@@ -29,7 +29,7 @@ import logging
 import os
 from typing import Any, List, Optional, Union
 
-from .engine import SearchResult, SemanticSearch
+from .engine import CatalogUnavailable, SearchResult, SemanticSearch
 from .generation import GenerationResult
 
 
@@ -243,7 +243,15 @@ def serve(
     def factory_for(d: Any, c: Any):
         memory = {"max_cases": c.feedback.max_cases, "min_similarity": c.feedback.min_similarity} \
             if c.feedback.memory else None
-        return lambda: SemanticSearch.from_config(d, config_path, feedback=store, memory=memory)
+
+        def factory():
+            try:
+                return SemanticSearch.from_config(d, config_path, feedback=store, memory=memory)
+            except CatalogUnavailable as missing:  # a first run: SQL, Config and drafting the catalog still work
+                logger.warning("%s", missing)
+                return SemanticSearch.without_catalog(d, missing, feedback=store)
+
+        return factory
 
     current = {"duck": duck}
 
