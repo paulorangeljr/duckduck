@@ -56,6 +56,9 @@ class SQLConsole:
         console = DuckAPI()
         console.functions = duck.functions  # shared: what's registered later shows up here too
         console.service_of = duck.service_of
+        console.failed_services = getattr(duck, "failed_services", {})  # why a configured connector has no tables
+        self._config_path = getattr(duck, "_config_path", None)
+        self._nested: Optional[Tuple[float, List[Dict[str, Any]], List[str]]] = None
         console._streaming_functions = getattr(duck, "_streaming_functions", {})
         console.conn.execute("SET enable_external_access = false")
         console.conn.execute("SET lock_configuration = true")
@@ -87,6 +90,38 @@ class SQLConsole:
             "row_count": int(len(df)), "truncated": len(df) > self.max_rows,
             "elapsed_ms": round((time.perf_counter() - started) * 1000, 1), "log": log,
         }
+
+    def connections(self, configured: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Each connector in the config and whether it started: ``services``
+        [{name, connector, started, tables, error}], the config file read,
+        and how many tables are registered — why the SQL tab's list is what
+        it is (a connector that failed to start has no tables).
+        """
+        failed = self.duck.failed_services
+        counts: Dict[str, int] = {}
+        for svc in self.duck.service_of.values():
+            counts[svc] = counts.get(svc, 0) + 1
+        names = list(configured or {}) or sorted(set(counts) | set(failed))
+        services = []
+        for name in names:
+            conf = (configured or {}).get(name) or {}
+            f = failed.get(name)
+            services.append({
+                "name": name, "connector": (f or {}).get("connector") or conf.get("connector") or name,
+                "started": f is None,
+                "tables": counts.get(name, 0), "error": (f or {}).get("error"),
+            })
+        return {"config_path": self._config_path, "services": services, "tables": len(self.duck.functions)}
+
+    def nested(self, refresh: bool = False, ttl: float = 300.0) -> Dict[str, Any]:
+        """``DuckAPI.nested_tables`` for the expanded catalog — every catalog read is a call, so cached ``ttl`` s."""
+        now = time.time()
+        if refresh or self._nested is None or now - self._nested[0] > ttl:
+            tables, notes = self.duck.nested_tables()
+            self._nested = (now, tables, notes)
+        at, tables, notes = self._nested
+        return {"tables": tables, "notes": notes, "read_at": at}
 
     def tables(self) -> List[Dict[str, Any]]:
         df = self.duck.list_tables()

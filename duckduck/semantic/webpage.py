@@ -177,6 +177,22 @@ textarea.editor { width: 100%; min-height: 180px; resize: vertical; tab-size: 2;
          border-radius: 6px; color: var(--ink); font: inherit; font-size: 13.5px; text-align: left; cursor: pointer; }
 .titem:hover { background: var(--surface-2); }
 .titem .kind { margin-left: auto; font-size: 11px; color: var(--muted); }
+.enablebar { display: flex; gap: 12px; align-items: center; justify-content: center; flex-wrap: wrap; padding: 8px 16px;
+  background: rgba(42,120,214,.09); border-bottom: 1px solid var(--border); font-size: 14px; }
+.enablelink { font-weight: 650; color: var(--accent); text-decoration: none; }
+.enablelink:hover { text-decoration: underline; }
+#enablecard, #setupcard { scroll-margin-top: 90px; }
+.enable ol { margin: 8px 0 0; padding-left: 20px; } .enable li { margin: 6px 0; }
+.enable .ok { color: var(--good-ink); font-weight: 600; } .enable .todo { color: var(--bad); font-weight: 600; }
+.nested { margin: 0 0 4px 14px; border-left: 2px solid var(--grid); padding-left: 6px; }
+.nitem { display: flex; gap: 6px; align-items: center; padding: 2px 4px; border-radius: 6px; font-size: 13px; }
+.nitem:hover { background: var(--surface-2); }
+.nitem .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.nitem button { margin-left: auto; flex: none; padding: 1px 8px; font-size: 12px; }
+.connbox { font-size: 12.5px; margin: 0 0 8px; padding: 8px 10px; border-radius: 8px; background: var(--surface-2); }
+.connbox.bad { background: rgba(208,59,59,.08); }
+.connbox ul { margin: 6px 0 0; padding-left: 16px; } .connbox li { margin: 2px 0; }
+.connbox .err { color: var(--bad); word-break: break-word; }
 .log { max-height: 240px; overflow: auto; white-space: pre-wrap; }
 .msg { font-size: 13.5px; margin: 6px 0 0; } .msg.bad { color: var(--bad); } .msg.good { color: var(--good-ink); }
 .msg.warn { color: var(--ink-2); }
@@ -312,6 +328,10 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
   </nav>
   <div class="user"><label for="user">You</label><input id="user" placeholder="your name (optional)"></div>
 </header>
+<div class="enablebar" id="enablebar" hidden>
+  <span><b>Ask in plain language is off</b> — there's no semantic catalog yet. SQL works meanwhile.</span>
+  <a href="#enable-ask" class="enablelink" id="enablelink">Enable it →</a>
+</div>
 <main>
   <section id="tab-ask">
     <div class="card setupcard" id="setupcard" hidden>
@@ -418,7 +438,11 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
         tables here — read queries only, with no file or network access.</p></div>
     <div class="sqlgrid" id="sqlon">
       <aside class="card"><h3>Tables</h3>
+        <div id="connstatus"></div>
         <input id="tablefilter" placeholder="filter tables" style="width:100%">
+        <label class="check small" style="margin-top:8px;display:flex;gap:6px;align-items:center"
+          title="Also list the tables behind catalogs (e.g. every table a Glue, ADX or database catalog lists) — reading them calls each source">
+          <input type="checkbox" id="expanded"> Expanded catalog <span class="muted" id="expandednote"></span></label>
         <div class="tlist" id="tablelist"></div></aside>
       <div>
         <div class="card">
@@ -431,6 +455,11 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
     </div>
   </section>
   <section id="tab-config" hidden>
+    <div class="card enable" id="enablecard" hidden>
+      <h3 style="margin:0">Enable Ask</h3>
+      <p class="muted small" style="margin:4px 0 0">Ask reads a semantic catalog: what each table and field means. Three steps:</p>
+      <ol id="enablesteps"></ol>
+    </div>
     <div class="card catcard" id="catcard">
       <div class="cfghead"><h3>Semantic catalog <span class="muted small mono" id="catpath"></span></h3>
         <span class="muted small" id="catllm"></span></div>
@@ -557,7 +586,7 @@ document.querySelectorAll("nav button").forEach(b => b.addEventListener("click",
   document.querySelectorAll("nav button").forEach(x => x.setAttribute("aria-selected", x === b));
   document.querySelectorAll("main > section").forEach(s => s.hidden = s.id !== "tab-" + b.dataset.tab);
   ({history: loadHistory, dashboard: loadDashboard, suggestions: loadSuggestions,
-    sql: () => META?.features?.sql && loadTables(),
+    sql: () => loadTables(),  // never waits on META: an empty list always says why
     config: () => { loadCatalog(); return CFG || loadConfig(); }})[b.dataset.tab]?.();  // config: loaded once, so switching tabs keeps edits
 }));
 $("#user").value = store.get("duckduck-user") || "";
@@ -1441,26 +1470,75 @@ function openTab(name) { document.querySelector(`nav button[data-tab="${name}"]`
 
 // ---- SQL tab -----------------------------------------------------------------------------
 let TABLES = [];
+let NESTED = null;  // {tables, notes} once the expanded catalog was read
 async function loadTables() {
+  loadConnections();
   try { TABLES = await api("/api/tables"); drawTables(); }
-  catch (err) { $("#tablelist").innerHTML = `<p class="error small">${esc(err.message)}</p>`; }
+  catch (err) { TABLES = []; $("#tablelist").innerHTML = `<p class="error small">${esc(err.message)}</p>`; }
+  if ($("#expanded").checked) loadNested(false);
 }
+// which connectors in duckduck.json started, and why the others didn't — why the list is what it is
+async function loadConnections() {
+  let c;
+  try { c = await api("/api/connections"); } catch { $("#connstatus").innerHTML = ""; return; }
+  const svcs = c.services || [], failed = svcs.filter(x => !x.started), ok = svcs.length - failed.length;
+  const where = c.config_path ? `<div class="muted mono" style="word-break:break-all">${esc(c.config_path)}</div>` : "";
+  if (!svcs.length) {
+    $("#connstatus").innerHTML = `<div class="connbox bad"><b>No connectors configured.</b> Add them under
+      <span class="mono">services</span> in duckduck.json${META?.features?.config ? " (Config tab)" : ""}.${where}</div>`;
+    return;
+  }
+  $("#connstatus").innerHTML = `<div class="connbox ${failed.length ? "bad" : ""}">
+    <b>${ok} of ${svcs.length} connector${svcs.length === 1 ? "" : "s"} started</b> · ${c.tables} table${c.tables === 1 ? "" : "s"}
+    ${failed.length ? `<ul>${failed.map(x => `<li><b>${esc(x.name)}</b> <span class="muted">(${esc(x.connector)})</span>
+      didn't start: <span class="err">${esc(x.error || "unknown error")}</span></li>`).join("")}</ul>` : ""}
+    ${svcs.some(x => x.started && !x.tables) ? `<div class="muted">Started with no tables: ${esc(svcs.filter(x => x.started && !x.tables).map(x => x.name).join(", "))}</div>` : ""}
+    ${failed.length || !c.tables ? where : ""}</div>`;
+}
+async function loadNested(refresh) {
+  $("#expandednote").innerHTML = `<span class="spin" aria-hidden="true" style="display:inline-block;vertical-align:-2px"></span> reading catalogs…`;
+  try { NESTED = await api("/api/tables/nested" + (refresh ? "?refresh=1" : "")); }
+  catch (err) { NESTED = {tables: [], notes: [err.message]}; }
+  const n = NESTED.tables.length;
+  $("#expandednote").innerHTML = `· ${n} nested <a href="#" id="nestedrefresh" title="Read the catalogs again">↻</a>`;
+  $("#nestedrefresh").addEventListener("click", (e) => { e.preventDefault(); loadNested(true); });
+  drawTables();
+}
+$("#expanded").addEventListener("change", () => {
+  if ($("#expanded").checked) loadNested(false); else { $("#expandednote").textContent = ""; drawTables(); }
+});
+function previewSql(sql) { $("#sqltext").value = sql; runSql(); }
 function drawTables() {
   const f = $("#tablefilter").value.trim().toLowerCase();
-  const rows = TABLES.filter(t => !f || (t.name + " " + (t.description || "") + " " + (t.service || "")).toLowerCase().includes(f));
+  const expanded = $("#expanded").checked && NESTED;
+  const byCatalog = {};
+  if (expanded) NESTED.tables.forEach(n => (byCatalog[n.catalog] ||= []).push(n));
+  const nestedOf = t => (byCatalog[t.name] || []).filter(n => !f || (n.label + " " + n.table).toLowerCase().includes(f));
+  const rows = TABLES.filter(t => !f || (t.name + " " + (t.description || "") + " " + (t.service || "")).toLowerCase().includes(f)
+                                 || nestedOf(t).length);
   const groups = {};
   rows.forEach(t => (groups[t.service || "other"] ||= []).push(t));
-  $("#tablelist").innerHTML = Object.entries(groups).map(([svc, ts]) => `<h4>${esc(svc)}</h4>` + ts.map(t =>
-    `<button class="titem" type="button" data-usage="${esc(t.usage || ("SELECT * FROM " + t.name + " LIMIT 100"))}"
+  const MAXN = 200;
+  $("#tablelist").innerHTML = Object.entries(groups).map(([svc, ts]) => `<h4>${esc(svc)}</h4>` + ts.map(t => {
+    const kids = nestedOf(t);
+    return `<button class="titem" type="button" data-usage="${esc(t.usage || ("SELECT * FROM " + t.name + " LIMIT 100"))}"
       title="${esc([t.description, t.pushdown ? "push-down: " + t.pushdown : ""].filter(Boolean).join("\n"))}">
-      ${icon(t.icon)}<span>${esc(t.name)}</span><span class="kind">${esc(t.kind || "")}</span></button>`).join("")).join("")
-    || `<p class="muted small">No tables.</p>`;
+      ${icon(t.icon)}<span>${esc(t.name)}</span><span class="kind">${esc(t.kind || "")}${kids.length ? ` · ${kids.length}` : ""}</span></button>` +
+      (kids.length ? `<div class="nested">${kids.slice(0, MAXN).map(n => `<div class="nitem" title="${esc(n.usage)}">
+        <span class="lbl" data-usage="${esc(n.usage)}">${esc(n.label)}</span>
+        <button class="secondary" type="button" data-preview="${esc(n.usage)}">Preview</button></div>`).join("")}
+        ${kids.length > MAXN ? `<div class="muted small">+${kids.length - MAXN} more — filter to find them</div>` : ""}</div>` : "");
+  }).join("")).join("")
+    || (TABLES.length ? `<p class="muted small">Nothing matches.</p>` : `<p class="muted small">No tables registered — see above for why.</p>`);
+  if (expanded && NESTED.notes?.length) $("#tablelist").insertAdjacentHTML("beforeend",
+    `<div class="muted small" style="margin-top:8px">${NESTED.notes.map(esc).join("<br>")}</div>`);
   $("#tablelist").querySelectorAll("[data-usage]").forEach(b => b.addEventListener("click", () => {
     let u = b.dataset.usage;
     if (!/^\s*(select|with|from|show|describe)/i.test(u)) u = `SELECT * FROM ${u}`;
     if (!/\blimit\b/i.test(u)) u += " LIMIT 100";
     $("#sqltext").value = u; $("#sqltext").focus();
   }));
+  $("#tablelist").querySelectorAll("[data-preview]").forEach(b => b.addEventListener("click", () => previewSql(b.dataset.preview)));
 }
 $("#tablefilter").addEventListener("input", drawTables);
 async function runSql() {
@@ -1497,6 +1575,7 @@ async function loadCatalog() {
     + (info.max_tables ? ` · at most ${info.max_tables} per run` : "") + (off ? "" : ".");
   drawCatalogTables(!!off || running);
   drawConnections();
+  drawEnable(info, off, running);
   if (CAT.job && (!CATJOB || CATJOB.id !== CAT.job.id)) watchJob(CAT.job);  // a job started elsewhere, or before a reload
 }
 function drawCatalogTables(disabled) {
@@ -1516,6 +1595,32 @@ function drawCatalogTables(disabled) {
   $("#catlist").querySelectorAll("[data-redraft]").forEach(b => b.addEventListener("click", () => startGeneration({force: [b.dataset.redraft]})));
   $("#catlist").querySelectorAll("[data-add]").forEach(b => b.addEventListener("click", () => startGeneration({only: [b.dataset.add]})));
 }
+// ---- enable Ask: what's missing, in order, with the button that does the last step ----
+function drawEnable(info, off, running) {
+  const setup = META?.setup;
+  $("#enablecard").hidden = !setup;
+  if (!setup) return;
+  const hasLlm = !!info.llm, canEdit = !!META?.features?.catalog_generation;
+  const step = (ok, text) => `<li><span class="${ok ? "ok" : "todo"}">${ok ? "✓" : "○"}</span> ${text}</li>`;
+  $("#enablesteps").innerHTML =
+    step(hasLlm, hasLlm ? `An LLM to draft it: <b>${esc(info.llm)}</b>`
+      : `Add an LLM: an entry under <b>AI providers</b> below, then set <span class="mono">semantic.default_llm</span> to its name — and Save.`) +
+    step(canEdit, canEdit ? "Drafting from this page is on."
+      : `Restart the server with <span class="mono">--edit-config</span> to draft it from here — or run
+         <span class="mono">python -m duckduck.semantic generate-catalog</span> and reload.`) +
+    step(false, hasLlm && canEdit
+      ? `<button class="primary" type="button" id="enablego" ${running ? "disabled" : ""}>${running ? "Drafting…" : "Draft the catalog now"}</button>
+         <span class="muted small">one LLM call per table · Ask turns on by itself when it's done</span>`
+      : "Draft the catalog (the button appears here once the steps above are done).");
+  $("#enablego")?.addEventListener("click", () => startGeneration({}));
+}
+// the quick link: #enable-ask, from the banner on every tab (or a bookmarked / printed URL)
+function goEnable() {
+  if (META?.features?.config) { openTab("config"); setTimeout(() => $("#enablecard").scrollIntoView({behavior: "smooth", block: "start"}), 150); }
+  else { openTab("ask"); $("#setupcard").scrollIntoView({behavior: "smooth"}); }
+}
+$("#enablelink").addEventListener("click", (e) => { e.preventDefault(); history.replaceState(null, "", "#enable-ask"); goEnable(); });
+
 // ---- catalog connections: is each table's system connected, and why not ----
 const CONN_CHECKS = {};  // source → the last Test result
 function drawConnections() {
@@ -1899,6 +2004,8 @@ function showFeatures() {
   // no catalog yet (a first run): Ask says what's missing; SQL and Config work
   const setup = META?.setup, gen = !!META?.features?.catalog_generation;
   $("#setupcard").hidden = !setup;
+  $("#enablebar").hidden = !setup;
+  if (!setup && CAT) $("#enablecard").hidden = true;
   $("#setuppath").textContent = setup ? setup.catalog_path : "";
   $("#setuphow").textContent = !setup ? "" : gen
     ? "Set up the catalog drafts it from your connected tables with your LLM (Config → Semantic catalog → Update catalog)."
@@ -1913,8 +2020,11 @@ function showFeatures() {
   document.querySelector('nav button[data-tab="config"]').hidden = !META?.features?.config;
 }
 $("#setupsql").addEventListener("click", () => openTab("sql"));
-$("#setupconfig").addEventListener("click", () => openTab("config"));
-api("/api/meta").then(m => { META = m; showFeatures(); }).catch(err => toast(err.message));
+$("#setupconfig").addEventListener("click", goEnable);
+api("/api/meta").then(m => {
+  META = m; showFeatures();
+  if (location.hash === "#enable-ask" && META.setup) goEnable();
+}).catch(err => toast(err.message));
 </script>
 </body>
 </html>

@@ -952,6 +952,22 @@ your LLM — Ask then works without a restart. The CLI says the same
 Python, `SemanticSearch.from_config` raises `CatalogUnavailable` (its
 `path` and `reason`).
 
+**Turning Ask on.** While there's no catalog, every tab shows *Ask in
+plain language is off — Enable it →*, and `serve` prints the same quick
+link (`http://127.0.0.1:8765/#enable-ask`). It opens *Config → Enable Ask*:
+a checklist (an LLM in `ai_providers` + `semantic.default_llm`; drafting
+from the page, i.e. `--edit-config`) ending in **Draft the catalog now**.
+
+**The SQL tab's table list.** On top, which connectors in `duckduck.json`
+started — and, for each one that didn't, the error (a missing
+`authentication` block, `boto3` not installed, a secret it couldn't read…)
+— with the config file it read. That's the usual reason for a short or
+empty list: with `"on_error": "warn"` a connector that fails to start is
+skipped. **Expanded catalog** also lists the tables *behind* catalogs
+(every table a Glue, ADX or database catalog lists, under it) with a
+**Preview** that runs `SELECT * FROM glue_table(database='…',
+table_name='…') LIMIT 100`. In Python: `duck.nested_tables()`.
+
 **The web page** (`serve()`) has four tabs:
 
 - **Ask.** The follow-up questions show up as buttons, or you can answer

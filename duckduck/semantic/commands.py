@@ -289,6 +289,10 @@ def serve(
         return app
     print(f"duckduck: http://{host}:{port}  (feedback in {store.path}"
           f"{'' if allow_sql else '; SQL tab off'}{'; config editing on' if allow_config_edit else ''})")
+    if getattr(app.state.current_search(), "setup", None):  # a first run: the quick link to turn Ask on
+        print(f"Ask isn't set up yet (no semantic catalog) — SQL works now; enable Ask at "
+              f"http://{host}:{port}/#enable-ask"
+              + ("" if allow_config_edit else "  (start with --edit-config to draft the catalog from the page)"))
     run_app(app, host=host, port=port)
     return app
 

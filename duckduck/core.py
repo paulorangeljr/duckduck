@@ -787,7 +787,7 @@ class DuckAPI:
         if not text.strip():
             return {}
 
-        expr = ast.parse(f"_f_({text})", mode="eval")
+        expr = ast.parse(f"_f_({self._sql_strings_as_python(text)})", mode="eval")
         call = expr.body
 
         if call.args:
@@ -803,6 +803,35 @@ class DuckAPI:
             kwargs[kw.arg] = ast.literal_eval(kw.value)
 
         return kwargs
+
+    @staticmethod
+    def _sql_strings_as_python(text: str) -> str:
+        """
+        SQL single-quoted strings as Python literals: ``'O''Brien'`` is one
+        string with an apostrophe in SQL, but two adjacent strings
+        (``'O' 'Brien'`` → ``OBrien``) to Python. Everything else is kept.
+        """
+        out, i, n = [], 0, len(text)
+        while i < n:
+            ch = text[i]
+            if ch == '"':  # a double-quoted string: copied as written
+                j = i + 1
+                while j < n and text[j] != '"':
+                    j += 2 if text[j] == "\\" else 1
+                out.append(text[i:j + 1]); i = j + 1
+            elif ch == "'":
+                j, buf = i + 1, []
+                while j < n:
+                    if text[j] == "'" and j + 1 < n and text[j + 1] == "'":
+                        buf.append("'"); j += 2
+                    elif text[j] == "'":
+                        break
+                    else:
+                        buf.append(text[j]); j += 1
+                out.append(repr("".join(buf))); i = j + 1
+            else:
+                out.append(ch); i += 1
+        return "".join(out)
 
     # ------------------------------------------------------------------
     # Push-down extraction from SQL
@@ -1406,6 +1435,74 @@ class DuckAPI:
             df = df.sort_values(["kind", "name"], key=lambda col: col.map(rank) if col.name == "kind" else col)
             df = df.reset_index(drop=True)
         return df
+
+    def nested_tables(self, catalog: Optional[str] = None) -> Tuple[List[Dict[str, Any]], List[str]]:
+        """
+        The tables *behind* connectors: every catalog that declares
+        ``lists=`` (``glue_tables`` → ``glue_table``, ``adx_tables`` →
+        ``adx_table``, ``<db>_tables`` → ``<db>_table``) is read, and each
+        row becomes a call of that table function, its required arguments
+        taken from the row's columns. ``catalog``: read only that one.
+
+        Returns ``(tables, notes)``: one dict per nested table — ``catalog``
+        (where it was listed), ``table`` (the table function), ``args``,
+        ``label`` (the joined arguments, ``security.proxy_logs``), ``usage``
+        (``SELECT * FROM glue_table(database='security', …) LIMIT 100``) and
+        ``service`` — plus a note per catalog that couldn't be read. Every
+        catalog read is a call to its source.
+        """
+        from .kinds import CATALOG, kind_of, lists_of, required_params
+
+        tables: List[Dict[str, Any]] = []
+        notes: List[str] = []
+        for catalog_name, catalog_fn in self.functions.items():
+            if catalog is not None and catalog_name != catalog.lower():
+                continue
+            method = lists_of(catalog_fn)
+            if kind_of(catalog_fn) != CATALOG or not method:
+                continue
+            target = self.sibling_function(catalog_fn, method)
+            if target is None:
+                notes.append(f"catalog '{catalog_name}' lists '{method}', which isn't registered — skipped")
+                continue
+            required = [p.name for p in required_params(self.functions[target])]
+            try:
+                listing = self.fetch(catalog_name)
+            except Exception as exc:
+                notes.append(f"catalog '{catalog_name}' failed ({exc.__class__.__name__}: {exc}) — its tables skipped")
+                continue
+            missing = [r for r in required if r not in listing.columns]
+            if missing:
+                notes.append(f"catalog '{catalog_name}' has no column(s) {missing} for '{target}' — skipped")
+                continue
+            for row in listing[required].to_dict(orient="records"):
+                args = {r: (v.item() if hasattr(v, "item") else v) for r, v in row.items()}
+                call = ", ".join(f"{k}={self._sql_literal(v)}" for k, v in args.items())
+                tables.append({
+                    "catalog": catalog_name, "table": target, "args": args,
+                    "label": ".".join(str(v) for v in args.values()),
+                    "usage": f"SELECT * FROM {target}({call}) LIMIT 100",
+                    "service": self.service_of.get(catalog_name),
+                })
+        return tables, notes
+
+    def sibling_function(self, fn: Any, method: str) -> Optional[str]:
+        """The registered name of ``method`` on the same connector instance as ``fn`` (a bound method)."""
+        owner = getattr(fn, "__self__", None)
+        if owner is None:
+            return None
+        for name, other in self.functions.items():
+            if getattr(other, "__self__", None) is owner and getattr(other, "__name__", None) == method:
+                return name
+        return None
+
+    @staticmethod
+    def _sql_literal(value: Any) -> str:
+        if isinstance(value, bool) or value is None:
+            return {True: "true", False: "false", None: "NULL"}[value]
+        if isinstance(value, (int, float)):
+            return repr(value)
+        return "'" + str(value).replace("'", "''") + "'"
 
     def sql(self, query: str):
         """

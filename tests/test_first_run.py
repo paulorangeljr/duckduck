@@ -107,3 +107,22 @@ def test_drafting_the_catalog_from_config_makes_ask_work(project):
     assert job["state"] == "done" and job["reloaded"], job
     assert client.get("/api/meta").json()["setup"] is None  # no restart
     assert client.post("/api/ask", json={"question": "which hosts?"}).status_code == 200
+
+
+def test_serving_prints_the_quick_link_to_enable_ask(project, monkeypatch, capsys):
+    pytest.importorskip("fastapi")
+    from duckduck.semantic import commands, server
+
+    monkeypatch.setattr(server, "run", lambda app, host, port: None)
+    commands.serve(config_path=str(project / "duckduck.json"), port=9999)
+    out = capsys.readouterr().out
+    assert "http://127.0.0.1:9999/#enable-ask" in out and "--edit-config" in out
+    commands.serve(config_path=str(project / "duckduck.json"), port=9999, allow_config_edit=True)
+    assert "--edit-config" not in capsys.readouterr().out.split("#enable-ask")[1]
+
+
+def test_the_page_has_the_quick_link():
+    pytest.importorskip("fastapi")
+    from duckduck.semantic.webpage import PAGE
+
+    assert 'id="enablebar"' in PAGE and 'href="#enable-ask"' in PAGE and 'id="enablecard"' in PAGE

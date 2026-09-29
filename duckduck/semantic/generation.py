@@ -412,32 +412,13 @@ class CatalogGenerator:
             elif kind == TABLE_FUNCTION and not self._has_catalog(fn):
                 undiscoverable.append(name)
 
-        if self.discover:
-            for catalog_name, catalog_fn in self.duck.functions.items():
-                target_method = lists_of(catalog_fn)
-                if kind_of(catalog_fn) != CATALOG or not target_method:
-                    continue
-                target_name = self._sibling_name(catalog_fn, target_method)
-                if target_name is None:
-                    notes.append(f"catalog '{catalog_name}' lists '{target_method}', which isn't registered — skipped")
-                    continue
-                required = [p.name for p in required_params(self.duck.functions[target_name])]
-                logger.info("catalog: discovering tables through %s …", catalog_name)
-                try:
-                    listing = self.duck.fetch(catalog_name)
-                except Exception as exc:
-                    notes.append(f"catalog '{catalog_name}' failed ({exc.__class__.__name__}: {exc}) — its tables skipped")
-                    logger.info("  %s failed: %s", catalog_name, exc)
-                    continue
-                logger.info("  %s: %d tables → %s(%s)", catalog_name, len(listing), target_name, ", ".join(required))
-                missing = [r for r in required if r not in listing.columns]
-                if missing:
-                    notes.append(f"catalog '{catalog_name}' has no column(s) {missing} for '{target_name}' — skipped")
-                    continue
-                for row in listing[required].to_dict(orient="records"):
-                    args = {r: row[r] for r in required}
-                    label = ".".join(str(v) for v in args.values())
-                    candidates.append((label, TableSpec(name=table_name_for(label), table=target_name, args=args)))
+        if self.discover:  # the tables behind connectors, through their catalogs (DuckAPI.nested_tables)
+            logger.info("catalog: discovering the tables behind connectors …")
+            nested, found_notes = self.duck.nested_tables()
+            notes += found_notes
+            for n in nested:
+                candidates.append((n["label"], TableSpec(name=table_name_for(n["label"]), table=n["table"], args=n["args"])))
+            logger.info("  %d table(s) found behind catalogs", len(nested))
 
         chosen = [(label, spec) for label, spec in candidates if self._wanted(label)]
         if undiscoverable:
@@ -468,14 +449,6 @@ class CatalogGenerator:
             getattr(c, "__self__", None) is owner and lists_of(c) == getattr(fn, "__name__", None)
             for c in self.duck.functions.values()
         )
-
-    def _sibling_name(self, catalog_fn: Any, method: str) -> Optional[str]:
-        """The registered name of ``method`` on the same connector instance as ``catalog_fn``."""
-        owner = getattr(catalog_fn, "__self__", None)
-        for name, fn in self.duck.functions.items():
-            if owner is not None and getattr(fn, "__self__", None) is owner and getattr(fn, "__name__", None) == method:
-                return name
-        return None
 
     def profile(self, spec: TableSpec, previous: Optional[Any] = None) -> Dict[str, Any]:
         """
