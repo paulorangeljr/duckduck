@@ -58,7 +58,7 @@ class SQLConsole:
         console.service_of = duck.service_of
         console.failed_services = getattr(duck, "failed_services", {})  # why a configured connector has no tables
         self._config_path = getattr(duck, "_config_path", None)
-        self._nested: Optional[Tuple[float, List[Dict[str, Any]], List[str]]] = None
+        self._nested: Dict[Optional[str], Tuple[float, List[Dict[str, Any]], List[str]]] = {}
         console._streaming_functions = getattr(duck, "_streaming_functions", {})
         console.conn.execute("SET enable_external_access = false")
         console.conn.execute("SET lock_configuration = true")
@@ -114,14 +114,26 @@ class SQLConsole:
             })
         return {"config_path": self._config_path, "services": services, "tables": len(self.duck.functions)}
 
-    def nested(self, refresh: bool = False, ttl: float = 300.0) -> Dict[str, Any]:
-        """``DuckAPI.nested_tables`` for the expanded catalog — every catalog read is a call, so cached ``ttl`` s."""
+    def nested(self, refresh: bool = False, ttl: float = 300.0, service: Optional[str] = None) -> Dict[str, Any]:
+        """
+        ``DuckAPI.nested_tables`` for the expanded catalog — every catalog read
+        is a call, so cached ``ttl`` s, per ``service`` (None = every connector).
+        """
         now = time.time()
-        if refresh or self._nested is None or now - self._nested[0] > ttl:
-            tables, notes = self.duck.nested_tables()
-            self._nested = (now, tables, notes)
-        at, tables, notes = self._nested
-        return {"tables": tables, "notes": notes, "read_at": at}
+        cached = self._nested.get(service)
+        if refresh or cached is None or now - cached[0] > ttl:
+            tables, notes = self.duck.nested_tables(service=service)
+            cached = self._nested[service] = (now, tables, notes)
+        at, tables, notes = cached
+        return {"tables": tables, "notes": notes, "read_at": at, "service": service}
+
+    def _expandable(self, name: str) -> bool:
+        """A catalog whose rows feed a registered table function: the expanded catalog can list what's behind it."""
+        from ..kinds import CATALOG, kind_of, lists_of
+
+        fn = self.duck.functions.get(name)
+        method = lists_of(fn) if fn is not None else None
+        return bool(method and kind_of(fn) == CATALOG and self.duck.sibling_function(fn, method))
 
     def tables(self) -> List[Dict[str, Any]]:
         df = self.duck.list_tables()
@@ -131,6 +143,7 @@ class SQLConsole:
         for r in records:
             r["icon"] = kinds.get(r["name"], "api")
             r["service"] = self.duck.service_of.get(r["name"])
+            r["expandable"] = self._expandable(r["name"])
         return records
 
 
@@ -323,7 +336,7 @@ def _model_options(model: Any, skip: Tuple[str, ...] = (), depth: int = 0) -> Li
 
 
 #: Constructor parameters that only take Python objects (a client, a session) — not config options.
-_INJECTED = {"client", "kcsb", "session", "credential", "engine"}
+_INJECTED = {"client", "kcsb", "session", "credential", "engine", "sleep"}
 #: Non-secret parameters that are still credentials: the form offers them in the authentication block.
 _CREDENTIAL_NAMES = {"username", "user", "client_id", "tenant_id", "aws_access_key_id"}
 

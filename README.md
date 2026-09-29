@@ -966,7 +966,11 @@ empty list: with `"on_error": "warn"` a connector that fails to start is
 skipped. **Expanded catalog** also lists the tables *behind* catalogs
 (every table a Glue, ADX or database catalog lists, under it) with a
 **Preview** that runs `SELECT * FROM glue_table(database='…',
-table_name='…') LIMIT 100`. In Python: `duck.nested_tables()`.
+table_name='…') LIMIT 100`. It reads every connector's catalogs; each
+connector that has one also gets its own **Expand catalog** on its heading,
+which reads only that connector's catalog (and ↻ reads it again). In
+Python: `duck.nested_tables()`, or `duck.nested_tables(service="lake")`
+for one connector.
 
 **The web page** (`serve()`) has four tabs:
 

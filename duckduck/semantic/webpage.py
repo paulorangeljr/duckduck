@@ -188,6 +188,11 @@ textarea.editor { width: 100%; min-height: 180px; resize: vertical; tab-size: 2;
 .nitem { display: flex; gap: 6px; align-items: center; padding: 2px 4px; border-radius: 6px; font-size: 13px; }
 .nitem:hover { background: var(--surface-2); }
 .nitem .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.tlist h4 .expsvc { float: right; display: inline-flex; gap: 6px; align-items: center; text-transform: none; letter-spacing: 0; font-weight: 400; }
+.tlist h4 .expsvc .spin { width: 11px; height: 11px; }
+button.linkish { background: none; border: 0; padding: 0; font: inherit; font-size: 12px; color: var(--accent); cursor: pointer; }
+button.linkish:hover { text-decoration: underline; }
+button.linkish[aria-pressed="true"] { color: var(--ink-2); }
 .nitem button { margin-left: auto; flex: none; padding: 1px 8px; font-size: 12px; }
 .connbox { font-size: 12.5px; margin: 0 0 8px; padding: 8px 10px; border-radius: 8px; background: var(--surface-2); }
 .connbox.bad { background: rgba(208,59,59,.08); }
@@ -441,7 +446,7 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
         <div id="connstatus"></div>
         <input id="tablefilter" placeholder="filter tables" style="width:100%">
         <label class="check small" style="margin-top:8px;display:flex;gap:6px;align-items:center"
-          title="Also list the tables behind catalogs (e.g. every table a Glue, ADX or database catalog lists) — reading them calls each source">
+          title="Every connector: also list the tables behind catalogs (e.g. every table a Glue, ADX or database catalog lists) — reading them calls each source. Each connector with a catalog also has its own Expand catalog.">
           <input type="checkbox" id="expanded"> Expanded catalog <span class="muted" id="expandednote"></span></label>
         <div class="tlist" id="tablelist"></div></aside>
       <div>
@@ -1470,12 +1475,14 @@ function openTab(name) { document.querySelector(`nav button[data-tab="${name}"]`
 
 // ---- SQL tab -----------------------------------------------------------------------------
 let TABLES = [];
-let NESTED = null;  // {tables, notes} once the expanded catalog was read
+// the expanded catalog, per connector: service → {tables, notes, loading}; EXPANDED = the connectors shown expanded
+const NESTED = {}, EXPANDED = new Set();
 async function loadTables() {
   loadConnections();
   try { TABLES = await api("/api/tables"); drawTables(); }
   catch (err) { TABLES = []; $("#tablelist").innerHTML = `<p class="error small">${esc(err.message)}</p>`; }
-  if ($("#expanded").checked) loadNested(false);
+  if ($("#expanded").checked) loadNested(null, false);
+  else EXPANDED.forEach(svc => loadNested(svc, false));
 }
 // which connectors in duckduck.json started, and why the others didn't — why the list is what it is
 async function loadConnections() {
@@ -1495,31 +1502,54 @@ async function loadConnections() {
     ${svcs.some(x => x.started && !x.tables) ? `<div class="muted">Started with no tables: ${esc(svcs.filter(x => x.started && !x.tables).map(x => x.name).join(", "))}</div>` : ""}
     ${failed.length || !c.tables ? where : ""}</div>`;
 }
-async function loadNested(refresh) {
-  $("#expandednote").innerHTML = `<span class="spin" aria-hidden="true" style="display:inline-block;vertical-align:-2px"></span> reading catalogs…`;
-  try { NESTED = await api("/api/tables/nested" + (refresh ? "?refresh=1" : "")); }
-  catch (err) { NESTED = {tables: [], notes: [err.message]}; }
-  const n = NESTED.tables.length;
-  $("#expandednote").innerHTML = `· ${n} nested <a href="#" id="nestedrefresh" title="Read the catalogs again">↻</a>`;
-  $("#nestedrefresh").addEventListener("click", (e) => { e.preventDefault(); loadNested(true); });
+// one connector's catalogs (svc), or every connector's (null — the "Expanded catalog" box)
+async function loadNested(svc, refresh) {
+  const all = svc === null, keys = all ? expandableServices() : [svc];
+  keys.forEach(k => { EXPANDED.add(k); NESTED[k] = {...(NESTED[k] || {tables: [], notes: []}), loading: true}; });
+  if (all) $("#expandednote").innerHTML = `<span class="spin" aria-hidden="true" style="display:inline-block;vertical-align:-2px"></span> reading catalogs…`;
+  drawTables();
+  let got;
+  try { got = await api("/api/tables/nested?" + new URLSearchParams({...(all ? {} : {service: svc}), ...(refresh ? {refresh: 1} : {})})); }
+  catch (err) { got = {tables: [], notes: [err.message]}; }
+  keys.forEach(k => { NESTED[k] = {tables: got.tables.filter(n => (n.service || "other") === k),
+    notes: all ? [] : got.notes, loading: false}; });
+  if (all) {
+    NESTED[""] = {tables: [], notes: got.notes, loading: false};
+    $("#expandednote").innerHTML = `· ${got.tables.length} nested <a href="#" id="nestedrefresh" title="Read every catalog again">↻</a>`;
+    $("#nestedrefresh").addEventListener("click", (e) => { e.preventDefault(); loadNested(null, true); });
+  }
   drawTables();
 }
+// the connectors with a catalog that lists tables behind it (Glue, ADX, a database…)
+const expandableServices = () => [...new Set(TABLES.filter(t => t.expandable).map(t => t.service || "other"))];
+function collapseNested(svc) { EXPANDED.delete(svc); if ($("#expanded").checked) $("#expanded").checked = false; drawTables(); }
 $("#expanded").addEventListener("change", () => {
-  if ($("#expanded").checked) loadNested(false); else { $("#expandednote").textContent = ""; drawTables(); }
+  if ($("#expanded").checked) loadNested(null, false);
+  else { EXPANDED.clear(); delete NESTED[""]; $("#expandednote").textContent = ""; drawTables(); }
 });
 function previewSql(sql) { $("#sqltext").value = sql; runSql(); }
 function drawTables() {
   const f = $("#tablefilter").value.trim().toLowerCase();
-  const expanded = $("#expanded").checked && NESTED;
   const byCatalog = {};
-  if (expanded) NESTED.tables.forEach(n => (byCatalog[n.catalog] ||= []).push(n));
+  EXPANDED.forEach(svc => (NESTED[svc]?.tables || []).forEach(n => (byCatalog[n.catalog] ||= []).push(n)));
   const nestedOf = t => (byCatalog[t.name] || []).filter(n => !f || (n.label + " " + n.table).toLowerCase().includes(f));
   const rows = TABLES.filter(t => !f || (t.name + " " + (t.description || "") + " " + (t.service || "")).toLowerCase().includes(f)
                                  || nestedOf(t).length);
   const groups = {};
   rows.forEach(t => (groups[t.service || "other"] ||= []).push(t));
   const MAXN = 200;
-  $("#tablelist").innerHTML = Object.entries(groups).map(([svc, ts]) => `<h4>${esc(svc)}</h4>` + ts.map(t => {
+  // a connector with a catalog gets its own toggle: expand just its catalog
+  const toggle = (svc, ts) => {
+    if (!ts.some(t => t.expandable)) return "";
+    const st = NESTED[svc], on = EXPANDED.has(svc);
+    if (on && st?.loading) return `<span class="expsvc muted"><span class="spin" aria-hidden="true"></span> reading…</span>`;
+    const n = on && st ? st.tables.length : null;
+    return `<span class="expsvc">${n !== null ? `<span class="muted">${n} nested</span>
+      <button type="button" class="linkish" data-exprefresh="${esc(svc)}" title="Read ${esc(svc)}'s catalog again">↻</button>` : ""}
+      <button type="button" class="linkish" data-expand="${esc(svc)}" aria-pressed="${on}"
+        title="${on ? "Hide the tables behind this connector's catalog" : "List the tables behind this connector's catalog (reads it now)"}">${on ? "Collapse" : "Expand catalog"}</button></span>`;
+  };
+  $("#tablelist").innerHTML = Object.entries(groups).map(([svc, ts]) => `<h4>${esc(svc)}${toggle(svc, ts)}</h4>` + ts.map(t => {
     const kids = nestedOf(t);
     return `<button class="titem" type="button" data-usage="${esc(t.usage || ("SELECT * FROM " + t.name + " LIMIT 100"))}"
       title="${esc([t.description, t.pushdown ? "push-down: " + t.pushdown : ""].filter(Boolean).join("\n"))}">
@@ -1527,11 +1557,14 @@ function drawTables() {
       (kids.length ? `<div class="nested">${kids.slice(0, MAXN).map(n => `<div class="nitem" title="${esc(n.usage)}">
         <span class="lbl" data-usage="${esc(n.usage)}">${esc(n.label)}</span>
         <button class="secondary" type="button" data-preview="${esc(n.usage)}">Preview</button></div>`).join("")}
-        ${kids.length > MAXN ? `<div class="muted small">+${kids.length - MAXN} more — filter to find them</div>` : ""}</div>` : "");
-  }).join("")).join("")
+        ${kids.length > MAXN ? `<div class="muted small">+${kids.length - MAXN} more — filter to find them</div>` : ""}</div>` : "") +
+      (EXPANDED.has(svc) && !NESTED[svc]?.loading && t.expandable && !(byCatalog[t.name] || []).length
+        ? `<div class="nested muted small">no tables listed</div>` : "");
+  }).join("") + (EXPANDED.has(svc) && NESTED[svc]?.notes?.length
+    ? `<div class="muted small nested">${NESTED[svc].notes.map(esc).join("<br>")}</div>` : "")).join("")
     || (TABLES.length ? `<p class="muted small">Nothing matches.</p>` : `<p class="muted small">No tables registered — see above for why.</p>`);
-  if (expanded && NESTED.notes?.length) $("#tablelist").insertAdjacentHTML("beforeend",
-    `<div class="muted small" style="margin-top:8px">${NESTED.notes.map(esc).join("<br>")}</div>`);
+  if (NESTED[""]?.notes?.length && $("#expanded").checked) $("#tablelist").insertAdjacentHTML("beforeend",
+    `<div class="muted small" style="margin-top:8px">${NESTED[""].notes.map(esc).join("<br>")}</div>`);
   $("#tablelist").querySelectorAll("[data-usage]").forEach(b => b.addEventListener("click", () => {
     let u = b.dataset.usage;
     if (!/^\s*(select|with|from|show|describe)/i.test(u)) u = `SELECT * FROM ${u}`;
@@ -1539,6 +1572,9 @@ function drawTables() {
     $("#sqltext").value = u; $("#sqltext").focus();
   }));
   $("#tablelist").querySelectorAll("[data-preview]").forEach(b => b.addEventListener("click", () => previewSql(b.dataset.preview)));
+  $("#tablelist").querySelectorAll("[data-expand]").forEach(b => b.addEventListener("click", () =>
+    EXPANDED.has(b.dataset.expand) ? collapseNested(b.dataset.expand) : loadNested(b.dataset.expand, false)));
+  $("#tablelist").querySelectorAll("[data-exprefresh]").forEach(b => b.addEventListener("click", () => loadNested(b.dataset.exprefresh, true)));
 }
 $("#tablefilter").addEventListener("input", drawTables);
 async function runSql() {

@@ -105,3 +105,51 @@ def test_the_web_app(tmp_path):
     assert {s["name"] for s in conn["services"]} >= {"wh"} and conn["tables"] >= 2
     off = TestClient(create_app(lambda: search, store=None))
     assert off.get("/api/tables/nested").status_code == 403 and off.get("/api/connections").status_code == 403
+
+
+def _two_warehouses():
+    duck, first = _duck()
+    second = Warehouse(schemas={"ops": ["tickets"]})
+    duck.register_api_function("dw_tables", second.tables)
+    duck.register_api_function("dw_table", second.table)
+    duck.service_of.update({"dw_tables": "dw", "dw_table": "dw"})
+    return duck, first, second
+
+
+def test_one_connectors_catalog_is_expanded_without_reading_the_others():
+    pytest.importorskip("pydantic")
+    from duckduck.semantic.admin import SQLConsole
+
+    duck, first, second = _two_warehouses()
+    tables, _ = duck.nested_tables(service="dw")
+    assert [t["label"] for t in tables] == ["ops.tickets"] and first.catalog_reads == 0
+    console = SQLConsole(duck)
+    assert console.nested(service="dw")["service"] == "dw" and second.catalog_reads == 2
+    console.nested(service="dw")
+    assert second.catalog_reads == 2 and first.catalog_reads == 0  # cached per connector
+    assert len(console.nested()["tables"]) == 4 and first.catalog_reads == 1
+    listed = {t["name"]: t["expandable"] for t in console.tables()}
+    assert listed["wh_tables"] and listed["dw_tables"] and not listed["wh_table"]
+
+
+def test_the_web_app_expands_one_connector():
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from duckduck.semantic.admin import SQLConsole
+    from duckduck.semantic.server import create_app
+    from test_answer_shapes import _search
+
+    search = _search()
+    duck, first, _ = _two_warehouses()
+    search.duck.functions.update(duck.functions)
+    search.duck.service_of.update(duck.service_of)
+    client = TestClient(create_app(lambda: search, store=None, console=SQLConsole(search.duck)))
+    got = client.get("/api/tables/nested", params={"service": "dw"}).json()
+    assert [t["label"] for t in got["tables"]] == ["ops.tickets"] and first.catalog_reads == 0
+
+
+def test_the_page_has_a_toggle_per_connector():
+    from duckduck.semantic.webpage import PAGE
+
+    assert "data-expand=" in PAGE and "loadNested(b.dataset.expand" in PAGE and "expandableServices" in PAGE

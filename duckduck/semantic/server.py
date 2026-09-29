@@ -23,7 +23,7 @@ HTML page (``webpage.PAGE``) over a JSON API:
 ``GET  /api/evaluation.json``                that evaluation set, to keep
 ``GET  /api/export.md``                      the still-failing questions, as a brief for a developer
 ``GET  /api/meta``                           categories, answer kinds, tables (+ icon kind), entities, values
-``GET  /api/connections`` · ``GET /api/tables/nested?refresh=1``  each connector started or why not · the tables behind catalogs
+``GET  /api/connections`` · ``GET /api/tables/nested?service=&refresh=1``  each connector started or why not · the tables behind catalogs (one connector's, or all)
 ``POST /api/sql {sql}`` · ``GET /api/tables``  the SQL console (``allow_sql``, on by default; read-only, no files/network)
 ``POST /api/takeover {conversation_id, name, full, user}``  "take over from here": the answer's rows as a table (an unrated answer → answered)
 ``POST /api/takeover/proposal {conversation_id}``  what that would give: suggested name, rows, columns, capped
@@ -502,9 +502,9 @@ def create_app(
         return dump(the_console().connections(configured))
 
     @app.get("/api/tables/nested")
-    def nested_tables(refresh: int = 0):
-        """The tables behind catalogs (glue_tables → glue_table(...), …) — the SQL tab's expanded catalog."""
-        return dump(the_console().nested(refresh=bool(refresh)))
+    def nested_tables(refresh: int = 0, service: Optional[str] = None):
+        """The tables behind catalogs (glue_tables → glue_table(...), …) — the SQL tab's expanded catalog, of every connector or one."""
+        return dump(the_console().nested(refresh=bool(refresh), service=service or None))
 
     @app.post("/api/takeover/proposal")
     def takeover_proposal(body: Dict[str, Any] = Body(...)):

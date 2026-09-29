@@ -1436,13 +1436,16 @@ class DuckAPI:
             df = df.reset_index(drop=True)
         return df
 
-    def nested_tables(self, catalog: Optional[str] = None) -> Tuple[List[Dict[str, Any]], List[str]]:
+    def nested_tables(
+        self, catalog: Optional[str] = None, service: Optional[str] = None
+    ) -> Tuple[List[Dict[str, Any]], List[str]]:
         """
         The tables *behind* connectors: every catalog that declares
         ``lists=`` (``glue_tables`` → ``glue_table``, ``adx_tables`` →
         ``adx_table``, ``<db>_tables`` → ``<db>_table``) is read, and each
         row becomes a call of that table function, its required arguments
-        taken from the row's columns. ``catalog``: read only that one.
+        taken from the row's columns. ``catalog``: read only that one;
+        ``service``: only the catalogs of that ``auto_register`` service.
 
         Returns ``(tables, notes)``: one dict per nested table — ``catalog``
         (where it was listed), ``table`` (the table function), ``args``,
@@ -1457,6 +1460,8 @@ class DuckAPI:
         notes: List[str] = []
         for catalog_name, catalog_fn in self.functions.items():
             if catalog is not None and catalog_name != catalog.lower():
+                continue
+            if service is not None and self.service_of.get(catalog_name) != service:
                 continue
             method = lists_of(catalog_fn)
             if kind_of(catalog_fn) != CATALOG or not method:
