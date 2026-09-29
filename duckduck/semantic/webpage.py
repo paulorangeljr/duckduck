@@ -168,7 +168,6 @@ textarea { width: 100%; min-height: 60px; }
 /* SQL and Config tabs */
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
 .sqlgrid { display: grid; grid-template-columns: 270px minmax(0, 1fr); gap: 14px; align-items: start; }
-.cfggrid { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 14px; align-items: start; }
 textarea.editor { width: 100%; min-height: 180px; resize: vertical; tab-size: 2; line-height: 1.45; }
 #cfgtext { min-height: 520px; }
 .tlist { max-height: 70vh; overflow: auto; margin-top: 8px; }
@@ -209,7 +208,7 @@ button.linkish[aria-pressed="true"] { color: var(--ink-2); }
 .optref details > summary { font-weight: 600; color: var(--ink); padding: 4px 0; }
 .optref details details { margin-left: 12px; }
 .badge { font-size: 11px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--ink-2); margin-left: 4px; }
-@media (max-width: 860px) { .sqlgrid, .cfggrid { grid-template-columns: 1fr; } }
+@media (max-width: 860px) { .sqlgrid { grid-template-columns: 1fr; } }
 /* Config form */
 .catcard { margin-bottom: 14px; }
 .catbar { gap: 10px; align-items: center; }
@@ -257,6 +256,88 @@ button.add { background: none; border: 1px dashed var(--border); border-radius: 
 #cfgform details.sect { margin: 6px 0; border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; }
 #cfgform details.sect > summary { font-weight: 600; color: var(--ink); }
 #cfgform details.sect > .hint { margin: 4px 0 8px; }
+/* Config: a page per kind of setting */
+#tab-config { overflow-x: clip; }
+.cfglayout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; align-items: start; }
+.cfgnav { position: sticky; top: 76px; display: flex; flex-direction: column; gap: 1px; padding: 8px;
+          background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+.cfgnav .navgroup { font-size: 11px; font-weight: 650; color: var(--muted); text-transform: uppercase; letter-spacing: .05em;
+                    padding: 10px 10px 4px; }
+.cfgnav .navgroup:first-child { padding-top: 4px; }
+.cfgnav button { display: flex; align-items: center; gap: 6px; background: none; border: 0; border-radius: 8px; padding: 6px 10px;
+                 font: inherit; font-size: 14px; color: var(--ink-2); text-align: left; cursor: pointer; }
+.cfgnav button:hover { background: var(--surface-2); color: var(--ink); }
+.cfgnav button[aria-current="page"] { background: var(--surface-2); color: var(--ink); font-weight: 600;
+                                      box-shadow: inset 3px 0 0 var(--accent); }
+.cfgnav .count { margin-left: auto; font-size: 11.5px; color: var(--muted); font-weight: 400; }
+.cfgnav .count.bad { color: var(--bad); font-weight: 600; }
+.cfgmain > * + *, .cfgpage > * + * { margin-top: 14px; }
+.cfgmain a[data-cfggo], .cfgmain a[data-open] { color: var(--accent); }
+.cfgmain .card { margin-bottom: 0; }
+.cfgintro { color: var(--ink-2); font-size: 14px; margin: 6px 0 4px; max-width: 72ch; }
+.dirty { color: var(--accent); font-size: 13px; font-weight: 600; margin-left: auto; }
+@media (max-width: 860px) {
+  .cfglayout { grid-template-columns: 1fr; }
+  .cfgnav { position: static; flex-direction: row; flex-wrap: wrap; }
+  .cfgnav .navgroup { width: 100%; }
+}
+/* overview */
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; }
+.tile { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; background: var(--surface); text-align: left;
+        font: inherit; color: var(--ink); cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
+.tile:hover { border-color: var(--accent); }
+.tile .k { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.tile .v { font-size: 22px; font-weight: 650; }
+.tile .s { font-size: 12.5px; color: var(--ink-2); }
+.tile .s.bad { color: var(--bad); }
+.problems { margin: 12px 0 0; padding: 0; list-style: none; }
+.problems li { padding: 8px 10px; border-radius: 8px; background: rgba(208,59,59,.07); margin: 6px 0; font-size: 13.5px; }
+.problems li .err { color: var(--bad); word-break: break-word; }
+/* groups of settings on a page */
+.group { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; margin: 12px 0; background: var(--surface); }
+.group > .gt { font-weight: 650; font-size: 14.5px; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.group > .gd { color: var(--muted); font-size: 12.5px; margin: 2px 0 10px; }
+.fld label .key { font-weight: 400; font-size: 11px; color: var(--muted); margin-left: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+/* collapsible cards: connectors, AI providers */
+details.ccard { border: 1px solid var(--border); border-radius: 12px; margin: 10px 0; background: var(--surface); overflow: hidden; }
+details.ccard[open] { box-shadow: 0 4px 16px rgba(0,0,0,.06); }
+details.ccard > summary { list-style: none; display: flex; gap: 10px; align-items: center; padding: 12px 14px; cursor: pointer; }
+details.ccard > summary::-webkit-details-marker { display: none; }
+details.ccard > summary:hover { background: var(--surface-2); }
+details.ccard > summary .ico { width: 22px; height: 22px; color: var(--accent); }
+details.ccard > summary .who { display: flex; flex-direction: column; min-width: 0; }
+details.ccard > summary .who b { font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+details.ccard > summary .who span { font-size: 12.5px; color: var(--muted); }
+details.ccard > summary .grow { flex: 1; }
+details.ccard > summary .chev { color: var(--muted); transition: transform .15s; font-size: 12px; }
+details.ccard[open] > summary .chev { transform: rotate(90deg); }
+details.ccard > .body { padding: 4px 14px 14px; border-top: 1px solid var(--grid); }
+.status { font-size: 12px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--border); white-space: nowrap; }
+.status.ok { color: var(--good-ink); border-color: currentColor; }
+.status.bad { color: var(--bad); border-color: currentColor; }
+.status.new { color: var(--ink-2); border-style: dashed; }
+.ccard .sec { margin-top: 14px; }
+.ccard .sec > .st { font-size: 12px; font-weight: 650; color: var(--ink-2); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 6px; }
+.ccard .sec > .sd { font-size: 12.5px; color: var(--muted); margin: -2px 0 8px; }
+.ccard details.adv { margin-top: 14px; }
+.ccard details.adv > summary { font-size: 12px; font-weight: 650; color: var(--ink-2); text-transform: uppercase; letter-spacing: .04em; cursor: pointer; }
+.ccard .errbox { margin-top: 10px; padding: 8px 10px; border-radius: 8px; background: rgba(208,59,59,.07); font-size: 13px; }
+.ccard .errbox .err { color: var(--bad); word-break: break-word; }
+.ccard .foot { display: flex; justify-content: flex-end; margin-top: 14px; }
+button.danger { background: none; border: 1px solid var(--border); border-radius: 8px; color: var(--bad); cursor: pointer; font: inherit; font-size: 13px; padding: 5px 12px; }
+button.danger:hover { border-color: var(--bad); }
+.listtools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 4px 0 0; }
+.listtools .grow { flex: 1; }
+/* add a connector: pick its kind */
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; margin-top: 10px; }
+.gallery button { display: flex; gap: 10px; align-items: flex-start; text-align: left; border: 1px solid var(--border); border-radius: 10px;
+                  background: var(--surface); padding: 10px 12px; font: inherit; color: var(--ink); cursor: pointer; }
+.gallery button:hover { border-color: var(--accent); }
+.gallery button[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(42,120,214,.2); }
+.gallery button .ico { width: 20px; height: 20px; color: var(--accent); margin-top: 2px; }
+.gallery button b { display: block; font-size: 14px; }
+.gallery button span.d { display: block; font-size: 12px; color: var(--muted); line-height: 1.35; }
+.addbox { border: 1px dashed var(--border); border-radius: 12px; padding: 12px 14px; margin: 12px 0; }
 /* take-over dialog */
 dialog.modal { border: 1px solid var(--border); border-radius: 14px; padding: 0; width: min(560px, calc(100vw - 32px));
                background: var(--surface); color: var(--ink); box-shadow: 0 24px 60px rgba(0,0,0,.25); }
@@ -463,52 +544,82 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
     </div>
   </section>
   <section id="tab-config" hidden>
-    <div class="card enable" id="enablecard" hidden>
-      <h3 style="margin:0">Enable Ask</h3>
-      <p class="muted small" style="margin:4px 0 0">Ask reads a semantic catalog: what each table and field means. Three steps:</p>
-      <ol id="enablesteps"></ol>
-    </div>
-    <div class="card catcard" id="catcard">
-      <div class="cfghead"><h3>Semantic catalog <span class="muted small mono" id="catpath"></span></h3>
-        <span class="muted small" id="catllm"></span></div>
-      <p class="muted small" style="margin:6px 0 10px">What questions are answered from: each table, its fields and what they mean.
-        The LLM drafts it from the columns and a few sample rows; tables you wrote by hand and your <em>notes</em> are kept.</p>
-      <div class="row catbar">
-        <button class="primary" type="button" id="catupdate" title="Draft the tables that are new or older than max_age">Update catalog</button>
-        <button class="secondary" type="button" id="catall" title="Draft every generated table again (one LLM call each)">Redraft all generated</button>
-        <span class="small" id="catnote"></span></div>
-      <div id="catjob" hidden>
-        <div class="row catprog"><span class="spin" id="catspin" aria-hidden="true"></span><strong id="catstate"></strong>
-          <progress id="catbar" max="1" value="0"></progress><span class="muted small" id="catelapsed"></span></div>
-        <pre class="catlog mono" id="catlog" aria-live="polite"></pre>
-        <div id="catresult"></div>
+    <div class="cfglayout">
+      <aside class="cfgnav" id="cfgnav" role="navigation" aria-label="Configuration pages">
+        <div class="navgroup">Start</div>
+        <button type="button" data-cfgpage="overview">Overview</button>
+        <div class="navgroup">Connect</div>
+        <button type="button" data-cfgpage="connectors">Connectors <span class="count" id="navc-connectors"></span></button>
+        <button type="button" data-cfgpage="ai">AI providers <span class="count" id="navc-ai"></span></button>
+        <div class="navgroup">Ask in plain language</div>
+        <button type="button" data-cfgpage="catalog">Semantic catalog</button>
+        <button type="button" data-cfgpage="connections">Catalog connections</button>
+        <button type="button" data-cfgpage="reading">How questions are read</button>
+        <button type="button" data-cfgpage="answers">Answers &amp; data</button>
+        <button type="button" data-cfgpage="drafting">Catalog drafting</button>
+        <button type="button" data-cfgpage="thresholds">Confidence thresholds</button>
+        <button type="button" data-cfgpage="learning">Feedback &amp; learning</button>
+        <div class="navgroup">Advanced</div>
+        <button type="button" data-cfgpage="json">duckduck.json</button>
+        <button type="button" data-cfgpage="reference">Every option</button>
+      </aside>
+      <div class="cfgmain">
+        <div class="cfgpage" data-page="overview">
+        <div class="card enable" id="enablecard" hidden>
+          <h3 style="margin:0">Enable Ask</h3>
+          <p class="muted small" style="margin:4px 0 0">Ask reads a semantic catalog: what each table and field means. Three steps:</p>
+          <ol id="enablesteps"></ol>
+        </div>
+          <div id="cfgoverview"></div>
+        </div>
+        <div class="cfgpage" data-page="catalog" hidden>
+        <div class="card catcard" id="catcard">
+          <div class="cfghead"><h3>Semantic catalog <span class="muted small mono" id="catpath"></span></h3>
+            <span class="muted small" id="catllm"></span></div>
+          <p class="muted small" style="margin:6px 0 10px">What questions are answered from: each table, its fields and what they mean.
+            The LLM drafts it from the columns and a few sample rows; tables you wrote by hand and your <em>notes</em> are kept.</p>
+          <div class="row catbar">
+            <button class="primary" type="button" id="catupdate" title="Draft the tables that are new or older than max_age">Update catalog</button>
+            <button class="secondary" type="button" id="catall" title="Draft every generated table again (one LLM call each)">Redraft all generated</button>
+            <span class="small" id="catnote"></span></div>
+          <div id="catjob" hidden>
+            <div class="row catprog"><span class="spin" id="catspin" aria-hidden="true"></span><strong id="catstate"></strong>
+              <progress id="catbar" max="1" value="0"></progress><span class="muted small" id="catelapsed"></span></div>
+            <pre class="catlog mono" id="catlog" aria-live="polite"></pre>
+            <div id="catresult"></div>
+          </div>
+          <details id="cattables"><summary id="catcount">Tables</summary><div id="catlist"></div></details>
+        </div>
+        </div>
+        <div class="cfgpage" data-page="connections" hidden>
+        <div class="card" id="conncard">
+          <div class="cfghead"><h3>Catalog connections</h3><span class="muted small" id="conncount"></span></div>
+          <p class="muted small" style="margin:6px 0 10px">Each table of the catalog and whether its system is connected.
+            A table that isn't can't be used in answers until the reason below is fixed. <em>Test</em> reads one row now.</p>
+          <div class="row"><button class="secondary" type="button" id="conntestall" title="Read one row of every connected table, one after another">Test all</button>
+            <span class="small muted" id="connnote"></span></div>
+          <div id="connlist"></div>
+        </div>
+        </div>
+        <div class="cfgpage" data-page="reference" hidden>
+          <div class="card optref"><h3>Every option</h3>
+            <p class="muted small" style="margin:4px 0 10px">Everything duckduck.json can hold, with its type and default.</p>
+            <input id="optfilter" placeholder="search options" style="width:100%">
+            <div id="optref" style="margin-top:8px"></div></div>
+        </div>
+        <div class="card" id="cfgeditor">
+          <div class="cfghead"><h3 id="cfgtitle">Settings</h3><span class="muted small mono" id="cfgpath"></span></div>
+          <p class="cfgintro" id="cfgintro"></p>
+          <p class="muted small" id="cfgnote"></p>
+          <div id="cfgform"></div>
+          <textarea class="editor mono" id="cfgtext" spellcheck="false" aria-label="duckduck.json" hidden></textarea>
+          <div class="row cfgbar"><button class="secondary" id="cfgvalidate">Validate</button>
+            <button class="primary" id="cfgsave">Save and reload</button>
+            <button class="secondary" id="cfgreset">Discard changes</button>
+            <span class="dirty" id="cfgdirty" hidden>● Unsaved changes</span></div>
+          <div id="cfgmsgs"></div>
+        </div>
       </div>
-      <details id="cattables"><summary id="catcount">Tables</summary><div id="catlist"></div></details>
-    </div>
-    <div class="card" id="conncard">
-      <div class="cfghead"><h3>Catalog connections</h3><span class="muted small" id="conncount"></span></div>
-      <p class="muted small" style="margin:6px 0 10px">Each table of the catalog and whether its system is connected.
-        A table that isn't can't be used in answers until the reason below is fixed. <em>Test</em> reads one row now.</p>
-      <div class="row"><button class="secondary" type="button" id="conntestall" title="Read one row of every connected table, one after another">Test all</button>
-        <span class="small muted" id="connnote"></span></div>
-      <div id="connlist"></div>
-    </div>
-    <div class="cfggrid">
-      <div class="card"><div class="cfghead"><h3>duckduck.json <span class="muted small mono" id="cfgpath"></span></h3>
-          <div class="seg" role="group" aria-label="Edit as">
-            <button type="button" data-view="form" aria-pressed="true">Form</button>
-            <button type="button" data-view="json" aria-pressed="false">JSON</button></div></div>
-        <p class="muted small" id="cfgnote"></p>
-        <div id="cfgform"></div>
-        <textarea class="editor mono" id="cfgtext" spellcheck="false" aria-label="duckduck.json" hidden></textarea>
-        <div class="row cfgbar"><button class="secondary" id="cfgvalidate">Validate</button>
-          <button class="primary" id="cfgsave">Save and reload</button>
-          <button class="secondary" id="cfgreset">Discard changes</button></div>
-        <div id="cfgmsgs"></div>
-      </div>
-      <aside class="card optref"><h3>Every option</h3>
-        <input id="optfilter" placeholder="search options" style="width:100%">
-        <div id="optref" style="margin-top:8px"></div></aside>
     </div>
   </section>
   <section id="tab-suggestions" hidden>
@@ -593,9 +704,13 @@ const user = () => $("#user").value.trim() || null;
 document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => {
   document.querySelectorAll("nav button").forEach(x => x.setAttribute("aria-selected", x === b));
   document.querySelectorAll("main > section").forEach(s => s.hidden = s.id !== "tab-" + b.dataset.tab);
+  if (b.dataset.tab !== "config" && location.hash.startsWith("#config/")) history.replaceState(null, "", location.pathname);
   ({history: loadHistory, dashboard: loadDashboard, suggestions: loadSuggestions,
     sql: () => loadTables(),  // never waits on META: an empty list always says why
-    config: () => { loadCatalog(); return CFG || loadConfig(); }})[b.dataset.tab]?.();  // config: loaded once, so switching tabs keeps edits
+    config: async () => {  // loaded once, so switching tabs keeps edits
+      loadCatalog(); await loadCfgStatus();
+      if (CFG) showCfgPage(CFGPAGE); else await loadConfig();
+    }})[b.dataset.tab]?.();
 }));
 $("#user").value = store.get("duckduck-user") || "";
 $("#user").addEventListener("change", () => store.set("duckduck-user", $("#user").value));
@@ -1682,6 +1797,7 @@ async function loadCatalog() {
   drawCatalogTables(!!off || running);
   drawConnections();
   drawEnable(info, off, running);
+  if (CFGPAGE === "overview" && !$("#tab-config").hidden) drawOverview();
   if (CAT.job && (!CATJOB || CATJOB.id !== CAT.job.id)) watchJob(CAT.job);  // a job started elsewhere, or before a reload
 }
 function drawCatalogTables(disabled) {
@@ -1710,7 +1826,7 @@ function drawEnable(info, off, running) {
   const step = (ok, text) => `<li><span class="${ok ? "ok" : "todo"}">${ok ? "✓" : "○"}</span> ${text}</li>`;
   $("#enablesteps").innerHTML =
     step(hasLlm, hasLlm ? `An LLM to draft it: <b>${esc(info.llm)}</b>`
-      : `Add an LLM: an entry under <b>AI providers</b> below, then set <span class="mono">semantic.default_llm</span> to its name — and Save.`) +
+      : `Add an LLM on the <a href="#" data-cfggo="ai">AI providers</a> page and pick it as the <b>Default LLM</b> there — then Save.`) +
     step(canEdit, canEdit ? "Drafting from this page is on."
       : `Restart the server with <span class="mono">--edit-config</span> to draft it from here — or run
          <span class="mono">python -m duckduck.semantic generate-catalog</span> and reload.`) +
@@ -1722,7 +1838,10 @@ function drawEnable(info, off, running) {
 }
 // the quick link: #enable-ask, from the banner on every tab (or a bookmarked / printed URL)
 function goEnable() {
-  if (META?.features?.config) { openTab("config"); setTimeout(() => $("#enablecard").scrollIntoView({behavior: "smooth", block: "start"}), 150); }
+  if (META?.features?.config) {
+    CFGPAGE = "overview"; openTab("config");
+    setTimeout(() => $("#enablecard").scrollIntoView({behavior: "smooth", block: "start"}), 150);
+  }
   else { openTab("ask"); $("#setupcard").scrollIntoView({behavior: "smooth"}); }
 }
 $("#enablelink").addEventListener("click", (e) => { e.preventDefault(); history.replaceState(null, "", "#enable-ask"); goEnable(); });
@@ -1810,20 +1929,133 @@ $("#catall").addEventListener("click", () => {
     startGeneration({force: true});
 });
 
-// ---- Config tab --------------------------------------------------------------------------
-let CFG = null;
+// ---- Config tab: a page per kind of setting ----------------------------------------------
+// Every page edits the same DRAFT (duckduck.json); the editor card (Validate / Save) follows you between them.
+let CFG = null, CONN = null;  // CONN: /api/connections — each connector started, or why not
+const CFG_PAGES = {
+  overview: {title: "Overview", editor: false},
+  connectors: {title: "Connectors", intro: "The systems data is read from. Each connector becomes a set of tables named <name>_<table>, queryable in the SQL tab and usable by Ask.", editor: true},
+  ai: {title: "AI providers", intro: "The models Ask can use — to draft the semantic catalog, read questions, or make its decisions. Other pages refer to them by the name you give here.", editor: true},
+  catalog: {title: "Semantic catalog", editor: false},
+  connections: {title: "Catalog connections", editor: false},
+  reading: {title: "How questions are read", intro: "Who reads a question, who decides what it means, and when Ask considers several readings before asking you back.",
+            editor: true, semantic: ["reader", "default_llm", "decision_engine", "extractor", "router", "hypotheses"]},
+  answers: {title: "Answers & data", intro: "How much data an answer reads and shows, and which tables Ask may use.",
+            editor: true, semantic: ["sample", "default_limit", "stream", "allowed_sources", "strict", "live_evidence"]},
+  drafting: {title: "Catalog drafting", intro: "Where the semantic catalog lives, and how the LLM drafts it from your tables.",
+             editor: true, semantic: ["catalog_path", "catalog_generation"]},
+  thresholds: {title: "Confidence thresholds", intro: "How sure Ask must be of each decision before acting on it. Below its threshold it asks you instead of guessing. Higher = asks more often, guesses less.",
+               editor: true, semantic: ["thresholds"]},
+  learning: {title: "Feedback & learning", intro: "Where ratings are kept, how Ask learns from similar questions, and the wording it uses.",
+             editor: true, semantic: ["feedback", "answer_shapes", "clarification_texts"]},
+  json: {title: "duckduck.json", intro: "The whole file as JSON. The other pages edit this same text — change it here or there.", editor: true},
+  reference: {title: "Every option", editor: false},
+};
+let CFGPAGE = CFG_PAGES[store.get("duckduck-cfgpage")] ? store.get("duckduck-cfgpage") : "overview";
+
+// friendly names: "<context>.<key>" first, then the key alone, then the key made readable
+const LABELS = {
+  on_error: "When a connector fails to start", connector: "Connector type", table_prefix: "Table name prefix",
+  "authentication.type": "Where the credentials come from", secret_id: "Secret name", region_name: "AWS region",
+  profile_name: "AWS profile", vault_url: "Key Vault URL", tenant_id: "Tenant ID",
+  client_id: "Client (app) ID", client_secret: "Client secret", default_page_size: "Rows per page", page_size: "Rows per page",
+  hostname: "SharePoint hostname", site_path: "Default site path", host: "Host", username: "Username", password: "Password",
+  verify: "Verify the TLS certificate", connection_string: "Connection string", instance: "Instance", api_key: "API key",
+  api_secret: "API secret", request_interval: "Pause between requests (s)", max_retries: "Retries on errors",
+  base_url: "Base URL", include_rejected: "Include rejected CVEs", timeout: "Timeout (s)",
+  aws_access_key_id: "AWS access key ID", aws_secret_access_key: "AWS secret access key", cluster: "Cluster",
+  database: "Database", notruncation: "Allow results over ADX's size limits", path: "Folder",
+  include_hidden: "Include hidden files", module: "Python file or module", factory: "Factory function",
+  kwargs: "Arguments for the factory", account_name: "Storage account",
+  provider: "Provider", api: "API style", decisions_url: "Decisions API URL", model: "Model", max_tokens: "Max output tokens",
+  effort: "Reasoning effort", fallbacks: "Refusal fallback", endpoint: "Endpoint", resource: "Resource name",
+  deployment: "Deployment", api_version: "API version", require_parameters: "Only providers that honour structured output",
+  headers: "Extra HTTP headers",
+  catalog_path: "Catalog file", decision_engine: "Decision engine", default_llm: "Default LLM", extractor: "Value extraction",
+  reader: "Default reading mode", router: "Auto mode", hypotheses: "Weigh several readings before asking back",
+  stream: "Read page by page", sample: "Rows shown per answer", catalog_generation: "Catalog drafting",
+  thresholds: "Confidence thresholds", clarification_texts: "Follow-up question texts", answer_shapes: "Answer wording",
+  feedback: "Feedback", live_evidence: "Check values live in the data", allowed_sources: "Only these tables",
+  default_limit: "Row cap per answer", strict: "Fail when a catalog table isn't connected",
+  "decision_engine.type": "Engine", "decision_engine.ai_provider": "AI provider (empty = offline rules)", retries: "Retries",
+  system_prompt: "System prompt", system_prompt_file: "System prompt file",
+  "extractor.type": "Extractor", "extractor.llm": "LLM", "extractor.on_error": "If the LLM fails", translate: "Translate questions to English",
+  min_similarity: "Min similarity to past questions", max_runs: "Past runs considered", fallback: "Fallback mode",
+  tie_margin: "Tie margin", enabled: "On", max_hypotheses: "Max readings", depth: "Depth", workers: "Parallel workers",
+  "hypotheses.threshold": "Winner's min probability", margin: "Winner's lead", check: "Plan check min probability",
+  output_path: "Write to (default: the catalog file)", max_age: "Redraft tables older than", auto_refresh: "Refresh when the server starts",
+  sample_rows: "Sample rows sent to the LLM", source_prompt: "Table prompt", source_prompt_file: "Table prompt file",
+  link_prompt: "Vocabulary prompt", link_prompt_file: "Vocabulary prompt file", tables: "Tables to draft (explicit list)",
+  discover: "Discover the tables behind catalogs", include: "Only tables matching", exclude: "Skip tables matching",
+  max_tables: "Max tables per run", profile_rows: "Rows profiled", sample_values: "Example values kept",
+  sample_sensitive: "Keep examples of sensitive fields", max_enum_values: "Max values per category",
+  api_docs: "API documentation", api_docs_max_chars: "API docs budget (characters)", "catalog_generation.llm": "LLM",
+  link_llm: "LLM for the vocabulary pass",
+  "thresholds.source": "A table is relevant", "thresholds.field": "The right field", "thresholds.relationship": "The right join",
+  "thresholds.critical": "A critical field", "thresholds.entity": "What it's about", "thresholds.activity": "The activity",
+  "thresholds.resource_type": "A value's type", "thresholds.answer_shape": "The kind of answer",
+  "thresholds.out_of_scope": "Not about the data", "thresholds.subject": "Data or this assistant",
+  "thresholds.subject_doubt": "Ask when possibly about this assistant", "thresholds.reply": "Understanding your reply",
+  "thresholds.router": "Auto mode's pick",
+  "feedback.path": "Store file", memory: "Learn from similar questions", max_cases: "Similar questions used",
+  learned_answer_shapes: "Learned wording file", min_support: "Failures before a suggestion",
+  max_probes: "Max checks per question", "live_evidence.timeout": "Timeout per check (s)",
+};
+const ACRONYMS = {id: "ID", url: "URL", api: "API", llm: "LLM", ai: "AI", aws: "AWS", sql: "SQL", kql: "KQL", tls: "TLS", ssl: "SSL", http: "HTTP"};
+function humanize(key) {
+  const words = String(key).replace(/^_+/, "").split(/[_\s]+/).filter(Boolean).map(w => ACRONYMS[w.toLowerCase()] || w.toLowerCase());
+  if (!words.length) return String(key);
+  words[0] = words[0][0].toUpperCase() + words[0].slice(1);
+  return words.join(" ");
+}
+const labelOf = (key, ctx) => LABELS[ctx ? `${ctx}.${key}` : key] || LABELS[key] || humanize(key);
+// friendly names for the values of a choice
+const CHOICE_LABELS = {
+  on_error: {raise: "Stop everything (raise)", warn: "Skip it and warn (warn)"},
+  "authentication.type": {local: "Written here (local)", aws: "AWS Secrets Manager (aws)", azure: "Azure Key Vault (azure)"},
+  reader: {rules: "🦆 Paddle — rules (rules)", llm: "🤿 Dive — an LLM reads (llm)", llm_decides: "🪽 Fly — an LLM reads and decides (llm_decides)", auto: "🧭 Auto — picks per question (auto)"},
+  "router.fallback": {rules: "🦆 Paddle (rules)", llm: "🤿 Dive (llm)", llm_decides: "🪽 Fly (llm_decides)"},
+  "extractor.type": {rules: "Rules — offline (rules)", llm: "An LLM (llm)"},
+  "extractor.on_error": {fallback: "Fall back to rules (fallback)", raise: "Fail (raise)"},
+  "decision_engine.type": {lexical: "Offline rules (lexical)"},
+  provider: {anthropic: "Anthropic — Claude API (anthropic)", foundry: "Claude on Microsoft Foundry (foundry)",
+             azure_openai: "Azure OpenAI (azure_openai)", openrouter: "OpenRouter (openrouter)", jev: "Jev — Decisions API (jev)"},
+  api: {chat: "Chat model (chat)", decisions: "Decisions API (decisions)"},
+};
+const choiceLabel = (key, ctx, value) => ((CHOICE_LABELS[ctx ? `${ctx}.${key}` : key] || CHOICE_LABELS[key] || {})[value]) ?? String(value);
+// connector kinds, as a person would call them
+const CONNECTOR_INFO = {
+  sharepoint: ["SharePoint", "Sites, lists, files and drives through Microsoft Graph"],
+  insightvm: ["Rapid7 InsightVM", "Assets, vulnerabilities and sites"],
+  database: ["SQL database", "SQL Server, PostgreSQL, MySQL, Oracle, SQLite… through SQLAlchemy"],
+  servicenow: ["ServiceNow", "Incidents, problems, changes, users, CMDB — any table"],
+  axonius: ["Axonius", "Devices and users"],
+  nvd: ["NVD (CVE database)", "Public CVEs from NIST — an API key is optional"],
+  restcountries: ["REST Countries", "Countries of the world (needs an API key)"],
+  glue: ["AWS Glue / S3", "Parquet, Delta and Iceberg tables from the Glue Data Catalog"],
+  adx: ["Azure Data Explorer", "Kusto tables and KQL queries"],
+  files: ["Local files", "Every CSV, Parquet or JSON file in a folder"],
+  python: ["Python module", "Tables made by your own Python functions"],
+  blob_storage: ["Azure Blob Storage", "Parquet, CSV, JSON, Delta or Iceberg in a container"],
+};
+const connectorName = (c) => (CONNECTOR_INFO[c] || [humanize(c || "?")])[0];
 async function loadConfig() {
   try {
     CFG = await api("/api/config");
     $("#cfgpath").textContent = CFG.path || "";
     DRAFT = JSON.parse(JSON.stringify(CFG.config || {}));
-    syncJson(); setView(CFGVIEW === "json" ? "json" : "form");
     $("#cfgnote").textContent = (CFG.editable ? "Secrets show as \"***\" — leave them to keep the saved value, or type a new one. Saving keeps a .bak and reconnects everything."
       : "Read-only here: start the server with --edit-config to save. Secrets show as \"***\".");
     $("#cfgsave").disabled = !CFG.editable;
     $("#cfgmsgs").innerHTML = "";
-    drawReference();
+    CFGVIEW = "form";
+    showCfgPage(CFGPAGE);
   } catch (err) { $("#cfgmsgs").innerHTML = `<p class="msg bad">${esc(err.message)}</p>`; }
+}
+// which connectors started, and why the others didn't (needs the SQL console; without it, no status)
+async function loadCfgStatus() {
+  try { CONN = await api("/api/connections"); } catch { CONN = null; }
+  navCounts();
 }
 function parsedConfig() {
   if (CFGVIEW === "form") return DRAFT;
@@ -1846,19 +2078,73 @@ $("#cfgsave").addEventListener("click", async () => {
   const r = await fetch("/api/config", {method: "PUT", headers, body: JSON.stringify({config: cfg})});
   const d = await r.json().catch(() => ({}));
   if (!r.ok) { $("#cfgmsgs").innerHTML = `<p class="msg bad">✗ ${esc(d.detail || r.statusText)}</p>`; return; }
+  META = await api("/api/meta").catch(() => META); showFeatures();
+  await loadCfgStatus(); await loadConfig(); loadCatalog();  // reconnected: fresh status, the saved file, no unsaved changes
   showReport({warnings: [...(d.warnings || []), ...(d.reload_error ? ["saved, but reconnecting failed: " + d.reload_error] : [])]},
     d.reloaded ? `Saved (${d.saved}) and reconnected.` : `Saved (${d.saved}).`);
-  META = await api("/api/meta").catch(() => META); showFeatures();
 });
 $("#cfgreset").addEventListener("click", loadConfig);
 $("#cfgtext").addEventListener("keydown", (e) => {
   if (e.key === "Tab") { e.preventDefault(); const t = e.target, s = t.selectionStart;
     t.value = t.value.slice(0, s) + "  " + t.value.slice(t.selectionEnd); t.selectionStart = t.selectionEnd = s + 2; }
 });
-// ---- Config form: edits DRAFT, the JSON view shows it -----------------------------------------
+$("#cfgtext").addEventListener("input", markDirty);
+
+// ---- pages ----
+function showCfgPage(page) {
+  if (!CFG_PAGES[page]) page = "overview";
+  if (CFGVIEW === "json" && page !== "json") {  // leaving the JSON page: what's typed there becomes the draft
+    try { const d = JSON.parse($("#cfgtext").value || "{}"); if (!isObj(d)) throw new Error("the config must be a JSON object"); DRAFT = d; }
+    catch (err) { $("#cfgmsgs").innerHTML = `<p class="msg bad">Fix the JSON first: ${esc(err.message)}</p>`; return; }
+    CFGVIEW = "form";
+  }
+  CFGPAGE = page; store.set("duckduck-cfgpage", page);
+  if (!$("#tab-config").hidden) history.replaceState(null, "", "#config/" + page);
+  document.querySelectorAll("#cfgnav [data-cfgpage]").forEach(b => {
+    if (b.dataset.cfgpage === page) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current"); });
+  document.querySelectorAll("#tab-config .cfgpage").forEach(d => { d.hidden = d.dataset.page !== page; });
+  const info = CFG_PAGES[page];
+  $("#cfgeditor").hidden = !info.editor;
+  if (page === "reference" && CFG) drawReference();
+  if (page === "overview") drawOverview();
+  if (!info.editor || !CFG) return;
+  $("#cfgtitle").textContent = info.title;
+  $("#cfgintro").textContent = info.intro || "";
+  CFGVIEW = page === "json" ? "json" : "form";
+  $("#cfgform").hidden = page === "json"; $("#cfgtext").hidden = page !== "json";
+  if (page === "json") syncJson(); else renderForm();
+}
+document.querySelectorAll("#cfgnav [data-cfgpage]").forEach(b => b.addEventListener("click", () => {
+  showCfgPage(b.dataset.cfgpage); window.scrollTo({top: 0});
+}));
+// any link to a page: <a data-cfggo="ai">
+document.addEventListener("click", (e) => {
+  const go = e.target.closest?.("[data-cfggo]"); if (!go) return;
+  e.preventDefault();
+  if ($("#tab-config").hidden) { CFGPAGE = go.dataset.cfggo; openTab("config"); } else showCfgPage(go.dataset.cfggo);
+  if (go.dataset.open) { OPEN.add(go.dataset.open); if (CFG) renderForm();
+    setTimeout(() => document.getElementById("card-" + go.dataset.open)?.scrollIntoView({behavior: "smooth", block: "start"}), 150); }
+});
+function navCounts() {
+  const svcs = Object.keys(DRAFT.services || {}), bad = (CONN?.services || []).filter(s => !s.started).length;
+  const c = $("#navc-connectors");
+  c.textContent = svcs.length ? (bad ? `${svcs.length} · ${bad} ✗` : String(svcs.length)) : "";
+  c.classList.toggle("bad", !!bad);
+  c.title = bad ? `${bad} didn't start` : "";
+  const ai = Object.keys(DRAFT.ai_providers || {}).length;
+  $("#navc-ai").textContent = ai ? String(ai) : "";
+}
+function markDirty() {
+  let now = DRAFT;
+  if (CFGVIEW === "json") { try { now = JSON.parse($("#cfgtext").value); } catch { now = null; } }
+  $("#cfgdirty").hidden = !CFG || JSON.stringify(now) === JSON.stringify(CFG.config || {});
+}
+
+// ---- Config form: edits DRAFT; the JSON page shows it -----------------------------------------
 // Every field comes from the options reference (/api/config → reference): its "input" says how to edit it.
 // Only what's set is written; clearing a field removes the key (the default applies).
 let DRAFT = {}, CFGVIEW = "form", FID = 0;
+const OPEN = new Set();  // the cards left open: "svc:<name>" / "ai:<name>"
 const LLM_REFS = new Set(["default_llm", "ai_provider", "llm", "link_llm"]);
 const AUTH_KEYS = {local: [], aws: ["secret_id", "region_name", "profile_name"], azure: ["secret_id", "vault_url", "tenant_id"]};
 function h(tag, attrs = {}, ...kids) {
@@ -1873,8 +2159,8 @@ function h(tag, attrs = {}, ...kids) {
   return el;
 }
 const plain = (text) => String(text || "").replace(/``/g, "");  // reST literals in docstrings
-function iconEl(kind) { const s = h("span"); s.innerHTML = icon(kind); return s; }
-function syncJson() { $("#cfgtext").value = JSON.stringify(DRAFT, null, 2); }
+function iconEl(kind) { const s = h("span"); s.innerHTML = icon(kind); return s.firstElementChild || s; }
+function syncJson() { $("#cfgtext").value = JSON.stringify(DRAFT, null, 2); markDirty(); navCounts(); }
 const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
 const ROOT = { obj: () => DRAFT, get: (k) => DRAFT[k],
   set(k, v) { if (v === undefined) delete DRAFT[k]; else DRAFT[k] = v; syncJson(); } };
@@ -1900,17 +2186,33 @@ function scalarOf(text) {  // a number / true / false / null if it reads as one,
   if (/^(-?\d+(\.\d+)?([eE][-+]?\d+)?|true|false|null)$/.test(text.trim())) return JSON.parse(text.trim());
   return text;
 }
-function field(opt, sc, {after, wide} = {}) {
+// a label people read, with the key as written in duckduck.json next to it
+function labelEl(id, opt, ctx) {
+  const name = labelOf(opt.name, ctx);
+  return h("label", {for: id, title: opt.name},
+    name, opt.required ? h("span", {class: "req", title: "required"}, " *") : null,
+    name.toLowerCase().replace(/[^a-z0-9]/g, "") !== opt.name.toLowerCase().replace(/[^a-z0-9]/g, "")
+      ? h("span", {class: "key"}, opt.name) : null);
+}
+function field(opt, sc, {after, wide, ctx} = {}) {
   const id = "cf" + (++FID), cur = sc.get(opt.name), def = opt.default, kind = opt.input || "text";
   const set = (v) => { sc.set(opt.name, v); after?.(v); };
   const defText = def === null || def === undefined || def === "" ? "" : typeof def === "object" ? JSON.stringify(def) : String(def);
   let input, hint = plain(opt.description);
-  if (kind === "choice" || kind === "bool") {
+  if (LLM_REFS.has(opt.name) && (kind === "text" || kind === "scalar")) {  // pick one of the AI providers by name
+    const names = Object.keys(DRAFT.ai_providers || {});
+    if (cur !== undefined && !names.includes(cur)) names.push(cur);
+    input = h("select", {id, onchange: (e) => set(e.target.value === "" ? undefined : e.target.value)},
+      h("option", {value: ""}, opt.name === "ai_provider" ? "— offline rules —" : "— none —"),
+      names.map(n => h("option", {value: n, selected: n === cur}, n)));
+    if (!Object.keys(DRAFT.ai_providers || {}).length) hint = (hint ? hint + " " : "") + "Add one on the AI providers page first.";
+  } else if (kind === "choice" || kind === "bool") {
     const choices = kind === "bool" ? [true, false] : [...opt.choices];
     if (cur !== undefined && !choices.some(c => JSON.stringify(c) === JSON.stringify(cur))) choices.push(cur);
+    const text = (c) => kind === "bool" ? (c ? "Yes" : "No") : choiceLabel(opt.name, ctx, c);
     input = h("select", {id, onchange: (e) => set(e.target.value === "" ? undefined : JSON.parse(e.target.value))},
-      h("option", {value: ""}, defText ? `default (${defText})` : "—"),
-      choices.map(c => h("option", {value: JSON.stringify(c), selected: JSON.stringify(c) === JSON.stringify(cur)}, String(c))));
+      h("option", {value: ""}, defText ? `Default — ${kind === "bool" ? (def ? "Yes" : "No") : choiceLabel(opt.name, ctx, def)}` : "—"),
+      choices.map(c => h("option", {value: JSON.stringify(c), selected: JSON.stringify(c) === JSON.stringify(cur)}, text(c))));
   } else if (kind === "int" || kind === "float") {
     input = h("input", {id, type: "number", step: kind === "int" ? "1" : "any", value: shown(cur), placeholder: defText,
       oninput: (e) => set(e.target.value === "" ? undefined : Number(e.target.value))});
@@ -1927,26 +2229,28 @@ function field(opt, sc, {after, wide} = {}) {
     wide = true;
   } else {
     const secret = opt.secret || isSecretKey(opt.name);
-    const list = LLM_REFS.has(opt.name) ? "cf-ai-names" : undefined;
-    input = h("input", {id, type: secret ? "password" : "text", value: shown(cur), placeholder: defText, autocomplete: "off", list,
+    input = h("input", {id, type: secret ? "password" : "text", value: shown(cur), placeholder: defText, autocomplete: "off",
       oninput: (e) => { const t = e.target.value; set(t === "" ? undefined : kind === "scalar" ? scalarOf(t) : t); }});
     if (secret && cur === CFG.reference.secrets.mask) hint = "Saved — leave it to keep, or type a new value. " + hint;
-    if (list) hint = hint || "An ai_providers name.";
   }
-  return h("div", {class: "fld" + (wide ? " wide" : "")},
-    h("label", {for: id}, opt.name, opt.required ? h("span", {class: "req", title: "required"}, " *") : null),
-    input, hint ? h("div", {class: "hint"}, hint) : null);
+  return h("div", {class: "fld" + (wide ? " wide" : "")}, labelEl(id, opt, ctx), input, hint ? h("div", {class: "hint"}, hint) : null);
 }
-function fields(opts, sc) {  // plain fields in a grid, nested sections below it
+function fields(opts, sc, ctx) {  // plain fields in a grid, nested sections below it
   const grid = h("div", {class: "fgrid"}), sections = [];
   opts.forEach(o => {
     if (o.options) {
       sections.push(h("details", {class: "sect", open: Object.keys(scope(sc, o.name).obj()).length ? true : null},
-        h("summary", {}, o.name), o.description ? h("div", {class: "hint muted small"}, plain(o.description)) : null,
-        fields(o.options, scope(sc, o.name))));
-    } else grid.append(field(o, sc));
+        h("summary", {}, labelOf(o.name, ctx), " ", h("span", {class: "key muted small mono"}, o.name)),
+        o.description ? h("div", {class: "hint muted small"}, plain(o.description)) : null,
+        fields(o.options, scope(sc, o.name), o.name)));
+    } else grid.append(field(o, sc, {ctx}));
   });
-  return h("div", {}, grid, sections);
+  return h("div", {}, grid.children.length ? grid : null, sections);
+}
+// a titled box of settings on a page (one nested object of duckduck.json)
+function group(title, key, description, ...body) {
+  return h("div", {class: "group"}, h("div", {class: "gt"}, title, key ? h("span", {class: "key muted small mono"}, key) : null),
+    description ? h("div", {class: "gd"}, plain(description)) : null, body);
 }
 // free keys (an authentication block, a service's keys no option describes): key → value rows
 function keyRows(sc, skip, suggest = [], note = "") {
@@ -1963,138 +2267,285 @@ function keyRows(sc, skip, suggest = [], note = "") {
       box.append(h("div", {class: "kv"}, keyIn, valIn, h("button", {type: "button", class: "x", title: "remove " + k,
         onclick: () => { sc.set(k, undefined); draw(); }}, "remove")));
     });
-    const missing = suggest.filter(k => !(k in sc.obj()));
+    const missing = suggest.filter(k => !(k in sc.obj()) && !skip.includes(k));
     const addKey = (k) => { if (!k || k in sc.obj()) return; sc.set(k, ""); draw();
       box.querySelector(`.kv:last-of-type input[aria-label="${CSS.escape(k)}"]`)?.focus(); };
-    box.append(h("div", {}, missing.map(k => h("button", {type: "button", class: "add", onclick: () => addKey(k)}, "+ " + k)),
+    box.append(h("div", {}, missing.map(k => h("button", {type: "button", class: "add", title: k, onclick: () => addKey(k)}, "+ " + labelOf(k))),
       h("button", {type: "button", class: "add", onclick: () => { const k = prompt("Key name:"); if (k) addKey(k.trim()); }}, "+ other key")));
     if (note) box.append(h("div", {class: "hint muted small"}, note));
   };
   draw();
   return box;
 }
+// sign-in: where the credentials come from, and — written here — the credentials themselves as fields
 function authBlock(sc, credentials, optional) {
-  const box = h("div", {class: "sub"});
+  const box = h("div", {class: "sec"});
+  const authOpt = (k) => CFG.reference.authentication.find(o => o.name === k) || {name: k, input: "text"};
   const draw = () => {
-    const type = sc.get("type") || "local";
-    const typeOpt = CFG.reference.authentication.find(o => o.name === "type");
-    const known = AUTH_KEYS[type] || [];
+    const type = sc.get("type") || "local", known = AUTH_KEYS[type] || [];
+    const local = type === "local";
     box.replaceChildren(
-      h("div", {class: "t"}, "authentication", optional ? h("span", {class: "muted"}, " — optional for this connector") : null),
-      h("div", {class: "fgrid"}, field(typeOpt, sc, {after: draw}),
-        known.map(k => field(CFG.reference.authentication.find(o => o.name === k), sc))),
-      h("div", {class: "t", style: "margin-top:10px"}, type === "local" ? "Credentials" : "On top of the fetched secret"),
-      keyRows(sc, ["type", ...known], credentials, type === "local"
-        ? "Used exactly as written. Prefer aws / azure so no secret sits in this file."
-        : "Optional: a value overrides the secret's key; \"$secret.<key>\" copies another key of the secret."));
+      h("div", {class: "st"}, "Sign-in"),
+      h("div", {class: "sd"}, optional ? "Optional for this one. " : "",
+        local ? "Written in this file, as is. AWS Secrets Manager or Azure Key Vault keep secrets out of it."
+          : credentials.length ? `Read from the secret, which should hold: ${credentials.map(k => labelOf(k)).join(", ")}.` : "Read from the secret."),
+      h("div", {class: "fgrid"}, field(authOpt("type"), sc, {after: draw, ctx: "authentication"}),
+        known.map(k => field(authOpt(k), sc, {ctx: "authentication"})),
+        local ? credentials.map(k => field({name: k, input: "text", secret: isSecretKey(k), description: ""}, sc)) : null),
+      h("details", {class: "adv", open: Object.keys(sc.obj()).some(k => !["type", ...known, ...(local ? credentials : [])].includes(k)) || null},
+        h("summary", {}, local ? "Other keys" : "Override keys of the secret"),
+        keyRows(sc, ["type", ...known, ...(local ? credentials : [])], local ? [] : credentials,
+          local ? "Anything else the connector reads from its credentials."
+            : "Optional: a value replaces the secret's key; \"$secret.<key>\" copies another key of the secret.")));
   };
   draw();
   return box;
 }
-function connectorSelect(current, onchange) {
+const connectorRef = (c) => CFG.reference.connectors.find(x => x.connector === c);
+function connectorSelect(current, onchange, id) {
   const names = CFG.reference.connectors.map(c => c.connector);
   if (current && !names.includes(current)) names.push(current);
-  return h("select", {"aria-label": "connector", onchange: (e) => onchange(e.target.value)},
-    names.map(n => h("option", {value: n, selected: n === current}, n)));
+  return h("select", {id, "aria-label": "connector type", onchange: (e) => onchange(e.target.value)},
+    names.map(n => h("option", {value: n, selected: n === current}, `${connectorName(n)} (${n})`)));
 }
-function serviceEntry(services, name) {
-  const sc = scope(services, name, true);
-  const conn = sc.get("connector") || name;
-  const ref = CFG.reference.connectors.find(c => c.connector === conn);
+function statusPill(name, saved) {
+  if (!saved) return h("span", {class: "status new", title: "Save to connect it"}, "not saved yet");
+  const st = (CONN?.services || []).find(x => x.name === name);
+  if (!st) return null;
+  return st.started ? h("span", {class: "status ok"}, `● connected · ${st.tables} table${st.tables === 1 ? "" : "s"}`)
+    : h("span", {class: "status bad", title: st.error || ""}, "● didn't start");
+}
+function openToggle(key) { return (e) => { if (e.target.open) OPEN.add(key); else OPEN.delete(key); }; }
+// ---- Connectors page: one collapsible card per service ----
+function serviceCard(services, name) {
+  const sc = scope(services, name, true), conn = sc.get("connector") || name, ref = connectorRef(conn);
   const opts = ref ? ref.options.filter(o => !o.credential) : [];
   const creds = ref ? ref.options.filter(o => o.credential).map(o => o.name) : [];
+  const main = opts.filter(o => o.required || o.default === null || o.default === undefined);
+  const adv = opts.filter(o => !main.includes(o));
   const common = CFG.reference.service_common.filter(o => o.name === "table_prefix");
   const known = ["connector", "authentication", ...common.map(o => o.name), ...opts.map(o => o.name)];
-  const el = h("div", {class: "entry"},
-    h("div", {class: "head"}, iconEl(ref?.icon || "api"),
-      h("input", {class: "name mono", value: name, "aria-label": "service name",
-        onchange: (e) => { if (services.rename(name, e.target.value.trim())) renderForm(); else e.target.value = name; }}),
-      connectorSelect(conn, (c) => { sc.set("connector", c); el.replaceWith(serviceEntry(services, name)); }),
-      h("span", {class: "grow muted small"}, ref ? (ref.dynamic_tables ? "tables: one per file / module function"
-        : `tables ${sc.get("table_prefix") ?? name}_…: ${ref.tables.join(", ")}`) : "unknown connector"),
-      h("button", {type: "button", class: "x", onclick: () => { if (confirm(`Remove the service “${name}”?`)) { services.set(name, undefined); renderForm(); } }}, "remove")),
-    h("div", {class: "fgrid"}, [...common, ...opts].map(o => field(o, sc))),
-    authBlock(scope(sc, "authentication"), creds, ref && !ref.requires_authentication));
-  const extra = Object.keys(sc.obj()).filter(k => !known.includes(k));
-  if (extra.length) el.append(h("div", {class: "sub"}, h("div", {class: "t"}, "Other keys"),
-    keyRows(sc, known, [], "Not options of this connector — validation will say if they're ignored.")));
-  return el;
+  const saved = name in ((CFG.config || {}).services || {});
+  const st = (CONN?.services || []).find(x => x.name === name);
+  const key = "svc:" + name, prefix = sc.get("table_prefix") ?? name;
+  const tables = !ref ? [] : ref.dynamic_tables ? null : ref.tables.map(t => (prefix ? prefix + "_" : "") + t);
+  const nameId = "cf" + (++FID), connId = "cf" + (++FID);
+  const card = h("details", {class: "ccard", id: "card-" + key, open: OPEN.has(key) || null, ontoggle: openToggle(key)},
+    h("summary", {}, iconEl(ref?.icon || "api"),
+      h("span", {class: "who"}, h("b", {}, name), h("span", {}, connectorName(conn) +
+        (tables ? ` · ${tables.length} table${tables.length === 1 ? "" : "s"}` : ref ? " · a table per file / function" : " · unknown connector"))),
+      h("span", {class: "grow"}), statusPill(name, saved), h("span", {class: "chev", "aria-hidden": "true"}, "▶")),
+    h("div", {class: "body"},
+      st && !st.started ? h("div", {class: "errbox"}, h("b", {}, "Didn't start: "), h("span", {class: "err"}, st.error || "unknown error"),
+        h("div", {class: "muted small"}, "Fix it below and Save — it reconnects.")) : null,
+      h("div", {class: "sec"}, h("div", {class: "st"}, "Name & type"),
+        h("div", {class: "fgrid"},
+          h("div", {class: "fld"}, h("label", {for: nameId}, "Name"),
+            h("input", {id: nameId, class: "mono", value: name,
+              onchange: (e) => { const to = e.target.value.trim();
+                if (services.rename(name, to)) { if (OPEN.delete(key)) OPEN.add("svc:" + to); renderForm(); } else e.target.value = name; }}),
+            h("div", {class: "hint"}, "Its tables are named after it.")),
+          h("div", {class: "fld"}, h("label", {for: connId}, "Connector type", h("span", {class: "key"}, "connector")),
+            connectorSelect(conn, (c) => { sc.set("connector", c); OPEN.add(key); card.replaceWith(serviceCard(services, name)); }, connId),
+            h("div", {class: "hint"}, (CONNECTOR_INFO[conn] || [])[1] || "")),
+          common.map(o => field(o, sc))),
+        h("div", {class: "hint muted small", style: "margin-top:6px"},
+          tables ? `Tables: ${tables.join(", ")}` : ref ? "Tables: one per file / module function" : "")),
+      main.length ? h("div", {class: "sec"}, h("div", {class: "st"}, "Connection"),
+        h("div", {class: "fgrid"}, main.map(o => field(o, sc, {ctx: conn})))) : null,
+      authBlock(scope(sc, "authentication"), creds, ref && !ref.requires_authentication),
+      adv.length ? h("details", {class: "adv", open: adv.some(o => sc.get(o.name) !== undefined) || null},
+        h("summary", {}, "Advanced"), h("div", {class: "fgrid", style: "margin-top:8px"}, adv.map(o => field(o, sc, {ctx: conn})))) : null,
+      Object.keys(sc.obj()).some(k => !known.includes(k)) ? h("div", {class: "sec"}, h("div", {class: "st"}, "Other keys"),
+        keyRows(sc, known, [], "Not options of this connector — Validate says if they're ignored.")) : null,
+      h("div", {class: "foot"}, h("button", {type: "button", class: "danger",
+        onclick: () => { if (confirm(`Remove the connector “${name}”? (Nothing changes until you Save.)`)) { services.set(name, undefined); OPEN.delete(key); renderForm(); } }},
+        "Remove connector"))));
+  return card;
 }
-function providerEntry(providers, name) {
-  const sc = scope(providers, name, true);
-  const opts = CFG.reference.ai_provider.filter(o => o.name !== "authentication");
-  const el = h("div", {class: "entry"},
-    h("div", {class: "head"},
-      h("input", {class: "name mono", value: name, "aria-label": "provider name",
-        onchange: (e) => { if (providers.rename(name, e.target.value.trim())) renderForm(); else e.target.value = name; }}),
-      h("span", {class: "grow muted small"}, "referenced by this name from semantic"),
-      h("button", {type: "button", class: "x", onclick: () => { if (confirm(`Remove “${name}”?`)) { providers.set(name, undefined); renderForm(); } }}, "remove")),
-    fields(opts, sc),
-    authBlock(scope(sc, "authentication"), ["api_key"], true));
-  return el;
-}
-function addRow(label, withConnector, add) {
-  const nameIn = h("input", {placeholder: "name", class: "mono", "aria-label": label + " name"});
-  let conn = CFG.reference.connectors[0]?.connector;
-  const go = () => { const n = nameIn.value.trim(); if (!n) { nameIn.focus(); return; }
-    if (!add(n, conn)) { toast(`“${n}” already exists`); return; } renderForm(); };
+function addConnectorBox(services) {
+  let chosen = null;
+  const nameIn = h("input", {class: "mono", placeholder: "name, e.g. crm", "aria-label": "new connector name"});
+  const addBtn = h("button", {type: "button", class: "primary", disabled: true}, "Add");
+  const unique = (base) => { let n = base, i = 2; while (n in services.obj()) n = `${base}_${i++}`; return n; };
+  const gallery = h("div", {class: "gallery"}, CFG.reference.connectors.map(c => h("button", {type: "button", "aria-pressed": "false",
+    onclick: (e) => { chosen = c.connector; gallery.querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", String(b === e.currentTarget)));
+      if (!nameIn.value || nameIn.dataset.auto) { nameIn.value = unique(c.connector); nameIn.dataset.auto = "1"; }
+      addBtn.disabled = false; nameIn.focus(); nameIn.select(); }},
+    iconEl(c.icon || "api"), h("span", {}, h("b", {}, connectorName(c.connector)), h("span", {class: "d"}, (CONNECTOR_INFO[c.connector] || [])[1] || c.connector)))));
+  const go = () => {
+    const n = nameIn.value.trim(); if (!chosen) return; if (!n) { nameIn.focus(); return; }
+    if (n in services.obj()) { toast(`“${n}” already exists`); return; }
+    const auth = (connectorRef(chosen) || {}).requires_authentication === false ? {} : {authentication: {type: "local"}};
+    services.set(n, {connector: chosen, ...auth}); OPEN.add("svc:" + n); renderForm();
+    setTimeout(() => document.getElementById("card-svc:" + n)?.scrollIntoView({behavior: "smooth", block: "start"}), 50);
+  };
+  nameIn.addEventListener("input", () => delete nameIn.dataset.auto);
   nameIn.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } });
-  return h("div", {class: "row", style: "margin-top:6px"}, nameIn,
-    withConnector ? connectorSelect(conn, (c) => { conn = c; }) : null,
-    h("button", {type: "button", class: "secondary", onclick: go}, "Add " + label));
+  addBtn.addEventListener("click", go);
+  const body = h("div", {hidden: true}, h("p", {class: "muted small", style: "margin:8px 0 0"}, "Pick what it connects to:"), gallery,
+    h("div", {class: "row", style: "margin-top:10px"}, nameIn, addBtn));
+  return h("div", {class: "addbox"}, h("button", {type: "button", class: "secondary",
+    onclick: (e) => { body.hidden = !body.hidden; e.currentTarget.textContent = body.hidden ? "＋ Add a connector" : "Close"; }}, "＋ Add a connector"), body);
+}
+function formConnectors(form) {
+  const services = scope(ROOT, "services", true), names = Object.keys(services.obj());
+  const bad = (CONN?.services || []).filter(s => !s.started).length;
+  form.append(h("div", {class: "listtools"},
+    h("span", {class: "muted small"}, names.length ? `${names.length} connector${names.length === 1 ? "" : "s"}` +
+      (CONN ? ` · ${(CONN.services || []).filter(s => s.started).length} connected` + (bad ? ` · ${bad} didn't start` : "") : "") : "No connectors yet."),
+    h("span", {class: "grow"}),
+    names.length > 1 ? h("button", {type: "button", class: "x", onclick: () => { names.forEach(n => OPEN.add("svc:" + n)); renderForm(); }}, "Expand all") : null,
+    names.length > 1 ? h("button", {type: "button", class: "x", onclick: () => { names.forEach(n => OPEN.delete("svc:" + n)); renderForm(); }}, "Collapse all") : null));
+  names.forEach(n => form.append(serviceCard(services, n)));
+  form.append(addConnectorBox(services));
+  const onErr = CFG.reference.top_level.find(o => o.name === "on_error");
+  if (onErr) form.append(group("Startup", null, "", h("div", {class: "fgrid"}, field(onErr, ROOT))));
+}
+
+// ---- AI providers page ----
+const PROVIDER_ONLY = {resource: ["foundry"], deployment: ["azure_openai"], api_version: ["azure_openai"], endpoint: ["foundry", "azure_openai"],
+  tenant_id: ["foundry", "azure_openai"], fallbacks: ["anthropic", "foundry"], base_url: ["anthropic", "openrouter", "jev"],
+  require_parameters: ["openrouter"], max_tokens: ["anthropic", "foundry", "azure_openai", "openrouter"],
+  effort: ["anthropic", "foundry", "azure_openai", "openrouter"], headers: ["anthropic", "foundry", "azure_openai", "openrouter"],
+  decisions_url: null, timeout: null};
+function usedBy(name) {
+  const sem = DRAFT.semantic || {}, out = [];
+  if (sem.default_llm === name) out.push("default LLM");
+  if (sem.decision_engine?.ai_provider === name) out.push("decision engine");
+  if (sem.extractor?.llm === name) out.push("value extraction");
+  if (sem.catalog_generation?.llm === name) out.push("catalog drafting");
+  if (sem.catalog_generation?.link_llm === name) out.push("vocabulary pass");
+  return out;
+}
+function providerCard(providers, name) {
+  const sc = scope(providers, name, true), key = "ai:" + name;
+  const provider = sc.get("provider") || "anthropic", api = sc.get("api") || (provider === "jev" ? "decisions" : "chat");
+  const all = CFG.reference.ai_provider.filter(o => o.name !== "authentication");
+  const fits = (o) => { const only = PROVIDER_ONLY[o.name];
+    if (o.name === "decisions_url" || o.name === "timeout") return api === "decisions";
+    if (["max_tokens", "effort", "headers", "require_parameters"].includes(o.name) && api === "decisions") return false;
+    return !only || only.includes(provider); };
+  const shownOpt = (o) => fits(o) || sc.get(o.name) !== undefined;  // a stray setting stays visible, so it can be cleared
+  const mainNames = ["provider", "api", "model", "deployment", "decisions_url"];
+  const endNames = ["base_url", "endpoint", "resource", "api_version", "tenant_id"];
+  const pick = (names) => names.map(n => all.find(o => o.name === n)).filter(o => o && shownOpt(o));
+  const advOpts = all.filter(o => !mainNames.includes(o.name) && !endNames.includes(o.name) && shownOpt(o));
+  const used = usedBy(name), nameId = "cf" + (++FID);
+  const redraw = () => { OPEN.add(key); card.replaceWith(providerCard(providers, name)); };
+  const model = sc.get("model") || sc.get("deployment") || "";
+  const card = h("details", {class: "ccard", id: "card-" + key, open: OPEN.has(key) || null, ontoggle: openToggle(key)},
+    h("summary", {}, iconEl("api"),
+      h("span", {class: "who"}, h("b", {}, name), h("span", {}, choiceLabel("provider", null, provider).replace(/ \([a-z_]+\)$/, "") + (model ? ` · ${model}` : ""))),
+      h("span", {class: "grow"}),
+      used.length ? h("span", {class: "status ok", title: "Referenced by name from these settings"}, "used for " + used.join(", "))
+        : h("span", {class: "status new"}, "not used yet"),
+      h("span", {class: "chev", "aria-hidden": "true"}, "▶")),
+    h("div", {class: "body"},
+      h("div", {class: "sec"}, h("div", {class: "st"}, "Model"),
+        h("div", {class: "fgrid"},
+          h("div", {class: "fld"}, h("label", {for: nameId}, "Name"),
+            h("input", {id: nameId, class: "mono", value: name,
+              onchange: (e) => { const to = e.target.value.trim();
+                if (providers.rename(name, to)) { if (OPEN.delete(key)) OPEN.add("ai:" + to); renderForm(); } else e.target.value = name; }}),
+            h("div", {class: "hint"}, "Other settings pick it by this name.")),
+          pick(mainNames).map(o => field(o, sc, {after: ["provider", "api"].includes(o.name) ? redraw : undefined})))),
+      pick(endNames).length ? h("div", {class: "sec"}, h("div", {class: "st"}, "Endpoint"),
+        h("div", {class: "fgrid"}, pick(endNames).map(o => field(o, sc)))) : null,
+      authBlock(scope(sc, "authentication"), ["api_key"], true),
+      advOpts.length ? h("details", {class: "adv", open: advOpts.some(o => sc.get(o.name) !== undefined) || null},
+        h("summary", {}, "Advanced"), h("div", {style: "margin-top:8px"}, fields(advOpts, sc))) : null,
+      h("div", {class: "foot"}, h("button", {type: "button", class: "danger",
+        onclick: () => { if (confirm(`Remove “${name}”? (Nothing changes until you Save.)`)) { providers.set(name, undefined); OPEN.delete(key); renderForm(); } }},
+        "Remove provider"))));
+  return card;
+}
+function formProviders(form) {
+  const providers = scope(ROOT, "ai_providers"), names = Object.keys(providers.obj());
+  const sem = scope(ROOT, "semantic"), dl = CFG.reference.semantic.find(o => o.name === "default_llm");
+  if (dl) form.append(group("Default LLM", "semantic.default_llm", "Used by every step that doesn't name its own (catalog drafting, value extraction, Dive / Fly).",
+    h("div", {class: "fgrid"}, field(dl, sem))));
+  names.forEach(n => form.append(providerCard(providers, n)));
+  const nameIn = h("input", {class: "mono", placeholder: "name, e.g. claude", "aria-label": "new AI provider name"});
+  const provSel = h("select", {"aria-label": "provider"}, (CFG.reference.ai_provider.find(o => o.name === "provider")?.choices || ["anthropic"])
+    .map(p => h("option", {value: p}, choiceLabel("provider", null, p))));
+  const go = () => { const n = nameIn.value.trim(); if (!n) { nameIn.focus(); return; }
+    if (n in providers.obj()) { toast(`“${n}” already exists`); return; }
+    providers.set(n, {provider: provSel.value}); OPEN.add("ai:" + n); renderForm(); };
+  nameIn.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+  form.append(h("div", {class: "addbox"}, h("div", {class: "st muted small", style: "margin-bottom:6px"}, "Add an AI provider"),
+    h("div", {class: "row"}, nameIn, provSel, h("button", {type: "button", class: "secondary", onclick: go}, "Add"))));
+}
+
+// ---- Ask pages: the semantic section, a page per concern ----
+function formSemantic(form, page) {
+  const ref = CFG.reference.semantic, sem = scope(ROOT, "semantic");
+  let names = CFG_PAGES[page]?.semantic || [];
+  if (page === "answers") {  // anything no page claims shows up here, so every option stays reachable
+    const claimed = new Set(Object.values(CFG_PAGES).flatMap(p => p.semantic || []));
+    names = [...names, ...ref.map(o => o.name).filter(n => !claimed.has(n))];
+  }
+  const opts = names.map(n => ref.find(o => o.name === n)).filter(Boolean);
+  const flat = opts.filter(o => !o.options), nested = opts.filter(o => o.options);
+  if (nested.length === 1 && !flat.length) {  // a page that is one object (thresholds): its fields, no extra box
+    const o = nested[0];
+    form.append(fields(o.options, scope(sem, o.name), o.name));
+    return;
+  }
+  if (flat.length) form.append(group("General", null, "", h("div", {class: "fgrid"}, flat.map(o => field(o, sem)))));
+  nested.forEach(o => form.append(group(labelOf(o.name), "semantic." + o.name, o.description, fields(o.options, scope(sem, o.name), o.name))));
 }
 function renderForm() {
   const ref = CFG?.reference; if (!ref) return;
-  const services = scope(ROOT, "services", true), providers = scope(ROOT, "ai_providers");
   const form = $("#cfgform"); form.replaceChildren();
-  form.append(h("datalist", {id: "cf-ai-names"}, Object.keys(providers.obj()).map(n => h("option", {value: n}))));
-  form.append(h("h4", {}, "General"), h("div", {class: "fgrid"}, ref.top_level.filter(o => o.input).map(o => field(o, ROOT))));
-  form.append(h("h4", {}, "Services", h("span", {class: "muted"}, "one per connection; its tables are <name>_<table>")));
-  Object.keys(services.obj()).forEach(n => form.append(serviceEntry(services, n)));
-  form.append(addRow("service", true, (n, c) => {
-    if (n in services.obj()) return false;
-    const auth = (CFG.reference.connectors.find(x => x.connector === c) || {}).requires_authentication === false ? {} : {authentication: {type: "local"}};
-    services.set(n, {connector: c, ...auth}); return true; }));
-  form.append(h("h4", {}, "AI providers", h("span", {class: "muted"}, "LLMs and decision engines, named here and used by name in semantic")));
-  Object.keys(providers.obj()).forEach(n => form.append(providerEntry(providers, n)));
-  form.append(addRow("AI provider", false, (n) => {
-    if (n in providers.obj()) return false; providers.set(n, {provider: "anthropic"}); return true; }));
-  form.append(h("h4", {}, "Semantic search"), fields(ref.semantic, scope(ROOT, "semantic")));
+  if (CFGPAGE === "connectors") formConnectors(form);
+  else if (CFGPAGE === "ai") formProviders(form);
+  else formSemantic(form, CFGPAGE);
+  navCounts();
 }
-function setView(view) {
-  if (view === "form" && CFGVIEW === "json") {
-    try { DRAFT = JSON.parse($("#cfgtext").value || "{}"); }
-    catch (err) { $("#cfgmsgs").innerHTML = `<p class="msg bad">Fix the JSON first: ${esc(err.message)}</p>`; return; }
-    if (!isObj(DRAFT)) { $("#cfgmsgs").innerHTML = `<p class="msg bad">The config must be a JSON object.</p>`; DRAFT = {}; return; }
-  }
-  CFGVIEW = view;
-  document.querySelectorAll(".seg [data-view]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.view === view)));
-  $("#cfgform").hidden = view !== "form"; $("#cfgtext").hidden = view !== "json";
-  if (view === "form") renderForm(); else syncJson();
+// the overview: what's configured, what needs attention
+function drawOverview() {
+  const box = $("#cfgoverview"); if (!box) return;
+  const svcs = Object.keys(DRAFT.services || {}), conn = CONN?.services || [];
+  const failed = conn.filter(s => !s.started), started = conn.filter(s => s.started);
+  const ai = Object.keys(DRAFT.ai_providers || {}), sem = DRAFT.semantic || {};
+  const cat = CAT?.sources || [], notConn = (CAT?.status || []).filter(r => !r.connected);
+  const tile = (page, k, v, sub, bad) => `<button type="button" class="tile" data-cfggo="${page}"><span class="k">${esc(k)}</span>
+    <span class="v">${esc(v)}</span><span class="s ${bad ? "bad" : ""}">${esc(sub)}</span></button>`;
+  box.innerHTML = `<div class="card"><h3 style="margin:0 0 10px">At a glance</h3><div class="tiles">
+    ${tile("connectors", "Connectors", svcs.length, CONN ? `${started.length} connected${failed.length ? ` · ${failed.length} didn't start` : ""}` : "status needs the SQL console", failed.length)}
+    ${tile("ai", "AI providers", ai.length, sem.default_llm ? `default LLM: ${sem.default_llm}` : ai.length ? "no default LLM" : "none yet — Ask works offline", false)}
+    ${tile("catalog", "Semantic catalog", cat.length, META?.setup ? "Ask is off — no catalog yet" : `tables described${notConn.length ? ` · ${notConn.length} not connected` : ""}`, !!META?.setup || notConn.length)}
+    ${tile("reading", "Decisions by", sem.decision_engine?.ai_provider || "offline rules", `reading mode: ${sem.reader || "rules"}`, false)}
+  </div>
+  ${failed.length || notConn.length ? `<h4 style="margin:16px 0 4px">Needs attention</h4><ul class="problems">
+    ${failed.map(s => `<li><b>${esc(s.name)}</b> <span class="muted">(${esc(connectorName(s.connector))})</span> didn't start:
+      <span class="err">${esc(s.error || "unknown error")}</span> — <a href="#" data-cfggo="connectors" data-open="svc:${esc(s.name)}">open it</a></li>`).join("")}
+    ${notConn.length ? `<li>${notConn.length} catalog table${notConn.length === 1 ? "" : "s"} can't be used in answers — <a href="#" data-cfggo="connections">see why</a></li>` : ""}
+  </ul>` : `<p class="msg good" style="margin-top:12px">✓ Nothing needs attention.</p>`}</div>`;
 }
-document.querySelectorAll(".seg [data-view]").forEach(b => b.addEventListener("click", () => setView(b.dataset.view)));
 
-function optRows(opts) {
-  return opts.map(o => o.options ? `<details data-find="${esc((o.name + " " + (o.description || "")).toLowerCase())}"><summary>${esc(o.name)} <span class="t">${esc(o.type || "")}</span></summary>
-      ${o.description ? `<div class="d">${esc(o.description)}</div>` : ""}${optRows(o.options)}</details>`
-    : `<div class="opt" data-find="${esc((o.name + " " + (o.description || "")).toLowerCase())}"><span class="n">${esc(o.name)}</span><span class="t">${esc(o.type || "")}</span>
+function optRows(opts, ctx) {
+  return opts.map(o => o.options ? `<details data-find="${esc((o.name + " " + labelOf(o.name, ctx) + " " + (o.description || "")).toLowerCase())}"><summary>${esc(labelOf(o.name, ctx))} <span class="t mono">${esc(o.name)}</span></summary>
+      ${o.description ? `<div class="d">${esc(plain(o.description))}</div>` : ""}${optRows(o.options, o.name)}</details>`
+    : `<div class="opt" data-find="${esc((o.name + " " + labelOf(o.name, ctx) + " " + (o.description || "")).toLowerCase())}"><span class="n">${esc(labelOf(o.name, ctx))}</span><span class="t mono">${esc(o.name)} · ${esc(o.type || "")}</span>
       ${o.required ? `<span class="badge">required</span>` : ""}${o.secret ? `<span class="badge">secret</span>` : ""}
-      ${o.description ? `<div class="d">${esc(o.description)}</div>` : ""}
+      ${o.description ? `<div class="d">${esc(plain(o.description))}</div>` : ""}
       ${o.default !== null && o.default !== undefined && o.default !== "" ? `<div class="def">default: <span class="mono">${esc(JSON.stringify(o.default))}</span></div>` : ""}</div>`).join("");
 }
 function drawReference() {
   const ref = CFG.reference;
   $("#optref").innerHTML =
-    `<details open data-find="top level"><summary>Top level</summary>${optRows(ref.top_level)}</details>` +
-    `<details data-find="services service"><summary>Every service</summary>${optRows(ref.service_common)}</details>` +
-    `<details data-find="authentication"><summary>authentication</summary>${optRows(ref.authentication)}</details>` +
-    `<details data-find="connectors"><summary>Connectors</summary>` + ref.connectors.map(c =>
-      `<details data-find="${esc((c.connector + " " + c.description).toLowerCase())}"><summary>${icon({insightvm: "insightvm", blob_storage: "blob_storage", files: "files", python: "python"}[c.connector] || c.connector)} ${esc(c.connector)} <span class="t">${esc(c.class)}</span></summary>
-        ${c.description ? `<div class="d">${esc(c.description)}</div>` : ""}
-        <div class="def">tables: ${c.dynamic_tables ? "one per file / module function" : esc(c.tables.join(", "))}${c.requires_authentication ? "" : " · authentication optional"}</div>
-        ${optRows(c.options)}</details>`).join("") + `</details>` +
-    `<details data-find="ai_providers ai providers llm"><summary>An ai_providers entry</summary>${optRows(ref.ai_provider)}</details>` +
-    `<details data-find="semantic"><summary>semantic</summary>${optRows(ref.semantic)}</details>`;
+    `<details open data-find="top level general"><summary>General (top level)</summary>${optRows(ref.top_level)}</details>` +
+    `<details data-find="services service connectors"><summary>Every connector</summary>${optRows(ref.service_common)}</details>` +
+    `<details data-find="authentication sign-in"><summary>Sign-in <span class="t mono">authentication</span></summary>${optRows(ref.authentication, "authentication")}</details>` +
+    `<details data-find="connectors"><summary>Connector types</summary>` + ref.connectors.map(c =>
+      `<details data-find="${esc((c.connector + " " + connectorName(c.connector) + " " + c.description).toLowerCase())}"><summary>${icon(c.icon || "api")} ${esc(connectorName(c.connector))} <span class="t mono">${esc(c.connector)}</span></summary>
+        <div class="d">${esc((CONNECTOR_INFO[c.connector] || [])[1] || "")}</div>
+        <div class="def">tables: ${c.dynamic_tables ? "one per file / module function" : esc(c.tables.join(", "))}${c.requires_authentication ? "" : " · sign-in optional"}</div>
+        ${optRows(c.options, c.connector)}</details>`).join("") + `</details>` +
+    `<details data-find="ai_providers ai providers llm"><summary>An AI provider <span class="t mono">ai_providers.&lt;name&gt;</span></summary>${optRows(ref.ai_provider)}</details>` +
+    `<details data-find="semantic ask"><summary>Ask <span class="t mono">semantic</span></summary>${optRows(ref.semantic)}</details>`;
 }
 $("#optfilter").addEventListener("input", () => {
   const f = $("#optfilter").value.trim().toLowerCase();
@@ -2130,6 +2581,8 @@ $("#setupconfig").addEventListener("click", goEnable);
 api("/api/meta").then(m => {
   META = m; showFeatures();
   if (location.hash === "#enable-ask" && META.setup) goEnable();
+  const page = /^#config\/(\w+)$/.exec(location.hash);  // a bookmarked Config page
+  if (page && META.features?.config && CFG_PAGES[page[1]]) { CFGPAGE = page[1]; openTab("config"); }
 }).catch(err => toast(err.message));
 </script>
 </body>

@@ -1187,22 +1187,39 @@ for one connector.
     saving the config, it rewrites a file and spends LLM calls, so it needs
     `serve --edit-config`; without it the card shows the catalog and says
     why the buttons are off.
-- **Config.** `duckduck.json` as a **form** or as **JSON** (a toggle; both
-  edit the same config, so a change in one shows in the other), next to
-  **every option there is**, searchable.
-  - **The form** is built from that same options reference: *General*
-    (`on_error`), one card per **service** (name, connector, its options,
-    `table_prefix`, and an `authentication` block that shows the keys its
-    `type` needs, with buttons for the connector's credentials, e.g.
-    `+ client_secret`), one card per **AI provider**, and every
-    **semantic** section. Each option gets the right input: a list of
-    choices, a number, true/false, comma-separated names, or a small JSON
-    box for dicts. An empty field is left out of the file, so the default
-    applies. Keys the form doesn't know are kept as they are.
-  - **The JSON** is what gets saved: the form writes it as you type.
-  - The reference lists each connector's parameters (with the tables it
-    registers), the `authentication` block, an `ai_providers` entry, and
-    the whole `semantic` section with defaults and descriptions.
+- **Config.** One page per kind of setting, picked from a menu on the
+  left (`#config/<page>` links straight to one):
+  - **Overview** — counts of connectors (connected / didn't start), AI
+    providers, catalog tables and the decision engine, plus what needs
+    attention (each connector that didn't start, with its error and a
+    link that opens its card). The *Enable Ask* steps show here while
+    there's no catalog.
+  - **Connectors** — one card per service that opens and closes (*Expand
+    all* / *Collapse all*). Closed, it shows the name, the kind of
+    connector, how many tables, and whether it connected; open: *Name &
+    type* (with the tables it gives), *Connection*, *Sign-in* (where the
+    credentials come from and, when they're written here, the connector's
+    own credential fields), *Advanced* (options with a default: page
+    size, TLS, timeouts…) and *Remove*. **＋ Add a connector** shows every
+    kind as a tile to pick from.
+  - **AI providers** — the *Default LLM*, then a card per provider
+    showing only the settings its provider takes, and what uses it
+    (default LLM, decision engine, value extraction, catalog drafting).
+  - **Ask** — *Semantic catalog*, *Catalog connections*, *How questions
+    are read*, *Answers & data*, *Catalog drafting*, *Confidence
+    thresholds*, *Feedback & learning*.
+  - **Advanced** — the whole **duckduck.json** (every page edits the same
+    config; what you type there shows on the others) and **Every
+    option**, searchable, with defaults and descriptions.
+  
+  Settings have readable names ("Rows per page", "Where the credentials
+  come from"); the key as written in `duckduck.json` sits small next to
+  each one. Each gets the right input: a list of choices (also readable:
+  "AWS Secrets Manager (aws)"), a pick of your AI providers by name, a
+  number, yes/no, comma-separated names, or a small JSON box. An empty
+  field is left out of the file, so the default applies; keys the form
+  doesn't know are kept. *Validate* / *Save and reload* / *Discard* follow
+  you between pages, with a mark while something is unsaved.
   - **Masked secrets.** Passwords, secrets, tokens, API keys, private keys
     and connection strings show as `"***"`; `"$secret.<key>"` references
     and `*_id` / `*_env` names aren't secrets. Leave `"***"` to keep the

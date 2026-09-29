@@ -143,7 +143,7 @@ def test_the_page_has_the_sql_tab_next_to_ask_and_a_config_form():
     tabs = [line.split('data-tab="')[1].split('"')[0] for line in PAGE.splitlines() if 'role="tab" data-tab=' in line]
     assert tabs[:2] == ["ask", "sql"]
     assert 'data-tab="sql" aria-selected="false" hidden' not in PAGE and 'id="sqloff"' in PAGE
-    assert 'data-view="form"' in PAGE and "function renderForm()" in PAGE
+    assert 'data-cfgpage="connectors"' in PAGE and "function renderForm()" in PAGE
 
 
 def test_secrets_travel_masked_and_come_back_from_the_file():
@@ -262,3 +262,21 @@ def test_config_tab_validates_saves_and_reloads(served):
     assert saved["reloaded"] and json.loads(served.read_text())["ai_providers"]["claude"]["authentication"]["api_key"] == "p4ss"
     names = [t["name"] for t in client.get("/api/tables").json()]
     assert "x_alerts" in names and "alerts" not in names
+
+
+def test_every_semantic_option_has_a_config_page_and_friendly_names():
+    import re
+
+    from duckduck.semantic.admin import config_reference
+    from duckduck.semantic.webpage import PAGE
+
+    claimed = set()
+    for names in re.findall(r"semantic: \[([^\]]*)\]", PAGE):
+        claimed.update(re.findall(r'"(\w+)"', names))
+    ref = config_reference()
+    assert {o["name"] for o in ref["semantic"]} <= claimed  # each lands on a page by design, not in the fallback
+    block = PAGE.split("const LABELS = {")[1].split("};")[0]
+    labelled = {k for line in block.splitlines() for k in re.findall(r'(?:^|, )"?([\w.]+)"?: "', line.strip())}
+    assert {o["name"] for o in ref["semantic"]} <= labelled
+    for c in ref["connectors"]:
+        assert f"  {c['connector']}: [" in PAGE  # a friendly name per connector kind
