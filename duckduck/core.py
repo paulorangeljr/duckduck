@@ -188,6 +188,86 @@ def _why_not_pushed(c: Condition, accepted: set) -> str:
 # ---------------------------------------------------------------------------
 
 
+
+# ---------------------------------------------------------------------------
+# Nested values (ADX `dynamic`, JSON APIs): kept as STRUCT / LIST when every
+# row has the same shape, JSON text when they don't
+# ---------------------------------------------------------------------------
+
+class _Mixed(Exception):
+    pass
+
+
+def _is_container(v: Any) -> bool:
+    return isinstance(v, (dict, list, tuple)) or type(v).__name__ == "ndarray"
+
+
+def _shape_of(v: Any) -> Any:
+    """A value's shape: None (a null — fits anything), a scalar kind, ("list", elem) or ("dict", {key: shape})."""
+    if v is None or (isinstance(v, float) and v != v):
+        return None
+    if isinstance(v, dict):
+        return ("dict", {str(k): _shape_of(x) for k, x in v.items()})
+    if _is_container(v):
+        elem = None
+        for x in v:
+            elem = _merge_shapes(elem, _shape_of(x))
+        return ("list", elem)
+    if isinstance(v, bool):
+        return "bool"
+    if isinstance(v, (int, float)) or type(v).__name__.startswith(("int", "float")):
+        return "number"
+    return "text" if isinstance(v, str) else type(v).__name__
+
+
+def _merge_shapes(a: Any, b: Any) -> Any:
+    if a is None:
+        return b
+    if b is None:
+        return a
+    if isinstance(a, tuple) and isinstance(b, tuple) and a[0] == b[0]:
+        if a[0] == "list":
+            return ("list", _merge_shapes(a[1], b[1]))
+        if set(a[1]) != set(b[1]):
+            raise _Mixed()
+        return ("dict", {k: _merge_shapes(a[1][k], b[1][k]) for k in a[1]})
+    if a != b:
+        raise _Mixed()
+    return a
+
+
+def _json_text(v: Any) -> Any:
+    if not _is_container(v):
+        return v
+    return json.dumps(v, default=lambda x: x.tolist() if hasattr(x, "tolist") else str(x), ensure_ascii=False)
+
+
+def json_for_mixed_objects(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    A column of nested values (dicts, lists) whose rows don't share one
+    shape — different keys, a number here and a string there, a dict next to
+    plain text: typical of ADX ``dynamic`` columns — becomes JSON text.
+    DuckDB can't give it one type and would otherwise store Python's
+    ``repr`` (``{'a': 1}``); JSON text still answers ``col->>'key'``.
+    Columns whose rows all share one shape stay STRUCT / LIST.
+    """
+    changed = {}
+    for col in df.columns[df.dtypes == object]:
+        values = df[col].tolist()
+        if not any(_is_container(v) for v in values):
+            continue
+        try:
+            shape = None
+            for v in values:
+                shape = _merge_shapes(shape, _shape_of(v))
+        except _Mixed:
+            changed[col] = [_json_text(v) for v in values]
+    if changed:
+        df = df.copy()
+        for col, values in changed.items():
+            df[col] = pd.Series(values, index=df.index, dtype=object)
+    return df
+
 class DuckAPI:
     """
     SQL engine that lets you query Python functions as if they were tables.
@@ -1034,7 +1114,7 @@ class DuckAPI:
             )
 
         df.columns = [c.replace(".", "_") for c in df.columns]
-        return df
+        return json_for_mixed_objects(df)
 
     # ------------------------------------------------------------------
     # Materialization
@@ -1153,7 +1233,7 @@ class DuckAPI:
             if close is not None:
                 close()
         if kept:
-            df = pd.concat(kept, ignore_index=True)
+            df = json_for_mixed_objects(pd.concat(kept, ignore_index=True))
         else:
             columns = last_columns or list(fallback_columns or []) or [self.EMPTY_PLACEHOLDER_COLUMN]
             df = pd.DataFrame({c: pd.Series(dtype="object") for c in columns})

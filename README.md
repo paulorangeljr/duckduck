@@ -958,6 +958,12 @@ link (`http://127.0.0.1:8765/#enable-ask`). It opens *Config → Enable Ask*:
 a checklist (an LLM in `ai_providers` + `semantic.default_llm`; drafting
 from the page, i.e. `--edit-config`) ending in **Draft the catalog now**.
 
+**Nested values** (an ADX `dynamic` column, a JSON field of any API):
+when every row has the same shape they're STRUCT / LIST columns
+(`props.k`, `tags[1]`); when they don't (different keys, a number in one
+row and text in another) they become JSON text, queryable as
+`dyn->>'key'`. The page shows them as JSON.
+
 **The SQL tab's table list.** On top, which connectors in `duckduck.json`
 started — and, for each one that didn't, the error (a missing
 `authentication` block, `boto3` not installed, a secret it couldn't read…)

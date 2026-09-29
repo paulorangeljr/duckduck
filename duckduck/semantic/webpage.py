@@ -193,6 +193,7 @@ textarea.editor { width: 100%; min-height: 180px; resize: vertical; tab-size: 2;
 button.linkish { background: none; border: 0; padding: 0; font: inherit; font-size: 12px; color: var(--accent); cursor: pointer; }
 button.linkish:hover { text-decoration: underline; }
 button.linkish[aria-pressed="true"] { color: var(--ink-2); }
+.jcell { font-size: 12px; color: var(--ink-2); white-space: pre-wrap; word-break: break-word; }
 .nitem button { margin-left: auto; flex: none; padding: 1px 8px; font-size: 12px; }
 .connbox { font-size: 12.5px; margin: 0 0 8px; padding: 8px 10px; border-radius: 8px; background: var(--surface-2); }
 .connbox.bad { background: rgba(208,59,59,.08); }
@@ -1010,7 +1011,14 @@ function table(rows, max = 500) {
   const cols = Object.keys(rows[0]);
   const num = cols.map(c => rows.every(r => r[c] === null || typeof r[c] === "number"));
   return `<div class="tablewrap"><table><thead><tr>${cols.map((c, i) => `<th class="${num[i] ? "num" : ""}">${esc(c)}</th>`).join("")}</tr></thead>
-    <tbody>${rows.slice(0, max).map(r => `<tr>${cols.map((c, i) => `<td class="${num[i] ? "num" : ""}">${r[c] === null ? '<span class="muted">—</span>' : esc(r[c])}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+    <tbody>${rows.slice(0, max).map(r => `<tr>${cols.map((c, i) => `<td class="${num[i] ? "num" : ""}">${cellHtml(r[c])}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+}
+// a nested value (an ADX dynamic column, a JSON field) shows as JSON, never "[object Object]"
+function cellHtml(v) {
+  if (v === null || v === undefined) return '<span class="muted">—</span>';
+  if (typeof v !== "object") return esc(v);
+  const text = JSON.stringify(v), CUT = 160;
+  return `<span class="mono jcell" title="${esc(JSON.stringify(v, null, 2))}">${esc(text.length > CUT ? text.slice(0, CUT) + "…" : text)}</span>`;
 }
 
 const SHAPE_WORDS = {list: "a list", count: "a count", values: "the different values", count_values: "a count of values",

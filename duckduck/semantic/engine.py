@@ -252,6 +252,8 @@ class SearchResult:
 
 
 def _json_default(value: Any) -> Any:
+    if type(value).__name__ == "ndarray":  # a LIST column's cell
+        return value.tolist()
     if hasattr(value, "isoformat"):
         return value.isoformat()
     if hasattr(value, "item") and not isinstance(value, (list, dict)):  # numpy scalars → int / float / bool
