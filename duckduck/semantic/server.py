@@ -24,7 +24,7 @@ HTML page (``webpage.PAGE``) over a JSON API:
 ``GET  /api/export.md``                      the still-failing questions, as a brief for a developer
 ``GET  /api/meta``                           categories, answer kinds, tables (+ icon kind), entities, values
 ``GET  /api/connections`` · ``GET /api/tables/nested?service=&refresh=1``  each connector started or why not · the tables behind catalogs (one connector's, or all)
-``POST /api/sql {sql}`` · ``GET /api/tables``  the SQL console (``allow_sql``, on by default; read-only, no files/network)
+``POST /api/sql {sql, debug, background}`` · ``GET /api/tables``  the SQL console (``allow_sql``, on by default; read-only, no files/network; ``background`` → a job)
 ``POST /api/takeover {conversation_id, name, full, user}``  "take over from here": the answer's rows as a table (an unrated answer → answered)
 ``POST /api/takeover/proposal {conversation_id}``  what that would give: suggested name, rows, columns, capped
 ``GET  /api/config``                         duckduck.json, secrets masked, + every option documented
@@ -185,9 +185,14 @@ def create_app(
 
     ask_jobs: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 
-    def start_job(run: Callable[[], Any]) -> Any:
+    def start_job(run: Callable[[], Any], render: Optional[Callable[[Any], Any]] = None,
+                  on_cancel: Optional[Callable[[], None]] = None, log: Optional[list] = None) -> Any:
+        """``run`` in a thread under a ``Progress``; ``render`` turns what it returns into the job's result
+        (a conversation → ``payload``), ``on_cancel`` also stops what checkpoints can't (a DuckDB query),
+        ``log`` is shown live."""
         progress = Progress()
-        job = {"id": uuid.uuid4().hex[:16], "progress": progress, "conv": None, "error": None, "finished": False}
+        job = {"id": uuid.uuid4().hex[:16], "progress": progress, "conv": None, "error": None, "finished": False,
+               "render": render or payload, "on_cancel": on_cancel, "log": log}
 
         def work() -> None:
             with tracking(progress):
@@ -226,8 +231,10 @@ def create_app(
         elif job["finished"]:
             view["state"] = "failed" if job["error"] else "done"
             if job["conv"] is not None:
-                view["result"] = payload(job["conv"])
+                view["result"] = job["render"](job["conv"])
             view["error"] = job["error"]
+        if job["log"] is not None:
+            view["log"] = list(job["log"])
         return view
 
     @app.get("/api/jobs/{job_id}")
@@ -241,6 +248,8 @@ def create_app(
             raise HTTPException(404, f"unknown action {action!r}: pause, resume or cancel")
         if not job["finished"]:
             getattr(job["progress"], action)()
+            if action == "cancel" and job["on_cancel"] is not None:
+                job["on_cancel"]()
         return dump(job_view(job))
 
     @app.post("/api/ask")
@@ -483,7 +492,13 @@ def create_app(
 
     @app.post("/api/sql")
     def run_sql(body: Dict[str, Any] = Body(...)):
-        return dump(the_console().run(str(body.get("sql") or "")))
+        """``debug``: the log at DEBUG; ``background``: as a job (live steps and log, pause / cancel) → 202."""
+        console, sql, debug = the_console(), str(body.get("sql") or ""), bool(body.get("debug"))
+        if body.get("background"):
+            log: list = []
+            return start_job(lambda: console.run(sql, debug=debug, log=log), render=lambda r: r,
+                             on_cancel=console.interrupt, log=log)
+        return dump(console.run(sql, debug=debug))
 
     @app.get("/api/tables")
     def tables():

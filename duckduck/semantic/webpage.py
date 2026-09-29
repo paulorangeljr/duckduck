@@ -454,6 +454,8 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
         <div class="card">
           <textarea class="editor mono" id="sqltext" spellcheck="false" aria-label="SQL">SHOW TABLES</textarea>
           <div class="row" style="margin-top:8px"><button class="primary" id="sqlrun">Run</button>
+            <label class="check small" title="Log at DEBUG: request bodies, bound parameters, every page (secrets stay masked)">
+              <input type="checkbox" id="sqldebug"> Debug log</label>
             <span class="muted small">Ctrl+Enter · read queries only (SELECT, WITH, SHOW, DESCRIBE…) · no file or network access</span></div>
         </div>
         <div id="sqlresult"></div>
@@ -1585,16 +1587,76 @@ function drawTables() {
   $("#tablelist").querySelectorAll("[data-exprefresh]").forEach(b => b.addEventListener("click", () => loadNested(b.dataset.exprefresh, true)));
 }
 $("#tablefilter").addEventListener("input", drawTables);
+// a query runs as a job: its steps and log live, ⏸ Pause (between API calls and pages), ✕ Cancel (DuckDB too)
+let SQLJOB = null;  // {id, timer, debug}
+try { $("#sqldebug").checked = store.get("duckduck-sqldebug") === "1"; } catch {}
+$("#sqldebug").addEventListener("change", () => store.set("duckduck-sqldebug", $("#sqldebug").checked ? "1" : "0"));
 async function runSql() {
   const sql = $("#sqltext").value.trim(); if (!sql) return;
-  $("#sqlresult").innerHTML = `<div class="card muted">Running…</div>`;
-  try {
-    const r = await api("/api/sql", {sql});
-    const rows = (r.rows || []).map(row => Object.fromEntries(r.columns.map((c, i) => [c, row[i]])));
-    $("#sqlresult").innerHTML = `<div class="card">` + (r.error ? `<p class="error">${esc(r.error)}</p>` :
-      `<div class="muted small">${r.row_count} row${r.row_count === 1 ? "" : "s"} · ${r.elapsed_ms} ms${r.truncated ? " · first " + rows.length + " shown" : ""}</div>${table(rows)}`) +
-      ((r.log || []).length ? `<details${r.error ? " open" : ""}><summary>What went to each source (push-down)</summary><pre class="log mono">${esc(r.log.join("\n"))}</pre></details>` : "") + `</div>`;
-  } catch (err) { $("#sqlresult").innerHTML = `<div class="card error">${esc(err.message)}</div>`; }
+  if (SQLJOB) await sqlJobAction("cancel");  // a new run replaces the one still running
+  const debug = $("#sqldebug").checked;
+  $("#sqlresult").innerHTML = `<div class="card muted">Starting…</div>`;
+  let r;
+  try { r = await api("/api/sql", {sql, debug, background: true}); }
+  catch (err) { $("#sqlresult").innerHTML = `<div class="card error">${esc(err.message)}</div>`; return; }
+  if (!r.job_id) { drawSqlResult(r); return; }
+  SQLJOB = {id: r.job_id, debug};
+  pollSqlJob();
+}
+async function pollSqlJob() {
+  const job = SQLJOB; if (!job) return;
+  let v;
+  try { v = await api(`/api/jobs/${job.id}`); }
+  catch (err) { SQLJOB = null; $("#sqlresult").innerHTML = `<div class="card error">${esc(err.message)}</div>`; return; }
+  if (SQLJOB !== job) return;  // replaced meanwhile
+  if (v.state === "done" || v.state === "failed" || v.state === "cancelled") SQLJOB = null;
+  if (v.state === "done") drawSqlResult(v.result);
+  else if (v.state === "failed") $("#sqlresult").innerHTML = `<div class="card error">${esc(v.error?.message || "failed")}</div>`;
+  else drawSqlJob(v, job.debug);
+  if (SQLJOB === job) job.timer = setTimeout(pollSqlJob, v.state === "paused" ? 1000 : 350);
+}
+async function sqlJobAction(action) {
+  const job = SQLJOB; if (!job) return;
+  if (action === "cancel") { clearTimeout(job.timer); SQLJOB = null; }
+  let v;
+  try { v = await api(`/api/jobs/${job.id}/${action}`, {}); } catch (err) { toast(err.message); return; }
+  if (action === "cancel") drawSqlJob({...v, state: "cancelled"}, job.debug);
+  else if (SQLJOB === job) drawSqlJob(v, job.debug);
+}
+const SQL_STATE = {running: "Running", pausing: "Pausing…", paused: "Paused", cancelled: "Cancelled"};
+function drawSqlJob(v, debug) {
+  const st = v.state, live = st === "running" || st === "pausing", steps = (v.events || []).filter(Boolean);
+  const secs = (ms) => ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
+  const fetched = Object.entries(v.partial?.fetched || {});
+  const log = v.log || [];
+  $("#sqlresult").innerHTML = `<div class="card" aria-live="polite">
+    <div class="jobhead">${live ? `<span class="spin" aria-hidden="true"></span>` : ""}
+      <strong>${esc(SQL_STATE[st] || st)}</strong><span class="muted small">${v.elapsed ? secs(v.elapsed) : ""}</span>
+      <span class="grow"></span>
+      ${st === "running" ? `<button class="secondary" type="button" data-sqljob="pause" title="Stop before the next API call or page">⏸ Pause</button>` : ""}
+      ${st === "paused" || st === "pausing" ? `<button class="secondary" type="button" data-sqljob="resume">▶ Continue</button>` : ""}
+      ${st !== "cancelled" ? `<button class="secondary" type="button" data-sqljob="cancel" title="Stop the query">✕ Cancel</button>` : ""}
+    </div>
+    <ol class="steps">${steps.map((e, k) => {
+      const now = k === steps.length - 1 && live;
+      return `<li class="${now ? "now" : "done"}"><span class="mark">${now ? `<span class="spin" aria-hidden="true"></span>` : k < steps.length - 1 ? "✓" : st === "cancelled" ? "✕" : st === "paused" ? "⏸" : "✓"}</span>
+        <span>${esc(e.text)}</span><span class="at">${secs(e.ms)}</span></li>`; }).join("")
+      || `<li class="now"><span class="mark"><span class="spin"></span></span><span>Starting…</span></li>`}</ol>
+    ${st === "pausing" ? `<p class="jobnote">A call already in flight finishes first — then it stops. DuckDB's own step can't pause; cancel stops it.</p>` : ""}
+    ${st === "cancelled" ? `<p class="jobnote">Stopped. Nothing else is read.</p>` : ""}
+    ${fetched.length ? `<div class="muted small" style="margin-top:6px">Read so far: ${fetched.map(([t, f]) =>
+      `<span class="mono">${esc(t)}</span> ${(f.rows ?? 0).toLocaleString()} rows${f.pages ? ` (${f.pages} pages)` : ""}`).join(" · ")}</div>` : ""}
+    <details class="sqllog" ${log.length && (debug || st !== "running") ? "open" : ""}><summary>Log${debug ? " (debug)" : ""} · ${log.length} line${log.length === 1 ? "" : "s"}</summary>
+      <pre class="log mono">${esc(log.join("\n"))}</pre></details>
+  </div>`;
+  const pre = $("#sqlresult pre.log"); if (pre) pre.scrollTop = pre.scrollHeight;
+  $("#sqlresult").querySelectorAll("[data-sqljob]").forEach(b => b.addEventListener("click", () => sqlJobAction(b.dataset.sqljob)));
+}
+function drawSqlResult(r) {
+  const rows = (r.rows || []).map(row => Object.fromEntries(r.columns.map((c, i) => [c, row[i]])));
+  $("#sqlresult").innerHTML = `<div class="card">` + (r.error ? `<p class="error">${esc(r.error)}</p>` :
+    `<div class="muted small">${r.row_count} row${r.row_count === 1 ? "" : "s"} · ${r.elapsed_ms} ms${r.truncated ? " · first " + rows.length + " shown" : ""}</div>${table(rows)}`) +
+    ((r.log || []).length ? `<details${r.error || r.debug ? " open" : ""}><summary>${r.debug ? "Debug log" : "What went to each source (push-down)"}</summary><pre class="log mono">${esc(r.log.join("\n"))}</pre></details>` : "") + `</div>`;
 }
 $("#sqlrun").addEventListener("click", runSql);
 $("#sqltext").addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); runSql(); } });

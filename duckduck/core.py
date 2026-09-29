@@ -1135,9 +1135,13 @@ class DuckAPI:
         -------
         (table_name, df_columns) : (str, list[str])
         """
+        from . import progress
+
         validated = self._validate_arguments(function_name, fetch_function, kwargs)
+        progress.step("fetching", f"Reading {function_name}…")  # a paused / cancelled run stops here
         started = time.perf_counter()
         data = fetch_function(**validated)
+        progress.checkpoint()
         df = self._to_dataframe(data, function_name, allow_empty=True)
         if len(df.columns) == 0:
             # No rows and nothing to infer columns from (e.g. an empty JSON
@@ -1150,6 +1154,7 @@ class DuckAPI:
         logger.info("  %s: %s rows × %s columns in %.2fs", function_name, f"{len(df):,}", len(df.columns),
                     time.perf_counter() - started)
 
+        progress.note_item("fetched", function_name, {"rows": len(df), "columns": len(df.columns)})
         self._table_counter += 1
         table_name = f"_api_{function_name}_{self._table_counter}"
         self.conn.register(table_name, df)
@@ -1197,7 +1202,10 @@ class DuckAPI:
         stop_at = (pushdown.limit if pushdown.limit is not None and pushdown.limit_safe and pushdown.complete
                    and tables == 1 else None)
 
+        from . import progress
+
         validated = self._validate_arguments(fn_name, iter_fn, kwargs)
+        progress.step("fetching", f"Reading {fn_name} page by page…")
         started = time.perf_counter()
         kept: List[pd.DataFrame] = []
         count = pages = scanned = 0
@@ -1205,6 +1213,7 @@ class DuckAPI:
         pages_iter = iter_fn(**validated)
         try:
             for page in pages_iter:
+                progress.checkpoint()  # pause / cancel between pages
                 df = self._to_dataframe(page, fn_name, allow_empty=True)
                 if df.empty:
                     continue
@@ -1226,6 +1235,7 @@ class DuckAPI:
                 if len(out):
                     kept.append(out)
                     count += len(out)
+                progress.update(f"Reading {fn_name}: page {pages} · kept {count:,} of {scanned:,} rows")
                 if stop_at is not None and every and count >= stop_at:
                     break  # enough rows for the answer: no more pages asked
         finally:
@@ -1237,6 +1247,7 @@ class DuckAPI:
         else:
             columns = last_columns or list(fallback_columns or []) or [self.EMPTY_PLACEHOLDER_COLUMN]
             df = pd.DataFrame({c: pd.Series(dtype="object") for c in columns})
+        progress.note_item("fetched", fn_name, {"rows": count, "rows_scanned": scanned, "pages": pages})
         logger.info("  %s: kept %s of %s rows from %s page(s), %s column(s), in %.2fs", fn_name, f"{count:,}",
                     f"{scanned:,}", pages, len(df.columns), time.perf_counter() - started)
         self._table_counter += 1

@@ -67,29 +67,56 @@ class SQLConsole:
         self.timeout = timeout
         self._lock = threading.Lock()  # one DuckDB connection: one query at a time
 
-    def run(self, query: str) -> Dict[str, Any]:
+    def run(self, query: str, debug: bool = False, log: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        Runs one read query. ``debug``: the log at DEBUG (request bodies,
+        bound parameters, every page) instead of INFO. ``log``: the list the
+        lines go to as they're written — a job's page reads it live. Under a
+        ``progress.tracking`` (a job) it reports steps, and pause / cancel
+        take effect between API calls and pages; ``interrupt()`` stops the
+        DuckDB step itself.
+        """
+        from .. import progress
+
+        log = [] if log is None else log
         reason = read_only_reason(query)
         if reason:
-            return {"error": reason, "columns": [], "rows": [], "row_count": 0, "log": []}
+            return {"error": reason, "columns": [], "rows": [], "row_count": 0, "log": log}
         started = time.perf_counter()
-        log: List[str] = []
-        with self._lock, _captured_log(log):
-            timer = threading.Timer(self.timeout, self.duck.conn.interrupt)
-            timer.start()
-            try:
-                df = self.duck.sql(query).df()
-            except Exception as exc:
-                return {"error": f"{type(exc).__name__}: {exc}", "columns": [], "rows": [], "row_count": 0,
-                        "log": log, "elapsed_ms": round((time.perf_counter() - started) * 1000, 1)}
-            finally:
-                timer.cancel()
+        ms = lambda: round((time.perf_counter() - started) * 1000, 1)  # noqa: E731
+        if not self._lock.acquire(timeout=self.timeout):
+            return {"error": "another SQL query is still running (or paused) — cancel it or wait",
+                    "columns": [], "rows": [], "row_count": 0, "log": log, "elapsed_ms": ms()}
+        try:
+            with _captured_log(log, logging.DEBUG if debug else logging.INFO):
+                timer = threading.Timer(self.timeout, self.duck.conn.interrupt)
+                timer.start()
+                try:
+                    progress.step("planning", "Reading the query: what goes to each source")
+                    relation = self.duck.sql(query)
+                    progress.step("query", "DuckDB runs the query")
+                    df = relation.df()
+                except Exception as exc:
+                    return {"error": f"{type(exc).__name__}: {exc}", "columns": [], "rows": [], "row_count": 0,
+                            "log": log, "elapsed_ms": ms()}
+                finally:
+                    timer.cancel()
+        finally:
+            self._lock.release()
         shown = df.head(self.max_rows)
         return {
             "columns": [str(c) for c in df.columns],
             "rows": shown.astype(object).where(shown.notna(), None).values.tolist(),
             "row_count": int(len(df)), "truncated": len(df) > self.max_rows,
-            "elapsed_ms": round((time.perf_counter() - started) * 1000, 1), "log": log,
+            "elapsed_ms": ms(), "log": log, "debug": debug,
         }
+
+    def interrupt(self) -> None:
+        """Stops the query DuckDB is running now (a cancelled job; API calls stop at their next checkpoint)."""
+        try:
+            self.duck.conn.interrupt()
+        except Exception:
+            pass
 
     def connections(self, configured: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
@@ -183,13 +210,15 @@ def _statements(text: str) -> List[str]:
 
 
 class _ThreadLog(logging.Handler):
-    def __init__(self, sink: List[str]):
-        super().__init__(logging.INFO)
+    MAX_LINES = 2000
+
+    def __init__(self, sink: List[str], level: int = logging.INFO):
+        super().__init__(level)
         self.sink, self.thread = sink, threading.get_ident()
         self.setFormatter(logging.Formatter("%(message)s"))
 
     def emit(self, record: logging.LogRecord) -> None:
-        if record.thread == self.thread and len(self.sink) < 500:
+        if record.thread == self.thread and len(self.sink) < self.MAX_LINES:
             try:
                 self.sink.append(self.format(record))
             except Exception:
@@ -197,18 +226,18 @@ class _ThreadLog(logging.Handler):
 
 
 class _captured_log:
-    """The ``duckduck`` log lines this thread writes during the block (at INFO, whatever the global level)."""
+    """The ``duckduck`` log lines this thread writes during the block (at ``level`` — INFO — whatever the global level)."""
 
-    def __init__(self, sink: List[str]):
-        self.sink = sink
+    def __init__(self, sink: List[str], level: int = logging.INFO):
+        self.sink, self.want = sink, level
 
     def __enter__(self):
         self.logger = logging.getLogger("duckduck")
-        self.handler = _ThreadLog(self.sink)
+        self.handler = _ThreadLog(self.sink, self.want)
         self.level = self.logger.level
         self.logger.addHandler(self.handler)
-        if self.logger.getEffectiveLevel() > logging.INFO:
-            self.logger.setLevel(logging.INFO)
+        if self.logger.getEffectiveLevel() > self.want:
+            self.logger.setLevel(self.want)
         return self
 
     def __exit__(self, *exc):

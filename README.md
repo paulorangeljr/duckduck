@@ -964,6 +964,14 @@ when every row has the same shape they're STRUCT / LIST columns
 row and text in another) they become JSON text, queryable as
 `dyn->>'key'`. The page shows them as JSON.
 
+**Running a query in the SQL tab** shows what it's doing as it goes: each
+source it reads (with the page it's on and the rows kept so far), then
+DuckDB's step, with the log live. **⏸ Pause** stops before the next API
+call or page (one already in flight finishes first) and **▶ Continue**
+picks up; **✕ Cancel** stops it — DuckDB's own step included. **Debug
+log** shows the DEBUG lines too (request bodies, bound parameters, every
+page); secrets stay masked.
+
 **The SQL tab's table list.** On top, which connectors in `duckduck.json`
 started — and, for each one that didn't, the error (a missing
 `authentication` block, `boto3` not installed, a secret it couldn't read…)
