@@ -194,3 +194,71 @@ def test_the_page_shows_register_all_and_the_default_database():
     assert 'const DEFAULT_DB = "default"' in PAGE and "CLOSED_DBS" in PAGE  # a click closes even a lone one
     # every connector has a default: its tools (listed first) and its tables with no database; the catalog's header on top
     assert "tool: !t.saved && TOOL_KINDS.has(t.kind)" in PAGE and "part.catalogs.map(t => nestedBlock(t, svc))" in PAGE
+
+
+def test_a_connection_s_own_database_is_in_the_name(tmp_path):
+    """ADX (its database), MySQL/Postgres/SQLite (the connection's): connector.database.table — both forms read."""
+    pytest.importorskip("sqlalchemy")
+    import sqlite3
+
+    from duckduck.addresses import native_database
+    from duckduck.database import SQLDatabase
+    from duckduck.semantic.admin import nested_group
+
+    con = sqlite3.connect(tmp_path / "shop.db")
+    con.execute("create table orders(id int)")
+    con.execute("insert into orders values (7)")
+    con.commit()
+    duck, db = DuckAPI(), SQLDatabase(f"sqlite:///{tmp_path / 'shop.db'}")
+    for name, fn in [("pg_tables", db.tables), ("pg_table", db.table)]:
+        duck.register_api_function(name, fn)
+        duck.service_of[name] = "pg"
+    duck.service_prefix["pg"] = "pg"
+    assert native_database(duck, "pg_table") == "shop"
+    assert duck.address_of("pg_table", {"table_name": "orders"}) == "pg.shop.orders"
+    assert nested_group(duck, "pg_table", {"table_name": "orders"}) == ("shop", "orders")
+    assert duck.sql("SELECT id FROM pg.shop.orders").fetchall() == [(7,)] == duck.sql("SELECT id FROM pg.orders").fetchall()
+
+    class DataExplorer:
+        database = "SecurityDb"
+
+        def table(self, table_name: str, where=None, limit=None):
+            return pd.DataFrame({"t": [table_name]})
+
+    adx = DataExplorer()
+    duck.register_api_function("adx_table", adx.table)
+    duck.service_of["adx_table"] = "adx"
+    duck.service_prefix["adx"] = "adx"
+    assert duck.address_of("adx_table", {"table_name": "ProxyLogs"}) == "adx.SecurityDb.ProxyLogs"
+    assert duck.sql("SELECT t FROM adx.SecurityDb.ProxyLogs").fetchall() == [("ProxyLogs",)]
+
+
+def test_saved_tables_move_to_another_database_in_one_write(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from duckduck.semantic.commands import serve
+
+    client, items = _app(tmp_path, 3)
+    client.post("/api/views/many", json={"items": items})
+    names = [v["name"] for v in client.get("/api/views").json()["views"]]
+    assert sorted(names) == ["s3.db0.t0", "s3.db1.t1", "s3.db2.t2"]
+    moved = client.post("/api/views/move", json={"names": ["s3.db0.t0", "s3.db1.t1", "nope"], "database": "reports"}).json()
+    assert moved["moved"] == [{"from": "s3.db0.t0", "to": "s3.reports.t0"}, {"from": "s3.db1.t1", "to": "s3.reports.t1"}]
+    assert moved["skipped"] == [{"name": "nope", "why": "not a saved table"}]
+    assert sorted(json.loads((tmp_path / "duckduck.json").read_text())["views"]) == ["s3.db2.t2", "s3.reports.t0", "s3.reports.t1"]
+    assert client.post("/api/sql", json={"sql": "SELECT n FROM s3.reports.t0"}).json()["rows"] == [[1]]
+    # onto a table behind the catalog (another one): refused — it would hide it
+    assert client.post("/api/views", json={"name": "s3.mine.t1", "sql": "SELECT 1 AS x"}).status_code == 200
+    back = client.post("/api/views/move", json={"names": ["s3.mine.t1"], "database": "db1"}).json()
+    assert back["moved"] == [] and "behind the catalog" in back["skipped"][0]["why"]
+    # its own address is fine: the bound table over db1.t1 can go back there
+    home = client.post("/api/views/move", json={"names": ["s3.reports.t1"], "database": "db1"}).json()
+    assert home["moved"] == [{"from": "s3.reports.t1", "to": "s3.db1.t1"}]
+    again = client.post("/api/views/move", json={"names": ["s3.db2.t2"], "database": "db0"}).json()
+    assert again["moved"] == [{"from": "s3.db2.t2", "to": "s3.db0.t2"}]  # db0.t2 isn't a table behind it: fine
+
+
+def test_the_page_selects_and_moves():
+    from duckduck.semantic.webpage import PAGE
+
+    assert 'id="selmode"' in PAGE and 'id="selbar"' in PAGE and "function moveSelected(" in PAGE and "/api/views/move" in PAGE

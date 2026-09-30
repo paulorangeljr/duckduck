@@ -447,6 +447,13 @@ SELECT * FROM sqlserver.dbo.Customers                    -- sqlserver_table(tabl
 SELECT * FROM adls.raw."events 2026"                     -- a part that isn't a plain name goes in double quotes
 ```
 
+A connector whose table function takes just the table's name but whose
+connection has a database of its own — ADX (its `database`), MySQL,
+PostgreSQL, SQL Server, SQLite (the connection's) — puts it in the name:
+`adx.SecurityDb.ProxyLogs`, `mysql.shop.orders`, `sqlserver.sales.dbo.Customers`
+(the short `adx.ProxyLogs` still reads the same). *Register all* names them
+that way, and the SQL tab groups them under that database.
+
 A table with no database of its own — listed under **default** in the SQL
 tab — can be written either way: `nvd.cves` or `nvd.default.cves`,
 `sn.incident` or `sn.default.incident`. (Where a connector's tables do have
@@ -1109,7 +1116,14 @@ time (*show more*); the filter searches names and databases and opens the
 databases with a match — a catalog with thousands of tables stays easy to
 browse. The catalog is read once: expanding it again shows what was read
 (the time is shown), and ↻ reads it again and marks what's **new** (and
-says how many are gone). In
+says how many are gone).
+
+**Moving tables between databases**: *Select* (above the list) puts a box on
+every saved table and every table behind a catalog; tick them — or a
+database's box for all of it — and **Move to database**: saved ones are
+renamed there (`s3_data.reports.orders`), the others saved there, in one
+write. A name that is another table behind the catalog is refused (it would
+hide it). In
 Python: `duck.nested_tables(service="lake")` (or every connector's with
 `duck.nested_tables()`). Saved tables are marked *saved* in the list,
 with a **✎ Edit** button on each. Every table has an **ⓘ** on the right:

@@ -154,19 +154,57 @@ def resolve(duck: Any, parts: List[str]) -> Optional[Tuple[str, Dict[str, Any]]]
 DEFAULT_DATABASE = "default"
 
 
+def native_database(duck: Any, table: str) -> Optional[str]:
+    """
+    The database a connector's table function reads from when its arguments don't
+    say one — the connection's own: ADX's ``database``, a SQL connection's
+    (``engine.url.database``; an SQLite file's name). None when there's none.
+    """
+    import os
+
+    fn = duck.functions.get(table)
+    instance = getattr(fn, "__self__", None)
+    if instance is None:
+        return None
+    db = getattr(instance, "database", None)
+    if isinstance(db, str) and db.strip():
+        return db.strip()
+    url = getattr(getattr(instance, "engine", None), "url", None)
+    name = getattr(url, "database", None)
+    if not isinstance(name, str) or not name.strip() or name == ":memory:":
+        return None
+    if str(getattr(url, "drivername", "")).startswith("sqlite"):
+        name = os.path.splitext(os.path.basename(name))[0]
+    return name or None
+
+
+def database_of_service(duck: Any, service: str) -> Optional[str]:
+    """The native database of a service whose table function takes only the table's name (ADX, SQL)."""
+    table = generic_function(duck, service)
+    if table is None or len(_required(duck, table)) != 1:
+        return None
+    return native_database(duck, table)
+
+
 def _without_default(duck: Any, parts: List[str]) -> List[str]:
     """
     ``svc.default.x`` → ``svc.x`` for a connector whose tables have no database
-    (``sn.default.incident`` is ``sn.incident``, ``nvd.default.cves`` is ``nvd.cves``).
-    Where the connector's tables do have databases (a table function taking one before
-    the name — Glue, a lakehouse), ``default`` is read as a real database of that name.
+    (``sn.default.incident`` is ``sn.incident``, ``nvd.default.cves`` is ``nvd.cves``),
+    and ``svc.<its database>.x`` → ``svc.x`` where the connection has one of its own
+    (``adx.SecurityDb.ProxyLogs``, ``mysql.shop.orders``). Where the connector's tables
+    do have databases (a table function taking one before the name — Glue, a
+    lakehouse), ``default`` is read as a real database of that name.
     """
-    if len(parts) < 3 or parts[1].lower() != DEFAULT_DATABASE or parts[0].lower() not in services(duck):
+    if len(parts) < 3 or parts[0].lower() not in services(duck):
         return parts
-    table = generic_function(duck, parts[0].lower())
+    service = parts[0].lower()
+    table = generic_function(duck, service)
     if table is not None and len(_required(duck, table)) >= 2:
         return parts
-    return [parts[0]] + parts[2:]
+    native = database_of_service(duck, service)
+    if parts[1].lower() == DEFAULT_DATABASE or (native and parts[1].lower() == native.lower()):
+        return [parts[0]] + parts[2:]
+    return parts
 
 
 def _saved_named(duck: Any, parts: List[str]) -> Optional[str]:
@@ -227,6 +265,9 @@ def address_of(duck: Any, table: str, args: Optional[Dict[str, Any]] = None) -> 
         values = [str(args[r]) for r in required]
         last = values[-1].split(".")  # the last part may be written dotted: sqlserver.dbo.Customers
         segments = [[v] for v in values[:-1]] + [last if all(last) else [values[-1]]]
+        native = native_database(duck, table) if len(required) == 1 else None
+        if native:  # the connection's own database, like every connector.database.table
+            segments = [[native]] + segments
     address = ".".join([_ident(duck, service)] + [".".join(_ident(duck, x) for x in seg) for seg in segments])
     try:
         back = resolve(duck, _parts(address))
@@ -243,7 +284,9 @@ def address_pattern(duck: Any, table: str) -> Optional[str]:
     service = duck.service_of.get(table)
     if service is None or service not in services(duck) or generic_function(duck, service) != table:
         return None
-    return ".".join([_ident(duck, service)] + [f"<{r}>" for r in _required(duck, table)])
+    required = _required(duck, table)
+    native = native_database(duck, table) if len(required) == 1 else None
+    return ".".join([_ident(duck, service)] + ([_ident(duck, native)] if native else []) + [f"<{r}>" for r in required])
 
 
 def _ident(duck: Any, part: str) -> str:

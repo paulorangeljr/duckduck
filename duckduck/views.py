@@ -526,6 +526,85 @@ def save_many(path: str, definitions: Dict[str, Dict[str, Any]]) -> None:
     _write(path, data)
 
 
+def rename_many(path: str, renames: Dict[str, str]) -> None:
+    """Renames several saved tables in the config file at once, keeping their order (one ``.bak``, one write)."""
+    data = _read(path)
+    views = data.get("views") if isinstance(data.get("views"), dict) else {}
+    data["views"] = {renames.get(k, k): v for k, v in views.items()}
+    _write(path, data)
+
+
+def moved_name(duck: Any, name: str, database: Optional[str], connector: Optional[str] = None) -> str:
+    """
+    The name a saved table gets in another database of its connector:
+    ``s3_data.sec.proxy`` → ``s3_data.reports.proxy``; an empty database (or
+    ``default`` where the connector has no databases) → ``connector.table``.
+    A plain name needs ``connector``.
+    """
+    from .addresses import DEFAULT_DATABASE, _ident, generic_function, services, _required
+
+    parts = _split_address(name) if is_dotted(name) else [name]
+    known = services(duck)
+    service = (connector or (parts[0] if len(parts) > 1 else "")).lower()
+    if service not in known:
+        raise ValueError(f"{name}: pick a connector to put it in one of its databases")
+    db = (database or "").strip()
+    table = generic_function(duck, service)
+    has_databases = table is not None and len(_required(duck, table)) >= 2
+    if db.lower() == DEFAULT_DATABASE and not has_databases:
+        db = ""
+    segments = [service] + [_ident(duck, p) for p in db.split(".") if p.strip()] + [_ident(duck, parts[-1])]
+    return canonical_name(".".join(segments))
+
+
+def move(duck: Any, path: str, names: List[str], database: Optional[str], connector: Optional[str] = None,
+         taken: Optional[Callable[[str, Dict[str, Any]], Optional[str]]] = None) -> Dict[str, Any]:
+    """
+    Moves saved tables to ``database`` (renames them there), one write to the file.
+    ``taken(new_name, definition)``: why a name can't be used, or None (the page's
+    check against the tables behind a catalog). Returns ``{moved: [{from, to}], skipped: [{name, why}]}``.
+    """
+    renames: Dict[str, str] = {}
+    skipped: List[Dict[str, str]] = []
+    for name in names:
+        name = canonical_name(str(name))
+        if name not in duck.views:
+            skipped.append({"name": name, "why": "not a saved table"})
+            continue
+        try:
+            new = moved_name(duck, name, database, connector)
+        except ValueError as exc:
+            skipped.append({"name": name, "why": str(exc)})
+            continue
+        if new == name:
+            skipped.append({"name": name, "why": "already there"})
+            continue
+        definition = dict(duck.views[name])
+        why = (taken(new, definition) if taken else None) or (
+            f"{new} is already a saved table" if new in duck.views or new in renames.values() else None)
+        if why:
+            skipped.append({"name": name, "why": why})
+            continue
+        unregister(duck, name)
+        try:
+            register(duck, new, definition)
+        except (ValueError, LookupError) as exc:
+            register(duck, name, definition)
+            skipped.append({"name": name, "why": str(exc).strip("'\"")})
+            continue
+        renames[name] = new
+    if renames:
+        try:
+            rename_many(path, renames)
+        except Exception:
+            for old, new in renames.items():  # the file wasn't written: back as they were
+                definition = dict(duck.views[new])
+                unregister(duck, new)
+                register(duck, old, definition)
+            raise
+    return {"moved": [{"from": a, "to": b} for a, b in renames.items()], "skipped": skipped}
+
+
 def saved_as(duck: Any, table: str, args: Optional[Dict[str, Any]]) -> Optional[str]:
     """The saved table that is exactly this table with these arguments, if one is."""
     want = {k: str(v) for k, v in (args or {}).items()}

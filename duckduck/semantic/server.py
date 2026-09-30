@@ -688,6 +688,38 @@ def create_app(
             return start_job(register_all, render=lambda r: r)
         return dump(register_all())
 
+    @app.post("/api/views/move")
+    def move_views(body: Dict[str, Any] = Body(...)):
+        """``{names, database, connector?}`` — saved tables moved (renamed) into another database of their
+        connector, in one write. A name that's a table behind an expanded catalog (another one) is refused."""
+        from .. import views as saved
+
+        console = the_console()
+        source = console.source
+        off = saved_tables_off()
+        if off:
+            raise HTTPException(403, off)
+        names = body.get("names")
+        if not isinstance(names, list) or not names:
+            raise HTTPException(400, "names: a list of saved tables")
+        behind = {}  # addresses of the tables behind the catalogs read so far
+        for entry in list(console._nested.values()):
+            for t in entry[1]:
+                if t.get("address"):
+                    behind[t["address"].lower()] = (t["table"], {k: str(v) for k, v in (t.get("args") or {}).items()})
+
+        def taken(new: str, definition: Dict[str, Any]) -> Optional[str]:
+            other = behind.get(new.lower())
+            mine = (definition.get("table"), {k: str(v) for k, v in (definition.get("args") or {}).items()})
+            return f"{new} is a table behind the catalog — it would hide it" if other and other != mine else None
+
+        try:
+            out = saved.move(source, config_path, [str(n) for n in names], body.get("database"),
+                             body.get("connector"), taken=taken)
+        except OSError as exc:
+            raise HTTPException(500, f"couldn't write {config_path}: {exc}")
+        return dump(out)
+
     @app.delete("/api/views/{name}")
     def delete_view(name: str):
         from .. import views as saved

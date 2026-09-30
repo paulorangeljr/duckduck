@@ -220,6 +220,11 @@ aside.tables .tlist { flex: 1; min-height: 120px; max-height: none; }
 .dbacts { display: flex; gap: 10px; padding: 0 4px 4px; align-items: center; }
 .dbsection { margin: 4px 0 2px; }
 .dbitems .trow { margin-left: 0; }
+.selbox { flex: none; margin: 0 4px 0 2px; width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
+#selbar { position: sticky; top: 0; z-index: 3; margin: 6px 0; }
+.selbarin { border: 1px solid var(--accent); border-radius: 10px; padding: 8px 10px; background: var(--surface); font-size: 13px; }
+.selmove { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 6px 0 4px; }
+.selmove input { flex: 1; min-width: 120px; font-family: var(--mono, monospace); font-size: 13px; }
 .regbox { border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; margin: 6px 0; background: var(--surface); font-size: 13px; }
 .regbox.bad { border-color: var(--bad, #b91c1c); }
 .reghead { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -692,8 +697,10 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
         <div id="regstatus" aria-live="polite"></div>
         <input id="tablefilter" type="search" placeholder="Filter tables…" style="width:100%" aria-label="Filter tables">
         <div class="tlisttools"><span class="muted small">Connectors</span><span class="grow"></span>
+          <button type="button" class="linkish" id="selmode" title="Pick several saved tables (or tables behind a catalog) and move them to a database at once">Select</button>
           <button type="button" class="linkish" id="groupsopen" title="Show every connector's tables">Expand all</button>
           <button type="button" class="linkish" id="groupsclose" title="Show only the connectors' names">Collapse all</button></div>
+        <div id="selbar" hidden></div>
         <div class="tlist" id="tablelist"></div></aside>
       <div>
         <div class="card">
@@ -2133,7 +2140,8 @@ function drawTables() {
     const label = leaf ? `<span class="tname">${esc(leaf)}</span>` : cut > 0 ? `<span class="tdb">${esc(sn.slice(0, cut + 1))}</span><span class="tname">${esc(sn.slice(cut + 1))}</span>`
       : `<span class="tname">${esc(sn)}</span>`;
     const savedTip = t.saved ? `\n${t.saved === "bound" ? "A saved table over a table function" : "A saved query"} — kept in duckduck.json` : "";
-    return `<div class="trow ${t.saved ? "saved" : ""} ${JUST_SAVED_NAMES.has((t.saved_name || "").toLowerCase()) ? "just" : ""}"><button class="titem" type="button" data-usage="${esc(t.usage || ("SELECT * FROM " + t.name + " LIMIT 100"))}" title="${esc(tip + savedTip)}">
+    const sel = SELECTING && t.saved ? selBox("saved:" + (t.saved_name || t.name)) : "";
+    return `<div class="trow ${t.saved ? "saved" : ""} ${JUST_SAVED_NAMES.has((t.saved_name || "").toLowerCase()) ? "just" : ""}">${sel}<button class="titem" type="button" data-usage="${esc(t.usage || ("SELECT * FROM " + t.name + " LIMIT 100"))}" title="${esc(tip + savedTip)}">
       ${icon(t.icon)}<span class="tlabel">${label}</span>${tag}${kids ? `<span class="kcount">${kids}</span>` : ""}</button>
       <button type="button" class="infobtn" data-fninfo="${esc(t.name)}" title="What this table is, what it takes and how to query it" aria-label="How to use ${esc(t.name)}">i</button>
       ${t.saved ? `<button type="button" class="editbtn" data-editview="${esc(t.saved_name || t.name)}" title="See and edit the statement behind it">✎ Edit</button>` : ""}</div>`;
@@ -2142,7 +2150,7 @@ function drawTables() {
   const nestedItem = (n, short) => {
     const use = nestedUsage(n), key = nestedKey(n.table, n.args);
     const fresh = NEW_TABLES.has(n.id);
-    return `<div class="nitem ${n.saved_as ? "saved" : ""} ${JUST_SAVED.has(key) ? "just" : ""}" title="${esc(n.address || n.usage)}">
+    return `<div class="nitem ${n.saved_as ? "saved" : ""} ${JUST_SAVED.has(key) ? "just" : ""}" title="${esc(n.address || n.usage)}">${SELECTING && !n.saved_as ? selBox("nested:" + n.id) : ""}
       <span class="lbl" data-usage="${esc(n.saved_as ? `SELECT * FROM ${n.saved_as} LIMIT 100` : use)}">${esc(short && n.name ? n.name : n.label)}</span>${fresh ? `<span class="newchip" title="Not there the last time the catalog was read">new</span>` : ""}
       ${n.saved_as ? `<span class="savedok" title="Saved as the table ${esc(n.saved_as)}">✓ ${n.address && n.saved_as.toLowerCase() === n.address.toLowerCase() ? "saved" : esc(n.saved_as)}</span>
           <button type="button" class="editbtn" data-editview="${esc(n.saved_as)}" title="See and edit its statement">✎</button>`
@@ -2200,7 +2208,11 @@ function drawTables() {
       const items = [...tools, ...[...mine.saved.filter(x => !x.tool).map(x => ({name: x.leaf, html: () => tableRow(x.t, 0, x.leaf)})),
                      ...mine.nested.map(n => ({name: n.name || n.label, html: () => nestedItem(n, true)}))]
         .sort((x, y) => String(x.name).localeCompare(String(y.name)))];  // tools first, then the tables by name
-      return `<div class="dbgroup"><div class="dbhead"><button type="button" class="dbtoggle" data-db="${esc(key)}" aria-expanded="${open}"
+      const selKeys = SELECTING ? [...mine.saved.filter(x => x.t.saved).map(x => "saved:" + (x.t.saved_name || x.t.name)),
+                                   ...mine.nested.filter(n => !n.saved_as).map(n => "nested:" + n.id)] : [];
+      const allSel = selKeys.length && selKeys.every(k => SEL.has(k));
+      return `<div class="dbgroup"><div class="dbhead">${selKeys.length ? `<input type="checkbox" class="selbox" data-selall="${esc(JSON.stringify(selKeys))}" ${allSel ? "checked" : ""}
+          title="Select every table of ${esc(db)}" aria-label="Select every table of ${esc(db)}">` : ""}<button type="button" class="dbtoggle" data-db="${esc(key)}" aria-expanded="${open}"
           title="${open ? "Hide" : "Show"} the tables of ${esc(db)}${db === DEFAULT_DB ? " — the ones with no database of their own" : ""}"><span class="chev" aria-hidden="true">▸</span>${icon("database")}<span class="dbname">${esc(db)}</span>
           <span class="gcount">${f ? `${shown} of ${total}` : total}</span>${savedN ? `<span class="okc small">${savedN} saved</span>` : ""}</button>
         ${canSave && todo.length && catalog ? `<button type="button" class="mini" data-regall="${esc(catalog)}" data-regdb="${esc(db)}"
@@ -2266,6 +2278,15 @@ function drawTables() {
     drawTables();
   });
   on("[data-fninfo]", b => showFunctionInfo(b.dataset.fninfo));
+  $("#tablelist").querySelectorAll("input[data-sel]").forEach(c => c.addEventListener("change", () => {
+    const k = c.dataset.sel;
+    if (c.checked) SEL.set(k, selItem(k)); else SEL.delete(k);
+    drawSelBar(); drawTables();
+  }));
+  $("#tablelist").querySelectorAll("input[data-selall]").forEach(c => c.addEventListener("change", () => {
+    JSON.parse(c.dataset.selall).forEach(k => { if (c.checked) SEL.set(k, selItem(k)); else SEL.delete(k); });
+    drawSelBar(); drawTables();
+  }));
 }
 // the push-down summary (hostname =, name LIKE/ILIKE, bytes >…) in KQL's operators
 const kqlPushdown = (text) => String(text).replace(/(^|[\s(])=(?=[,\s)]|$)/g, "$1==")
@@ -2338,6 +2359,69 @@ $("#fnclose").addEventListener("click", () => $("#fninfo").close());
 $("#fninfo").addEventListener("click", (e) => { if (e.target === $("#fninfo")) $("#fninfo").close(); });
 
 // "Register all": every table behind a catalog not saved yet becomes a saved table (one write; already-saved ones skipped)
+// Select: several saved tables (and tables behind a catalog not saved yet) moved to a database at once —
+// saved ones are renamed there, the others saved there.
+let SELECTING = false;
+const SEL = new Map();  // "saved:<name>" | "nested:<id>" → {kind, name|n, svc}
+const selBox = (key) => `<input type="checkbox" class="selbox" data-sel="${esc(key)}" ${SEL.has(key) ? "checked" : ""} aria-label="Select">`;
+function selItem(key) {
+  const [kind, ...rest] = key.split(":"), id = rest.join(":");
+  if (kind === "saved") { const t = TABLES.find(x => (x.saved_name || x.name) === id); return {kind, name: id, svc: t?.service}; }
+  const n = Object.values(NESTED).flatMap(x => x.tables || []).find(x => x.id === id);
+  return {kind, n, svc: n?.service};
+}
+$("#selmode").addEventListener("click", () => {
+  SELECTING = !SELECTING; if (!SELECTING) SEL.clear();
+  $("#selmode").textContent = SELECTING ? "Done" : "Select";
+  drawSelBar(); drawTables();
+});
+function drawSelBar() {
+  const bar = $("#selbar");
+  if (!SELECTING) { bar.hidden = true; bar.innerHTML = ""; return; }
+  const items = [...SEL.values()], svcs = [...new Set(items.map(x => x.svc).filter(Boolean))];
+  const dbs = new Set(); svcs.forEach(sv => databasesOf(sv).forEach(d => dbs.add(d)));
+  bar.hidden = false;
+  bar.innerHTML = items.length ? `<div class="selbarin"><b>${items.length}</b> selected${svcs.length ? ` <span class="muted">in ${esc(svcs.join(", "))}</span>` : ""}
+      <div class="selmove"><label class="small" for="seldb">Move to database</label>
+        <input id="seldb" list="seldblist" placeholder="default" autocomplete="off" spellcheck="false">
+        <datalist id="seldblist">${[...dbs].sort().map(d => `<option value="${esc(d)}">`).join("")}</datalist>
+        <button type="button" class="primary small" id="selgo">Move</button>
+        <button type="button" class="linkish" id="selclear">Clear</button></div>
+      <div class="muted small">Saved tables are renamed into it; the others are saved there. A new database only groups them.</div></div>`
+    : `<div class="selbarin muted small">Tick saved tables — or a database's box for all of it — then move them to a database.</div>`;
+  $("#selclear")?.addEventListener("click", () => { SEL.clear(); drawSelBar(); drawTables(); });
+  $("#selgo")?.addEventListener("click", () => moveSelected($("#seldb").value.trim()));
+  $("#seldb")?.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); moveSelected($("#seldb").value.trim()); } });
+}
+async function moveSelected(database) {
+  const items = [...SEL.values()];
+  const saved = items.filter(x => x.kind === "saved").map(x => x.name);
+  const fresh = items.filter(x => x.kind === "nested" && x.n);
+  const where = database || DEFAULT_DB;
+  if (!confirm(`Move ${items.length} table${items.length === 1 ? "" : "s"} to the database “${where}”?` +
+    (saved.length ? `\n\n${saved.length} saved table${saved.length === 1 ? " is" : "s are"} renamed (connector.${where}.<table>) — a saved query reading the old name has to be changed too.` : "") +
+    (fresh.length ? `\n${fresh.length} not saved yet ${fresh.length === 1 ? "is" : "are"} saved there.` : ""))) return;
+  $("#selgo").disabled = true; $("#selgo").textContent = "Moving…";
+  let moved = 0, skipped = [];
+  try {
+    if (saved.length) {
+      const r = await api("/api/views/move", {names: saved, database});
+      moved += (r.moved || []).length; skipped = skipped.concat(r.skipped || []);
+      (r.moved || []).forEach(m => { JUST_SAVED_NAMES.add(m.to.toLowerCase()); draftViews(v => { if (v[m.from]) { v[m.to] = v[m.from]; delete v[m.from]; } }); });
+    }
+    if (fresh.length) {
+      const leaf = (n) => n.name || (n.address || n.label).split(".").pop();
+      const name = (n) => [n.service, ...(database && !(database.toLowerCase() === DEFAULT_DB && !databasesOf(n.service).length)
+        ? database.split(".").map(quotePart) : []), quotePart(leaf(n))].join(".");
+      const r = await api("/api/views/many", {items: fresh.map(x => ({table: x.n.table, args: x.n.args, name: name(x.n)}))});
+      moved += (r.created || []).length; skipped = skipped.concat(r.skipped || []);
+      (r.created || []).forEach(v => { JUST_SAVED.add(nestedKey(v.table, v.args)); JUST_SAVED_NAMES.add(v.name.toLowerCase()); draftViews(vs => { vs[v.name] = {table: v.table, args: v.args}; }); });
+    }
+  } catch (err) { toast(err.message); drawSelBar(); return; }
+  SEL.clear();
+  drawRegDone({created: Array(moved).fill({}), skipped, verb: `Moved to ${where}`});
+  afterSavedTables(); drawSelBar();
+}
 // "Register all" runs as a job: a bar with how far it got (and Cancel — then nothing is saved), and at the end
 // what was saved and, for any skipped, why
 let REGJOB = null;  // {id, timer, total, what}
@@ -2395,10 +2479,10 @@ function drawRegDone(r) {
   skipped.forEach(x => { why[x.why] = (why[x.why] || 0) + 1; });
   $("#regstatus").innerHTML = `<div class="regbox ${r.error ? "bad" : ""}"><div class="reghead">
       ${r.error ? `<b class="err">Nothing saved:</b> <span>${esc(r.error)}</span>` : r.cancelled ? `<b>Cancelled</b> <span class="muted">— nothing of that run was saved</span>`
-        : `<b class="okc">✓ Saved ${created.toLocaleString()} table${created === 1 ? "" : "s"}</b>${skipped.length ? ` <span class="muted">· ${skipped.length} skipped</span>` : ""}`}
+        : `<b class="okc">✓ ${esc(r.verb || "Saved")} ${created.toLocaleString()} table${created === 1 ? "" : "s"}</b>${skipped.length ? ` <span class="muted">· ${skipped.length} skipped</span>` : ""}`}
       <span class="grow"></span><button type="button" class="iconbtn" id="regclose" aria-label="Close">✕</button></div>
     ${skipped.length ? `<details class="small"><summary>Why ${skipped.length === 1 ? "one was" : "some were"} skipped</summary><ul>${Object.entries(why).slice(0, 20)
-      .map(([w, n]) => `<li>${n > 1 ? `<b>${n}×</b> ` : ""}${esc(w.replace(/already saved as \S+/, "already saved"))}</li>`).join("")}</ul></details>` : ""}</div>`;
+      .map(([w, n]) => `<li>${n > 1 ? `<b>${n}×</b> ` : ""}${esc(n > 1 ? w.replace(/already saved as \S+/, "already saved") : w)}</li>`).join("")}</ul></details>` : ""}</div>`;
   $("#regclose").addEventListener("click", () => { $("#regstatus").innerHTML = ""; });
 }
 $("#tablefilter").addEventListener("input", drawTables);

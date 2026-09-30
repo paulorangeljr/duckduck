@@ -359,13 +359,15 @@ def nested_group(duck: Any, table: str, args: Dict[str, Any]) -> Tuple[Optional[
     """
     from ..kinds import required_params
 
+    from ..addresses import native_database
+
     fn = duck.functions.get(table)
     required = [p.name for p in required_params(fn)] if fn is not None else []
     if not required or not all(r in (args or {}) for r in required):
         return None, None
     name = str(args[required[-1]])
-    if len(required) < 2:
-        return None, name
+    if len(required) < 2:  # the table's name only: the connection's own database, when it has one (ADX, SQL)
+        return native_database(duck, table), name
     return ".".join(str(args[r]) for r in required[:-1]), name
 
 
