@@ -1094,6 +1094,26 @@ picks up; **✕ Cancel** stops it — DuckDB's own step included. **Debug
 log** shows the DEBUG lines too (request bodies, bound parameters, every
 page); secrets stay masked.
 
+**Cache.** The SQL tab reuses what a source returned for 10 minutes: the
+same call to the same table, with the same arguments and the same filters
+sent to the source, isn't made again. DuckDB still runs the whole query on
+it, so changing the SELECT, ORDER BY or GROUP BY, or a filter that stays
+with DuckDB, answers at once. A filter that goes to the source reads again.
+The result says **⚡ from the cache · read 3 min ago**. **↻ Run without
+cache** (Ctrl+Shift+Enter, or *Run again without cache* on the result)
+reads every source again and keeps the new reads. Set it in
+`duckduck.json`:
+
+```json
+"sql_cache": {"ttl": "30m", "max_rows": 2000000}
+```
+
+`false` turns it off. `ttl` takes seconds or `30s` / `10m` / `1h` / `1d`.
+`max_rows` caps the rows kept in memory; the least recently used reads go
+first. In Python it's off by default: `DuckAPI(cache=True)` (or
+`{"ttl": …}`), and `with duckduck.cache.refreshing():` reads again.
+`GET /api/sql/cache` shows it, `DELETE /api/sql/cache` empties it.
+
 **Query tabs.** The editor has tabs: **＋** opens a new one, a double-click
 renames it, **×** closes it. Each tab keeps its own query, language (SQL or
 KQL) and last result, so running one doesn't wipe another. A query keeps

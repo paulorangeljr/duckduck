@@ -281,6 +281,15 @@ def _extract_scoped(selects: List[exp.Select], ctx: "PushDownContext", arg_quali
                 ctx.filters[column] = c.value
 
 
+def _ago(seconds: float) -> str:
+    """``12s ago`` / ``3 min ago`` / ``2 h ago``."""
+    if seconds < 60:
+        return f"{int(seconds)}s ago"
+    if seconds < 3600:
+        return f"{int(seconds // 60)} min ago"
+    return f"{seconds / 3600:.1f} h ago"
+
+
 def _limit_blocker(parsed: exp.Expression) -> Optional[str]:
     """
     Why a source-side LIMIT could change the query's answer, or None when
@@ -450,7 +459,7 @@ class DuckAPI:
     correctness even when the API returns extra data.
     """
 
-    def __init__(self, database: str = ":memory:", verbose=None, stream_pages: bool = True):
+    def __init__(self, database: str = ":memory:", verbose=None, stream_pages: bool = True, cache: Any = None):
         """
         Parameters
         ----------
@@ -469,6 +478,12 @@ class DuckAPI:
             time. ``"debug"`` adds request bodies and query parameters.
             Defaults to the ``DUCKDUCK_VERBOSE`` environment variable; off
             when neither is set. See ``duckduck.logs``.
+        cache : SourceCache, bool or dict, optional
+            Reuse what a source returned for the same call (function,
+            arguments, push-down) for a while instead of calling it again
+            — ``True`` (10 minutes), ``{"ttl": "10m", "max_rows": …}`` or a
+            ``duckduck.cache.SourceCache``. Off by default. See
+            ``duckduck.cache`` (``refreshing()`` reads again).
         """
         if verbose is None:
             verbose = verbose_from_env()
@@ -492,6 +507,11 @@ class DuckAPI:
         self._config_views: Optional[Dict[str, Any]] = None
         self._table_counter = 0
         self.stream_pages = stream_pages
+        from .cache import SourceCache
+
+        #: What sources returned, reused within its ttl (None = off). See ``duckduck.cache``.
+        self.cache: Optional[SourceCache] = (cache if isinstance(cache, SourceCache) or cache is None
+                                             else SourceCache.from_config(cache))
 
     # ------------------------------------------------------------------
     # Function registration
@@ -1377,12 +1397,28 @@ class DuckAPI:
         """
         from . import progress
 
+        from . import cache as source_cache
+
         validated = self._validate_arguments(function_name, fetch_function, kwargs)
-        progress.step("fetching", f"Reading {function_name}…")  # a paused / cancelled run stops here
-        started = time.perf_counter()
-        data = fetch_function(**validated)
-        progress.checkpoint()
-        df = self._to_dataframe(data, function_name, allow_empty=True)
+        key = (source_cache.key_of("call", function_name, id(fetch_function), validated)
+               if self.cache is not None else None)
+        hit = self.cache.get(key) if key is not None else None
+        if hit is not None:
+            df, age = hit
+            progress.step("fetching", f"{function_name}: from the cache (read {_ago(age)})")
+            logger.info("  %s: %s rows from the cache, read %s", function_name, f"{len(df):,}", _ago(age))
+            source_cache.note(function_name, True, len(df), age)
+        else:
+            progress.step("fetching", f"Reading {function_name}…")  # a paused / cancelled run stops here
+            started = time.perf_counter()
+            data = fetch_function(**validated)
+            progress.checkpoint()
+            df = self._to_dataframe(data, function_name, allow_empty=True)
+            if key is not None:
+                self.cache.put(key, df, len(df))
+            source_cache.note(function_name, False, len(df))
+            logger.info("  %s: %s rows × %s columns in %.2fs", function_name, f"{len(df):,}", len(df.columns),
+                        time.perf_counter() - started)
         if len(df.columns) == 0:
             # No rows and nothing to infer columns from (e.g. an empty JSON
             # list): shape an empty table from the columns the query itself
@@ -1391,10 +1427,9 @@ class DuckAPI:
             columns = list(fallback_columns or []) or [self.EMPTY_PLACEHOLDER_COLUMN]
             df = pd.DataFrame({c: pd.Series(dtype="object") for c in columns})
             logger.info("  %s: no rows returned — empty result with columns %s", function_name, columns)
-        logger.info("  %s: %s rows × %s columns in %.2fs", function_name, f"{len(df):,}", len(df.columns),
-                    time.perf_counter() - started)
 
-        progress.note_item("fetched", function_name, {"rows": len(df), "columns": len(df.columns)})
+        progress.note_item("fetched", function_name, {"rows": len(df), "columns": len(df.columns),
+                                                      **({"cached": True} if hit is not None else {})})
         self._table_counter += 1
         table_name = f"_api_{function_name}_{self._table_counter}"
         self.conn.register(table_name, df)
@@ -1442,9 +1477,26 @@ class DuckAPI:
         stop_at = (pushdown.limit if pushdown.limit is not None and pushdown.limit_safe and pushdown.complete
                    and tables == 1 else None)
 
+        from . import cache as source_cache
         from . import progress
 
         validated = self._validate_arguments(fn_name, iter_fn, kwargs)
+        key = (source_cache.key_of("pages", fn_name, id(iter_fn), validated, conditions,
+                                   "*" if star else sorted(used), stop_at)
+               if self.cache is not None else None)
+        hit = self.cache.get(key) if key is not None else None
+        if hit is not None:
+            (df, count, scanned, pages), age = hit
+            progress.step("fetching", f"{fn_name}: from the cache (read {_ago(age)})")
+            logger.info("  %s: %s rows from the cache (kept of %s read page by page), read %s", fn_name,
+                        f"{count:,}", f"{scanned:,}", _ago(age))
+            source_cache.note(fn_name, True, len(df), age)
+            progress.note_item("fetched", fn_name, {"rows": count, "rows_scanned": scanned, "pages": pages,
+                                                    "cached": True})
+            self._table_counter += 1
+            table_name = f"_api_{fn_name}_{self._table_counter}"
+            self.conn.register(table_name, df)
+            return table_name, list(df.columns), kwargs
         progress.step("fetching", f"Reading {fn_name} page by page…")
         started = time.perf_counter()
         kept: List[pd.DataFrame] = []
@@ -1487,6 +1539,9 @@ class DuckAPI:
         else:
             columns = last_columns or list(fallback_columns or []) or [self.EMPTY_PLACEHOLDER_COLUMN]
             df = pd.DataFrame({c: pd.Series(dtype="object") for c in columns})
+        if key is not None:
+            self.cache.put(key, (df, count, scanned, pages), len(df))
+        source_cache.note(fn_name, False, len(df))
         progress.note_item("fetched", fn_name, {"rows": count, "rows_scanned": scanned, "pages": pages})
         logger.info("  %s: kept %s of %s rows from %s page(s), %s column(s), in %.2fs", fn_name, f"{count:,}",
                     f"{scanned:,}", pages, len(df.columns), time.perf_counter() - started)

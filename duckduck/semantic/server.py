@@ -24,8 +24,9 @@ HTML page (``webpage.PAGE``) over a JSON API:
 ``GET  /api/export.md``                      the still-failing questions, as a brief for a developer
 ``GET  /api/meta``                           categories, answer kinds, tables (+ icon kind), entities, values
 ``GET  /api/connections`` · ``GET /api/tables/nested?service=&refresh=1``  each connector started or why not · the tables behind catalogs (one connector's, or all)
+``GET|DELETE /api/sql/cache``  the source cache: status / forget every kept read (``cache: false`` on /api/sql skips it)
 ``GET /api/sql/results/{id}[/csv]?offset&limit&sort&desc&q``  a query's whole result, paged / searched / sorted / as CSV
-``POST /api/sql {sql, debug, background}`` · ``GET /api/tables``  the SQL console (``allow_sql``, on by default; read-only, no files/network; ``background`` → a job)
+``POST /api/sql {sql, debug, background, cache}`` · ``GET /api/tables``  the SQL console (``allow_sql``, on by default; read-only, no files/network; ``background`` → a job)
 ``POST /api/takeover {conversation_id, name, full, user}``  "take over from here": the answer's rows as a table (an unrated answer → answered)
 ``POST /api/takeover/proposal {conversation_id}``  what that would give: suggested name, rows, columns, capped
 ``GET /api/views`` · ``POST /api/views/check {sql}`` · ``POST /api/views`` · ``POST /api/views/many`` · ``DELETE /api/views/{name}``  saved tables (a query kept as a table in duckduck.json)
@@ -498,11 +499,23 @@ def create_app(
         """``debug``: the log at DEBUG; ``background``: as a job (live steps and log, pause / cancel) → 202."""
         console, sql, debug = the_console(), str(body.get("sql") or ""), bool(body.get("debug"))
         language = str(body.get("language") or "sql").lower()  # "kql": translated first (or sent to ADX as it is)
+        cache = body.get("cache", True) is not False  # false: read every source again ("Run without cache")
         if body.get("background"):
             log: list = []
-            return start_job(lambda: console.run(sql, debug=debug, log=log, language=language), render=lambda r: r,
-                             on_cancel=console.interrupt, log=log)
-        return dump(console.run(sql, debug=debug, language=language))
+            return start_job(lambda: console.run(sql, debug=debug, log=log, language=language, cache=cache),
+                             render=lambda r: r, on_cancel=console.interrupt, log=log)
+        return dump(console.run(sql, debug=debug, language=language, cache=cache))
+
+    @app.get("/api/sql/cache")
+    def sql_cache():
+        """The source cache: enabled, ttl, reads kept."""
+        return dump(the_console().cache_status())
+
+    @app.delete("/api/sql/cache")
+    def clear_sql_cache():
+        """Forgets every kept read."""
+        console = the_console()
+        return dump({"cleared": console.clear_cache(), **console.cache_status()})
 
     @app.post("/api/sql/translate")
     def kql_translate(body: Dict[str, Any] = Body(...)):

@@ -72,6 +72,13 @@ class SQLConsole:
         console.default_database = getattr(duck, "default_database", None)
         self._nested: Dict[Optional[str], Tuple[float, List[Dict[str, Any]], List[str], set]] = {}
         console._streaming_functions = getattr(duck, "_streaming_functions", {})
+        from ..cache import SourceCache
+
+        try:  # what each source returned, reused for a while — the config's "sql_cache" (on by default)
+            console.cache = SourceCache.from_config(_config_value(self._config_path, "sql_cache"))
+        except ValueError as exc:
+            logging.getLogger("duckduck.admin").warning("sql_cache: %s — using the defaults", exc)
+            console.cache = SourceCache()
         console.conn.execute("SET enable_external_access = false")
         console.conn.execute("SET lock_configuration = true")
         self.duck = console
@@ -113,15 +120,20 @@ class SQLConsole:
                                    and self.duck.service_of.get(n)})
         return status
 
-    def run(self, query: str, debug: bool = False, log: Optional[List[str]] = None, language: str = "sql") -> Dict[str, Any]:
+    def run(self, query: str, debug: bool = False, log: Optional[List[str]] = None, language: str = "sql",
+            cache: bool = True) -> Dict[str, Any]:
         """
-        Runs one read query. ``debug``: the log at DEBUG (request bodies,
-        bound parameters, every page) instead of INFO. ``log``: the list the
+        Runs one read query. ``cache``: reuse what a source returned for
+        the same call within the cache's ttl (``False``: read every source
+        again and keep the new reads); the result's ``cache`` says which
+        sources came from it and how old they were. ``debug``: the log at
+        DEBUG (request bodies, bound parameters, every page) instead of INFO. ``log``: the list the
         lines go to as they're written — a job's page reads it live. Under a
         ``progress.tracking`` (a job) it reports steps, and pause / cancel
         take effect between API calls and pages; ``interrupt()`` stops the
         DuckDB step itself.
         """
+        from .. import cache as source_cache
         from .. import progress
 
         log = [] if log is None else log
@@ -151,10 +163,11 @@ class SQLConsole:
                 timer = threading.Timer(self.timeout, self.duck.conn.interrupt)
                 timer.start()
                 try:
-                    progress.step("planning", "Reading the query: what goes to each source")
-                    relation = self.duck.sql(query)
-                    progress.step("query", "DuckDB runs the query")
-                    df = relation.df()
+                    with source_cache.refreshing(not cache), source_cache.collecting() as used:
+                        progress.step("planning", "Reading the query: what goes to each source")
+                        relation = self.duck.sql(query)
+                        progress.step("query", "DuckDB runs the query")
+                        df = relation.df()
                 except Exception as exc:
                     return {"error": f"{type(exc).__name__}: {exc}", "columns": [], "rows": [], "row_count": 0,
                             "log": log, "elapsed_ms": ms(), **extra}
@@ -172,8 +185,18 @@ class SQLConsole:
             "columns": [str(c) for c in df.columns],
             "rows": _json_rows(shown),
             "row_count": int(len(df)), "truncated": len(df) > self.max_rows,
-            "elapsed_ms": ms(), "log": log, "debug": debug, "result_id": result_id, **extra,
+            "elapsed_ms": ms(), "log": log, "debug": debug, "result_id": result_id,
+            "cache": {**self.cache_status(), "used": used, "skipped": not cache}, **extra,
         }
+
+    def cache_status(self) -> Dict[str, Any]:
+        """The source cache: on or off, ttl, reads kept (``duckduck.cache``)."""
+        cache = self.duck.cache
+        return cache.status() if cache is not None else {"enabled": False}
+
+    def clear_cache(self) -> int:
+        """Forgets every kept read; returns how many."""
+        return self.duck.cache.clear() if self.duck.cache is not None else 0
 
     def _kept(self, result_id: str) -> Any:
         with self._results_lock:
@@ -710,7 +733,7 @@ def validate_config(data: Any, path: str = "") -> Dict[str, List[str]]:
     warnings: List[str] = []
     if not isinstance(data, dict):
         return {"errors": ["the config must be a JSON object"], "warnings": []}
-    known = {"services", "on_error", "ai_providers", "semantic", "views", "kql", "default_database"}
+    known = {"services", "on_error", "ai_providers", "semantic", "views", "kql", "default_database", "sql_cache"}
     for key in sorted(set(data) - known):
         warnings.append(f"unknown top-level key {key!r} (known: {', '.join(sorted(known))})")
     if data.get("on_error") not in (None, "raise", "warn"):
@@ -754,6 +777,13 @@ def validate_config(data: Any, path: str = "") -> Dict[str, List[str]]:
     default_db = data.get("default_database")
     if default_db is not None and not (isinstance(default_db, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", default_db)):
         errors.append("default_database must be a plain name (letters, digits and _), e.g. \"duckdefault\"")
+    if "sql_cache" in data:
+        from ..cache import SourceCache
+
+        try:
+            SourceCache.from_config(data["sql_cache"])
+        except ValueError as exc:
+            errors.append(str(exc))
     views = data.get("views", {})
     if not isinstance(views, dict):
         errors.append("views must be an object: {name: {table, args} | {sql}}")

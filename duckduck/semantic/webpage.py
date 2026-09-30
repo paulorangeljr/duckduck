@@ -513,6 +513,8 @@ table.vwtable tbody tr:hover td.rn { background: var(--surface-2); }
 .vwempty { padding: 40px; text-align: center; color: var(--muted); }
 .resbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .resbar .grow { flex: 1; }
+.cachenote { color: var(--accent); }
+.cachenote.muted { color: var(--muted); }
 .sqlres .tablewrap { max-height: 480px; overflow: auto; }
 .sqlres .tablewrap th { position: sticky; top: 0; background: var(--surface); box-shadow: inset 0 -1px 0 var(--border); }
 @media (max-width: 700px) { .vwcell { position: absolute; inset: auto 0 0 0; width: auto; height: 45%; background: var(--surface);
@@ -737,10 +739,11 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
               aria-controls="sqlac">SHOW TABLES</textarea>
             <div class="acpop" id="sqlac" role="listbox" hidden></div></div>
           <div class="row" style="margin-top:8px"><button class="primary" id="sqlrun">Run</button>
+            <button class="secondary" type="button" id="sqlfresh" title="Read every source again instead of reusing what the cache kept (Ctrl+Shift+Enter)">↻ Run without cache</button>
             <button class="secondary" type="button" id="sqlsave" title="Keep this query as a table with a name — in duckduck.json, for SQL and Ask">Save as table</button>
             <label class="check small" title="Log at DEBUG: request bodies, bound parameters, every page (secrets stay masked)">
               <input type="checkbox" id="sqldebug"> Debug log</label>
-            <span class="muted small" id="sqlhint">Ctrl+Enter · read queries only (SELECT, WITH, SHOW, DESCRIBE…) · no file or network access</span></div>
+            <span class="muted small" id="sqlhint">Ctrl+Enter · Ctrl+Shift+Enter without cache · read queries only (SELECT, WITH, SHOW, DESCRIBE…) · no file or network access</span></div>
         </div>
         <div id="sqlresult"></div>
       </div>
@@ -2533,7 +2536,9 @@ $("#groupsclose").addEventListener("click", () => { groupsOf().forEach(g => COLL
 // Each query tab has its own job; one keeps running while another tab is shown.
 try { $("#sqldebug").checked = store.get("duckduck-sqldebug") === "1"; } catch {}
 $("#sqldebug").addEventListener("change", () => store.set("duckduck-sqldebug", $("#sqldebug").checked ? "1" : "0"));
-async function runSql() {
+// fresh: read every source again (the server's cache — what each source returned, reused for a while — is skipped
+// and refilled)
+async function runSql(fresh = false) {
   const tab = curTab(), sql = $("#sqltext").value.trim(); if (!sql || !tab) return;
   acClose();
   if (tab.job) await sqlJobAction("cancel", tab);  // a new run replaces the one still running in this tab
@@ -2541,7 +2546,7 @@ async function runSql() {
   tab.result = null; tab.error = null;
   $("#sqlresult").innerHTML = `<div class="card muted">Starting…</div>`;
   let r;
-  try { r = await api("/api/sql", {sql, debug, background: true, language: LANG}); }
+  try { r = await api("/api/sql", {sql, debug, background: true, language: LANG, cache: !fresh}); }
   catch (err) { tab.error = err.message; if (QACTIVE === tab.id) drawTabResult(tab); return; }
   if (!r.job_id) { tab.result = r; if (QACTIVE === tab.id) drawSqlResult(r); return; }
   tab.job = {id: r.job_id, debug};
@@ -2593,7 +2598,7 @@ function drawSqlJob(v, debug) {
     ${st === "pausing" ? `<p class="jobnote">A call already in flight finishes first — then it stops. DuckDB's own step can't pause; cancel stops it.</p>` : ""}
     ${st === "cancelled" ? `<p class="jobnote">Stopped. Nothing else is read.</p>` : ""}
     ${fetched.length ? `<div class="muted small" style="margin-top:6px">Read so far: ${fetched.map(([t, f]) =>
-      `<span class="mono">${esc(t)}</span> ${(f.rows ?? 0).toLocaleString()} rows${f.pages ? ` (${f.pages} pages)` : ""}`).join(" · ")}</div>` : ""}
+      `<span class="mono">${esc(t)}</span> ${(f.rows ?? 0).toLocaleString()} rows${f.pages ? ` (${f.pages} pages)` : ""}${f.cached ? " (from the cache)" : ""}`).join(" · ")}</div>` : ""}
     <details class="sqllog" ${log.length && (debug || st !== "running") ? "open" : ""}><summary>Log${debug ? " (debug)" : ""} · ${log.length} line${log.length === 1 ? "" : "s"}</summary>
       <pre class="log mono">${esc(log.join("\n"))}</pre></details>
   </div>`;
@@ -2611,10 +2616,25 @@ function drawSqlResult(r) {
       <pre class="log mono">${esc(tr.sql)}</pre>${tr.route !== "native" ? `<button class="mini" type="button" id="sqlastext" title="Switch the editor to SQL with this query">Open as SQL</button>` : ""}</details>` : "";
   $("#sqlresult").innerHTML = `<div class="card sqlres">` + trHtml + (r.error ? `<p class="error">${esc(r.error)}</p>` :
     `<div class="resbar"><span class="muted small">${r.row_count.toLocaleString()} row${r.row_count === 1 ? "" : "s"} · ${r.columns.length} column${r.columns.length === 1 ? "" : "s"} · ${r.elapsed_ms} ms${r.truncated ? " · first " + rows.length.toLocaleString() + " shown here" : ""}</span>
-      <span class="grow"></span>${r.columns.length ? `<button class="secondary" type="button" id="sqlexpand" title="Open the result full screen: search, sort, every row, CSV">⤢ Expand</button>` : ""}</div>${table(rows)}`) +
+      ${cacheNote(r.cache)}<span class="grow"></span>${r.columns.length ? `<button class="secondary" type="button" id="sqlexpand" title="Open the result full screen: search, sort, every row, CSV">⤢ Expand</button>` : ""}</div>${table(rows)}`) +
     ((r.log || []).length ? `<details${r.error || r.debug ? " open" : ""}><summary>${r.debug ? "Debug log" : "What went to each source (push-down)"}</summary><pre class="log mono">${esc(r.log.join("\n"))}</pre></details>` : "") + `</div>`;
 }
+// which sources came from the cache, and how old those reads are — with a way to read them again
+function cacheNote(c) {
+  if (!c || !c.enabled) return "";
+  const hits = (c.used || []).filter(u => u.cached);
+  const when = (s) => s < 60 ? `${Math.round(s)}s ago` : s < 3600 ? `${Math.floor(s / 60)} min ago` : `${(s / 3600).toFixed(1)} h ago`;
+  const ttl = c.ttl_s >= 3600 ? `${+(c.ttl_s / 3600).toFixed(1)} h` : c.ttl_s >= 60 ? `${+(c.ttl_s / 60).toFixed(1)} min` : `${c.ttl_s}s`;
+  if (c.skipped) return `<span class="cachenote muted small" title="Every source was read again; these reads are reused for ${ttl}">↻ read fresh</span>`;
+  if (!hits.length) return "";
+  const oldest = Math.max(...hits.map(u => u.age_s || 0));
+  const all = hits.length === (c.used || []).length;
+  const tip = hits.map(u => `${u.table}: ${u.rows.toLocaleString()} rows, read ${when(u.age_s || 0)}`).join("\n") + `\nReads are reused for ${ttl}`;
+  return `<span class="cachenote small" title="${esc(tip)}">⚡ ${all ? "from the cache" : `${hits.length} of ${(c.used || []).length} sources from the cache`} · read ${when(oldest)}</span>
+    <button class="mini" type="button" id="sqlnocache" title="Read every source again (Ctrl+Shift+Enter)">↻ Run again without cache</button>`;
+}
 $("#sqlresult").addEventListener("click", (e) => {
+  if (e.target.closest("#sqlnocache")) { runSql(true); return; }
   if (e.target.closest("#sqlexpand") && LAST_SQL) openViewer(resultSource(LAST_SQL.result), LAST_SQL.sql || "Result");
   const asSql = e.target.closest("#sqlastext");
   if (asSql) { const pre = asSql.previousElementSibling; setLang("sql", pre ? pre.textContent : undefined); }
@@ -2660,7 +2680,7 @@ function applyLang() {
   $("#sqltext").setAttribute("aria-label", lang === "kql" ? "KQL" : "SQL");
   $("#sqlhint").textContent = lang === "kql"
     ? "Ctrl+Enter · queries only (no .commands but .show tables) · where ==, contains, has, ago(1d)… · take N"
-    : "Ctrl+Enter · read queries only (SELECT, WITH, SHOW, DESCRIBE…) · no file or network access";
+    : "Ctrl+Enter · Ctrl+Shift+Enter without cache · read queries only (SELECT, WITH, SHOW, DESCRIBE…) · no file or network access";
   $("#sqlsave").title = lang === "kql" ? "Keep this query as a table: saved as the SQL it translates to" : "Keep this query as a table with a name — in duckduck.json, for SQL and Ask";
   kqlNote();
 }
@@ -2769,7 +2789,8 @@ function inLang(sql) {
   const conds = m[2] ? m[2].split(/\s+AND\s+/i).map(c => c.trim().replace(/\s=\s/, " == ")) : [];
   return ref + (conds.length ? `\n| where ${conds.join("\n    and ")}` : "") + `\n| take ${m[3]}`;
 }
-$("#sqlrun").addEventListener("click", runSql);
+$("#sqlrun").addEventListener("click", () => runSql());
+$("#sqlfresh").addEventListener("click", () => runSql(true));
 
 // ---- SQL autocomplete (SQL mode only): tables by address after FROM / JOIN, level by level (connector →
 // database → table), arg.<x> of the query's tables, fn(<param>=, alias.<column>, columns, keywords, functions.
@@ -3130,7 +3151,7 @@ async function copyText(text, done) {
   }
   toast(done);
 }
-$("#sqltext").addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); runSql(); } });
+$("#sqltext").addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); runSql(e.shiftKey); } });
 
 // ---- Semantic catalog (Config tab): generate it with the LLM, as a job with its log live ----------
 let CAT = null, CATJOB = null;  // CATJOB: {id, lines, timer}
