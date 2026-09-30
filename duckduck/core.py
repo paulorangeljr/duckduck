@@ -106,6 +106,11 @@ def _literal_value(node: exp.Expression) -> Any:
         return node.this  # unquoted string
     if isinstance(node, exp.Boolean):
         return node.this
+    # TIMESTAMP '2026-09-30 11:00:00' / DATE '…' / CAST('…' AS TIMESTAMP): the source gets the text,
+    # DuckDB keeps the typed comparison (it re-applies the whole WHERE)
+    if (isinstance(node, exp.Cast) and isinstance(node.this, exp.Literal) and node.this.is_string
+            and node.to is not None and node.to.is_type(*exp.DataType.TEMPORAL_TYPES)):
+        return node.this.this
     return None
 
 
@@ -134,6 +139,17 @@ def _extract_filters(node: exp.Expression, ctx: "PushDownContext") -> None:
             ctx.filters[column] = val
         return
 
+    if isinstance(node, exp.Between) and isinstance(node.this, exp.Column):
+        # col BETWEEN a AND b ≡ col >= a AND col <= b
+        low, high = _literal_value(node.args.get("low")), _literal_value(node.args.get("high"))
+        if low is None or high is None or node.args.get("symmetric"):
+            ctx.complete = False
+            return
+        column, table = node.this.name.lower(), (node.this.table.lower() if node.this.table else None)
+        ctx.conditions.append(Condition(column=column, op="gte", value=low, table=table))
+        ctx.conditions.append(Condition(column=column, op="lte", value=high, table=table))
+        return
+
     if isinstance(node, (exp.And, exp.Where)):
         for child in node.args.values():
             if isinstance(child, exp.Expression):
@@ -141,6 +157,97 @@ def _extract_filters(node: exp.Expression, ctx: "PushDownContext") -> None:
         return
 
     ctx.complete = False
+
+
+def _sources_of(select: exp.Select) -> List[exp.Expression]:
+    """The FROM and JOIN sources of one SELECT (tables, calls, subqueries)."""
+    frm = select.args.get("from_") or select.args.get("from")
+    nodes = [frm.this] if frm is not None else []
+    return nodes + [j.this for j in select.args.get("joins") or []]
+
+
+def _source_label(node: exp.Expression) -> Optional[str]:
+    """How a condition names a table source — its alias, else its (function's) name; None for a subquery."""
+    if not isinstance(node, exp.Table):
+        return None
+    if node.alias:
+        return node.alias.lower()
+    name = node.name or (node.this.name if isinstance(node.this, exp.Func) else "")
+    return name.lower() or None
+
+
+def _passes_through(node: exp.Expression) -> Optional[exp.Select]:
+    """
+    A derived table that's just ``SELECT * FROM <one source> [WHERE …]`` — a
+    condition on it is a condition on that source. None for anything else
+    (projections, aggregates, DISTINCT, LIMIT…: a column may not be the source's).
+    """
+    inner = node.this if isinstance(node, exp.Subquery) else None
+    if not isinstance(inner, exp.Select) or len(_sources_of(inner)) != 1:
+        return None
+    if (len(inner.expressions) != 1 or not isinstance(inner.expressions[0], exp.Star)
+            or any(inner.expressions[0].args.values())):  # SELECT * EXCLUDE / REPLACE / RENAME: not the source's columns
+        return None
+    for arg in ("group", "distinct", "having", "limit", "offset", "qualify", "order", "joins", "with"):
+        if inner.args.get(arg):
+            return None
+    return inner
+
+
+def _extract_scoped(selects: List[exp.Select], ctx: "PushDownContext", arg_qualifiers: Tuple[str, ...]) -> None:
+    """
+    Conditions of a query with subqueries / CTEs / set operations, each
+    scoped to the table it filters: every one comes out qualified with that
+    table's alias or name, so it reaches that call only. Pushed only when
+    it can't change the answer:
+
+    - a SELECT with one source that is a table (or a ``SELECT *`` pass-through
+      down to one) → its conditions go to that table;
+    - a qualified condition (``L.x``) → to the table with that alias in its SELECT;
+    - a condition on a derived table's computed column, an unqualified one
+      over several sources, or on a table name used twice without an alias →
+      DuckDB only (and the WHERE counts as incomplete).
+
+    ``arg.x`` conditions keep their qualifier (they fill arguments, never filter).
+    """
+    labels = [lbl for s in selects for src in _sources_of(s) if isinstance(src, exp.Table) and not src.alias
+              for lbl in [_source_label(src)] if lbl]
+    twice = {lbl for lbl in labels if labels.count(lbl) > 1}
+
+    def target(node: exp.Expression, depth: int = 0) -> Optional[str]:
+        if isinstance(node, exp.Table):
+            label = _source_label(node)
+            return None if label is None or (not node.alias and label in twice) else label
+        inner = _passes_through(node)
+        return target(_sources_of(inner)[0], depth + 1) if inner is not None and depth < 20 else None
+
+    for select in selects:
+        where = select.args.get("where")
+        if where is None:
+            continue
+        found = PushDownContext()
+        _extract_filters(where, found)
+        if not found.complete:
+            ctx.complete = False
+        sources = _sources_of(select)
+        by_label = {}
+        for src in sources:
+            lbl = (src.alias or "").lower() or _source_label(src)
+            if lbl:
+                by_label[lbl] = src
+        for c in found.conditions:
+            if c.table in arg_qualifiers:
+                table = c.table
+            elif c.table:
+                table = target(by_label[c.table]) if c.table in by_label else None
+            else:
+                table = target(sources[0]) if len(sources) == 1 else None
+            if table is None:
+                ctx.complete = False
+                continue
+            ctx.conditions.append(Condition(column=c.column, op=c.op, value=c.value, table=table))
+            if c.op == "eq":
+                ctx.filters[c.column] = c.value
 
 
 def _limit_blocker(parsed: exp.Expression) -> Optional[str]:
@@ -993,9 +1100,14 @@ class DuckAPI:
             except (ValueError, AttributeError, TypeError):
                 pass
 
-        where_node = parsed.find(exp.Where)
-        if where_node is not None:
-            _extract_filters(where_node, ctx)
+        selects = list(parsed.find_all(exp.Select))
+        if isinstance(parsed, exp.Select) and len(selects) == 1:
+            where_node = parsed.args.get("where")
+            if where_node is not None:
+                _extract_filters(where_node, ctx)
+        else:
+            # subqueries, CTEs, set operations: each WHERE applies to its own SELECT's tables only
+            _extract_scoped(selects, ctx, self.ARG_QUALIFIERS)
 
         ctx.limit_blocker = _limit_blocker(parsed)
         ctx.limit_safe = ctx.limit_blocker is None

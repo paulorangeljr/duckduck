@@ -497,11 +497,28 @@ def create_app(
     def run_sql(body: Dict[str, Any] = Body(...)):
         """``debug``: the log at DEBUG; ``background``: as a job (live steps and log, pause / cancel) → 202."""
         console, sql, debug = the_console(), str(body.get("sql") or ""), bool(body.get("debug"))
+        language = str(body.get("language") or "sql").lower()  # "kql": translated first (or sent to ADX as it is)
         if body.get("background"):
             log: list = []
-            return start_job(lambda: console.run(sql, debug=debug, log=log), render=lambda r: r,
+            return start_job(lambda: console.run(sql, debug=debug, log=log, language=language), render=lambda r: r,
                              on_cancel=console.interrupt, log=log)
-        return dump(console.run(sql, debug=debug))
+        return dump(console.run(sql, debug=debug, language=language))
+
+    @app.post("/api/sql/translate")
+    def kql_translate(body: Dict[str, Any] = Body(...)):
+        """``{kql}`` → the SQL it runs as (``route``: translated, or native on an ADX connector) — Save as table in KQL."""
+        from ..kql import KqlError, KqlUnavailable
+
+        console = the_console()
+        try:
+            return dump(console.kql.to_sql(str(body.get("kql") or ""), console.duck).to_dict())
+        except (KqlError, KqlUnavailable) as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.get("/api/sql/kql")
+    def kql_status():
+        """Whether the SQL tab can take KQL: the translator (the kql extension) and the ADX connectors it runs on natively."""
+        return dump(the_console().kql_status())
 
     @app.get("/api/sql/results/{result_id}")
     def sql_result_page(result_id: str, offset: int = 0, limit: int = 200, sort: Optional[str] = None,

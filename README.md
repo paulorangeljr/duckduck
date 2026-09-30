@@ -460,6 +460,58 @@ made from one (`SELECT * FROM s3_data.x.y` → a table over that call). In
 Python: `duck.address_of("nvd_cves")` → `"nvd.cves"`,
 `duck.resolve_addresses(sql)`.
 
+## Writing queries in KQL
+
+The SQL tab has a **SQL | KQL** switch: write Kusto Query Language instead,
+over every registered table — ADX's and everyone else's, joined:
+
+```kql
+adx.ProxyLogs
+| where Timestamp > ago(1d) and Host startswith 'web'
+| join kind=inner (sn.incident | project Host = cmdb_ci, number) on Host
+| project Host, Bytes, number
+```
+
+- **Translated to SQL** by the `kql` DuckDB extension built from
+  [saoc90/kql-to-sql](https://github.com/saoc90/kql-to-sql) (the official Kusto
+  parser), then run like any SQL: the time filter and `startswith` go to ADX,
+  the join happens in DuckDB. The result shows the SQL it ran as (*Open as SQL*
+  switches the editor to it).
+- **Native on ADX**: when every table a query reads is one ADX connector's
+  (`adx.X`), it's sent to the cluster as KQL, untouched but for the `adx.`
+  prefix — the real Kusto engine. That works even without the extension.
+- **Tables** by address (`adx.ProxyLogs`, `s3_data.security.proxy_logs`,
+  `['adx.Proxy Logs']` when a part isn't a plain name) or by registered name.
+- **Table functions**, three ways: `sn.incident`, `sn_table('incident')` /
+  `sn_table(table_name='incident')`, or `sn_table | where arg.table_name ==
+  'incident'`.
+- `ago()` / `now()` become the timestamp they mean (one clock per query), so
+  time filters reach the source; `=~` reaches it as an exact case-insensitive
+  match. A typo is an error naming where (`KQL doesn't parse: Query operator
+  expected (line 4, at "projct Host")`), never a different query.
+- Queries only: management commands are refused, except `.show tables`.
+  **Save as table** keeps the SQL a KQL query translates to.
+
+**The extension** is built once from source (needs the .NET 10 SDK — on
+Ubuntu `apt-get install dotnet-sdk-10.0`):
+
+```bash
+scripts/build_kql_extension.sh   # → ~/.duckduck/extensions/kql.duckdb_extension
+```
+
+It adds `kql_syntax_errors()` to the extension (the Kusto parser's own syntax
+check, which duckduck runs before translating). Elsewhere: `"kql": {"extension":
+"path/to/kql.duckdb_extension"}` in `duckduck.json` (relative to it) or the
+`DUCKDUCK_KQL_EXTENSION` env var. It's loaded unsigned into a private DuckDB
+connection that only translates. In Python:
+
+```python
+from duckduck.kql import KqlTranslator, run_kql
+
+run_kql(duck, "adx.ProxyLogs | where Host == 'web01' | take 10").df()
+KqlTranslator().to_sql("sn.incident | take 5", duck).sql   # the SQL (or the native call)
+```
+
 ## Discovering what's registered
 
 ```python

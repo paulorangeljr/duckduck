@@ -305,6 +305,11 @@ button.linkish[aria-pressed="true"] { color: var(--ink-2); }
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .seg button { font: inherit; font-size: 13px; border: 0; background: none; color: var(--ink-2); padding: 5px 12px; cursor: pointer; }
 .seg button[aria-pressed="true"] { background: var(--surface-2); color: var(--ink); font-weight: 600; }
+.seg button:disabled { opacity: .45; cursor: not-allowed; }
+.edhead { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+.edhead #kqlnote { flex: 1; min-width: 200px; }
+.translated pre { max-height: 240px; overflow: auto; }
+.routepill { display: inline-block; font-size: 11.5px; padding: 1px 8px; border-radius: 999px; background: var(--surface-2); color: var(--ink-2); margin-left: 6px; }
 #cfgform h4 { margin: 18px 0 6px; font-size: 14px; display: flex; gap: 8px; align-items: center; }
 #cfgform h4:first-child { margin-top: 4px; }
 #cfgform h4 .muted { font-weight: 400; font-size: 12.5px; }
@@ -675,12 +680,16 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
         <div class="tlist" id="tablelist"></div></aside>
       <div>
         <div class="card">
+          <div class="edhead"><div class="seg lang" role="group" aria-label="Query language">
+              <button type="button" data-lang="sql" aria-pressed="true" title="DuckDB SQL">SQL</button>
+              <button type="button" data-lang="kql" aria-pressed="false" title="Kusto Query Language — translated to SQL, or run on ADX as it is">KQL</button></div>
+            <span class="muted small" id="kqlnote"></span></div>
           <textarea class="editor mono" id="sqltext" spellcheck="false" aria-label="SQL">SHOW TABLES</textarea>
           <div class="row" style="margin-top:8px"><button class="primary" id="sqlrun">Run</button>
             <button class="secondary" type="button" id="sqlsave" title="Keep this query as a table with a name — in duckduck.json, for SQL and Ask">Save as table</button>
             <label class="check small" title="Log at DEBUG: request bodies, bound parameters, every page (secrets stay masked)">
               <input type="checkbox" id="sqldebug"> Debug log</label>
-            <span class="muted small">Ctrl+Enter · read queries only (SELECT, WITH, SHOW, DESCRIBE…) · no file or network access</span></div>
+            <span class="muted small" id="sqlhint">Ctrl+Enter · read queries only (SELECT, WITH, SHOW, DESCRIBE…) · no file or network access</span></div>
         </div>
         <div id="sqlresult"></div>
       </div>
@@ -1457,7 +1466,12 @@ $("#viewform").addEventListener("submit", async (e) => {
   afterSavedTables();
   if (!previous) { openTab("sql"); $("#sqltext").value = `SELECT * FROM ${name} LIMIT 100`; $("#sqltext").focus(); }
 });
-$("#sqlsave").addEventListener("click", () => saveAsTable($("#sqltext").value));
+$("#sqlsave").addEventListener("click", async () => {
+  const text = $("#sqltext").value;
+  if (LANG !== "kql") return saveAsTable(text);
+  try { saveAsTable((await api("/api/sql/translate", {kql: text})).sql); }  // saved as the SQL it runs as
+  catch (err) { toast(err.message); }
+});
 
 async function reply(convId, text) {
   runJob("/api/answer", {conversation_id: convId, reply: text}, LAST_QUESTION);
@@ -1951,6 +1965,7 @@ function keepCollapsed() { store.set("duckduck-collapsed", JSON.stringify([...CO
 function groupsOf() { return [...new Set(TABLES.map(t => t.service || "other"))]; }
 async function loadTables() {
   loadConnections();
+  if (!KQL) loadKql();
   try { TABLES = await api("/api/tables"); drawTables(); }
   catch (err) { TABLES = []; $("#tablelist").innerHTML = `<p class="error small">${esc(err.message)}</p>`; }
   EXPANDED.forEach(svc => loadNested(svc, false));
@@ -1985,7 +2000,7 @@ async function loadNested(svc, refresh) {
   drawTables();
 }
 function collapseNested(svc) { EXPANDED.delete(svc); drawTables(); }
-function previewSql(sql) { $("#sqltext").value = sql; runSql(); }
+function previewSql(sql) { $("#sqltext").value = inLang(sql); runSql(); }
 // nested rows saved in this session stay listed, marked; ones saved before are skipped (they're tables above)
 const JUST_SAVED = new Set(), SHOW_SAVED = new Set();
 // databases of an expanded catalog: closed until opened ("catalog|database"); how many rows each list shows
@@ -2096,7 +2111,7 @@ function drawTables() {
     let u = b.dataset.usage;
     if (!/^\s*(select|with|from|show|describe)/i.test(u)) u = `SELECT * FROM ${u}`;
     if (!/\blimit\b/i.test(u)) u += " LIMIT 100";
-    $("#sqltext").value = u; $("#sqltext").focus();
+    $("#sqltext").value = inLang(u); $("#sqltext").focus();
   });
   on("[data-preview]", b => previewSql(b.dataset.preview));
   on("[data-editview]", b => editSavedTable(b.dataset.editview));
@@ -2169,7 +2184,7 @@ function showFunctionInfo(name) {
     ${t.address_pattern && META?.features?.saved_tables ? `<p class="muted small">Want one of its tables as a table of its own? Write it by address and press
       <b>Save as table</b> — it's kept as ${esc(t.address_pattern)}.</p>` : ""}`;
   $("#fnbody").querySelectorAll("[data-fnuse]").forEach(b => b.addEventListener("click", () => {
-    const sql = ways[Number(b.dataset.fnuse)].sql, ta = $("#sqltext");
+    const sql = inLang(ways[Number(b.dataset.fnuse)].sql), ta = $("#sqltext");
     $("#fninfo").close(); openTab("sql"); ta.value = sql; ta.focus();
     const at = sql.search(/'?<[^>]+>'?/);  // the first placeholder selected: type over it
     if (at >= 0) { const m = sql.slice(at).match(/'?<[^>]+>'?/)[0]; ta.setSelectionRange(at, at + m.length); }
@@ -2211,7 +2226,7 @@ async function runSql() {
   const debug = $("#sqldebug").checked;
   $("#sqlresult").innerHTML = `<div class="card muted">Starting…</div>`;
   let r;
-  try { r = await api("/api/sql", {sql, debug, background: true}); }
+  try { r = await api("/api/sql", {sql, debug, background: true, language: LANG}); }
   catch (err) { $("#sqlresult").innerHTML = `<div class="card error">${esc(err.message)}</div>`; return; }
   if (!r.job_id) { drawSqlResult(r); return; }
   SQLJOB = {id: r.job_id, debug};
@@ -2270,14 +2285,69 @@ let LAST_SQL = null;  // {result, sql}: what ⤢ Expand opens
 function drawSqlResult(r) {
   const rows = (r.rows || []).map(row => Object.fromEntries(r.columns.map((c, i) => [c, row[i]])));
   LAST_SQL = r.error ? null : {result: r, sql: $("#sqltext").value.trim()};
-  $("#sqlresult").innerHTML = `<div class="card sqlres">` + (r.error ? `<p class="error">${esc(r.error)}</p>` :
+  const tr = r.translation;
+  const trHtml = tr ? `<details class="translated" ${r.error ? "open" : ""}><summary>${tr.route === "native"
+      ? `Ran on <b>${esc(tr.service)}</b> as KQL<span class="routepill">native ADX</span>` : `Translated to SQL<span class="routepill">KQL → SQL</span>`}</summary>
+      <pre class="log mono">${esc(tr.sql)}</pre>${tr.route !== "native" ? `<button class="mini" type="button" id="sqlastext" title="Switch the editor to SQL with this query">Open as SQL</button>` : ""}</details>` : "";
+  $("#sqlresult").innerHTML = `<div class="card sqlres">` + trHtml + (r.error ? `<p class="error">${esc(r.error)}</p>` :
     `<div class="resbar"><span class="muted small">${r.row_count.toLocaleString()} row${r.row_count === 1 ? "" : "s"} · ${r.columns.length} column${r.columns.length === 1 ? "" : "s"} · ${r.elapsed_ms} ms${r.truncated ? " · first " + rows.length.toLocaleString() + " shown here" : ""}</span>
       <span class="grow"></span>${r.columns.length ? `<button class="secondary" type="button" id="sqlexpand" title="Open the result full screen: search, sort, every row, CSV">⤢ Expand</button>` : ""}</div>${table(rows)}`) +
     ((r.log || []).length ? `<details${r.error || r.debug ? " open" : ""}><summary>${r.debug ? "Debug log" : "What went to each source (push-down)"}</summary><pre class="log mono">${esc(r.log.join("\n"))}</pre></details>` : "") + `</div>`;
 }
 $("#sqlresult").addEventListener("click", (e) => {
   if (e.target.closest("#sqlexpand") && LAST_SQL) openViewer(resultSource(LAST_SQL.result), LAST_SQL.sql || "Result");
+  const asSql = e.target.closest("#sqlastext");
+  if (asSql) { const pre = asSql.previousElementSibling; setLang("sql", pre ? pre.textContent : undefined); }
 });
+// ---- SQL | KQL: the editor's language. KQL is translated to SQL (the kql extension) — or, when it reads only
+// one ADX connector's tables (adx.Table), sent to the cluster as it is. Each language keeps its own text.
+let LANG = "sql", KQL = null;
+const EDIT_TEXT = {sql: null, kql: null};
+const KQL_START = "// KQL: tables by address (adx.ProxyLogs, s3_data.db.table) or name\n.show tables";
+async function loadKql() {
+  try { KQL = await api("/api/sql/kql"); } catch { KQL = {available: false, native: [], reason: "the server didn't answer"}; }
+  const btn = $('.seg.lang [data-lang="kql"]'), usable = KQL.available || (KQL.native || []).length;
+  btn.disabled = !usable;
+  btn.title = usable ? "Kusto Query Language — translated to SQL, or run on ADX as it is" : `KQL is off: ${KQL.reason || ""}`;
+  if (!usable && LANG === "kql") setLang("sql");
+  let saved = null; try { saved = store.get("duckduck-sqllang"); } catch {}
+  if (saved === "kql" && usable && LANG !== "kql") setLang("kql");
+  kqlNote();
+}
+function kqlNote() {
+  const note = $("#kqlnote"); if (!note) return;
+  if (LANG !== "kql" || !KQL) { note.textContent = ""; return; }
+  const nat = (KQL.native || []).join(", ");
+  note.textContent = KQL.available
+    ? `Translated to SQL — joins across every source work${nat ? `; only ${nat} tables → runs on ADX as KQL` : ""}. A table function: sn_table('incident'), sn.incident or | where arg.table_name == 'incident'.`
+      + (KQL.checks_syntax === false ? " ⚠ This extension build doesn't check syntax — rebuild it with scripts/build_kql_extension.sh." : "")
+    : `Runs on ${nat} as KQL (adx.Table). Joining other sources needs the kql extension: ${KQL.reason || ""}`;
+}
+function setLang(lang, text) {
+  if (lang === LANG && text === undefined) return;
+  EDIT_TEXT[LANG] = $("#sqltext").value;
+  LANG = lang;
+  document.querySelectorAll(".seg.lang [data-lang]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.lang === lang)));
+  $("#sqltext").value = text !== undefined ? text : (EDIT_TEXT[lang] ?? (lang === "kql" ? KQL_START : "SHOW TABLES"));
+  $("#sqltext").setAttribute("aria-label", lang === "kql" ? "KQL" : "SQL");
+  $("#sqlhint").textContent = lang === "kql"
+    ? "Ctrl+Enter · queries only (no .commands but .show tables) · where ==, contains, has, ago(1d)… · take N"
+    : "Ctrl+Enter · read queries only (SELECT, WITH, SHOW, DESCRIBE…) · no file or network access";
+  $("#sqlsave").title = lang === "kql" ? "Keep this query as a table: saved as the SQL it translates to" : "Keep this query as a table with a name — in duckduck.json, for SQL and Ask";
+  try { store.set("duckduck-sqllang", lang); } catch {}
+  kqlNote();
+}
+document.querySelectorAll(".seg.lang [data-lang]").forEach(b => b.addEventListener("click", () => { if (!b.disabled) setLang(b.dataset.lang); }));
+// the page's own SQL (a table's usage, the ⓘ's ways, Preview) written as KQL when the editor is in KQL
+function inLang(sql) {
+  if (LANG !== "kql") return sql;
+  const m = sql.trim().match(/^SELECT \* FROM\s+(.+?)(?:\s+WHERE\s+([\s\S]+?))?\s+LIMIT\s+(\d+)$/i);
+  if (!m) return sql;
+  let ref = m[1].trim();
+  if (ref.includes('"')) ref = `['${ref.replace(/"/g, "").replace(/'/g, "\\'")}']`;  // a quoted part: the whole address bracketed
+  const conds = m[2] ? m[2].split(/\s+AND\s+/i).map(c => c.trim().replace(/\s=\s/, " == ")) : [];
+  return ref + (conds.length ? `\n| where ${conds.join("\n    and ")}` : "") + `\n| take ${m[3]}`;
+}
 $("#sqlrun").addEventListener("click", runSql);
 
 // ---- the result viewer: a query's whole result full screen — search, sort, pages, columns, a value in full, CSV ----

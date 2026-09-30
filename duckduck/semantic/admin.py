@@ -79,7 +79,37 @@ class SQLConsole:
         self._results_lock = threading.Lock()  # not the query lock: a paused query mustn't hold up the viewer
         self._lock = threading.Lock()  # one DuckDB connection: one query at a time
 
-    def run(self, query: str, debug: bool = False, log: Optional[List[str]] = None) -> Dict[str, Any]:
+    @property
+    def kql(self) -> Any:
+        """The KQL translator: the config file's ``"kql": {"extension": …}`` (relative to it), else the defaults."""
+        if getattr(self, "_kql", None) is None:
+            from ..kql import KqlTranslator
+
+            extension = None
+            if self._config_path:
+                try:
+                    with open(self._config_path, encoding="utf-8") as fh:
+                        extension = ((json.load(fh) or {}).get("kql") or {}).get("extension")
+                except (OSError, ValueError, AttributeError):
+                    extension = None
+                if extension and not os.path.isabs(os.path.expanduser(extension)):
+                    extension = os.path.join(os.path.dirname(os.path.abspath(self._config_path)), extension)
+            self._kql = KqlTranslator(extension=extension)
+        return self._kql
+
+    @kql.setter
+    def kql(self, translator: Any) -> None:
+        self._kql = translator
+
+    def kql_status(self) -> Dict[str, Any]:
+        """For the page's SQL | KQL switch: the translator, and the ADX connectors KQL runs on natively without one."""
+        status = dict(self.kql.status())
+        status["native"] = sorted({self.duck.service_of[n] for n, f in self.duck.functions.items()
+                                   if getattr(f, "__name__", "") == "query" and getattr(f, "__module__", "") == "duckduck.adx"
+                                   and self.duck.service_of.get(n)})
+        return status
+
+    def run(self, query: str, debug: bool = False, log: Optional[List[str]] = None, language: str = "sql") -> Dict[str, Any]:
         """
         Runs one read query. ``debug``: the log at DEBUG (request bodies,
         bound parameters, every page) instead of INFO. ``log``: the list the
@@ -91,9 +121,22 @@ class SQLConsole:
         from .. import progress
 
         log = [] if log is None else log
+        translation = None
+        if language == "kql":  # KQL → the SQL that runs (or the native ADX call) — shown with the result
+            from ..kql import KqlError, KqlUnavailable
+
+            progress.step("translating", "Translating the KQL")
+            try:
+                translation = self.kql.to_sql(query, self.duck)
+            except (KqlError, KqlUnavailable) as exc:
+                return {"error": str(exc), "columns": [], "rows": [], "row_count": 0, "log": log, "language": "kql"}
+            query = translation.sql
+        elif language != "sql":
+            return {"error": f"unknown language {language!r} (sql or kql)", "columns": [], "rows": [], "row_count": 0, "log": log}
+        extra = {"language": language, **({"translation": translation.to_dict()} if translation else {})}
         reason = read_only_reason(query)
         if reason:
-            return {"error": reason, "columns": [], "rows": [], "row_count": 0, "log": log}
+            return {"error": reason, "columns": [], "rows": [], "row_count": 0, "log": log, **extra}
         started = time.perf_counter()
         ms = lambda: round((time.perf_counter() - started) * 1000, 1)  # noqa: E731
         if not self._lock.acquire(timeout=self.timeout):
@@ -110,7 +153,7 @@ class SQLConsole:
                     df = relation.df()
                 except Exception as exc:
                     return {"error": f"{type(exc).__name__}: {exc}", "columns": [], "rows": [], "row_count": 0,
-                            "log": log, "elapsed_ms": ms()}
+                            "log": log, "elapsed_ms": ms(), **extra}
                 finally:
                     timer.cancel()
         finally:
@@ -125,7 +168,7 @@ class SQLConsole:
             "columns": [str(c) for c in df.columns],
             "rows": _json_rows(shown),
             "row_count": int(len(df)), "truncated": len(df) > self.max_rows,
-            "elapsed_ms": ms(), "log": log, "debug": debug, "result_id": result_id,
+            "elapsed_ms": ms(), "log": log, "debug": debug, "result_id": result_id, **extra,
         }
 
     def _kept(self, result_id: str) -> Any:
@@ -609,7 +652,7 @@ def validate_config(data: Any, path: str = "") -> Dict[str, List[str]]:
     warnings: List[str] = []
     if not isinstance(data, dict):
         return {"errors": ["the config must be a JSON object"], "warnings": []}
-    known = {"services", "on_error", "ai_providers", "semantic", "views"}
+    known = {"services", "on_error", "ai_providers", "semantic", "views", "kql"}
     for key in sorted(set(data) - known):
         warnings.append(f"unknown top-level key {key!r} (known: {', '.join(sorted(known))})")
     if data.get("on_error") not in (None, "raise", "warn"):
