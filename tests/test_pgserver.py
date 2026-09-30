@@ -167,7 +167,19 @@ def test_connectors_are_schemas_and_every_table_without_arguments_is_listed(serv
     assert ["s3_data.sec", "proxy_logs", "r"] in rows  # a saved table named by its address
     assert ["nvd", "cves", "r"] in rows and ["s3_data", "tables", "r"] in rows
     assert ["public", "high_cves", "v"] in rows  # a saved query: a view, with its SQL
-    assert not any(r[1] == "table" for r in rows)  # a table function needs arguments: not a table
+    assert ["s3_data", "table", "r"] in rows  # a table function too — its arguments go in the WHERE
+    _, rows, _, _ = w.query("SELECT d.description FROM pg_description d JOIN pg_class c ON c.oid = d.objoid "
+                            "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 's3_data' "
+                            "AND c.relname = 'table' AND d.objsubid = 0")
+    assert rows[0][0].startswith("Needs database; table_name: WHERE database = '…' AND table_name = '…'")
+    for sql in ["SELECT host FROM s3_data.\"table\" WHERE database = 'sec' AND table_name = 'proxy logs' AND bytes > 9",
+                "SELECT t.host FROM s3_data.\"table\" t WHERE t.database = 'sec' AND t.table_name = 'proxy logs' "
+                "AND t.bytes > 9",
+                "SELECT host FROM s3_data.\"table\" WHERE arg.database = 'sec' AND arg.table_name = 'proxy logs' "
+                "AND bytes > 9"]:
+        assert w.query(sql)[1] == [["b"]], sql
+    _, _, _, error = w.query("SELECT * FROM s3_data.\"table\" WHERE database = 'sec'")
+    assert error.startswith("22023:") and "table_name" in error
     _, rows, _, _ = w.query("SELECT definition FROM pg_catalog.pg_views WHERE viewname = 'high_cves'")
     assert rows == [["SELECT id FROM nvd.cves WHERE severity = 'HIGH'"]]
     _, rows, _, _ = w.query("SELECT obj_description('nvd.cves'::regclass, 'pg_class')")
@@ -488,14 +500,19 @@ def test_saved_tables_follow_the_config_file_and_sit_in_their_connector_s_schema
         w = Wire(server.port)
         tree = "SELECT n.nspname || '.' || c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace " \
                "WHERE n.nspname = 'sharepoint' ORDER BY 1"
-        assert w.query(tree)[1] == [["sharepoint.tasks"]]  # list_items itself isn't: it can't be read bare
+        # list_items is listed too — it needs a list (@needs_arguments), given in the WHERE
+        assert w.query(tree)[1] == [["sharepoint.list_items"], ["sharepoint.tasks"]]
+        assert w.query("SELECT \"Title\" FROM sharepoint.list_items WHERE site_name = 'a' "
+                       "AND arg.list_name = 'x'")[1] == [["a/x"]]
+        error = w.query("SELECT * FROM sharepoint.list_items")[3]
+        assert "list_id or list_name is required" in error
         views = json.loads(config.read_text())
         views["views"]["sharepoint.duckdefault.tickets"] = {"sql": first.replace("'tasks'", "'tickets'")}
         del views["views"]["sharepoint.duckdefault.tasks"]
         time.sleep(0.01)
         config.write_text(json.dumps(views))
         os.utime(config, (time.time() + 5, time.time() + 5))
-        assert w.query(tree)[1] == [["sharepoint.tickets"]]
+        assert w.query(tree)[1] == [["sharepoint.list_items"], ["sharepoint.tickets"]]
         for sql in ['SELECT "Title" FROM "sharepoint"."tickets"', "SELECT t.Title FROM sharepoint.tickets t",
                     "SELECT tickets.Title FROM sharepoint.tickets", "SELECT Title FROM sharepoint.duckdefault.tickets"]:
             assert w.query(sql)[1] == [["a/tickets"]], sql
@@ -588,6 +605,7 @@ def test_tables_behind_a_catalog_are_listed_without_saving_them(tmp_path):
         assert w.query(tree)[1] == [
             ["sn.incident", "sn_table(table_name='incident') — listed by sn_tables"],
             ["sn.sys_user", "Saved: the users"],  # saved: listed once, as the saved table
+            ["sn.table", "Needs table_name: WHERE table_name = '…' (or arg.table_name = '…')"],
             ["sn.tables", None],
         ]
         assert sn.calls == []  # listing reads the catalog, never the tables
@@ -601,6 +619,9 @@ def test_tables_behind_a_catalog_are_listed_without_saving_them(tmp_path):
             assert w.query(sql)[1] == [["INC2"]], sql
         w.query("SET search_path TO sn")
         assert w.query("SELECT number FROM incident WHERE state = 1")[1] == [["INC1"]]
+        # the table function itself, without its catalog: the argument in the WHERE
+        assert w.query('SELECT t.number FROM "table" t WHERE t.table_name = \'incident\' AND t.state = 1')[1] \
+            == [["INC1"]]
         w.close()
     finally:
         server.shutdown()
@@ -608,4 +629,5 @@ def test_tables_behind_a_catalog_are_listed_without_saving_them(tmp_path):
     off.read_catalogs(wait=True)
     off.catalog.refresh()
     assert ("sn", "incident") not in off.catalog.functions and ("sn", "sys_user") in off.catalog.functions
+    assert off.catalog.functions[("sn", "table")] == "sn_table"  # without catalog permission: the function still
     assert pgcat.table_entries(duck, pgcat.ColumnMemory(), []) == pgcat.table_entries(duck, pgcat.ColumnMemory())

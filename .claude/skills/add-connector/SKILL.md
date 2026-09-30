@@ -34,11 +34,11 @@ the shapes you couldn't verify in one place.
   `while` loop. That is what lets Spark split the read. Cursor APIs keep their own loop.
 - `@needs_arguments(...)` (`duckduck.kinds`) on a table whose optional arguments are really needed — one of a
   group (`("list_id", "list_name")`) or a single one (`"drive_id"`); leave out what the config can supply. SQL
-  clients then don't see it bare (it would only fail), and its usage example shows the arguments.
+  clients then see in its comment which arguments to put in the WHERE, and its usage example shows them.
 - `@catalog` on listing methods (with `lists="<table fn>"` when its rows are that function's arguments),
   `@raw_query` on a passthrough of the source's own query language. **A table function (required args) needs
   such a catalog** whenever the source can list its tables: without it SQL clients (the PostgreSQL endpoint)
-  and the SQL tab can't show them, and catalog generation can't discover them. `drafts=False` when the listing
+  only see the function (arguments in the WHERE), the SQL tab can't show them, and catalog generation can't discover them. `drafts=False` when the listing
   is mostly the platform's own tables (ServiceNow's `sys_db_object`), so they aren't all drafted.
 - `iter_<table>` streaming methods yielding one DataFrame per page when the API pages.
 

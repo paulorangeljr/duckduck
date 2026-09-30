@@ -1311,10 +1311,17 @@ class DuckAPI:
 
     def _alias_at(self, text: str, pos: int) -> Optional[str]:
         """The alias written right after a table reference ending at ``pos``, if any."""
+        quoted = re.match(r'\s+(?:AS\s+)?"((?:[^"]|"")+)"', text[pos:], re.IGNORECASE)
+        if quoted:
+            return quoted.group(1).replace('""', '"').lower()  # FROM f AS "table" (a SQL client's quoting)
         m = re.match(r"\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*)", text[pos:], re.IGNORECASE)
         if m and m.group(1).lower() not in self._NOT_ALIASES:
             return m.group(1).lower()
         return None
+
+    def _has_alias(self, text: str, pos: int) -> bool:
+        """Whether an alias — plain or quoted (``AS "table"``) — follows a table reference ending at ``pos``."""
+        return self._alias_at(text, pos) is not None
 
     # ------------------------------------------------------------------
     # Signature validation
@@ -1654,7 +1661,8 @@ class DuckAPI:
             if close is not None:  # stopped early (enough rows): let the connector stop paging
                 close()
 
-    def _strip_where_conditions(self, query: str, keys: set, qualifiers: Tuple[str, ...] = ()) -> str:
+    def _strip_where_conditions(self, query: str, keys: set, qualifiers: Tuple[str, ...] = (),
+                                qualified: Optional[Dict[str, set]] = None) -> str:
         """
         Removes WHERE conditions that reference columns in ``keys``.
 
@@ -1663,6 +1671,8 @@ class DuckAPI:
         DataFrame — typically structural parameters like ``site_name``,
         ``list_name`` — and every condition qualified by one of
         ``qualifiers`` (``arg.table_name = 'x'``: an argument, never a column).
+        ``qualified``: key → the names (function, alias) of the tables it was
+        an argument of — ``t.table_name = 'x'`` is removed too when ``t`` is one.
         """
         if not keys and not qualifiers:
             return query
@@ -1680,7 +1690,8 @@ class DuckAPI:
                 if isinstance(node.this, exp.Column):
                     if (node.this.table or "").lower() in qualifiers:
                         return False
-                    if node.this.name.lower() in keys and not node.this.table:
+                    name, table = node.this.name.lower(), (node.this.table or "").lower()
+                    if name in keys and (not table or table in (qualified or {}).get(name, ())):
                         return False
             return True
 
@@ -1970,6 +1981,7 @@ class DuckAPI:
         self._check_arguments(query, pushdown)
         rewritten = query
         structural_used: set = set()  # WHERE filters consumed that aren't columns
+        structural_of: Dict[str, set] = {}  # … and the names (function, alias) of the tables that took them
         started = time.perf_counter()
         sources = 0
         try:
@@ -1998,10 +2010,10 @@ class DuckAPI:
                     tname, df_cols = self._materialize(fn_name, fn, kwargs, fallback)
                 sources += 1
                 # WHERE filters that reached the function but aren't result columns
-                structural_used.update(
-                    k for k in pushdown.filters
-                    if k in kwargs and k not in df_cols
-                )
+                for k in pushdown.filters:
+                    if k in kwargs and k not in df_cols:
+                        structural_used.add(k)
+                        structural_of.setdefault(k, set()).update(n.lower() for n in names)
                 rewritten = rewritten[: m.start()] + tname + rewritten[m.end() :]
 
             # ---- 2. FROM/JOIN func  (no parentheses) ------------------
@@ -2020,15 +2032,17 @@ class DuckAPI:
                     self._log_call(fn_name, kwargs, report)
                     tname, df_cols = self._materialize(fn_name, fn, kwargs, fallback)
                 sources += 1
-                structural_used.update(
-                    k for k in pushdown.filters
-                    if k in kwargs and k not in df_cols
-                )
+                for k in pushdown.filters:
+                    if k in kwargs and k not in df_cols:
+                        structural_used.add(k)
+                        structural_of.setdefault(k, set()).update(n.lower() for n in names)
                 op = m.group(1)
-                rewritten = rewritten[: m.start()] + f"{op} {tname}" + rewritten[m.end() :]
+                # no alias written: the temp table keeps the function's name (SELECT nvd_cves.id FROM nvd_cves)
+                keep = "" if self._has_alias(rewritten, m.end()) else f" AS {fn_name}"
+                rewritten = rewritten[: m.start()] + f"{op} {tname}{keep}" + rewritten[m.end() :]
 
         if structural_used or self._arg_conditions(pushdown):
-            rewritten = self._strip_where_conditions(rewritten, structural_used, self.ARG_QUALIFIERS)
+            rewritten = self._strip_where_conditions(rewritten, structural_used, self.ARG_QUALIFIERS, structural_of)
 
         if sources:
             logger.info("%d source(s) fetched in %.2fs — DuckDB runs the rest of the query", sources,

@@ -562,16 +562,32 @@ server = PGServer.from_config(duck, "duckduck.json").start()   # background thre
 **What a client sees.** Connectors are schemas: `nvd` holds `cves`, and a
 connector's database is its own schema — the saved table
 `s3_data.security.proxy_logs` shows as `proxy_logs` in schema
-`s3_data.security`. Every table that needs no arguments is listed (plain
-tables, catalogs, saved tables, taken-over answers); a saved query is a
-view, with its SQL. Table descriptions come along as comments. Tables
-without an address sit in `public`.
+`s3_data.security`. Every table is listed (plain tables, catalogs, saved
+tables, taken-over answers, table functions); a saved query is a view, with
+its SQL. Table descriptions come along as comments. Tables without a
+connector sit in `public`.
 
+- **Table functions** — tables that need arguments — are listed in their
+  connector's schema without the prefix: `servicenow_table(table_name)` is
+  `servicenow."table"`, `glue_table(database, table_name)` is
+  `s3_data."table"`, SharePoint's `list_items` (it needs a list) is
+  `sharepoint.list_items`. Their comment says what they need; give it in
+  the WHERE, qualified or not:
+
+  ```sql
+  SELECT t.number, t.state FROM servicenow."table" t
+  WHERE t.table_name = 'incident' AND t.state = 2     -- or arg.table_name = 'incident'
+  ```
+
+  Without it the error says which argument is missing. Their columns change
+  with the arguments, so the tree shows the placeholder column for them.
+  (In the web app and scripts `servicenow.table` means ServiceNow's table
+  named "table" — only a SQL client's listing names the function so.)
 - **The tables behind a catalog are listed too**, without saving anything:
-  a table function (`servicenow_table(table_name)`, `glue_table(database,
-  table_name)`) isn't listable bare, but every table its connector's catalog
-  lists is — `servicenow.incident`, `s3_data.security.proxy_logs` — read
-  only when queried. The catalogs are read in the background when the
+  every table a connector's catalog lists — `servicenow.incident`,
+  `s3_data.security.proxy_logs` — read only when queried. The ServiceNow
+  one needs read access to `sys_db_object`; without it only the function
+  above is there. The catalogs are read in the background when the
   server starts (a big one takes a few seconds: refresh the client's tree),
   and again after `catalog_refresh` seconds (default 3600).
   `"catalog_tables": false` turns it off; `["servicenow"]` reads only those
@@ -599,9 +615,7 @@ without an address sit in `public`.
   `sharepoint.tasks`), as views when they're saved queries. Saved in the web
   app — even while `python -m duckduck.pgserver` runs as another process —
   they show up on the client's next refresh: the server follows
-  `duckduck.json`. A table that can't be read without some arguments
-  (SharePoint's `list_items` needs a list) isn't listed bare: save it with
-  them, or query it by address with `WHERE arg.list_name = '…'`.
+  `duckduck.json`.
 - **Saving tables from the client** (off by default — `"allow_saved_tables":
   true` in `pg_server`, or `--allow-saved-tables`): `CREATE [OR REPLACE]
   VIEW`, `DROP VIEW [IF EXISTS]`, `ALTER VIEW … RENAME TO` and `COMMENT ON

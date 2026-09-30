@@ -181,3 +181,25 @@ def test_every_table_has_what_the_info_button_shows():
     # the optional arguments are arguments with arg. too
     duck.sql("SELECT * FROM sp_list_items WHERE arg.site_name = 'S' AND arg.list_name = 'Tasks' LIMIT 5").df()
     assert site.args == {"site_name": "S", "list_name": "Tasks", "limit": 5}
+
+
+def test_a_required_argument_qualified_by_its_table_or_alias_is_an_argument_not_a_column():
+    """SQL clients qualify everything: t.table_name = 'x' fills the argument like table_name = 'x', and a bare
+    FROM keeps the function's name for columns qualified by it."""
+    import pandas as pd
+
+    from duckduck import DuckAPI
+
+    duck, seen = DuckAPI(), []
+
+    def sn_table(table_name: str, where=None, limit=None):
+        seen.append(table_name)
+        return pd.DataFrame({"number": ["A", "B"], "state": [1, 2]})
+
+    duck.register_api_function("sn_table", sn_table)
+    for sql in ["SELECT t.number FROM sn_table t WHERE t.table_name = 'incident' AND t.state = 2",
+                'SELECT "table".number FROM sn_table AS "table" WHERE "table".table_name = \'incident\' AND state = 2',
+                "SELECT sn_table.number FROM sn_table WHERE sn_table.table_name = 'incident' AND sn_table.state = 2"]:
+        assert duck.sql(sql).fetchall() == [("B",)], sql
+    assert seen == ["incident"] * 3
+    duck.close()

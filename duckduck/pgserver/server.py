@@ -386,7 +386,7 @@ class Session:
         elif isinstance(exc, progress.Cancelled) or "INTERRUPT" in type(exc).__name__.upper():
             code, text, hint = "57014", "canceling statement due to user request", None
         else:
-            code, text, hint = _sqlstate(exc), f"{type(exc).__name__}: {exc}", None
+            code, text, hint = _sqlstate(exc), f"{type(exc).__name__}: {exc}", _hint_for(exc)
             logger.info("PostgreSQL: %s", text.splitlines()[0])
         if self.status == "T":
             self.status = "E"
@@ -451,10 +451,14 @@ class Session:
         names = catalog.unknown_in(sql)
         if not names or len(names) > self.server.learn_at_most:
             return
+        from ..kinds import needed_arguments, required_params
+
         for name in names:
             fn = self.source_fn(name)
             if fn is None or not ("limit" in inspect.signature(fn).parameters or self._streams(name)):
                 continue
+            if "." not in name and (required_params(fn) or needed_arguments(fn)):
+                continue  # needs arguments: its columns come with each call, by address
             p = progress.Progress()
             timer = threading.Timer(self.server.learn_timeout, p.cancel)
             timer.start()
@@ -638,6 +642,17 @@ def _without_placeholder(sql: str) -> str:
     if order is not None and not order.expressions:
         order.pop()
     return tree.sql(dialect="duckdb")
+
+
+def _hint_for(exc: BaseException) -> Optional[str]:
+    """A table read without the argument it needs: how to give it from a SQL client."""
+    m = re.search(r"missing a required argument: '(\w+)'", str(exc))
+    if m:
+        return f"add WHERE {m.group(1)} = '…' (or WHERE arg.{m.group(1)} = '…') — the table's comment says what it needs"
+    m = re.search(r"\b(\w+) or (\w+) is required", str(exc))
+    if m:
+        return f"add WHERE arg.{m.group(2)} = '…' (or arg.{m.group(1)})"
+    return None
 
 
 def _sqlstate(exc: BaseException) -> str:
@@ -1122,8 +1137,9 @@ class PGServer:
                     found = None
                 listed_fn = listed.get((schema.lower(), name.lower()))
                 if listed_fn is not None and free(m.start(2), m.end()):
+                    alias = aliases and self.source._alias_at(masked, m.end()) is None and listed_fn != name.lower()
                     edits.append((m.start(2), m.end(),
-                                  listed_fn + (f" AS {addresses._ident(self.source, name)}" if aliases else "")))
+                                  listed_fn + (f" AS {addresses._ident(self.source, name)}" if alias else "")))
                 elif found is not None and free(m.start(2), m.end()):
                     qualified = ".".join(addresses._ident(self.source, p) for p in parts + [name])
                     edits.append((m.start(2), m.end(), qualified))

@@ -362,6 +362,13 @@ class ColumnMemory:
             return list(self.columns.get(table) or []) or None
 
 
+def needs_text(needs: Sequence[Tuple[str, ...]]) -> str:
+    """How a client gives a table its arguments: ``Needs table_name: WHERE table_name = '…'``."""
+    which = "; ".join(" or ".join(group) for group in needs)
+    where = " AND ".join(f"{group[-1]} = '…'" for group in needs)
+    return f"Needs {which}: WHERE {where} (or arg.{needs[0][-1]} = '…')"
+
+
 def table_entries(duck: Any, columns: ColumnMemory, behind: Sequence[Dict[str, Any]] = ()) -> List[Dict[str, Any]]:
     """Every table a client can select from without arguments: schema, name, the function behind it, columns.
 
@@ -369,34 +376,46 @@ def table_entries(duck: Any, columns: ColumnMemory, behind: Sequence[Dict[str, A
     address (``servicenow.incident``, ``s3_data.security.proxy_logs``) unless a table of that name is already
     listed; their "function" is that address, which any query resolves to the table function's call."""
     from .. import addresses
-    from ..kinds import kind_of, needed_arguments
+    from ..kinds import kind_of, needed_arguments, required_params
 
     out = []
+    known = addresses.services(duck)
     for name, fn in list(duck.functions.items()):
         try:
             kind = kind_of(fn)
+            needs = [(p.name,) for p in required_params(fn)] + [tuple(g) for g in needed_arguments(fn)]
         except Exception:  # noqa: BLE001 — an odd callable isn't worth failing the catalog
             continue
-        if kind not in ("table", "catalog"):
-            continue
-        if needed_arguments(fn):  # can't be read bare (@needs_arguments): only its saved tables are listed
+        if kind not in ("table", "catalog", "table function"):
             continue
         try:
-            address = addresses.address_of(duck, name)
+            address = None if kind == "table function" else addresses.address_of(duck, name)
         except Exception:  # noqa: BLE001
             address = None
         parts = addresses._parts(address) if address else []
         if len(parts) >= 3 and parts[1].lower() == addresses.default_database(duck).lower():
             parts = [parts[0]] + parts[2:]  # sharepoint.duckdefault.x is sharepoint's own x: schema sharepoint
-        schema, table = (".".join(parts[:-1]), parts[-1]) if len(parts) >= 2 else ("public", name)
+        if len(parts) >= 2:
+            schema, table = ".".join(parts[:-1]), parts[-1]
+        else:  # no address — a table function (svc.x would mean svc's table x): its connector's schema anyway
+            service = duck.service_of.get(name)
+            prefix = known.get(service) if service else None
+            if service in known and prefix and name.startswith(prefix + "_"):
+                schema, table = service, name[len(prefix) + 1:]
+            elif service in known and not prefix:
+                schema, table = service, name
+            else:
+                schema, table = "public", name
         view = (getattr(duck, "views", None) or {}).get((getattr(duck, "view_key", None) or {}).get(name, name)) or {}
         try:
             description = view.get("description") or duck._describe_function(fn) or None
         except Exception:  # noqa: BLE001
             description = None
+        if needs:
+            description = needs_text(needs) + (f" — {description}" if description else "")
         out.append({"function": name, "schema": schema, "table": table, "kind": kind,
                     "view_sql": view.get("sql"), "description": description,
-                    "columns": columns.get(name)})
+                    "columns": columns.get(name), "needs": needs})
     listed = {(e["schema"].lower(), e["table"].lower()) for e in out}
     default = addresses.default_database(duck).lower()
     for row in behind:
@@ -413,7 +432,7 @@ def table_entries(duck: Any, columns: ColumnMemory, behind: Sequence[Dict[str, A
         call = ", ".join(f"{k}='{v}'" for k, v in (row.get("args") or {}).items())
         out.append({"function": address, "schema": schema, "table": table, "kind": "table", "view_sql": None,
                     "description": f"{row.get('table')}({call}) — listed by {row.get('catalog')}",
-                    "columns": columns.get(address)})
+                    "columns": columns.get(address), "needs": []})
     out.sort(key=lambda e: (e["schema"], e["table"]))
     return out
 
