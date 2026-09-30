@@ -52,6 +52,7 @@ Notes on the Table API
 """
 
 import re
+import threading
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
@@ -63,6 +64,9 @@ from .kinds import catalog
 from .logs import PageProgress, get_logger, instrument_session, log_http
 from .pushdown import Condition, parse_like, require_like
 from .sparkplan import spark_plan
+
+#: one token request at a time (a lock kept off the instance: the connector is pickled for Spark)
+_TOKEN_LOCK = threading.Lock()
 
 logger = get_logger("servicenow")
 
@@ -237,9 +241,16 @@ class ServiceNow:
     # ------------------------------------------------------------------
 
     def _ensure_token(self) -> None:
-        """Acquires (or refreshes, with a 60s buffer before expiry) the OAuth2 token."""
+        """Acquires (or refreshes, with a 60s buffer before expiry) the OAuth2 token — one request at a time, so
+        pages read in parallel don't each ask for one."""
         if self._token_expires_at is not None and datetime.now() < self._token_expires_at:
             return
+        with _TOKEN_LOCK:
+            if self._token_expires_at is not None and datetime.now() < self._token_expires_at:
+                return
+            self._fetch_token()
+
+    def _fetch_token(self) -> None:
 
         body = {
             "grant_type": "client_credentials",

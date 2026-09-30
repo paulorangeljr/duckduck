@@ -18,7 +18,8 @@ outbound internet access to DuckDB's extension repository (they're
 downloaded once and cached under ``~/.duckdb/extensions``).
 """
 
-from typing import List, Optional
+import threading
+from typing import Any, Dict, List, Optional
 
 import duckdb
 import pandas as pd
@@ -38,6 +39,14 @@ class LakehouseConnection:
     def __init__(self):
         self._conn = duckdb.connect()
         self._loaded_extensions = set()
+        #: one scan at a time: the web app, SQL clients and Spark may share a connector, not a DuckDB connection
+        self._lock = threading.RLock()
+        # listings (HEAD/LIST) and Parquet footers read once, reused by the next scans of the same files
+        for setting in ("enable_http_metadata_cache", "parquet_metadata_cache"):
+            try:
+                self._conn.execute(f"SET {setting} = true")
+            except Exception as exc:  # noqa: BLE001 — an older DuckDB without it just reads again
+                logger.debug("DuckDB setting %s unavailable: %s", setting, exc)
 
     def ensure_extension(self, name: str) -> None:
         """Installs (if needed) and loads a DuckDB extension, once per instance."""
@@ -56,6 +65,7 @@ class LakehouseConnection:
         scan_expression: str,
         limit: Optional[int] = None,
         where: Optional[List[Condition]] = None,
+        variables: Optional[Dict[str, Any]] = None,
     ) -> pd.DataFrame:
         """
         Runs ``SELECT * FROM {scan_expression} [WHERE ...] [LIMIT n]`` and
@@ -63,14 +73,19 @@ class LakehouseConnection:
         go into the scan itself, so DuckDB prunes Parquet row groups/files
         and only matching rows ever reach Python; ones on columns the scan
         doesn't have are skipped (a ``DESCRIBE`` — metadata only — finds out).
+        ``variables``: set first (``SET VARIABLE name = value``) — a file list
+        the expression reads with ``getvariable('name')``, however long.
         """
-        sql = f"SELECT * FROM {scan_expression}"
-        if where:
-            columns = [row[0] for row in self._conn.sql(f"DESCRIBE {sql}").fetchall()]
-            body = conditions_to_sql(where, columns)
-            if body:
-                sql += f" WHERE {body}"
-        if limit is not None:
-            sql += f" LIMIT {int(limit)}"
-        logger.info("DuckDB scan: %s", sql)
-        return self._conn.sql(sql).df()
+        with self._lock:
+            for name, value in (variables or {}).items():
+                self._conn.execute(f"SET VARIABLE {name} = ?", [value])
+            sql = f"SELECT * FROM {scan_expression}"
+            if where:
+                columns = [row[0] for row in self._conn.sql(f"DESCRIBE {sql}").fetchall()]
+                body = conditions_to_sql(where, columns)
+                if body:
+                    sql += f" WHERE {body}"
+            if limit is not None:
+                sql += f" LIMIT {int(limit)}"
+            logger.info("DuckDB scan: %s", sql)
+            return self._conn.sql(sql).df()

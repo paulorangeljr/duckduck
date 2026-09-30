@@ -286,6 +286,18 @@ single-table query with a `LIMIT` and nothing that needs every row (ORDER
 BY, aggregates, DISTINCT…) stops asking for pages once it has enough.
 `DuckAPI(stream_pages=False)` turns it off.
 
+### Several requests at once
+
+An API that reads any page on its own and says the total (InsightVM,
+ServiceNow) is read several pages at a time: page 0 first (it tells how
+many there are), then up to the number the table declares
+(`@spark_plan(..., max_parallel=4)` — what the API's rate limit allows),
+still kept in page order, cancelled as soon as a LIMIT has enough. A join
+that calls a table once per key value (or per chunk of values) runs those
+calls several at once too. APIs read one page after another by nature
+(cursor pagination, a strict rate limit like NVD's) stay sequential.
+`DuckAPI(parallel=False)` turns it off.
+
 ## Bootstrapping everything at once: `auto_register`
 
 Instead of instantiating each wrapper and calling `register_api_function`
@@ -723,6 +735,34 @@ everything is a plain table — the `kind` column says which is which, and
 | `table function` | data behind required arguments that say *which* data | `SELECT * FROM glue_table(database='<database>', table_name='<table_name>') LIMIT 10` |
 | `catalog` | lists what a source contains — how you find those arguments | `SELECT * FROM glue_tables` |
 | `raw query` | runs a query you write in the source's own language | `SELECT * FROM db_query(sql='<sql>')` |
+
+**Glue tables are read the way Athena reads them.** For a Parquet table,
+duckduck doesn't glob the table's whole S3 prefix: the WHERE's conditions on
+partition keys go to Glue (`get_partitions` with an `Expression`, served by
+the table's partition indexes when it has them) — or, for a table with
+**partition projection**, the partitions are computed from its
+`projection.*` properties and `storage.location.template` with no Glue call
+(enum, integer, date and injected keys). Only those locations are listed,
+several at once, and each listing is kept for `listing_ttl` (60 s). Files
+whose name or folder starts with `_` or `.` (`_SUCCESS`, `.hive-staging`,
+`_temporary`) are skipped; every other object is read as Parquet whatever
+its name — Athena's own output files have no `.parquet` extension.
+Partitions stored outside the table's folder get their values from Glue.
+DuckDB keeps listings and Parquet footers it already read. Options on the
+service: `list_files` (false → the old `**/*.parquet` glob), `listing_ttl`,
+`list_threads`.
+
+```sql
+SELECT * FROM s3_data.security.proxy_logs WHERE dt = '2026-09-30' AND host = 'x'
+-- glue: get_partitions(dt = '2026-09-30') → 1 partition(s)
+-- glue: listed 1 location(s) in 0.21s
+```
+
+What makes the read itself fast is how the files are written: partition by
+what you filter most, sort by the column you search within a partition
+(Parquet's per-block min/max then skip most of the file), bloom filters for
+exact lookups on ids/IPs, fewer bigger files — or an Iceberg/Delta table,
+whose manifest lists each file's min/max (duckduck reads both).
 
 Catalogs of table functions: `glue_tables` / `glue_databases`, `adx_tables`,
 `<db>_tables` (SQL databases), and `servicenow_tables` — the instance's

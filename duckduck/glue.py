@@ -18,11 +18,15 @@ records how the table was created:
   ``metadata_location`` directly when Glue recorded one.
 - ``table_type == "DELTA"`` (or ``spark.sql.sources.provider ==
   "delta"``) → ``delta_scan()`` against the table's S3 location.
-- Anything else → ``read_parquet()`` against
-  ``{location}/**/*.parquet`` with Hive partitioning enabled — the
-  common case for tables a Glue crawler registered from plain Parquet
-  data (this connector's default assumption, per its purpose: reading
-  Parquet whenever possible).
+- Anything else → ``read_parquet()`` of the table's files, found the
+  way Athena finds them (``duckduck.s3layout``): the partitions the
+  query's WHERE selects — from Glue's ``get_partitions`` with an
+  ``Expression``, or computed from the table's partition projection —
+  then only those locations listed (in threads, kept ``listing_ttl``
+  seconds), hidden files (``_SUCCESS``, ``.hive-staging``…) skipped and
+  every other object read as Parquet, extension or not (Athena's own
+  output files have none). ``list_files=False`` goes back to DuckDB's
+  ``{location}/**/*.parquet`` glob.
 
 Usage convention
 -----------------
@@ -41,14 +45,20 @@ projection push-down during the scan where the format supports it,
 independent of DuckAPI's own push-down layer.
 """
 
-from typing import Any, Dict, List, Optional
+import time
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from . import s3layout
 from .kinds import catalog
 from .lakehouse import LakehouseConnection
 from .pushdown import Condition, LikePattern, require_like
+from .logs import get_logger
 from .sparkplan import SparkSource, spark_plan
+
+logger = get_logger("glue")
 
 _TABLE_COLUMNS = [
     "database", "table_name", "format", "table_type", "location", "partition_keys",
@@ -96,7 +106,19 @@ class GlueTable:
         profile_name: Optional[str] = None,
         aws_access_key_id: Optional[str] = None,
         aws_secret_access_key: Optional[str] = None,
+        list_files: bool = True,
+        listing_ttl: float = 60.0,
+        list_threads: int = 16,
     ):
+        #: find a Parquet table's files like Athena (partitions, projection, own listing) — False: DuckDB's glob
+        self.list_files = bool(list_files)
+        #: how long a location's listing (and a partition lookup) is reused, in seconds (0: never)
+        self.listing_ttl = float(listing_ttl)
+        #: locations listed at once
+        self.list_threads = max(1, int(list_threads))
+        self._listings: Dict[str, Tuple[float, List[str]]] = {}
+        self._partition_cache: Dict[Tuple[str, str, str], Tuple[float, List[Tuple[str, Dict[str, str]]]]] = {}
+        self._s3_client: Any = None
         if boto3 is None:
             raise ImportError(
                 "boto3 is required for the Glue Data Catalog connector.\n"
@@ -109,6 +131,7 @@ class GlueTable:
             aws_access_key_id=aws_access_key_id,
             aws_secret_access_key=aws_secret_access_key,
         )
+        self._session = session
         self._glue = session.client("glue")
         self._lake = LakehouseConnection()
         self._table_cache: Dict[str, Dict[str, Any]] = {}
@@ -224,8 +247,127 @@ class GlueTable:
         limit : int, optional
             Applied via DuckDB's own ``LIMIT`` on the scan.
         """
+        table = self._describe(database, table_name)
+        if self.list_files and self._detect_format(table) == "parquet":
+            planned = self._parquet_read(database, table_name, table, where)
+            if planned is None:
+                return self._empty(table)
+            expression, variables = planned
+            return self._lake.scan(expression, limit=limit, where=where, variables=variables)
         scan_expr = self._scan_expression(database, table_name)
         return self._lake.scan(scan_expr, limit=limit, where=where)
+
+    # ------------------------------------------------------------------
+    # Finding a Parquet table's files — as Athena does (duckduck.s3layout)
+    # ------------------------------------------------------------------
+
+    def _parquet_read(self, database: str, table_name: str, table: Dict[str, Any],
+                      where: Optional[List[Condition]]) -> Optional[Tuple[str, Dict[str, Any]]]:
+        """(scan expression, variables) over just the files the query needs; None: there are none."""
+        location = (table.get("StorageDescriptor") or {}).get("Location")
+        if not location:
+            raise ValueError(f"Glue table '{database}.{table_name}' has no StorageDescriptor.Location.")
+        keys = {k["Name"].lower(): k.get("Type") or "string" for k in table.get("PartitionKeys") or []}
+        partitions = self._partitions(database, table_name, table, keys, where)
+        if partitions is None:  # unpartitioned, or no condition on a partition key: the whole location
+            files = self._list([location])[location]
+            logger.info("glue %s.%s: %s file(s) under %s", database, table_name, f"{len(files):,}", location)
+            if not files:
+                return None
+            return ("read_parquet(getvariable('duckduck_files'), hive_partitioning=true, union_by_name=true)",
+                    {"duckduck_files": files})
+        listed = self._list([loc for loc, _ in partitions])
+        files = [f for loc, _ in partitions for f in listed[loc]]
+        logger.info("glue %s.%s: %d partition(s), %s file(s)", database, table_name, len(partitions),
+                    f"{len(files):,}")
+        if not files:
+            return None
+        names = [k["Name"].lower() for k in table.get("PartitionKeys") or []]
+        if s3layout.is_hive_layout(partitions, names):
+            return ("read_parquet(getvariable('duckduck_files'), hive_partitioning=true, union_by_name=true)",
+                    {"duckduck_files": files})
+        # partitions anywhere (ALTER TABLE ADD PARTITION … LOCATION, a projection template): their values
+        # come from Glue, one row per file joined to what the file read
+        mapping = [{"file": f, **{k: values.get(k) for k in names}} for loc, values in partitions
+                   for f in listed[loc]]
+        columns = ", ".join(f'CAST(m."{k}" AS {s3layout.duck_type(keys[k])}) AS "{k}"' for k in names)
+        expression = ("(SELECT r.* EXCLUDE (filename), " + columns + " FROM read_parquet(getvariable('duckduck_files'),"
+                      " filename=true, hive_partitioning=false, union_by_name=true) r JOIN (SELECT unnest("
+                      "getvariable('duckduck_partitions'), recursive := true)) m ON r.filename = m.file)")
+        return expression, {"duckduck_files": files, "duckduck_partitions": mapping}
+
+    def _partitions(self, database: str, table_name: str, table: Dict[str, Any], keys: Dict[str, str],
+                    where: Optional[List[Condition]]) -> Optional[List[Tuple[str, Dict[str, str]]]]:
+        """The partitions the conditions select, as (location, {key: value}); None: read the whole location."""
+        conditions = s3layout.partition_conditions(where, keys)
+        if not keys or not conditions:
+            return None
+        projected = s3layout.projected_partitions(table, conditions)
+        if projected is not None:
+            logger.info("glue %s.%s: partition projection → %d partition(s)", database, table_name, len(projected))
+            return projected
+        if str((table.get("Parameters") or {}).get("projection.enabled", "")).lower() == "true":
+            return None  # a projection this can't compute: list the location
+        expression = s3layout.glue_expression(conditions, keys)
+        if expression is None:
+            return None
+        cache_key = (database, table_name, expression)
+        hit = self._partition_cache.get(cache_key)
+        if hit and time.time() - hit[0] < self.listing_ttl:
+            return hit[1]
+        names = [k["Name"].lower() for k in table.get("PartitionKeys") or []]
+        found = []
+        for page in self._glue.get_paginator("get_partitions").paginate(
+                DatabaseName=database, TableName=table_name, Expression=expression, ExcludeColumnSchema=True):
+            for p in page.get("Partitions", []) or []:
+                loc = (p.get("StorageDescriptor") or {}).get("Location")
+                if loc:
+                    found.append((loc, dict(zip(names, p.get("Values") or []))))
+        logger.info("glue %s.%s: get_partitions(%s) → %d partition(s)", database, table_name, expression, len(found))
+        self._partition_cache[cache_key] = (time.time(), found)
+        return found
+
+    def _s3(self) -> Any:
+        if self._s3_client is None:
+            self._s3_client = self._session.client("s3")
+        return self._s3_client
+
+    def _list(self, locations: List[str]) -> Dict[str, List[str]]:
+        """Each location's data files (``s3://…``), listed at once in threads and kept ``listing_ttl`` seconds."""
+        out: Dict[str, List[str]] = {}
+        todo = []
+        now = time.time()
+        for loc in dict.fromkeys(locations):
+            hit = self._listings.get(loc)
+            if hit and now - hit[0] < self.listing_ttl:
+                out[loc] = hit[1]
+            else:
+                todo.append(loc)
+        if todo:
+            started = time.perf_counter()
+            with ThreadPoolExecutor(max_workers=min(self.list_threads, len(todo))) as pool:
+                for loc, files in zip(todo, pool.map(self._list_one, todo)):
+                    out[loc] = files
+                    self._listings[loc] = (time.time(), files)
+            logger.info("glue: listed %d location(s) in %.2fs", len(todo), time.perf_counter() - started)
+        return out
+
+    def _list_one(self, location: str) -> List[str]:
+        bucket, prefix = s3layout.split_s3(location)
+        files = []
+        for page in self._s3().get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents", []) or []:
+                key = obj.get("Key") or ""
+                if s3layout.is_data_file(key[len(prefix):], obj.get("Size")):
+                    files.append(f"s3://{bucket}/{key}")
+        return files
+
+    @staticmethod
+    def _empty(table: Dict[str, Any]) -> pd.DataFrame:
+        """No files: an empty frame with the table's columns (as Glue lists them), so the query still binds."""
+        columns = [c.get("Name") for c in (table.get("StorageDescriptor") or {}).get("Columns") or []]
+        columns += [c.get("Name") for c in table.get("PartitionKeys") or []]
+        return pd.DataFrame({c: pd.Series(dtype="object") for c in columns if c})
 
     @spark_plan("native", source="_spark_path", why="an S3 location Spark reads directly")
     def path(

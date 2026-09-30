@@ -29,7 +29,14 @@ def test_ensure_extension_is_idempotent(monkeypatch):
     lake.ensure_extension("httpfs")
     lake.ensure_extension("httpfs")
 
-    assert fake_conn.execute.call_count == 2  # INSTALL + LOAD, only once total
+    loads = [c.args[0] for c in fake_conn.execute.call_args_list if c.args[0].startswith(("INSTALL", "LOAD"))]
+    assert loads == ["INSTALL httpfs", "LOAD httpfs"]  # only once total
+
+
+def test_listings_and_parquet_footers_are_cached(monkeypatch):
+    _, fake_conn = _make_lake(monkeypatch)
+    executed = [c.args[0] for c in fake_conn.execute.call_args_list]
+    assert "SET enable_http_metadata_cache = true" in executed and "SET parquet_metadata_cache = true" in executed
 
 
 def test_ensure_extension_different_names_both_load(monkeypatch):
@@ -38,7 +45,8 @@ def test_ensure_extension_different_names_both_load(monkeypatch):
     lake.ensure_extension("httpfs")
     lake.ensure_extension("delta")
 
-    assert fake_conn.execute.call_count == 4
+    loads = [c.args[0] for c in fake_conn.execute.call_args_list if c.args[0].startswith(("INSTALL", "LOAD"))]
+    assert len(loads) == 4
 
 
 def test_create_secret_ensures_httpfs_then_executes(monkeypatch):

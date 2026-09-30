@@ -191,7 +191,7 @@ def test_describe_is_cached(monkeypatch):
 
 
 def test_table_scans_via_lakehouse(monkeypatch):
-    gt, _, fake_glue_client, fake_duck_conn = _make_glue(monkeypatch)
+    gt, _, fake_glue_client, fake_duck_conn = _make_glue(monkeypatch, list_files=False)  # DuckDB's own glob
     fake_glue_client.get_table.return_value = {
         "Table": {"StorageDescriptor": {"Location": "s3://bucket/events"}, "Parameters": {}}
     }
@@ -234,7 +234,7 @@ def test_path_invalid_format_raises(monkeypatch):
 
 
 def test_iter_table_chunks_result(monkeypatch):
-    gt, _, fake_glue_client, fake_duck_conn = _make_glue(monkeypatch)
+    gt, _, fake_glue_client, fake_duck_conn = _make_glue(monkeypatch, list_files=False)
     fake_glue_client.get_table.return_value = {
         "Table": {"StorageDescriptor": {"Location": "s3://bucket/events"}, "Parameters": {}}
     }

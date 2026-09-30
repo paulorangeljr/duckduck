@@ -13,6 +13,7 @@ DataFrame.
 """
 
 import ast
+import contextvars
 import inspect
 import json
 import logging
@@ -21,6 +22,7 @@ import re
 import threading
 import time
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -30,6 +32,7 @@ import sqlglot
 import sqlglot.expressions as exp
 
 from .logs import get_logger, set_verbose, short, verbose_from_env
+from . import slicing
 from .pushdown import (Condition, assign_conditions, blocker_of, conditions_to_sql, map_conditions, parse_like,
                        where_ops_of)
 
@@ -632,7 +635,8 @@ class DuckAPI:
     """
 
     def __init__(self, database: str = ":memory:", verbose=None, stream_pages: bool = True, cache: Any = None,
-                 join_pushdown: bool = True, join_values_max: int = 1000, join_calls_max: int = 20):
+                 join_pushdown: bool = True, join_values_max: int = 1000, join_calls_max: int = 20,
+                 parallel: bool = True):
         """
         Parameters
         ----------
@@ -669,6 +673,12 @@ class DuckAPI:
             At most this many calls to narrow one side — one per value on an
             ``id`` parameter, or the values split in chunks of the
             connector's ``IN_MAX``.
+        parallel : bool
+            Read an API's pages several at a time — as many as its table
+            declares (``@spark_plan("partitioned", by="pages",
+            max_parallel=N)``: what the API's rate limit allows), once the
+            first page told the total — and a join's calls several at once.
+            ``False``: one request after another.
         """
         if verbose is None:
             verbose = verbose_from_env()
@@ -695,6 +705,7 @@ class DuckAPI:
         self.join_pushdown = join_pushdown
         self.join_values_max = int(join_values_max)
         self.join_calls_max = int(join_calls_max)
+        self.parallel = bool(parallel)
         from .cache import SourceCache
 
         #: Called ``(table, [(column, DuckDB type), ...])`` whenever a read gives a table's full set of columns
@@ -1610,7 +1621,8 @@ class DuckAPI:
         else:
             progress.step("fetching", f"Reading {function_name}…")  # a paused / cancelled run stops here
             started = time.perf_counter()
-            data = fetch_function(**validated)
+            with slicing.parallel(self._parallel_of(function_name)):
+                data = fetch_function(**validated)
             progress.checkpoint()
             df = self._to_dataframe(data, function_name, allow_empty=True)
             if key is not None:
@@ -1730,6 +1742,8 @@ class DuckAPI:
         count = pages = scanned = 0
         last_columns: List[str] = []
         pages_iter = iter_fn(**validated)
+        requests_at_once = slicing.parallel(self._parallel_of(fn_name))
+        requests_at_once.__enter__()  # read by the connector's pager at its first page, below
         try:
             for page in pages_iter:
                 progress.checkpoint()  # pause / cancel between pages
@@ -1761,6 +1775,7 @@ class DuckAPI:
             close = getattr(pages_iter, "close", None)
             if close is not None:
                 close()
+            requests_at_once.__exit__(None, None, None)
         if kept:
             df = json_for_mixed_objects(pd.concat(kept, ignore_index=True))
         else:
@@ -1820,7 +1835,9 @@ class DuckAPI:
             raise KeyError(f"No table registered as '{name}'.")
         validated = self._validate_arguments(name, fn, kwargs)
         started = time.perf_counter()
-        df = self._to_dataframe(fn(**validated), name, allow_empty=True)
+        with slicing.parallel(self._parallel_of(name)):
+            data = fn(**validated)
+        df = self._to_dataframe(data, name, allow_empty=True)
         logger.info("  %s: %s rows in %.2fs", name, f"{len(df):,}", time.perf_counter() - started)
         return df
 
@@ -2264,6 +2281,35 @@ class DuckAPI:
     # One source of a query, and what a join sends it
     # ------------------------------------------------------------------
 
+    def _calls_at_once(self, fn_name: str) -> int:
+        """How many separate calls of this table may run at once (a join's values split up): its declared
+        ``max_parallel`` unless it's read on the driver only (a rate limit, a cursor) — then one."""
+        if not self.parallel:
+            return 1
+        plan = self._plan_of(fn_name)
+        if plan is None or plan.strategy == "driver":
+            return 1
+        return plan.max_parallel
+
+    def _plan_of(self, fn_name: str) -> Any:
+        from .sparkplan import plan_of
+        from .views import VIEW_ATTR
+
+        fn = self.functions.get(fn_name)
+        view = getattr(fn, VIEW_ATTR, None)
+        if isinstance(view, dict) and view.get("table"):
+            fn = self.functions.get(str(view["table"]).lower(), fn)
+        return plan_of(fn) if fn is not None else None
+
+    def _parallel_of(self, fn_name: str) -> int:
+        """How many of this table's pages may be requested at once: its declared ``max_parallel`` when its API
+        reads any page on its own (``@spark_plan("partitioned", by="pages")``), else 1 — a saved table's is its
+        base table's."""
+        if not self.parallel:
+            return 1
+        plan = self._plan_of(fn_name)
+        return plan.max_parallel if plan and plan.strategy == "partitioned" and plan.by == "pages" else 1
+
     def _calls_blanked(self, query: str) -> str:
         """The query with each registered function's inline arguments emptied (``assets(limit=3)`` → ``assets()``):
         ``k=v`` isn't SQL DuckDB's parser takes when ``k`` is a keyword, and they're ours to read anyway."""
@@ -2421,21 +2467,45 @@ class DuckAPI:
 
     def _materialize_calls(self, fn_name: str, fn: Any, calls: List[Dict[str, Any]],
                            fallback: Optional[List[str]], fanned: Optional[str]) -> Tuple[str, List[str]]:
-        """Several calls of one table (a join's values split up): read each, keep them as one table. A call per
-        value on a parameter that isn't a result column gets it as one, so the join's ON still binds."""
-        frames = []
-        for kwargs in calls:
-            tname, _ = self._materialize(fn_name, fn, kwargs, fallback)
-            df = self.conn.execute(f'SELECT * FROM "{tname}"').df()
-            self.conn.unregister(tname)
+        """Several calls of one table (a join's values split up): read — several at once when the table allows it
+        (``_calls_at_once``) —, kept as one table. A call per value on a parameter that isn't a result column
+        gets it as one, so the join's ON still binds."""
+        from . import cache as source_cache
+        from . import progress
+
+        def one(kwargs: Dict[str, Any]) -> pd.DataFrame:
+            validated = self._validate_arguments(fn_name, fn, kwargs)
+            key = (source_cache.key_of("call", fn_name, id(fn), validated) if self.cache is not None else None)
+            hit = self.cache.get(key) if key is not None else None
+            if hit is not None:
+                df = hit[0]
+            else:
+                progress.checkpoint()
+                with slicing.parallel(1):  # the calls are the parallelism: each reads its pages in turn
+                    df = self._to_dataframe(fn(**validated), fn_name, allow_empty=True)
+                if key is not None:
+                    self.cache.put(key, df, len(df))
             if fanned and fanned.lower() not in {c.lower() for c in df.columns}:
+                df = df.copy()
                 df[fanned] = kwargs[fanned]
-            frames.append(df)
-        df = json_for_mixed_objects(pd.concat(frames, ignore_index=True)) if frames else pd.DataFrame()
+            return df
+
+        at_once = self._calls_at_once(fn_name)
+        progress.step("fetching", f"Reading {fn_name}: {len(calls)} calls, {at_once} at a time…")
+        started = time.perf_counter()
+        if at_once > 1:
+            with ThreadPoolExecutor(max_workers=min(at_once, len(calls)), thread_name_prefix="duckduck-call") as pool:
+                frames = list(pool.map(lambda kw: contextvars.copy_context().run(one, kw), calls))
+        else:
+            frames = [one(kw) for kw in calls]
+        frames = [f for f in frames if len(f.columns)]
+        df = json_for_mixed_objects(pd.concat(frames, ignore_index=True)) if frames else pd.DataFrame(
+            {c: pd.Series(dtype="object") for c in (list(fallback or []) or [self.EMPTY_PLACEHOLDER_COLUMN])})
         self._table_counter += 1
         tname = f"_api_{fn_name}_{self._table_counter}"
         self.conn.register(tname, df)
-        logger.info("  %s: %s rows from %d calls", fn_name, f"{len(df):,}", len(calls))
+        logger.info("  %s: %s rows from %d calls (%d at a time) in %.2fs", fn_name, f"{len(df):,}", len(calls),
+                    at_once, time.perf_counter() - started)
         return tname, list(df.columns)
 
     # ------------------------------------------------------------------

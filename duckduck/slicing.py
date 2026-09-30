@@ -14,12 +14,18 @@ Every table read through that loop can then be split:
   pages (``w.seen`` tells the caller the loop honored it — a table that
   doesn't read through it would return everything once per window).
 
-Without either, ``pages`` reads everything, as the connector always did.
+Without either, ``pages`` reads everything, as the connector always did —
+one page after another, or, inside ``with parallel(n):``, up to ``n`` pages at
+once once the first page told the total (``DuckAPI`` sets it from the table's
+``@spark_plan(max_parallel=…)``: the API's own limit). Pages are still
+yielded in order; closing the loop early cancels what hasn't started.
 """
 
 from __future__ import annotations
 
 import contextvars
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator, List, Optional, Tuple
@@ -56,6 +62,19 @@ def window(first_page: int, pages: int) -> Iterator[Window]:
         _WINDOW.reset(token)
 
 
+_PARALLEL: contextvars.ContextVar[int] = contextvars.ContextVar("duckduck_parallel", default=1)
+
+
+@contextmanager
+def parallel(requests: int) -> Iterator[int]:
+    """Reads in this block may request up to ``requests`` pages at once (once a total is known)."""
+    token = _PARALLEL.set(max(1, int(requests or 1)))
+    try:
+        yield _PARALLEL.get()
+    finally:
+        _PARALLEL.reset(token)
+
+
 @contextmanager
 def probing() -> Iterator[Probe]:
     """Reads in this block send their first request only, and say how many rows there are."""
@@ -86,6 +105,9 @@ def pages(fetch_page: Callable[[int], Tuple[List[Any], Optional[int]]], page_siz
     page, end = (win.first_page, win.first_page + win.pages) if win else (0, None)
     if win is not None:
         win.seen = True
+    elif _PARALLEL.get() > 1:
+        yield from _parallel_pages(fetch_page, page_size, _PARALLEL.get())
+        return
     while end is None or page < end:
         rows, total = fetch_page(page)
         if rows:
@@ -93,3 +115,46 @@ def pages(fetch_page: Callable[[int], Tuple[List[Any], Optional[int]]], page_siz
         if not rows or ((page + 1) * page_size >= total if total is not None else len(rows) < page_size):
             break
         page += 1
+
+
+def _parallel_pages(fetch_page: Callable[[int], Tuple[List[Any], Optional[int]]], page_size: int,
+                    workers: int) -> Iterator[List[Any]]:
+    """Page 0 first (it tells the total), then the rest ``workers`` at a time, yielded in order. Without a total
+    the API can't be read out of order: one page after another, as ``pages`` does."""
+    rows, total = fetch_page(0)
+    if rows:
+        yield rows
+    if not rows or total is None:
+        if rows and total is None and len(rows) >= page_size:
+            page = 1
+            while True:
+                rows, _ = fetch_page(page)
+                if rows:
+                    yield rows
+                if not rows or len(rows) < page_size:
+                    return
+                page += 1
+        return
+    last = -(-int(total) // page_size)  # pages in all
+    if last <= 1:
+        return
+    pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="duckduck-page")
+    pending: deque = deque()
+    following = iter(range(1, last))
+    try:
+        for page in following:  # the first `workers` requests
+            pending.append(pool.submit(contextvars.copy_context().run, fetch_page, page))
+            if len(pending) >= workers:
+                break
+        while pending:
+            rows, _ = pending.popleft().result()
+            nxt = next(following, None)
+            if nxt is not None:
+                pending.append(pool.submit(contextvars.copy_context().run, fetch_page, nxt))
+            if not rows:
+                return  # the data shrank since page 0 counted it: nothing after this
+            yield rows
+    finally:
+        for future in pending:
+            future.cancel()
+        pool.shutdown(wait=False, cancel_futures=True)

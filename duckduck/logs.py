@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from typing import Any, Optional, Union
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -202,10 +203,12 @@ class PageProgress:
         self.started = time.perf_counter()
         self.pages = 0
         self.rows = 0
+        self._lock = threading.Lock()  # pages may arrive from several threads (duckduck.slicing.parallel)
 
     def page(self, rows: int, total_pages: Optional[int] = None, total_rows: Optional[int] = None) -> None:
-        self.pages += 1
-        self.rows += rows
+        with self._lock:
+            self.pages += 1
+            self.rows += rows
         from . import progress
 
         progress.checkpoint()  # a paused or cancelled question stops between pages
