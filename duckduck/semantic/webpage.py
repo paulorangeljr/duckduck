@@ -2096,7 +2096,7 @@ function previewSql(sql) { $("#sqltext").value = inLang(sql); runSql(); }
 // saved in this session: highlighted once (behind-the-catalog rows by table+args, saved tables by name)
 const JUST_SAVED = new Set(), JUST_SAVED_NAMES = new Set(), NEW_TABLES = new Set();
 // a connector's databases: closed until opened ("connector|database"); how many rows each list shows
-const OPEN_DBS = new Set(), DB_SHOWN = {};
+const OPEN_DBS = new Set(), CLOSED_DBS = new Set(), DB_SHOWN = {};
 const DEFAULT_DB = "default";  // where a connector's tables with no database of their own are listed
 const nestedKey = (table, args) => table + "|" + JSON.stringify(Object.keys(args || {}).sort().map(k => [k, String(args[k])]));
 const nestedUsage = (n) => n.address ? `SELECT * FROM ${n.address} LIMIT 100` : n.usage;
@@ -2188,8 +2188,10 @@ function drawTables() {
     if (!names.length) return "";
     const matched = [...part.dbs.values()].reduce((a, d) => a + d.saved.length + d.nested.length, 0);
     const autoOpen = (f && matched <= 300) || names.length === 1;  // a search opens what it found; a lone database is open
+    // …unless it was closed by hand: a click always wins
     const group = (db) => {
-      const mine = part.dbs.get(db), all = full.dbs.get(db) || mine, key = svc + "|" + db, open = OPEN_DBS.has(key) || autoOpen;
+      const mine = part.dbs.get(db), all = full.dbs.get(db) || mine, key = svc + "|" + db;
+      const open = OPEN_DBS.has(key) || (autoOpen && !CLOSED_DBS.has(key));
       const total = all.saved.length + all.nested.length, shown = mine.saved.length + mine.nested.length;
       const todo = all.nested.filter(n => !n.saved_as), catalog = todo[0]?.catalog;
       const items = [...mine.saved.map(x => ({name: x.leaf, html: () => tableRow(x.t, 0, x.leaf)})),
@@ -2248,11 +2250,19 @@ function drawTables() {
   on("[data-expand]", b => EXPANDED.has(b.dataset.expand) ? collapseNested(b.dataset.expand) : loadNested(b.dataset.expand, false, true));
   on("[data-exprefresh]", b => loadNested(b.dataset.exprefresh, true));
   on("[data-regall]", b => registerAll(b.dataset.regall, b, b.dataset.regdb));
-  on("[data-db]", b => { const k = b.dataset.db; if (OPEN_DBS.has(k)) OPEN_DBS.delete(k); else OPEN_DBS.add(k); drawTables(); });
+  on("[data-db]", b => {  // toggles what's shown — open by hand, by a search or as the only one alike
+    const k = b.dataset.db;
+    if (b.getAttribute("aria-expanded") === "true") { OPEN_DBS.delete(k); CLOSED_DBS.add(k); }
+    else { OPEN_DBS.add(k); CLOSED_DBS.delete(k); }
+    drawTables();
+  });
   on("[data-showmore]", b => { const k = b.dataset.showmore; DB_SHOWN[k] = (DB_SHOWN[k] || MAXN) + MAXN; drawTables(); });
   on("[data-dbsall]", b => {
     const svc = b.dataset.dbsall, open = b.dataset.open === "1";
-    JSON.parse(b.dataset.names || "[]").forEach(db => open ? OPEN_DBS.add(svc + "|" + db) : OPEN_DBS.delete(svc + "|" + db));
+    JSON.parse(b.dataset.names || "[]").forEach(db => {
+      const k = svc + "|" + db;
+      if (open) { OPEN_DBS.add(k); CLOSED_DBS.delete(k); } else { OPEN_DBS.delete(k); CLOSED_DBS.add(k); }
+    });
     drawTables();
   });
   on("[data-fninfo]", b => showFunctionInfo(b.dataset.fninfo));
