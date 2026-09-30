@@ -362,8 +362,12 @@ class ColumnMemory:
             return list(self.columns.get(table) or []) or None
 
 
-def table_entries(duck: Any, columns: ColumnMemory) -> List[Dict[str, Any]]:
-    """Every table a client can select from without arguments: schema, name, the function behind it, columns."""
+def table_entries(duck: Any, columns: ColumnMemory, behind: Sequence[Dict[str, Any]] = ()) -> List[Dict[str, Any]]:
+    """Every table a client can select from without arguments: schema, name, the function behind it, columns.
+
+    ``behind``: the tables behind connectors' catalogs (``DuckAPI.nested_tables`` rows) — listed by their
+    address (``servicenow.incident``, ``s3_data.security.proxy_logs``) unless a table of that name is already
+    listed; their "function" is that address, which any query resolves to the table function's call."""
     from .. import addresses
     from ..kinds import kind_of, needed_arguments
 
@@ -393,6 +397,23 @@ def table_entries(duck: Any, columns: ColumnMemory) -> List[Dict[str, Any]]:
         out.append({"function": name, "schema": schema, "table": table, "kind": kind,
                     "view_sql": view.get("sql"), "description": description,
                     "columns": columns.get(name)})
+    listed = {(e["schema"].lower(), e["table"].lower()) for e in out}
+    default = addresses.default_database(duck).lower()
+    for row in behind:
+        address = row.get("address")
+        parts = addresses._parts(address) if address else []
+        if len(parts) < 2:
+            continue
+        if len(parts) >= 3 and parts[1].lower() == default:
+            parts = [parts[0]] + parts[2:]
+        schema, table = ".".join(parts[:-1]), parts[-1]
+        if (schema.lower(), table.lower()) in listed:
+            continue  # a saved table (or a table of its own) already has this name
+        listed.add((schema.lower(), table.lower()))
+        call = ", ".join(f"{k}='{v}'" for k, v in (row.get("args") or {}).items())
+        out.append({"function": address, "schema": schema, "table": table, "kind": "table", "view_sql": None,
+                    "description": f"{row.get('table')}({call}) — listed by {row.get('catalog')}",
+                    "columns": columns.get(address)})
     out.sort(key=lambda e: (e["schema"], e["table"]))
     return out
 
@@ -414,6 +435,9 @@ class PgCatalog:
         self.oids: Dict[Tuple[str, str], int] = {}
         self.namespaces: Dict[str, int] = {}
         self.started = time.time()
+        #: the tables behind connectors' catalogs (``PGServer.read_catalogs``), listed next to the rest
+        self.behind: List[Dict[str, Any]] = []
+        self.behind_version = 0
         self._create()
 
     # -- building --------------------------------------------------------------------------------------
@@ -541,7 +565,7 @@ class PgCatalog:
     def signature(self) -> Any:
         duck = self.duck
         return (tuple(sorted(duck.functions)), self.columns.version, len(getattr(duck, "views", {}) or {}),
-                tuple(sorted((getattr(duck, "view_key", None) or {}).items())))
+                tuple(sorted((getattr(duck, "view_key", None) or {}).items())), self.behind_version)
 
     def refresh(self, force: bool = False) -> bool:
         """Rebuilds namespaces, tables, columns and descriptions when the registered tables changed. True if it did."""
@@ -552,7 +576,7 @@ class PgCatalog:
             if not force and sig == self._signature:
                 return False
             started = time.perf_counter()
-            entries = table_entries(self.duck, self.columns)
+            entries = table_entries(self.duck, self.columns, self.behind)
             self._fill(entries)
             self._signature = sig
             logger.info("PostgreSQL catalog: %d tables in %d schemas (%.2fs)", len(entries), len(self.namespaces),

@@ -59,6 +59,7 @@ import pandas as pd
 import requests
 
 from . import slicing
+from .kinds import catalog
 from .logs import PageProgress, get_logger, instrument_session, log_http
 from .pushdown import Condition, parse_like, require_like
 from .sparkplan import spark_plan
@@ -495,6 +496,44 @@ class ServiceNow:
         """
         results = self._fetch(table_name, query=query, limit=limit, where=where)
         return pd.json_normalize(results, sep="_")
+
+    # ------------------------------------------------------------------
+    # The instance's tables (sys_db_object) — what table() can read
+    # ------------------------------------------------------------------
+
+    #: ``tables()`` column → sys_db_object field (dot-walked references read as plain text)
+    _TABLE_FIELDS = {"table_name": "name", "label": "label", "extends": "super_class.name",
+                     "extendable": "is_extendable", "scope": "sys_scope.scope", "updated": "sys_updated_on"}
+
+    @spark_plan("driver", why="catalog: a small listing")
+    @catalog(lists="table", drafts=False)
+    def tables(
+        self,
+        table_name: Optional[str] = None,
+        table_name_ilike: Optional[str] = None,
+        label_ilike: Optional[str] = None,
+        extends: Optional[str] = None,
+        scope: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> pd.DataFrame:
+        """
+        Every table of the instance (``sys_db_object``) — each row is a
+        ``table(table_name=...)`` call: ``table_name``, ``label``, ``extends``
+        (the parent table), ``extendable``, ``scope``, ``updated``. Needs read
+        access to ``sys_db_object``; ACLs may still refuse a listed table.
+        """
+        query = self._build_query(
+            **{"name": table_name, "name_ilike": table_name_ilike, "label_ilike": label_ilike,
+               "super_class.name": extends, "sys_scope.scope": scope}
+        )
+        query = (query + "^" if query else "") + "ORDERBYname"
+        rows = self._fetch("sys_db_object", query=query, fields=list(self._TABLE_FIELDS.values()), limit=limit)
+        columns = list(self._TABLE_FIELDS)
+        out = pd.DataFrame(
+            [{col: row.get(field) for col, field in self._TABLE_FIELDS.items()} for row in rows], columns=columns
+        )
+        out["extendable"] = out["extendable"].map(lambda v: None if v in (None, "") else str(v).lower() == "true")
+        return out
 
     # ------------------------------------------------------------------
     # Incidents

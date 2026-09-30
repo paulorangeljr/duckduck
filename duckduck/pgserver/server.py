@@ -18,6 +18,7 @@ connect with ``sslmode=require``.
 
 from __future__ import annotations
 
+import fnmatch
 import hmac
 import inspect
 import logging
@@ -452,8 +453,7 @@ class Session:
             return
         for name in names:
             fn = self.source_fn(name)
-            if fn is None or not ("limit" in inspect.signature(fn).parameters
-                                  or name in getattr(self.duck, "_streaming_functions", {})):
+            if fn is None or not ("limit" in inspect.signature(fn).parameters or self._streams(name)):
                 continue
             p = progress.Progress()
             timer = threading.Timer(self.server.learn_timeout, p.cancel)
@@ -475,7 +475,25 @@ class Session:
                             pass
 
     def source_fn(self, name: str) -> Any:
-        return self.duck.functions.get(name)
+        """The registered function behind a listed table: its name, or an address (a table behind a catalog)."""
+        fn = self.duck.functions.get(name)
+        if fn is None and "." in name:
+            try:
+                found = addresses.resolve(self.duck, addresses._parts(name))
+            except ValueError:
+                found = None
+            fn = self.duck.functions.get(found[0]) if found else None
+        return fn
+
+    def _streams(self, name: str) -> bool:
+        streaming = getattr(self.duck, "_streaming_functions", {})
+        if name in streaming:
+            return True
+        try:
+            found = addresses.resolve(self.duck, addresses._parts(name)) if "." in name else None
+        except ValueError:
+            found = None
+        return bool(found) and found[0] in streaming
 
     def describe_fields(self, sql: str) -> Optional[List[Tuple[str, int, int]]]:
         """A statement's columns before it runs: DESCRIBE for the catalog, a run (reads kept by the cache) otherwise."""
@@ -662,7 +680,8 @@ class PGServer:
     def __init__(self, duck: Any, host: str = "127.0.0.1", port: int = 5433, database: str = "duckduck",
                  password: Optional[str] = None, users: Optional[Dict[str, str]] = None,
                  tls: Optional[Tuple[str, str]] = None, ssl_required: bool = False, cache: Any = None,
-                 columns_file: Optional[str] = None, allow_saved_tables: bool = False):
+                 columns_file: Optional[str] = None, allow_saved_tables: bool = False,
+                 catalog_tables: Any = True, catalog_refresh: float = 3600.0):
         import duckdb
 
         from ..cache import SourceCache
@@ -701,6 +720,13 @@ class PGServer:
         self.config_path: Optional[str] = None
         self._views_mtime: Optional[float] = None
         self._views_lock = threading.Lock()
+        #: list the tables behind connectors' catalogs (``servicenow.incident``, ``s3_data.security.x``): True,
+        #: False, or the services to read (fnmatch patterns). Read in the background, again after ``catalog_refresh`` s
+        self.catalog_tables = catalog_tables
+        self.catalog_refresh = float(catalog_refresh)
+        self._behind_at: Optional[float] = None
+        self._behind_thread: Optional[threading.Thread] = None
+        self._behind_lock = threading.Lock()
         self._tcp: Optional[_TCPServer] = None
         self._thread: Optional[threading.Thread] = None
 
@@ -710,7 +736,8 @@ class PGServer:
         section = _section(config_path)
         base = os.path.dirname(os.path.abspath(config_path)) if config_path else os.getcwd()
         options: Dict[str, Any] = {k: section[k] for k in ("host", "port", "database", "ssl_required",
-                                                           "allow_saved_tables") if k in section}
+                                                           "allow_saved_tables", "catalog_tables", "catalog_refresh")
+                                   if k in section}
         tls = section.get("tls")
         if tls:
             options["tls"] = (_path(tls["cert"], base), _path(tls["key"], base))
@@ -913,6 +940,7 @@ class PGServer:
 
     def sync_views(self) -> None:
         """Saved tables added, changed or removed in the config file since it was last read: applied to ``source``."""
+        self.read_catalogs()  # the tables behind catalogs, read again once they're older than catalog_refresh
         path = self.config_path
         if not path:
             return
@@ -961,6 +989,70 @@ class PGServer:
         """The web app reconnected (its config was saved): new sessions read these tables."""
         self.source = duck
         self.catalog.duck = duck
+        self._behind_at = None  # its catalogs are read again
+        self.read_catalogs()
+
+    # -- the tables behind connectors' catalogs --------------------------------------------------------------
+
+    def catalog_services(self) -> List[str]:
+        """The services whose ``@catalog(lists=...)`` catalogs are read for the listing (``catalog_tables``)."""
+        from ..kinds import CATALOG, kind_of, lists_of
+
+        wanted = self.catalog_tables
+        if not wanted:
+            return []
+        patterns = [str(p).lower() for p in wanted] if isinstance(wanted, (list, tuple)) else ["*"]
+        found = []
+        for name, fn in list(self.source.functions.items()):
+            service = self.source.service_of.get(name)
+            try:
+                listing = kind_of(fn) == CATALOG and lists_of(fn)
+            except Exception:  # noqa: BLE001
+                listing = False
+            if listing and service and service not in found \
+                    and any(fnmatch.fnmatch(service.lower(), p) for p in patterns):
+                found.append(service)
+        return sorted(found)
+
+    def read_catalogs(self, wait: bool = False) -> None:
+        """Reads the tables behind connectors' catalogs (in a thread; ``wait`` = in this one) when they were
+        never read or are older than ``catalog_refresh``. They show up in the listing once read: a client's
+        tree refresh shows them. A catalog that fails only leaves its tables out (logged)."""
+        if not self.catalog_tables:
+            return
+        with self._behind_lock:
+            if self._behind_thread is not None and self._behind_thread.is_alive():
+                thread = self._behind_thread
+            elif self._behind_at is not None and time.time() - self._behind_at < self.catalog_refresh:
+                return
+            else:
+                self._behind_at = time.time()
+                thread = self._behind_thread = threading.Thread(target=self._read_catalogs, daemon=True,
+                                                                name="duckduck-pg-catalogs")
+                thread.start()
+        if wait:
+            thread.join()
+
+    def _read_catalogs(self) -> None:
+        source = self.source
+        rows: List[Dict[str, Any]] = []
+        started = time.perf_counter()
+        services = self.catalog_services()
+        for service in services:
+            try:
+                found, notes = source.nested_tables(service=service)
+            except Exception as exc:  # noqa: BLE001
+                found, notes = [], [f"{service}: {exc.__class__.__name__}: {exc}"]
+            for note in notes:
+                logger.warning("PostgreSQL: %s", note)
+            rows += [r for r in found if r.get("address")]
+        if source is not self.source:
+            return  # reconnected meanwhile: that one's read counts
+        self.catalog.behind = rows
+        self.catalog.behind_version += 1
+        if services:
+            logger.info("PostgreSQL: %d table(s) behind the catalogs of %s (%.1fs)", len(rows), ", ".join(services),
+                        time.perf_counter() - started)
 
     # -- sessions -----------------------------------------------------------------------------------------
 
@@ -1080,6 +1172,7 @@ class PGServer:
     def _bind(self) -> None:
         if self._tcp is None:
             self.catalog.refresh()
+            self.read_catalogs()  # the tables behind catalogs join the listing when read
             self._tcp = _TCPServer((self.host, self.port), _Handler)
             self._tcp.pg = self
             self.port = self._tcp.server_address[1]
@@ -1097,7 +1190,7 @@ class PGServer:
 
 #: ``pg_server`` options in duckduck.json
 OPTIONS = {"enabled", "host", "port", "database", "tls", "ssl_required", "authentication", "columns_file",
-           "allow_saved_tables"}
+           "allow_saved_tables", "catalog_tables", "catalog_refresh"}
 
 
 def config_problems(section: Any) -> List[str]:
@@ -1113,6 +1206,13 @@ def config_problems(section: Any) -> List[str]:
     for key in ("enabled", "ssl_required", "allow_saved_tables"):
         if key in section and not isinstance(section[key], bool):
             out.append(f"pg_server.{key} must be true or false")
+    tables = section.get("catalog_tables")
+    if tables is not None and not isinstance(tables, bool) and not (
+            isinstance(tables, list) and all(isinstance(t, str) and t.strip() for t in tables)):
+        out.append("pg_server.catalog_tables must be true, false or a list of service names")
+    refresh = section.get("catalog_refresh")
+    if refresh is not None and (isinstance(refresh, bool) or not isinstance(refresh, (int, float)) or refresh <= 0):
+        out.append("pg_server.catalog_refresh must be a number of seconds, e.g. 3600")
     for key in ("host", "database", "columns_file"):
         if key in section and not (isinstance(section[key], str) and section[key].strip()):
             out.append(f"pg_server.{key} must be text")

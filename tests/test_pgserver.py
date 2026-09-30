@@ -552,3 +552,60 @@ def test_views_from_a_sql_client_are_saved_tables_in_duckduck_json(tmp_path):
         w.close()
     finally:
         server.shutdown()
+
+
+def test_tables_behind_a_catalog_are_listed_without_saving_them(tmp_path):
+    """A table function (sn_table(table_name)) isn't listed bare — but every table its catalog lists is, by
+    address (sn.incident), without saving anything: read when queried, columns learned per table."""
+
+    class SN:
+        def __init__(self):
+            self.calls = []
+
+        @catalog(lists="table")
+        def tables(self, limit=None):
+            return pd.DataFrame({"table_name": ["incident", "sys_user"], "label": ["Incident", "User"]})
+
+        def table(self, table_name: str, where=None, limit=None):
+            self.calls.append(table_name)
+            if table_name == "incident":
+                return pd.DataFrame({"number": ["INC1", "INC2"], "state": [1, 2]})
+            return pd.DataFrame({"user_name": ["ana"]})
+
+    duck, sn = DuckAPI(), SN()
+    for name, fn in [("sn_tables", sn.tables), ("sn_table", sn.table)]:
+        duck.register_api_function(name, fn)
+        duck.service_of[name] = "sn"
+    duck.service_prefix["sn"] = "sn"
+    duck.register_view("sn.sys_user", {"table": "sn_table", "args": {"table_name": "sys_user"},
+                                       "description": "Saved: the users"})
+    server = PGServer(duck, port=0, columns_file=str(tmp_path / "columns.json")).start()
+    try:
+        server.read_catalogs(wait=True)
+        w = Wire(server.port)
+        tree = "SELECT n.nspname || '.' || c.relname, obj_description(c.oid, 'pg_class') FROM pg_class c " \
+               "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'sn' ORDER BY 1"
+        assert w.query(tree)[1] == [
+            ["sn.incident", "sn_table(table_name='incident') — listed by sn_tables"],
+            ["sn.sys_user", "Saved: the users"],  # saved: listed once, as the saved table
+            ["sn.tables", None],
+        ]
+        assert sn.calls == []  # listing reads the catalog, never the tables
+        columns = "SELECT a.attname FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid " \
+                  "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'sn' AND c.relname = 'incident' " \
+                  "AND a.attnum > 0 ORDER BY a.attnum"
+        assert w.query(columns)[1] == [["number"], ["state"]]  # a client expanding it: one row read, right then
+        assert sn.calls == ["incident"]
+        for sql in ['SELECT number FROM "sn"."incident" WHERE state = 2', "SELECT i.number FROM sn.incident i "
+                    "WHERE i.state = 2", "SELECT incident.number FROM sn.incident WHERE incident.state = 2"]:
+            assert w.query(sql)[1] == [["INC2"]], sql
+        w.query("SET search_path TO sn")
+        assert w.query("SELECT number FROM incident WHERE state = 1")[1] == [["INC1"]]
+        w.close()
+    finally:
+        server.shutdown()
+    off = PGServer(duck, port=0, catalog_tables=False, columns_file=str(tmp_path / "c2.json"))
+    off.read_catalogs(wait=True)
+    off.catalog.refresh()
+    assert ("sn", "incident") not in off.catalog.functions and ("sn", "sys_user") in off.catalog.functions
+    assert pgcat.table_entries(duck, pgcat.ColumnMemory(), []) == pgcat.table_entries(duck, pgcat.ColumnMemory())

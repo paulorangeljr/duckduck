@@ -41,21 +41,29 @@ _SUFFIXES = [("_ilike", "LIKE/ILIKE"), ("_like", "LIKE"), ("_gte", ">="), ("_gt"
 
 
 _LISTS_ATTR = "__duckduck_lists__"
+_NO_DRAFTS_ATTR = "__duckduck_no_drafts__"
 
 
-def catalog(fn: Optional[Callable] = None, *, lists: Optional[str] = None):
+def catalog(fn: Optional[Callable] = None, *, lists: Optional[str] = None, drafts: bool = True):
     """
     Marks a method that lists what its source contains. Used bare
     (``@catalog``) or with ``lists=`` — the name of the sibling *table
     function* its rows are arguments for (``@catalog(lists="table")`` on
     ``GlueTable.tables``: each row's ``database``/``table_name`` columns
     are ``GlueTable.table``'s required parameters). That link is what lets
-    catalog generation discover every table behind a connector.
+    catalog generation discover every table behind a connector, SQL clients
+    list them, and the SQL tab expand them.
+
+    ``drafts=False``: the listing is mostly the platform's own tables
+    (ServiceNow's thousands of ``sys_*``), so semantic-catalog generation
+    only drafts those its ``include`` patterns name — never all of them.
     """
     def mark(f: Callable) -> Callable:
         setattr(f, _ATTR, CATALOG)
         if lists:
             setattr(f, _LISTS_ATTR, lists)
+        if not drafts:
+            setattr(f, _NO_DRAFTS_ATTR, True)
         return f
 
     return mark(fn) if fn is not None else mark
@@ -64,6 +72,11 @@ def catalog(fn: Optional[Callable] = None, *, lists: Optional[str] = None):
 def lists_of(fn: Callable) -> Optional[str]:
     """The table-function method name a catalog's rows feed, if declared."""
     return getattr(fn, _LISTS_ATTR, None)
+
+
+def drafts_of(fn: Callable) -> bool:
+    """Whether catalog generation drafts every table this catalog lists (``@catalog(drafts=False)``: only named ones)."""
+    return not getattr(fn, _NO_DRAFTS_ATTR, False)
 
 
 _NEEDS_ATTR = "__duckduck_needs__"

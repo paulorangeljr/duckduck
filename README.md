@@ -567,9 +567,16 @@ tables, catalogs, saved tables, taken-over answers); a saved query is a
 view, with its SQL. Table descriptions come along as comments. Tables
 without an address sit in `public`.
 
-- A **table function** (it needs arguments) isn't listed, but its address
-  works in any query: `SELECT * FROM s3_data.security.proxy_logs` — or save
-  it (*Register all* in the SQL tab) to see it in the client's tree.
+- **The tables behind a catalog are listed too**, without saving anything:
+  a table function (`servicenow_table(table_name)`, `glue_table(database,
+  table_name)`) isn't listable bare, but every table its connector's catalog
+  lists is — `servicenow.incident`, `s3_data.security.proxy_logs` — read
+  only when queried. The catalogs are read in the background when the
+  server starts (a big one takes a few seconds: refresh the client's tree),
+  and again after `catalog_refresh` seconds (default 3600).
+  `"catalog_tables": false` turns it off; `["servicenow"]` reads only those
+  connectors' catalogs. A table function without a catalog still works by
+  address in any query (`SELECT * FROM svc.x`) — or save it to see it.
 - **Columns**: an API's columns are only known once something read the
   table. When a client asks for one table's columns (expanding it in its
   tree, *Generate SQL*), the server reads one row of it right then
@@ -625,7 +632,8 @@ without an address sit in `public`.
   "authentication": {"type": "aws", "secret_id": "prod/duckduck/pg-users"},
   "tls": {"cert": "certs/server.crt", "key": "certs/server.key"},
   "ssl_required": true,
-  "allow_saved_tables": false
+  "allow_saved_tables": false,
+  "catalog_tables": true
 }
 ```
 
@@ -658,6 +666,16 @@ everything is a plain table — the `kind` column says which is which, and
 | `table function` | data behind required arguments that say *which* data | `SELECT * FROM glue_table(database='<database>', table_name='<table_name>') LIMIT 10` |
 | `catalog` | lists what a source contains — how you find those arguments | `SELECT * FROM glue_tables` |
 | `raw query` | runs a query you write in the source's own language | `SELECT * FROM db_query(sql='<sql>')` |
+
+Catalogs of table functions: `glue_tables` / `glue_databases`, `adx_tables`,
+`<db>_tables` (SQL databases), and `servicenow_tables` — the instance's
+tables from `sys_db_object` (`table_name`, `label`, `extends`, `scope`;
+filters on those are sent to ServiceNow), each one readable as
+`servicenow.<table_name>`:
+
+```sql
+SELECT table_name, label FROM servicenow_tables WHERE table_name LIKE 'u_%'
+```
 
 The other columns: `pushdown` (which WHERE conditions / LIMIT the source
 applies itself — anything else still works, DuckDB filters after

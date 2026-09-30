@@ -36,7 +36,10 @@ the shapes you couldn't verify in one place.
   group (`("list_id", "list_name")`) or a single one (`"drive_id"`); leave out what the config can supply. SQL
   clients then don't see it bare (it would only fail), and its usage example shows the arguments.
 - `@catalog` on listing methods (with `lists="<table fn>"` when its rows are that function's arguments),
-  `@raw_query` on a passthrough of the source's own query language.
+  `@raw_query` on a passthrough of the source's own query language. **A table function (required args) needs
+  such a catalog** whenever the source can list its tables: without it SQL clients (the PostgreSQL endpoint)
+  and the SQL tab can't show them, and catalog generation can't discover them. `drafts=False` when the listing
+  is mostly the platform's own tables (ServiceNow's `sys_db_object`), so they aren't all drafted.
 - `iter_<table>` streaming methods yielding one DataFrame per page when the API pages.
 
 ## 3. Decide how Spark reads each table — `@spark_plan`

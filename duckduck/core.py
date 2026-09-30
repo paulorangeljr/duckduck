@@ -1438,17 +1438,31 @@ class DuckAPI:
         table_name = f"_api_{function_name}_{self._table_counter}"
         self.conn.register(table_name, df)
         if not shaped:
-            self._learn_columns(function_name, table_name)
+            self._learn_columns(function_name, table_name, kwargs)
         return table_name, list(df.columns)
 
-    def _learn_columns(self, function_name: str, table_name: str) -> None:
-        """Tells ``column_listener`` the columns (and DuckDB types) a table came back with. Never fails a query."""
+    def _learn_columns(self, function_name: str, table_name: str, kwargs: Optional[Dict[str, Any]] = None) -> None:
+        """Tells ``column_listener`` the columns (and DuckDB types) a table came back with. Never fails a query.
+
+        A table function's columns belong to the call, not the function: they're told under its address
+        (``servicenow.incident``) when it has one — ``servicenow_table`` reads a different table each time."""
         listener = self.column_listener
         if listener is None:
             return
+        from .kinds import required_params
+
         try:
+            key = function_name
+            required = [p.name for p in required_params(self.functions[function_name])] \
+                if function_name in self.functions else []
+            if required:
+                if not all(r in (kwargs or {}) for r in required):
+                    return
+                key = self.address_of(function_name, {r: kwargs[r] for r in required})
+                if not key:
+                    return
             described = self.conn.execute(f'DESCRIBE "{table_name}"').fetchall()
-            listener(function_name, [(str(r[0]), str(r[1])) for r in described])
+            listener(key, [(str(r[0]), str(r[1])) for r in described])
         except Exception as exc:  # noqa: BLE001
             logger.debug("  couldn't note the columns of %s: %s", function_name, exc)
 
@@ -1566,7 +1580,7 @@ class DuckAPI:
         table_name = f"_api_{fn_name}_{self._table_counter}"
         self.conn.register(table_name, df)
         if star and kept:  # every column of the pages, not just the ones the query used
-            self._learn_columns(fn_name, table_name)
+            self._learn_columns(fn_name, table_name, kwargs)
         return table_name, list(df.columns), kwargs
 
     #: Sole column of an empty result when neither the source nor the query
@@ -1863,7 +1877,7 @@ class DuckAPI:
         ``service`` — plus a note per catalog that couldn't be read. Every
         catalog read is a call to its source.
         """
-        from .kinds import CATALOG, kind_of, lists_of, required_params
+        from .kinds import CATALOG, drafts_of, kind_of, lists_of, required_params
 
         tables: List[Dict[str, Any]] = []
         notes: List[str] = []
@@ -1898,6 +1912,7 @@ class DuckAPI:
                     "usage": f"SELECT * FROM {target}({call}) LIMIT 100",
                     "service": self.service_of.get(catalog_name),
                     "address": self.address_of(target, args),  # s3_data.security.proxy_logs
+                    "drafts": drafts_of(catalog_fn),
                 })
         return tables, notes
 

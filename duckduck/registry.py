@@ -109,6 +109,7 @@ SERVICE_REGISTRY: Dict[str, ServiceSpec] = {
         factory=ServiceNow.from_secret,
         tables={
             "table": "table",
+            "tables": "tables",
             "incidents": "incidents",
             "problems": "problems",
             "change_requests": "change_requests",

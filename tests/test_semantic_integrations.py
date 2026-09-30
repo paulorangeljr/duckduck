@@ -622,3 +622,26 @@ def test_failing_catalog_is_a_note_not_a_crash(tmp_path):
     assert any("catalog 'glue_tables' failed (PermissionError: no glue:GetTables)" in n for n in notes)
     assert "customers" in {s.name for s in specs}  # other sources still discovered
     assert not any(s.table == "glue_table" for s in specs)
+
+
+def test_a_platform_listing_is_drafted_only_when_include_names_its_tables(tmp_path):
+    """@catalog(drafts=False) (ServiceNow's sys_db_object: thousands of platform tables) isn't drafted wholesale."""
+
+    class Platform:
+        @_catalog(lists="table", drafts=False)
+        def tables(self, limit=None):
+            return _pd.DataFrame({"table_name": ["incident", "sys_audit", "sys_user"]})
+
+        def table(self, table_name: str, limit=None):
+            return _pd.DataFrame({"number": ["x"]})
+
+    duck = _discovery_duck(tmp_path)
+    sn = Platform()
+    duck.register_api_function("sn_tables", sn.tables)
+    duck.register_api_function("sn_table", sn.table)
+    specs, notes = CatalogGenerator(FakeLLM(), duck).plan_specs()
+    assert not any(s.table == "sn_table" for s in specs)
+    assert any("3 table(s)" in n and "catalog_generation.include" in n for n in notes)
+    named = CatalogGenerator(FakeLLM(), duck, include=["incident", "sys_user"]).plan_specs()[0]
+    assert [(s.table, s.args) for s in named] == [("sn_table", {"table_name": "incident"}),
+                                                  ("sn_table", {"table_name": "sys_user"})]

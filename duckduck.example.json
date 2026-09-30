@@ -195,7 +195,9 @@
     "port": 5433,
     "database": "duckduck",
     "authentication": {"type": "aws", "region_name": "us-east-1", "secret_id": "prod/duckduck/pg-users"},
-    "tls": {"cert": "certs/server.crt", "key": "certs/server.key"}
+    "tls": {"cert": "certs/server.crt", "key": "certs/server.key"},
+    "catalog_tables": true,
+    "catalog_refresh": 3600
   },
   "semantic": {
     "catalog_path": "semantic_catalog.yaml",

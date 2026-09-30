@@ -416,8 +416,15 @@ class CatalogGenerator:
             logger.info("catalog: discovering the tables behind connectors …")
             nested, found_notes = self.duck.nested_tables()
             notes += found_notes
+            skipped = 0
             for n in nested:
+                if not n.get("drafts", True) and not self.include:
+                    skipped += 1  # a platform's own listing (ServiceNow): drafted only when include names them
+                    continue
                 candidates.append((n["label"], TableSpec(name=table_name_for(n["label"]), table=n["table"], args=n["args"])))
+            if skipped:
+                notes.append(f"{skipped} table(s) behind catalogs that list a platform's own tables (ServiceNow) "
+                             "weren't drafted — name the ones you want in catalog_generation.include")
             logger.info("  %d table(s) found behind catalogs", len(nested))
 
         chosen = [(label, spec) for label, spec in candidates if self._wanted(label)]

@@ -453,3 +453,46 @@ def test_raw_query_with_nq_keeps_where_in_duckdb_and_drops_limit():
     params = mock_get.call_args.args[1]
     assert params["sysparm_query"] == "priority=1^NQpriority=2"
     assert params["sysparm_limit"] == sn.default_page_size
+
+
+# ---------------------------------------------------------------------------
+# The instance's tables (sys_db_object) — a catalog of table()
+# ---------------------------------------------------------------------------
+
+
+def test_tables_lists_sys_db_object_as_calls_of_table():
+    from duckduck.kinds import CATALOG, drafts_of, kind_of, lists_of
+
+    sn = _make_sn()
+    rows = [
+        {"name": "incident", "label": "Incident", "super_class.name": "task", "is_extendable": "true",
+         "sys_scope.scope": "global", "sys_updated_on": "2026-01-01 00:00:00"},
+        {"name": "u_custom", "label": "Custom", "super_class.name": "", "is_extendable": "false",
+         "sys_scope.scope": "x_app", "sys_updated_on": ""},
+    ]
+    with patch.object(sn, "_get", return_value={"result": rows}) as mock_get:
+        df = sn.tables(table_name_ilike="%in%", extends="task", limit=10)
+    table, params = mock_get.call_args.args
+    assert table == "sys_db_object"
+    assert params["sysparm_query"] == "nameLIKEin^super_class.name=task^ORDERBYname"
+    assert params["sysparm_fields"] == "name,label,super_class.name,is_extendable,sys_scope.scope,sys_updated_on"
+    assert df["table_name"].tolist() == ["incident", "u_custom"]
+    assert df["extends"].tolist() == ["task", ""]
+    assert df["extendable"].tolist() == [True, False]
+    assert kind_of(sn.tables) == CATALOG and lists_of(sn.tables) == "table"
+    assert drafts_of(sn.tables) is False  # thousands of platform tables: never drafted wholesale
+
+
+def test_tables_behind_the_servicenow_catalog_are_its_table_calls():
+    duck = DuckAPI()
+    duck.auto_register({"sn": {"connector": "servicenow", "instance": "dev1",
+                               "authentication": {"type": "local", "username": "a", "password": "b"}}})
+    sn = duck.functions["sn_tables"].__self__
+    with patch.object(sn, "_get", return_value={"result": [{"name": "incident"}, {"name": "sys_user"}]}):
+        nested, notes = duck.nested_tables(service="sn")
+    assert notes == []
+    assert [(n["table"], n["args"], n["address"], n["drafts"]) for n in nested] == [
+        ("sn_table", {"table_name": "incident"}, "sn.incident", False),
+        ("sn_table", {"table_name": "sys_user"}, "sn.sys_user", False),
+    ]
+    duck.close()
