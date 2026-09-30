@@ -456,6 +456,11 @@ class KqlTranslator:
         sql = re.sub(rf'"?\b{_PLACEHOLDER}(\d+)\b"?', lambda m: refs[int(m.group(1))].sql, sql)
         # arg.x — the extension reads it as a dynamic property
         sql = re.sub(r"json_extract(?:_string)?\(\s*(args?)\s*,\s*'\$\.([A-Za-z_]\w*)'\s*\)", r"\1.\2", sql)
+        # has / has_cs / hasprefix / hassuffix → a term regex, which no source takes: ANDed with the LIKE it implies
+        # (a superset — "contains the term"), which reaches the source; DuckDB still applies the exact regex
+        sql = re.sub(r"regexp_matches\(CAST\(((?:\"(?:[^\"]|\"\")+\"|[A-Za-z_][\w.]*)) AS VARCHAR\), "
+                     r"'(\(\?i\))?(\(\?:\^\|\[\^\\p\{L\}\\p\{N\}\]\))?([A-Za-z0-9_ -]+)(\(\?:\[\^\\p\{L\}\\p\{N\}\]\|\$\))?'\)",
+                     lambda m: f"({m.group(1)} {'ILIKE' if m.group(2) else 'LIKE'} '%{m.group(4)}%' AND {m.group(0)})", sql)
         # =~ 'x' → ILIKE 'x' (exact: no wildcard in it), which reaches the source
         sql = re.sub(r"""UPPER\(((?:"(?:[^"]|"")+"|[A-Za-z_][\w.]*))\)\s*=\s*UPPER\('((?:[^'%_\\]|'')*)'\)""",
                      r"\1 ILIKE '\2'", sql)

@@ -504,7 +504,10 @@ adx.ProxyLogs
   'incident'`.
 - `ago()` / `now()` become the timestamp they mean (one clock per query), so
   time filters reach the source; `=~` reaches it as an exact case-insensitive
-  match. A typo is an error naming where (`KQL doesn't parse: Query operator
+  match; `has` / `has_cs` reach it as the `contains` they imply (DuckDB keeps
+  the exact term match); a `where` after `project` / `extend` still reaches it
+  (on a renamed column, as the source's name). `in (…)` and `or` don't —
+  DuckDB applies them after reading. A typo is an error naming where (`KQL doesn't parse: Query operator
   expected (line 4, at "projct Host")`), never a different query.
 - Queries only: management commands are refused, except `.show tables`.
   **Save as table** keeps the SQL a KQL query translates to.

@@ -21,7 +21,7 @@ import re
 import time
 import warnings
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import duckdb
 import pandas as pd
@@ -150,6 +150,10 @@ def _extract_filters(node: exp.Expression, ctx: "PushDownContext") -> None:
         ctx.conditions.append(Condition(column=column, op="lte", value=high, table=table))
         return
 
+    if isinstance(node, exp.Paren):  # (a = 1 AND b = 2): the same conditions
+        _extract_filters(node.this, ctx)
+        return
+
     if isinstance(node, (exp.And, exp.Where)):
         for child in node.args.values():
             if isinstance(child, exp.Expression):
@@ -176,22 +180,43 @@ def _source_label(node: exp.Expression) -> Optional[str]:
     return name.lower() or None
 
 
-def _passes_through(node: exp.Expression) -> Optional[exp.Select]:
+def _passes_through(node: exp.Expression) -> Optional[Tuple[exp.Select, Callable[[str], Optional[str]]]]:
     """
-    A derived table that's just ``SELECT * FROM <one source> [WHERE …]`` — a
-    condition on it is a condition on that source. None for anything else
-    (projections, aggregates, DISTINCT, LIMIT…: a column may not be the source's).
+    A derived table over one source whose columns are the source's own —
+    ``SELECT * FROM t``, ``SELECT a, b FROM t``, ``SELECT a AS x FROM t``,
+    ``SELECT *, a / 2 AS y FROM t`` (KQL's project / extend) — with the column
+    each of its names is in the source (``x`` → ``a``; ``y`` → None: computed).
+    None for anything else (aggregates, DISTINCT, LIMIT, ORDER…: the rows aren't the source's).
     """
     inner = node.this if isinstance(node, exp.Subquery) else None
     if not isinstance(inner, exp.Select) or len(_sources_of(inner)) != 1:
         return None
-    if (len(inner.expressions) != 1 or not isinstance(inner.expressions[0], exp.Star)
-            or any(inner.expressions[0].args.values())):  # SELECT * EXCLUDE / REPLACE / RENAME: not the source's columns
-        return None
     for arg in ("group", "distinct", "having", "limit", "offset", "qualify", "order", "joins", "with"):
         if inner.args.get(arg):
             return None
-    return inner
+    star, plain, computed = False, {}, set()
+    for e in inner.expressions:
+        if isinstance(e, exp.Star):
+            if any(e.args.values()):  # SELECT * EXCLUDE / REPLACE / RENAME: not the source's columns
+                return None
+            star = True
+        elif isinstance(e, exp.Column) and isinstance(e.this, exp.Identifier):
+            plain[e.name.lower()] = e.name.lower()
+        elif isinstance(e, exp.Alias) and isinstance(e.this, exp.Column) and isinstance(e.this.this, exp.Identifier):
+            plain[e.alias.lower()] = e.this.name.lower()
+        elif isinstance(e, exp.Alias):
+            computed.add(e.alias.lower())
+        else:
+            return None
+    if not star and not plain:
+        return None
+
+    def source_column(column: str) -> Optional[str]:
+        if column in plain:
+            return plain[column]
+        return column if star and column not in computed else None
+
+    return inner, source_column
 
 
 def _extract_scoped(selects: List[exp.Select], ctx: "PushDownContext", arg_qualifiers: Tuple[str, ...]) -> None:
@@ -214,12 +239,17 @@ def _extract_scoped(selects: List[exp.Select], ctx: "PushDownContext", arg_quali
               for lbl in [_source_label(src)] if lbl]
     twice = {lbl for lbl in labels if labels.count(lbl) > 1}
 
-    def target(node: exp.Expression, depth: int = 0) -> Optional[str]:
+    def target(node: exp.Expression, column: str, depth: int = 0) -> Optional[Tuple[str, str]]:
+        """(the table's label, the column's name there) a condition on ``column`` of ``node`` reaches, or None."""
         if isinstance(node, exp.Table):
             label = _source_label(node)
-            return None if label is None or (not node.alias and label in twice) else label
-        inner = _passes_through(node)
-        return target(_sources_of(inner)[0], depth + 1) if inner is not None and depth < 20 else None
+            return None if label is None or (not node.alias and label in twice) else (label, column)
+        through = _passes_through(node)
+        if through is None or depth >= 20:
+            return None
+        inner, source_column = through
+        mapped = source_column(column)
+        return target(_sources_of(inner)[0], mapped, depth + 1) if mapped else None
 
     for select in selects:
         where = select.args.get("where")
@@ -237,17 +267,18 @@ def _extract_scoped(selects: List[exp.Select], ctx: "PushDownContext", arg_quali
                 by_label[lbl] = src
         for c in found.conditions:
             if c.table in arg_qualifiers:
-                table = c.table
+                hit = (c.table, c.column)
             elif c.table:
-                table = target(by_label[c.table]) if c.table in by_label else None
+                hit = target(by_label[c.table], c.column) if c.table in by_label else None
             else:
-                table = target(sources[0]) if len(sources) == 1 else None
-            if table is None:
+                hit = target(sources[0], c.column) if len(sources) == 1 else None
+            if hit is None:
                 ctx.complete = False
                 continue
-            ctx.conditions.append(Condition(column=c.column, op=c.op, value=c.value, table=table))
+            table, column = hit
+            ctx.conditions.append(Condition(column=column, op=c.op, value=c.value, table=table))
             if c.op == "eq":
-                ctx.filters[c.column] = c.value
+                ctx.filters[column] = c.value
 
 
 def _limit_blocker(parsed: exp.Expression) -> Optional[str]:

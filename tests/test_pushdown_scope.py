@@ -77,3 +77,22 @@ def test_a_cte_is_scoped_too():
     duck, calls = _duck()
     out = duck.sql("WITH x AS (SELECT * FROM proxy WHERE Host = 'b') SELECT * FROM x JOIN inc AS i ON x.Host = i.host").df()
     assert calls[0] == ("proxy", [("host", "eq", "b")], None) and ("inc", None, None) in calls and out.empty
+
+
+def test_through_a_projection_of_the_source_s_columns():
+    """KQL's project / extend put a SELECT of the source's columns between the table and the where."""
+    duck, calls = _duck()
+    duck.sql("SELECT * FROM (SELECT Host, Bytes FROM proxy) WHERE Host = 'a'").df()
+    assert calls[-1] == ("proxy", [("host", "eq", "a")], None)
+    duck.sql("SELECT * FROM (SELECT Host AS h FROM proxy) WHERE h = 'c'").df()  # a rename: the source's name
+    assert calls[-1] == ("proxy", [("host", "eq", "c")], None)
+    out = duck.sql("SELECT * FROM (SELECT *, Bytes * 2 AS b2 FROM proxy) WHERE b2 > 10 AND Host = 'b'").df()
+    assert calls[-1] == ("proxy", [("host", "eq", "b")], None) and out["b2"].tolist() == [16]  # the computed one stays
+
+
+def test_parentheses_around_anded_conditions():
+    duck, calls = _duck()
+    duck.sql("SELECT * FROM proxy WHERE (Host = 'a' AND Bytes > 1)").df()
+    assert calls[-1] == ("proxy", [("bytes", "gt", 1), ("host", "eq", "a")], None)
+    duck.sql("SELECT * FROM proxy WHERE NOT (Host = 'a' AND Bytes > 1)").df()
+    assert calls[-1] == ("proxy", [], None)  # under NOT: nothing reaches the source

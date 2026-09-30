@@ -98,6 +98,18 @@ def test_addresses_calls_and_arguments_become_placeholders_and_come_back():
     assert adx.calls[-1] == ("table", "ProxyLogs", [("host", "ilike", "WEB01")], None)
 
 
+def test_has_reaches_the_source_as_the_like_it_implies():
+    duck, adx, _ = _duck()
+    regex = "regexp_matches(CAST(Url AS VARCHAR), '(?i)(?:^|[^\\p{L}\\p{N}])github(?:[^\\p{L}\\p{N}]|$)')"
+    translator = _fake({"['__duckref_0'] | where Url has 'github'": f"SELECT * FROM __duckref_0 WHERE {regex}",
+                        "['__duckref_0'] | where not(Url has 'github')": f"SELECT * FROM __duckref_0 WHERE NOT ({regex})"})
+    t = translator.to_sql("adx.ProxyLogs | where Url has 'github'", duck, native=False)
+    assert t.sql == f"SELECT * FROM adx.ProxyLogs WHERE (Url ILIKE '%github%' AND {regex})"
+    assert duck._extract_pushdown(duck.resolve_addresses(t.sql)).conditions[0].op == "ilike"
+    t = translator.to_sql("adx.ProxyLogs | where not(Url has 'github')", duck, native=False)
+    assert duck._extract_pushdown(duck.resolve_addresses(t.sql)).conditions == []  # under NOT: stays with DuckDB
+
+
 def test_a_table_read_twice_gets_an_alias_per_read():
     duck, adx, _ = _duck()
     translator = _fake({"['__duckref_0'] | where Host == 'web01' | join kind=inner (['__duckref_1'] | where Host == 'web02') on Bytes":
