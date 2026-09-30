@@ -2010,7 +2010,7 @@ function drawTables() {
     const savedTip = t.saved ? `\n${t.saved === "bound" ? "A saved table over a table function" : "A saved query"} — kept in duckduck.json` : "";
     return `<div class="trow ${t.saved ? "saved" : ""}"><button class="titem" type="button" data-usage="${esc(t.usage || ("SELECT * FROM " + t.name + " LIMIT 100"))}" title="${esc(tip + savedTip)}">
       ${icon(t.icon)}<span class="tlabel">${label}</span>${tag}${kids ? `<span class="kcount">${kids}</span>` : ""}</button>
-      ${t.params ? `<button type="button" class="infobtn" data-fninfo="${esc(t.name)}" title="A table function: what it takes and how to call it" aria-label="How to use ${esc(t.name)}">i</button>` : ""}
+      <button type="button" class="infobtn" data-fninfo="${esc(t.name)}" title="What this table is, what it takes and how to query it" aria-label="How to use ${esc(t.name)}">i</button>
       ${t.saved ? `<button type="button" class="editbtn" data-editview="${esc(t.saved_name || t.name)}" title="See and edit the statement behind it">✎ Edit</button>` : ""}</div>`;
   };
   const nestedBlock = (t, svc) => {
@@ -2064,30 +2064,57 @@ function drawTables() {
   on("[data-regall]", b => registerAll(b.dataset.regall, b));
   on("[data-fninfo]", b => showFunctionInfo(b.dataset.fninfo));
 }
-// ⓘ on a table function: what it takes, and the three ways to call it (by address, arg. in the WHERE, the call)
+// ⓘ on every table: what it is, what it takes (required and optional arguments) and the ways to query it
+const KIND_ABOUT = {
+  "table function": "A table function: it's a table once its arguments say which one.",
+  "raw query": "A raw query: it runs the source's own query language.",
+  "catalog": "A catalog: it lists what the source holds.",
+  "table": "A table: select it as it is.",
+};
 function showFunctionInfo(name) {
   const t = TABLES.find(x => x.name === name); if (!t) return;
-  const req = (t.params || []).filter(p => p.required), opt = (t.params || []).filter(p => !p.required);
-  const ph = (p) => p.type === "int" || p.type === "float" ? `<${p.name}>` : `'<${p.name}>'`;
-  const ways = [];
+  const params = t.params || [];
+  const req = params.filter(p => p.required), opt = params.filter(p => !p.required);
+  // optional arguments worth showing in the examples: the ones that are off unless given (default None)
+  // x_id next to x_name are alternatives (site_id or site_name): the example uses the name, the note says the other
+  const offByDefault = opt.filter(p => p.default == null || p.default === "None");
+  const names = new Set(offByDefault.map(p => p.name));
+  const alts = offByDefault.filter(p => p.name.endsWith("_id") && names.has(p.name.slice(0, -3) + "_name"));
+  const optShown = offByDefault.filter(p => !alts.includes(p)).slice(0, 4);
+  const altNote = alts.length ? ` Or ${alts.map(p => `${p.name} instead of ${p.name.slice(0, -3)}_name`).join(", ")}.` : "";
+  const ph = (p) => p.type === "int" || p.type === "float" || /Optional\[(int|float)\]/.test(p.type || "") ? `<${p.name}>` : `'<${p.name}>'`;
+  const argsWhere = (ps) => ps.map(p => `arg.${p.name} = ${ph(p)}`).join("\n  AND ");
+  const ref = t.address || t.name, ways = [];
   if (t.address_pattern) ways.push({t: "By address — like any table", d: "connector.part.part: each part fills an argument, in order.",
     sql: `SELECT * FROM ${t.address_pattern} LIMIT 10`});
+  if (!req.length) ways.push({t: t.address ? "By address — like any table" : "As a table", d: "",
+    sql: `SELECT * FROM ${ref} LIMIT 10`});
   if (req.length) ways.push({t: "Arguments in the WHERE", d: "arg. says it's an argument of the table, not a column of the result.",
-    sql: `SELECT * FROM ${t.name}\nWHERE ${req.map(p => `arg.${p.name} = ${ph(p)}`).join("\n  AND ")}\nLIMIT 10`});
-  ways.push({t: "Arguments in the call", d: "",
-    sql: `SELECT * FROM ${t.name}(${req.map(p => `${p.name}=${ph(p)}`).join(", ")}) LIMIT 10`});
-  $("#fntitle").textContent = t.name;
-  $("#fnsub").textContent = t.kind === "raw query" ? "A raw query: it runs the source's own query language."
-    : "A table function: it's a table once its arguments say which one.";
-  $("#fnbody").innerHTML = `${t.doc ? `<div class="doc">${esc(t.doc.split(/\n\s*\n/)[0])}</div>` : ""}
-    <h4>It takes</h4>
+    sql: `SELECT * FROM ${t.name}\nWHERE ${argsWhere(req)}\nLIMIT 10`});
+  else if (optShown.length) ways.push({t: "With its optional arguments, in the WHERE",
+    d: "Give only the ones you need (the description says which go together). arg. says it's an argument, not a column." + altNote,
+    sql: `SELECT * FROM ${ref}\nWHERE ${argsWhere(optShown)}\nLIMIT 10`});
+  const callArgs = req.length ? req : optShown;
+  if (callArgs.length) ways.push({t: "Arguments in the call", d: "",
+    sql: `SELECT * FROM ${t.name}(${callArgs.map(p => `${p.name}=${ph(p)}`).join(", ")}) LIMIT 10`});
+  $("#fntitle").textContent = t.saved_name || t.name;
+  $("#fnsub").textContent = t.saved === "query" ? "A saved query: it runs each time the table is read."
+    : t.saved === "bound" ? "A saved table over a table function, its arguments fixed."
+    : (KIND_ABOUT[t.kind] || KIND_ABOUT.table) + (t.kind === "table" && opt.length ? " Optional arguments narrow what's read." : "");
+  const doc = (t.doc || t.description || "").trim(), first = doc.split(/\n\s*\n/)[0], rest = doc.slice(first.length).trim();
+  $("#fnbody").innerHTML = `${first ? `<div class="doc">${esc(first)}</div>` : ""}
+    ${rest ? `<details class="small"><summary>More about it</summary><div class="doc">${esc(rest)}</div></details>` : ""}
+    ${t.source ? `<p class="muted small">Source: ${esc(t.source)}${t.address && t.address !== t.name ? ` · also written <span class="mono">${esc(t.address)}</span>` : ""}</p>` : ""}
+    ${params.length ? `<h4>It takes</h4>
     <table><thead><tr><th>argument</th><th></th><th>type</th><th>default</th></tr></thead><tbody>
       ${[...req, ...opt].map(p => `<tr><td class="mono">${esc(p.name)}</td><td>${p.required ? "<b>required</b>" : `<span class="muted">optional</span>`}</td>
-        <td class="mono muted">${esc(p.type || "")}</td><td class="mono muted">${esc(p.default ?? "")}</td></tr>`).join("")}</tbody></table>
-    <h4>How to call it</h4>
+        <td class="mono muted">${esc(p.type || "")}</td><td class="mono muted">${esc(p.default ?? "")}</td></tr>`).join("")}</tbody></table>`
+      : `<p class="muted small">It takes no arguments.</p>`}
+    <h4>How to query it</h4>
     ${ways.map((w, i) => `<div class="way"><div class="t">${esc(w.t)}</div>${w.d ? `<div class="d">${esc(w.d)}</div>` : ""}
       <div class="row"><pre class="mono">${esc(w.sql)}</pre><button class="mini" type="button" data-fnuse="${i}" title="Put it in the editor">Use</button></div></div>`).join("")}
-    ${t.pushdown ? `<p class="muted small">Filters that reach the source: ${esc(t.pushdown)}.</p>` : ""}
+    <p class="muted small">${t.pushdown ? `Filters that reach the source: ${esc(t.pushdown)}. Any other filter is applied after reading.`
+      : "Filters are applied after reading (none reach the source)."}</p>
     ${t.address_pattern && META?.features?.saved_tables ? `<p class="muted small">Want one of its tables as a table of its own? Write it by address and press
       <b>Save as table</b> — it's kept as ${esc(t.address_pattern)}.</p>` : ""}`;
   $("#fnbody").querySelectorAll("[data-fnuse]").forEach(b => b.addEventListener("click", () => {

@@ -264,9 +264,10 @@ class SQLConsole:
             elif pattern:
                 r["usage"] = f"SELECT * FROM {pattern} LIMIT 100"
                 r["address_pattern"] = pattern
-            if r["kind"] in ("table function", "raw query"):  # the page's ⓘ: what it takes and how to call it
-                r["params"] = _params_of(self.duck.functions.get(r["name"]))
-                r["doc"] = inspect.getdoc(self.duck.functions.get(r["name"])) or ""
+            # the page's ⓘ, on every table: what it is, what it takes (optional arguments too) and how to call it
+            fn = self.duck.functions.get(r["name"])
+            r["params"] = _params_of(fn)
+            r["doc"] = (inspect.getdoc(fn) or "") if fn is not None else ""
         return records
 
 
@@ -281,7 +282,8 @@ def _params_of(fn: Any) -> List[Dict[str, Any]]:
         if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD) or p.name in ("where", "limit"):
             continue
         ann = p.annotation
-        kind = "" if ann is inspect.Parameter.empty else getattr(ann, "__name__", None) or str(ann).replace("typing.", "")
+        kind = ("" if ann is inspect.Parameter.empty else ann.__name__ if isinstance(ann, type)
+                else str(ann).replace("typing.", ""))  # Optional[str], not "Optional"
         out.append({"name": p.name, "required": p.default is inspect.Parameter.empty, "type": kind,
                     "default": None if p.default is inspect.Parameter.empty else repr(p.default)})
     return out

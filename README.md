@@ -1032,12 +1032,14 @@ saved before you expanded aren't listed again — they're in the list as
 tables; *show them* brings them back. ↻ reads the catalog again. In
 Python: `duck.nested_tables(service="lake")` (or every connector's with
 `duck.nested_tables()`). Saved tables are marked *saved* in the list,
-with a **✎ Edit** button on each. A table function (a table that needs
-arguments, like `s3_data_table`) has an **ⓘ** on the right: what it
-does, the arguments it takes, and the ways to call it — by address
+with a **✎ Edit** button on each. Every table has an **ⓘ** on the right:
+what it is, the arguments it takes (required and optional), and the ways
+to query it — for a table function like `s3_data_table`: by address
 (`s3_data.<database>.<table_name>`), `WHERE arg.database = '…' AND
-arg.table_name = '…'`, or `s3_data_table(database='…', table_name='…')` —
-each with **Use** to put it in the editor.
+arg.table_name = '…'`, or `s3_data_table(database='…', table_name='…')`;
+for SharePoint's `list_items`, whose arguments are all optional: `WHERE
+arg.site_name = '…' AND arg.list_name = '…'` (or `site_id` / `list_id`
+instead) — each with **Use** to put it in the editor.
 
 **The list** groups tables by connector; click a connector's name to
 fold its tables away (*Expand all* / *Collapse all* above; remembered in

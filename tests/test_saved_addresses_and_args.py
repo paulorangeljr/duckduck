@@ -145,3 +145,39 @@ def test_the_page():
 
     assert 'id="fninfo"' in PAGE and "data-fninfo=" in PAGE and "function showFunctionInfo(" in PAGE
     assert "arg.${p.name}" in PAGE and "ADDRESS_OK" in PAGE
+    # on every row, not only when it has params
+    assert "${t.params ? `<button type=\"button\" class=\"infobtn\"" not in PAGE and "With its optional arguments" in PAGE
+
+
+def test_every_table_has_what_the_info_button_shows():
+    """ⓘ on every row, not only on table functions: SharePoint's list_items takes only optional arguments."""
+    pytest.importorskip("pydantic")
+    from typing import Optional
+
+    from duckduck.semantic.admin import SQLConsole
+
+    class Site:
+        def list_items(self, site_id: Optional[str] = None, list_id: Optional[str] = None,
+                       site_name: Optional[str] = None, list_name: Optional[str] = None,
+                       column_names: str = "display", limit: Optional[int] = None):
+            """Items of a SharePoint List with expanded fields.
+
+            site_id / site_name: the site — one of the two."""
+            self.args = {"site_name": site_name, "list_name": list_name, "limit": limit}
+            return pd.DataFrame([{"Title": "a"}])
+
+        def sites(self, limit: Optional[int] = None):
+            return pd.DataFrame([{"id": "1"}])
+
+    duck, site = DuckAPI(), Site()
+    duck.register_api_function("sp_list_items", site.list_items)
+    duck.register_api_function("sp_sites", site.sites)
+    rows = {t["name"]: t for t in SQLConsole(duck).tables()}
+    items = rows["sp_list_items"]
+    assert items["kind"] == "table" and items["doc"].startswith("Items of a SharePoint List")
+    assert [p["name"] for p in items["params"] if not p["required"]] == ["site_id", "list_id", "site_name", "list_name", "column_names"]
+    assert {p["name"]: p["type"] for p in items["params"]}["site_name"] == "Optional[str]"
+    assert rows["sp_sites"]["params"] == [] and rows["sp_sites"]["doc"] == ""
+    # the optional arguments are arguments with arg. too
+    duck.sql("SELECT * FROM sp_list_items WHERE arg.site_name = 'S' AND arg.list_name = 'Tasks' LIMIT 5").df()
+    assert site.args == {"site_name": "S", "list_name": "Tasks", "limit": 5}
