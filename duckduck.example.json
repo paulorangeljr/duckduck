@@ -131,6 +131,17 @@
       }
     }
   },
+  "views": {
+    "servicenow_incident": {
+      "table": "servicenow_table",
+      "args": {"table_name": "incident"},
+      "description": "ServiceNow incidents (the incident table, through the generic table function)"
+    },
+    "open_critical_incidents": {
+      "sql": "SELECT number, short_description, assigned_to FROM servicenow_incident WHERE priority = '1' AND active = 'true'",
+      "description": "Open P1 incidents"
+    }
+  },
   "ai_providers": {
     "jev": {
       "provider": "jev",

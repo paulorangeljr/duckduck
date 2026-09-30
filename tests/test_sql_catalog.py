@@ -152,4 +152,4 @@ def test_the_web_app_expands_one_connector():
 def test_the_page_has_a_toggle_per_connector():
     from duckduck.semantic.webpage import PAGE
 
-    assert "data-expand=" in PAGE and "loadNested(b.dataset.expand" in PAGE and "expandableServices" in PAGE
+    assert "data-expand=" in PAGE and "loadNested(b.dataset.expand" in PAGE and 'id="expanded"' not in PAGE

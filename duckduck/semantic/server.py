@@ -27,6 +27,7 @@ HTML page (``webpage.PAGE``) over a JSON API:
 ``POST /api/sql {sql, debug, background}`` · ``GET /api/tables``  the SQL console (``allow_sql``, on by default; read-only, no files/network; ``background`` → a job)
 ``POST /api/takeover {conversation_id, name, full, user}``  "take over from here": the answer's rows as a table (an unrated answer → answered)
 ``POST /api/takeover/proposal {conversation_id}``  what that would give: suggested name, rows, columns, capped
+``GET /api/views`` · ``POST /api/views/check {sql}`` · ``POST /api/views`` · ``DELETE /api/views/{name}``  saved tables (a query kept as a table in duckduck.json)
 ``GET  /api/config``                         duckduck.json, secrets masked, + every option documented
 ``POST /api/config/validate {config}``       check an edited config without saving
 ``PUT  /api/config {config}``                save it (``allow_config_edit``; ``.bak`` kept) and reload
@@ -159,7 +160,8 @@ def create_app(
             "features": {"ask": not getattr(search, "setup", None),
                          "sql": state["console"] is not None, "config": bool(config_path),
                          "config_edit": bool(config_path and allow_config_edit),
-                         "catalog_generation": bool(catalog_runner is not None and allow_config_edit)},
+                         "catalog_generation": bool(catalog_runner is not None and allow_config_edit),
+                         "saved_tables": bool(state["console"] is not None and config_path and allow_config_edit)},
             "source_icons": {n: search.source_icon(n) for n in cat.sources},
             "unavailable_sources": search.unavailable(),
             "texts": {"ask_anyway": search.texts.t("reply.ask_anyway")},
@@ -503,6 +505,81 @@ def create_app(
     @app.get("/api/tables")
     def tables():
         return dump(the_console().tables())
+
+    # -- saved tables: a query kept as a table in duckduck.json (duckduck.views) ----------------------
+
+    def saved_tables_off() -> Optional[str]:
+        if not config_path:
+            return "there's no duckduck.json to keep it in (the server wasn't started from a config file)"
+        if not allow_config_edit:
+            return "saving writes duckduck.json: start the server with --edit-config (serve(allow_config_edit=True))"
+        return None
+
+    @app.get("/api/views")
+    def list_views():
+        from ..views import describe
+
+        source = the_console().source
+        return dump({"views": [describe(source, n) for n in sorted(source.views)],
+                     "failed": dict(source.failed_views), "off": saved_tables_off()})
+
+    @app.post("/api/views/check")
+    def check_view(body: Dict[str, Any] = Body(...)):
+        """What saving this query would make: bound (a table function's arguments) or a query, and a name."""
+        from ..views import kind_of, read_only_reason, suggested_name
+
+        source, sql = the_console().source, str(body.get("sql") or "")
+        reason = read_only_reason(sql)
+        if reason:
+            return dump({"error": reason})
+        definition = source.view_from_sql(sql)
+        return dump({"kind": kind_of(definition), **definition, "name": suggested_name(source, definition),
+                     "off": saved_tables_off()})
+
+    @app.post("/api/views")
+    def create_view(body: Dict[str, Any] = Body(...)):
+        """``{name, sql | table + args, description, replace}`` → registered now, written to duckduck.json."""
+        from .. import views as saved
+
+        source = the_console().source
+        off = saved_tables_off()
+        if off:
+            raise HTTPException(403, off)
+        raw = {k: body[k] for k in ("table", "args", "sql", "description") if body.get(k) not in (None, "", {})}
+        if raw.get("sql") and not raw.get("table"):
+            found = source.view_from_sql(raw["sql"])  # a plain table-function call is kept bound: push-down stays
+            raw = {**found, **({"description": raw["description"]} if raw.get("description") else {})}
+        name = str(body.get("name") or "").strip().lower()
+        previous = source.views.get(name)
+        try:
+            definition = source.register_view(name, raw, replace=bool(body.get("replace")))
+        except (ValueError, LookupError) as exc:
+            raise HTTPException(400, str(exc).strip("'\""))
+        try:
+            saved.save(config_path, name, definition)
+        except Exception as exc:  # not kept: undo, so the page and the file agree
+            saved.unregister(source, name)
+            if previous is not None:
+                source.register_view(name, previous)
+            raise HTTPException(500, f"couldn't write {config_path}: {exc}")
+        return dump(saved.describe(source, name))
+
+    @app.delete("/api/views/{name}")
+    def delete_view(name: str):
+        from .. import views as saved
+
+        source = the_console().source
+        off = saved_tables_off()
+        if off:
+            raise HTTPException(403, off)
+        name = name.lower()
+        if name not in source.views and name not in source.failed_views:
+            raise HTTPException(404, f"{name!r} isn't a saved table")
+        if name in source.views:
+            saved.unregister(source, name)
+        source.failed_views.pop(name, None)
+        saved.remove(config_path, name)
+        return dump({"removed": name})
 
     @app.get("/api/connections")
     def connections():

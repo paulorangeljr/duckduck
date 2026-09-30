@@ -272,7 +272,7 @@ button.add { background: none; border: 1px dashed var(--border); border-radius: 
 .cfgnav .count { margin-left: auto; font-size: 11.5px; color: var(--muted); font-weight: 400; }
 .cfgnav .count.bad { color: var(--bad); font-weight: 600; }
 .cfgmain > * + *, .cfgpage > * + * { margin-top: 14px; }
-.cfgmain a[data-cfggo], .cfgmain a[data-open] { color: var(--accent); }
+.cfgmain a { color: var(--accent); }
 .cfgmain .card { margin-bottom: 0; }
 .cfgintro { color: var(--ink-2); font-size: 14px; margin: 6px 0 4px; max-width: 72ch; }
 .dirty { color: var(--accent); font-size: 13px; font-weight: 600; margin-left: auto; }
@@ -338,6 +338,11 @@ button.danger:hover { border-color: var(--bad); }
 .gallery button b { display: block; font-size: 14px; }
 .gallery button span.d { display: block; font-size: 12px; color: var(--muted); line-height: 1.35; }
 .addbox { border: 1px dashed var(--border); border-radius: 12px; padding: 12px 14px; margin: 12px 0; }
+.savedtag { font-size: 10.5px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--accent); color: var(--accent); margin-left: 4px; }
+.modal .vkind { background: var(--surface-2); border-radius: 10px; padding: 10px 12px; margin: 8px 0 14px; font-size: 13.5px; }
+.modal .vkind div { color: var(--ink-2); font-size: 13px; margin-top: 2px; }
+.modal .vsql { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; margin: 12px 0 0; font-size: 12.5px;
+               max-height: 120px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
 /* take-over dialog */
 dialog.modal { border: 1px solid var(--border); border-radius: 14px; padding: 0; width: min(560px, calc(100vw - 32px));
                background: var(--surface); color: var(--ink); box-shadow: 0 24px 60px rgba(0,0,0,.25); }
@@ -527,14 +532,12 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
       <aside class="card"><h3>Tables</h3>
         <div id="connstatus"></div>
         <input id="tablefilter" placeholder="filter tables" style="width:100%">
-        <label class="check small" style="margin-top:8px;display:flex;gap:6px;align-items:center"
-          title="Every connector: also list the tables behind catalogs (e.g. every table a Glue, ADX or database catalog lists) — reading them calls each source. Each connector with a catalog also has its own Expand catalog.">
-          <input type="checkbox" id="expanded"> Expanded catalog <span class="muted" id="expandednote"></span></label>
         <div class="tlist" id="tablelist"></div></aside>
       <div>
         <div class="card">
           <textarea class="editor mono" id="sqltext" spellcheck="false" aria-label="SQL">SHOW TABLES</textarea>
           <div class="row" style="margin-top:8px"><button class="primary" id="sqlrun">Run</button>
+            <button class="secondary" type="button" id="sqlsave" title="Keep this query as a table with a name — in duckduck.json, for SQL and Ask">Save as table</button>
             <label class="check small" title="Log at DEBUG: request bodies, bound parameters, every page (secrets stay masked)">
               <input type="checkbox" id="sqldebug"> Debug log</label>
             <span class="muted small">Ctrl+Enter · read queries only (SELECT, WITH, SHOW, DESCRIBE…) · no file or network access</span></div>
@@ -551,6 +554,7 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
         <div class="navgroup">Connect</div>
         <button type="button" data-cfgpage="connectors">Connectors <span class="count" id="navc-connectors"></span></button>
         <button type="button" data-cfgpage="ai">AI providers <span class="count" id="navc-ai"></span></button>
+        <button type="button" data-cfgpage="saved">Saved tables <span class="count" id="navc-saved"></span></button>
         <div class="navgroup">Ask in plain language</div>
         <button type="button" data-cfgpage="catalog">Semantic catalog</button>
         <button type="button" data-cfgpage="connections">Catalog connections</button>
@@ -671,6 +675,30 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
     <div class="mfoot"><span class="note">It's a snapshot: querying it never calls the sources again.</span>
       <button class="secondary" type="button" id="tocancel">Cancel</button>
       <button class="primary" type="submit" id="togo">Create table &amp; open SQL</button></div>
+  </form>
+</dialog>
+<dialog class="modal" id="viewdlg" aria-labelledby="viewtitle">
+  <form method="dialog" id="viewform">
+    <div class="mhead">
+      <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M2 6h12M6 6v7.5"/><path d="M11 9v4M9 11h4"/></svg>
+      <div><h2 id="viewtitle">Save as a table</h2>
+        <p class="sub">This query gets a name of its own, kept in duckduck.json: query it like any table — in the SQL tab,
+          and in Ask once the semantic catalog describes it.</p></div>
+    </div>
+    <div class="mbody">
+      <div class="vkind" id="vkind"></div>
+      <label class="name" for="vname">Table name</label>
+      <div class="namebox"><span>SELECT * FROM</span><input id="vname" autocomplete="off" spellcheck="false"
+        pattern="[a-z_][a-z0-9_]{0,62}" required></div>
+      <div class="hint" id="vhint"></div>
+      <label class="name" for="vdesc" style="margin-top:10px">Description <span class="muted" style="font-weight:400">— optional; helps people and Ask</span></label>
+      <input id="vdesc" autocomplete="off" style="width:100%" placeholder="e.g. ServiceNow incidents">
+      <pre class="mono vsql" id="vsql"></pre>
+      <p class="err" id="verr" hidden></p>
+    </div>
+    <div class="mfoot"><span class="note" id="vnote"></span>
+      <button class="secondary" type="button" id="vcancel">Cancel</button>
+      <button class="primary" type="submit" id="vgo">Save table</button></div>
   </form>
 </dialog>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -1118,6 +1146,61 @@ $("#takeoverform").addEventListener("submit", async (e) => {
     $("#togo").disabled = false; $("#togo").textContent = "Create table & open SQL";
   }
 });
+
+// "Save as table": a query kept as a table (duckduck.json → views) — bound when it's just a table function's arguments
+let VIEWDLG = null;  // {sql, check}
+const sqlLiteral = (v) => typeof v === "string" ? `'${v.replace(/'/g, "''")}'` : String(v);
+async function saveAsTable(sql) {
+  sql = (sql || "").trim();
+  if (!sql) { toast("Write a query first"); return; }
+  let c;
+  try { c = await api("/api/views/check", {sql}); } catch (err) { toast(err.message); return; }
+  if (c.error) { toast(c.error); return; }
+  VIEWDLG = {sql, check: c};
+  const call = c.kind === "bound" ? `${c.table}(${Object.entries(c.args || {}).map(([k, v]) => `${k}=${sqlLiteral(v)}`).join(", ")})` : "";
+  $("#vkind").innerHTML = c.kind === "bound"
+    ? `<b>A table over <span class="mono">${esc(call)}</span></b><div>Filters and LIMIT on it still go to the source, as they do on ${esc(c.table)}.</div>`
+    : `<b>A saved query</b><div>It runs each time the table is read; filters on it are applied after it runs.</div>`;
+  $("#vsql").textContent = c.kind === "bound" ? `SELECT * FROM ${call}` : c.sql;
+  $("#vname").value = c.name; $("#vdesc").value = "";
+  $("#verr").hidden = true;
+  $("#vgo").disabled = !!c.off; $("#vgo").textContent = "Save table";
+  $("#vnote").textContent = c.off ? `Can't save here: ${c.off}.` : "Kept in duckduck.json (a .bak is kept) — it's there after a restart.";
+  checkViewName();
+  $("#viewdlg").showModal(); $("#vname").select();
+}
+function checkViewName() {
+  const n = $("#vname").value.trim().toLowerCase(), hint = $("#vhint"), known = TABLES.find(t => t.name === n);
+  let bad = "";
+  if (!/^[a-z_][a-z0-9_]{0,62}$/.test(n)) bad = "Letters, digits and _, starting with a letter.";
+  else if (known && !known.saved) bad = `“${n}” is already a table (${known.service || "registered"}) — pick another name.`;
+  hint.textContent = bad || (known ? `Replaces the saved table “${n}”.` : "Letters, digits and _, starting with a letter.");
+  hint.classList.toggle("bad", !!bad);
+  if (!VIEWDLG?.check?.off) $("#vgo").disabled = !!bad;
+  return !bad;
+}
+$("#vname").addEventListener("input", checkViewName);
+$("#vcancel").addEventListener("click", () => $("#viewdlg").close());
+$("#viewdlg").addEventListener("click", (e) => { if (e.target === $("#viewdlg")) $("#viewdlg").close(); });  // backdrop
+$("#viewform").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (!VIEWDLG || !checkViewName()) return;
+  const name = $("#vname").value.trim().toLowerCase(), c = VIEWDLG.check;
+  const body = {name, description: $("#vdesc").value.trim() || undefined, replace: !!TABLES.find(t => t.name === name && t.saved),
+    ...(c.kind === "bound" ? {table: c.table, args: c.args} : {sql: c.sql})};
+  $("#vgo").disabled = true; $("#vgo").textContent = "Saving…";
+  try { await api("/api/views", body); }
+  catch (err) { $("#verr").textContent = err.message; $("#verr").hidden = false; $("#vgo").disabled = false; $("#vgo").textContent = "Save table"; return; }
+  $("#viewdlg").close();
+  toast(`Saved “${name}” — it's a table now`);
+  // the Config tab's copy of the file gets it too, so a later Save there keeps it
+  const def = c.kind === "bound" ? {table: c.table, args: c.args} : {sql: c.sql};
+  if (body.description) def.description = body.description;
+  if (CFG) for (const o of [CFG.config, DRAFT]) o.views = {...(o.views || {}), [name]: def};
+  openTab("sql"); await loadTables();
+  $("#sqltext").value = `SELECT * FROM ${name} LIMIT 100`; $("#sqltext").focus();
+});
+$("#sqlsave").addEventListener("click", () => saveAsTable($("#sqltext").value));
 
 async function reply(convId, text) {
   runJob("/api/answer", {conversation_id: convId, reply: text}, LAST_QUESTION);
@@ -1606,8 +1689,7 @@ async function loadTables() {
   loadConnections();
   try { TABLES = await api("/api/tables"); drawTables(); }
   catch (err) { TABLES = []; $("#tablelist").innerHTML = `<p class="error small">${esc(err.message)}</p>`; }
-  if ($("#expanded").checked) loadNested(null, false);
-  else EXPANDED.forEach(svc => loadNested(svc, false));
+  EXPANDED.forEach(svc => loadNested(svc, false));
 }
 // which connectors in duckduck.json started, and why the others didn't — why the list is what it is
 async function loadConnections() {
@@ -1627,31 +1709,17 @@ async function loadConnections() {
     ${svcs.some(x => x.started && !x.tables) ? `<div class="muted">Started with no tables: ${esc(svcs.filter(x => x.started && !x.tables).map(x => x.name).join(", "))}</div>` : ""}
     ${failed.length || !c.tables ? where : ""}</div>`;
 }
-// one connector's catalogs (svc), or every connector's (null — the "Expanded catalog" box)
+// one connector's catalogs: the tables behind them (Glue, ADX, a database…), under each catalog
 async function loadNested(svc, refresh) {
-  const all = svc === null, keys = all ? expandableServices() : [svc];
-  keys.forEach(k => { EXPANDED.add(k); NESTED[k] = {...(NESTED[k] || {tables: [], notes: []}), loading: true}; });
-  if (all) $("#expandednote").innerHTML = `<span class="spin" aria-hidden="true" style="display:inline-block;vertical-align:-2px"></span> reading catalogs…`;
+  EXPANDED.add(svc); NESTED[svc] = {...(NESTED[svc] || {tables: [], notes: []}), loading: true};
   drawTables();
   let got;
-  try { got = await api("/api/tables/nested?" + new URLSearchParams({...(all ? {} : {service: svc}), ...(refresh ? {refresh: 1} : {})})); }
+  try { got = await api("/api/tables/nested?" + new URLSearchParams({service: svc, ...(refresh ? {refresh: 1} : {})})); }
   catch (err) { got = {tables: [], notes: [err.message]}; }
-  keys.forEach(k => { NESTED[k] = {tables: got.tables.filter(n => (n.service || "other") === k),
-    notes: all ? [] : got.notes, loading: false}; });
-  if (all) {
-    NESTED[""] = {tables: [], notes: got.notes, loading: false};
-    $("#expandednote").innerHTML = `· ${got.tables.length} nested <a href="#" id="nestedrefresh" title="Read every catalog again">↻</a>`;
-    $("#nestedrefresh").addEventListener("click", (e) => { e.preventDefault(); loadNested(null, true); });
-  }
+  NESTED[svc] = {tables: got.tables, notes: got.notes, loading: false};
   drawTables();
 }
-// the connectors with a catalog that lists tables behind it (Glue, ADX, a database…)
-const expandableServices = () => [...new Set(TABLES.filter(t => t.expandable).map(t => t.service || "other"))];
-function collapseNested(svc) { EXPANDED.delete(svc); if ($("#expanded").checked) $("#expanded").checked = false; drawTables(); }
-$("#expanded").addEventListener("change", () => {
-  if ($("#expanded").checked) loadNested(null, false);
-  else { EXPANDED.clear(); delete NESTED[""]; $("#expandednote").textContent = ""; drawTables(); }
-});
+function collapseNested(svc) { EXPANDED.delete(svc); drawTables(); }
 function previewSql(sql) { $("#sqltext").value = sql; runSql(); }
 function drawTables() {
   const f = $("#tablefilter").value.trim().toLowerCase();
@@ -1678,9 +1746,10 @@ function drawTables() {
     const kids = nestedOf(t);
     return `<button class="titem" type="button" data-usage="${esc(t.usage || ("SELECT * FROM " + t.name + " LIMIT 100"))}"
       title="${esc([t.description, t.pushdown ? "push-down: " + t.pushdown : ""].filter(Boolean).join("\n"))}">
-      ${icon(t.icon)}<span>${esc(t.name)}</span><span class="kind">${esc(t.kind || "")}${kids.length ? ` · ${kids.length}` : ""}</span></button>` +
+      ${icon(t.icon)}<span>${esc(t.name)}</span>${t.saved ? `<span class="savedtag" title="${t.saved === "bound" ? "A saved table over a table function" : "A saved query"} — in duckduck.json">saved</span>` : ""}<span class="kind">${esc(t.kind || "")}${kids.length ? ` · ${kids.length}` : ""}</span></button>` +
       (kids.length ? `<div class="nested">${kids.slice(0, MAXN).map(n => `<div class="nitem" title="${esc(n.usage)}">
         <span class="lbl" data-usage="${esc(n.usage)}">${esc(n.label)}</span>
+        <button class="secondary" type="button" data-savetable="${esc(n.usage)}" title="Keep it as a table of its own, with a name">＋ Table</button>
         <button class="secondary" type="button" data-preview="${esc(n.usage)}">Preview</button></div>`).join("")}
         ${kids.length > MAXN ? `<div class="muted small">+${kids.length - MAXN} more — filter to find them</div>` : ""}</div>` : "") +
       (EXPANDED.has(svc) && !NESTED[svc]?.loading && t.expandable && !(byCatalog[t.name] || []).length
@@ -1688,8 +1757,6 @@ function drawTables() {
   }).join("") + (EXPANDED.has(svc) && NESTED[svc]?.notes?.length
     ? `<div class="muted small nested">${NESTED[svc].notes.map(esc).join("<br>")}</div>` : "")).join("")
     || (TABLES.length ? `<p class="muted small">Nothing matches.</p>` : `<p class="muted small">No tables registered — see above for why.</p>`);
-  if (NESTED[""]?.notes?.length && $("#expanded").checked) $("#tablelist").insertAdjacentHTML("beforeend",
-    `<div class="muted small" style="margin-top:8px">${NESTED[""].notes.map(esc).join("<br>")}</div>`);
   $("#tablelist").querySelectorAll("[data-usage]").forEach(b => b.addEventListener("click", () => {
     let u = b.dataset.usage;
     if (!/^\s*(select|with|from|show|describe)/i.test(u)) u = `SELECT * FROM ${u}`;
@@ -1697,6 +1764,8 @@ function drawTables() {
     $("#sqltext").value = u; $("#sqltext").focus();
   }));
   $("#tablelist").querySelectorAll("[data-preview]").forEach(b => b.addEventListener("click", () => previewSql(b.dataset.preview)));
+  $("#tablelist").querySelectorAll("[data-savetable]").forEach(b => b.addEventListener("click", () =>
+    saveAsTable(b.dataset.savetable.replace(/\s+limit\s+\d+\s*$/i, ""))));
   $("#tablelist").querySelectorAll("[data-expand]").forEach(b => b.addEventListener("click", () =>
     EXPANDED.has(b.dataset.expand) ? collapseNested(b.dataset.expand) : loadNested(b.dataset.expand, false)));
   $("#tablelist").querySelectorAll("[data-exprefresh]").forEach(b => b.addEventListener("click", () => loadNested(b.dataset.exprefresh, true)));
@@ -1932,10 +2001,12 @@ $("#catall").addEventListener("click", () => {
 // ---- Config tab: a page per kind of setting ----------------------------------------------
 // Every page edits the same DRAFT (duckduck.json); the editor card (Validate / Save) follows you between them.
 let CFG = null, CONN = null;  // CONN: /api/connections — each connector started, or why not
+let SAVED = null;  // /api/views: the saved tables registered now, and the ones that failed
 const CFG_PAGES = {
   overview: {title: "Overview", editor: false},
   connectors: {title: "Connectors", intro: "The systems data is read from. Each connector becomes a set of tables named <name>_<table>, queryable in the SQL tab and usable by Ask.", editor: true},
   ai: {title: "AI providers", intro: "The models Ask can use — to draft the semantic catalog, read questions, or make its decisions. Other pages refer to them by the name you give here.", editor: true},
+  saved: {title: "Saved tables", intro: "Queries kept as tables. A table over a table function (sn_table(table_name='incident')) is that function with its arguments fixed — filters still go to the source; a saved query runs each time it's read.", editor: true},
   catalog: {title: "Semantic catalog", editor: false},
   connections: {title: "Catalog connections", editor: false},
   reading: {title: "How questions are read", intro: "Who reads a question, who decides what it means, and when Ask considers several readings before asking you back.",
@@ -1967,6 +2038,7 @@ const LABELS = {
   database: "Database", notruncation: "Allow results over ADX's size limits", path: "Folder",
   include_hidden: "Include hidden files", module: "Python file or module", factory: "Factory function",
   kwargs: "Arguments for the factory", account_name: "Storage account",
+  views: "Saved tables", "views.table": "Table function", "views.args": "Arguments", "views.sql": "Query", description: "Description",
   provider: "Provider", api: "API style", decisions_url: "Decisions API URL", model: "Model", max_tokens: "Max output tokens",
   effort: "Reasoning effort", fallbacks: "Refusal fallback", endpoint: "Endpoint", resource: "Resource name",
   deployment: "Deployment", api_version: "API version", require_parameters: "Only providers that honour structured output",
@@ -2054,7 +2126,7 @@ async function loadConfig() {
 }
 // which connectors started, and why the others didn't (needs the SQL console; without it, no status)
 async function loadCfgStatus() {
-  try { CONN = await api("/api/connections"); } catch { CONN = null; }
+  [CONN, SAVED] = await Promise.all([api("/api/connections").catch(() => null), api("/api/views").catch(() => null)]);
   navCounts();
 }
 function parsedConfig() {
@@ -2133,6 +2205,10 @@ function navCounts() {
   c.title = bad ? `${bad} didn't start` : "";
   const ai = Object.keys(DRAFT.ai_providers || {}).length;
   $("#navc-ai").textContent = ai ? String(ai) : "";
+  const saved = Object.keys(DRAFT.views || {}).length, sbad = Object.keys(SAVED?.failed || {}).length;
+  const sc = $("#navc-saved");
+  sc.textContent = saved ? (sbad ? `${saved} · ${sbad} ✗` : String(saved)) : "";
+  sc.classList.toggle("bad", !!sbad);
 }
 function markDirty() {
   let now = DRAFT;
@@ -2477,6 +2553,52 @@ function formProviders(form) {
     h("div", {class: "row"}, nameIn, provSel, h("button", {type: "button", class: "secondary", onclick: go}, "Add"))));
 }
 
+// ---- Saved tables page: duckduck.json → views ----
+function savedCard(views, name) {
+  const sc = scope(views, name, true), key = "view:" + name, def = sc.obj(), bound = !!def.table;
+  const saved = name in ((CFG.config || {}).views || {}), failed = (SAVED?.failed || {})[name];
+  const registered = (SAVED?.views || []).some(v => v.name === name);
+  const call = bound ? `${def.table}(${Object.entries(def.args || {}).map(([k, v]) => `${k}=${sqlLiteral(v)}`).join(", ")})` : "";
+  const pill = !saved ? h("span", {class: "status new", title: "Save to register it"}, "not saved yet")
+    : failed ? h("span", {class: "status bad", title: failed}, "● not registered")
+    : registered ? h("span", {class: "status ok"}, "● registered") : null;
+  const nameId = "cf" + (++FID), sqlId = "cf" + (++FID);
+  const card = h("details", {class: "ccard", id: "card-" + key, open: OPEN.has(key) || null, ontoggle: openToggle(key)},
+    h("summary", {}, iconEl("dataset"),
+      h("span", {class: "who"}, h("b", {}, name), h("span", {}, bound ? `over ${call}` : "saved query")),
+      h("span", {class: "grow"}), pill, h("span", {class: "chev", "aria-hidden": "true"}, "▶")),
+    h("div", {class: "body"},
+      failed ? h("div", {class: "errbox"}, h("b", {}, "Not registered: "), h("span", {class: "err"}, failed)) : null,
+      h("div", {class: "sec"}, h("div", {class: "st"}, bound ? "A table over a table function" : "A saved query"),
+        h("div", {class: "fgrid"},
+          h("div", {class: "fld"}, h("label", {for: nameId}, "Name"),
+            h("input", {id: nameId, class: "mono", value: name,
+              onchange: (e) => { const to = e.target.value.trim().toLowerCase();
+                if (views.rename(name, to)) { if (OPEN.delete(key)) OPEN.add("view:" + to); renderForm(); } else e.target.value = name; }}),
+            h("div", {class: "hint"}, "SELECT * FROM this name.")),
+          field({name: "description", input: "text", description: "What it holds — shown in the SQL tab, used by catalog drafting."}, sc, {ctx: "views", wide: true}),
+          bound ? [field({name: "table", input: "text", required: true, description: "A registered table function (e.g. sn_table)."}, sc, {ctx: "views"}),
+                   field({name: "args", input: "json", required: true, description: "Its arguments, fixed: {\"table_name\": \"incident\"}."}, sc, {ctx: "views"})]
+            : h("div", {class: "fld wide"}, h("label", {for: sqlId}, "Query", h("span", {class: "key"}, "sql")),
+                h("textarea", {id: sqlId, class: "mono fjson", spellcheck: "false", value: def.sql || "", style: "min-height:90px",
+                  oninput: (e) => sc.set("sql", e.target.value.trim() || undefined)}),
+                h("div", {class: "hint"}, "A read query over the registered tables — it runs each time the table is read.")))),
+      h("div", {class: "foot"}, h("button", {type: "button", class: "danger",
+        onclick: () => { if (confirm(`Remove the saved table “${name}”? (Nothing changes until you Save.)`)) { views.set(name, undefined); OPEN.delete(key); renderForm(); } }},
+        "Remove saved table"))));
+  return card;
+}
+function formSaved(form) {
+  const views = scope(ROOT, "views"), names = Object.keys(views.obj());
+  form.append(h("p", {class: "muted small", style: "margin:0 0 6px"}, "Make one from the SQL tab: write a query and press ",
+    h("b", {}, "Save as table"), " — or ", h("b", {}, "＋ Table"), " on a table behind a connector's catalog. ",
+    h("a", {href: "#", onclick: (e) => { e.preventDefault(); openTab("sql"); }}, "Open the SQL tab")));
+  if (!names.length) form.append(h("p", {class: "muted"}, "No saved tables yet."));
+  names.forEach(n => form.append(savedCard(views, n)));
+  const stray = Object.keys(SAVED?.failed || {}).filter(n => !names.includes(n));
+  if (stray.length) form.append(h("p", {class: "msg warn"}, `Not registered, and no longer in this draft: ${stray.join(", ")}.`));
+}
+
 // ---- Ask pages: the semantic section, a page per concern ----
 function formSemantic(form, page) {
   const ref = CFG.reference.semantic, sem = scope(ROOT, "semantic");
@@ -2500,6 +2622,7 @@ function renderForm() {
   const form = $("#cfgform"); form.replaceChildren();
   if (CFGPAGE === "connectors") formConnectors(form);
   else if (CFGPAGE === "ai") formProviders(form);
+  else if (CFGPAGE === "saved") formSaved(form);
   else formSemantic(form, CFGPAGE);
   navCounts();
 }
@@ -2510,6 +2633,7 @@ function drawOverview() {
   const failed = conn.filter(s => !s.started), started = conn.filter(s => s.started);
   const ai = Object.keys(DRAFT.ai_providers || {}), sem = DRAFT.semantic || {};
   const cat = CAT?.sources || [], notConn = (CAT?.status || []).filter(r => !r.connected);
+  const badViews = Object.entries(SAVED?.failed || {});
   const tile = (page, k, v, sub, bad) => `<button type="button" class="tile" data-cfggo="${page}"><span class="k">${esc(k)}</span>
     <span class="v">${esc(v)}</span><span class="s ${bad ? "bad" : ""}">${esc(sub)}</span></button>`;
   box.innerHTML = `<div class="card"><h3 style="margin:0 0 10px">At a glance</h3><div class="tiles">
@@ -2518,7 +2642,9 @@ function drawOverview() {
     ${tile("catalog", "Semantic catalog", cat.length, META?.setup ? "Ask is off — no catalog yet" : `tables described${notConn.length ? ` · ${notConn.length} not connected` : ""}`, !!META?.setup || notConn.length)}
     ${tile("reading", "Decisions by", sem.decision_engine?.ai_provider || "offline rules", `reading mode: ${sem.reader || "rules"}`, false)}
   </div>
-  ${failed.length || notConn.length ? `<h4 style="margin:16px 0 4px">Needs attention</h4><ul class="problems">
+  ${failed.length || notConn.length || badViews.length ? `<h4 style="margin:16px 0 4px">Needs attention</h4><ul class="problems">
+    ${badViews.map(([n, why]) => `<li>Saved table <b>${esc(n)}</b> isn't registered: <span class="err">${esc(why)}</span> —
+      <a href="#" data-cfggo="saved" data-open="view:${esc(n)}">open it</a></li>`).join("")}
     ${failed.map(s => `<li><b>${esc(s.name)}</b> <span class="muted">(${esc(connectorName(s.connector))})</span> didn't start:
       <span class="err">${esc(s.error || "unknown error")}</span> — <a href="#" data-cfggo="connectors" data-open="svc:${esc(s.name)}">open it</a></li>`).join("")}
     ${notConn.length ? `<li>${notConn.length} catalog table${notConn.length === 1 ? "" : "s"} can't be used in answers — <a href="#" data-cfggo="connections">see why</a></li>` : ""}

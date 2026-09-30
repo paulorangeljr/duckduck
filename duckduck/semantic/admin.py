@@ -33,13 +33,13 @@ import time
 import typing
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..views import read_only_reason, statements as _statements  # noqa: F401 — the SQL guard, shared with saved tables
+
 MASK = "***"
 _SECRETISH = re.compile(r"pass(word|wd)?|secret|token|api[-_]?key|private[-_]?key|connection[-_]?string|"
                         r"\bsas\b|signature|credential", re.I)
 _NOT_SECRET_SUFFIX = ("_id", "_env", "_file", "_path", "_url", "_name", "_type")
 
-_READ_STATEMENTS = ("select", "with", "from", "show", "describe", "summarize", "explain", "values", "table",
-                    "list", "pivot", "unpivot", "(")
 
 
 # ---------------------------------------------------------------------------
@@ -54,9 +54,12 @@ class SQLConsole:
         from duckduck import DuckAPI
 
         console = DuckAPI()
+        self.source = duck  # where saved tables are registered (the console shares its tables)
         console.functions = duck.functions  # shared: what's registered later shows up here too
         console.service_of = duck.service_of
         console.failed_services = getattr(duck, "failed_services", {})  # why a configured connector has no tables
+        console.views = getattr(duck, "views", {})
+        console.failed_views = getattr(duck, "failed_views", {})
         self._config_path = getattr(duck, "_config_path", None)
         self._nested: Dict[Optional[str], Tuple[float, List[Dict[str, Any]], List[str]]] = {}
         console._streaming_functions = getattr(duck, "_streaming_functions", {})
@@ -171,42 +174,9 @@ class SQLConsole:
             r["icon"] = kinds.get(r["name"], "api")
             r["service"] = self.duck.service_of.get(r["name"])
             r["expandable"] = self._expandable(r["name"])
+            saved = self.duck.views.get(r["name"])
+            r["saved"] = None if saved is None else ("bound" if saved.get("table") else "query")
         return records
-
-
-def read_only_reason(query: str) -> Optional[str]:
-    """Why ``query`` isn't accepted (not a single read statement), or ``None``."""
-    text = re.sub(r"(--[^\n]*\n?|/\*.*?\*/)", " ", query or "", flags=re.S).strip()
-    if not text:
-        return "empty query"
-    first = re.match(r"\(|[A-Za-z]+", text)
-    if not first or first.group(0).lower() not in _READ_STATEMENTS:
-        return "only read queries: SELECT, WITH, FROM, SHOW, DESCRIBE, SUMMARIZE, EXPLAIN, VALUES"
-    if len(_statements(text)) > 1:
-        return "one statement at a time"
-    if first.group(0).lower() == "with" and re.search(r"\)\s*(insert|update|delete|merge)\b", text, re.I):
-        return "only read queries: this WITH writes"
-    return None
-
-
-def _statements(text: str) -> List[str]:
-    """Splits on ``;`` outside quotes and comments."""
-    parts, buf, quote = [], [], None
-    for ch in text:
-        if quote:
-            buf.append(ch)
-            if ch == quote:
-                quote = None
-        elif ch in ("'", '"'):
-            quote = ch
-            buf.append(ch)
-        elif ch == ";":
-            parts.append("".join(buf))
-            buf = []
-        else:
-            buf.append(ch)
-    parts.append("".join(buf))
-    return [p for p in parts if p.strip()]
 
 
 class _ThreadLog(logging.Handler):
@@ -250,7 +220,7 @@ SOURCE_KINDS = {
     "duckduck.sharepoint": "sharepoint", "duckduck.rapid7": "insightvm", "duckduck.servicenow": "servicenow",
     "duckduck.axonius": "axonius", "duckduck.database": "database", "duckduck.glue": "glue",
     "duckduck.blob_storage": "blob_storage", "duckduck.adx": "adx", "duckduck.local_files": "files",
-    "duckduck.python_source": "python", "duckduck.semantic.takeover": "dataset",
+    "duckduck.python_source": "python", "duckduck.semantic.takeover": "dataset", "duckduck.views": "dataset",
 }
 
 
@@ -309,6 +279,9 @@ def config_reference() -> Dict[str, Any]:
              "description": "warn: a service that fails to connect is skipped with a warning instead of stopping."},
             {"name": "ai_providers", "type": "object", "description": "Named LLMs and decision engines, "
              "referenced by name from semantic (default_llm, decision_engine.ai_provider, ...)."},
+            {"name": "views", "type": "object", "description": "Saved tables: {name: {\"table\": <a registered "
+             "table function>, \"args\": {...}} or {\"sql\": \"SELECT ...\"}, optional description}. A bound one is "
+             "that table function with its arguments fixed (push-down unchanged); a query runs each time it's read."},
             {"name": "semantic", "type": "object", "description": "Natural-language search: catalog, decision "
              "engine, extractor, catalog generation, feedback, thresholds..."},
         ],
@@ -503,7 +476,7 @@ def validate_config(data: Any, path: str = "") -> Dict[str, List[str]]:
     warnings: List[str] = []
     if not isinstance(data, dict):
         return {"errors": ["the config must be a JSON object"], "warnings": []}
-    known = {"services", "on_error", "ai_providers", "semantic"}
+    known = {"services", "on_error", "ai_providers", "semantic", "views"}
     for key in sorted(set(data) - known):
         warnings.append(f"unknown top-level key {key!r} (known: {', '.join(sorted(known))})")
     if data.get("on_error") not in (None, "raise", "warn"):
@@ -544,6 +517,19 @@ def validate_config(data: Any, path: str = "") -> Dict[str, List[str]]:
             if extra and not takes_any:
                 warnings.append(f"services.{name}: {', '.join(sorted(extra))} — not an option of {connector!r} "
                                 f"(options: {', '.join(sorted(params))})")
+    views = data.get("views", {})
+    if not isinstance(views, dict):
+        errors.append("views must be an object: {name: {table, args} | {sql}}")
+        views = {}
+    for name, definition in views.items():
+        from ..views import NAME_RE, clean_definition
+
+        if not NAME_RE.match(str(name)):
+            errors.append(f"views.{name}: a table name is lowercase letters, digits and _, starting with a letter")
+        try:
+            clean_definition(definition)
+        except ValueError as exc:
+            errors.append(f"views.{name}: {exc}")
     if "semantic" in data:
         from .config import SemanticConfig
 

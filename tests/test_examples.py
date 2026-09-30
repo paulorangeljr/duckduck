@@ -156,3 +156,17 @@ def test_offline_readme_snippets_run_verbatim(snippet, monkeypatch):
     monkeypatch.chdir(REPO)  # the README's paths are from the repo root
     with contextlib.redirect_stdout(io.StringIO()):
         exec(snippet, {})
+
+
+def test_reference_saved_tables_are_valid_and_over_registered_tables():
+    from duckduck.views import clean_definition
+
+    config = json.load(open(CONFIGS["reference"]))
+    registered = {
+        f"{service}_{table}"
+        for service, spec in config["services"].items()
+        for table in SERVICE_REGISTRY[spec.get("connector", service)].tables
+    } | set(config["views"])
+    for name, definition in config["views"].items():
+        clean = clean_definition(definition)
+        assert clean.get("table", name) in registered, name

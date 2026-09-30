@@ -977,14 +977,48 @@ started — and, for each one that didn't, the error (a missing
 `authentication` block, `boto3` not installed, a secret it couldn't read…)
 — with the config file it read. That's the usual reason for a short or
 empty list: with `"on_error": "warn"` a connector that fails to start is
-skipped. **Expanded catalog** also lists the tables *behind* catalogs
-(every table a Glue, ADX or database catalog lists, under it) with a
-**Preview** that runs `SELECT * FROM glue_table(database='…',
-table_name='…') LIMIT 100`. It reads every connector's catalogs; each
-connector that has one also gets its own **Expand catalog** on its heading,
-which reads only that connector's catalog (and ↻ reads it again). In
-Python: `duck.nested_tables()`, or `duck.nested_tables(service="lake")`
-for one connector.
+skipped. A connector with a catalog (Glue, ADX, a database…) gets
+**Expand catalog** on its heading: it lists the tables *behind* that
+catalog, under it, each with a **Preview** that runs `SELECT * FROM
+glue_table(database='…', table_name='…') LIMIT 100` and **＋ Table** to
+keep it as a saved table (below); ↻ reads the catalog again. In Python:
+`duck.nested_tables(service="lake")` (or every connector's with
+`duck.nested_tables()`).
+
+**Saving a query as a table.** Some tables are only known when you query
+— `SELECT * FROM sn_table WHERE table_name = 'incident'`. **Save as
+table** (next to Run) gives the query a name, kept in `duckduck.json`
+under `views`, so it's a table like any other: in the SQL tab, after a
+restart, and in the semantic catalog (Config → Semantic catalog lists it
+as a table to *Add*). What gets saved depends on the query:
+
+- just a table function with its arguments — `SELECT * FROM
+  sn_table(table_name='incident')`, or the same with the arguments in the
+  WHERE — becomes a **table over that function**: filters and LIMIT on
+  `sn_incident` still go to ServiceNow, exactly as on `sn_table`;
+- anything else (columns picked, other filters, joins) is a **saved
+  query**: it runs each time the table is read — read-only, with no file or
+  network access — and filters on it are applied after it runs.
+
+It needs `serve --edit-config` (it writes the file, keeping a `.bak`).
+Config → **Saved tables** lists them: edit, rename, remove. In the file,
+or from Python:
+
+```json
+"views": {
+  "sn_incident": {"table": "sn_table", "args": {"table_name": "incident"}, "description": "Incidents"},
+  "open_p1": {"sql": "SELECT number, short_description FROM sn_incident WHERE priority = '1'"}
+}
+```
+
+```python
+duck.register_view("sn_incident", {"table": "sn_table", "args": {"table_name": "incident"}})
+duck.register_view("open_p1", duck.view_from_sql("SELECT number FROM sn_incident WHERE priority = '1'"))
+```
+
+`auto_register()` registers the file's `views` after the services (in
+whatever order they resolve); with `"on_error": "warn"`, one whose table
+didn't start is skipped with the reason (`duck.failed_views`).
 
 **The web page** (`serve()`) has four tabs:
 
@@ -1194,6 +1228,9 @@ for one connector.
     attention (each connector that didn't start, with its error and a
     link that opens its card). The *Enable Ask* steps show here while
     there's no catalog.
+  - **Saved tables** — the queries kept as tables (`views`), one card
+    each: what it's over (or its query), description, remove; whether it
+    registered, and why not.
   - **Connectors** — one card per service that opens and closes (*Expand
     all* / *Collapse all*). Closed, it shows the name, the kind of
     connector, how many tables, and whether it connected; open: *Name &

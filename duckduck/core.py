@@ -343,6 +343,11 @@ class DuckAPI:
         #: ``auto_register(on_error="warn")`` services that failed: name → {error, prefix, connector}.
         self.failed_services: Dict[str, Dict[str, str]] = {}
         self._streaming_functions: Dict[str, Any] = {}
+        #: Saved tables (``duckduck.views``): name → definition ({table, args} or {sql}).
+        self.views: Dict[str, Dict[str, Any]] = {}
+        #: Saved tables that couldn't be registered (``on_error="warn"``): name → why.
+        self.failed_views: Dict[str, str] = {}
+        self._config_views: Optional[Dict[str, Any]] = None
         self._table_counter = 0
         self.stream_pages = stream_pages
 
@@ -381,6 +386,31 @@ class DuckAPI:
         self._streaming_functions[name.lower()] = iter_function
 
     # ------------------------------------------------------------------
+    # Saved tables (duckduck.views)
+    # ------------------------------------------------------------------
+
+    def register_view(self, name: str, definition: Dict[str, Any], replace: bool = False) -> Dict[str, Any]:
+        """
+        Registers a saved table: ``{"table": "sn_table", "args": {"table_name": "incident"}}``
+        (a table function with its arguments fixed — push-down unchanged) or
+        ``{"sql": "SELECT ..."}`` (a read query, run each time). See ``duckduck.views``.
+        """
+        from . import views
+
+        return views.register(self, name, definition, replace=replace)
+
+    def unregister_view(self, name: str) -> None:
+        from . import views
+
+        views.unregister(self, name)
+
+    def view_from_sql(self, sql: str) -> Dict[str, Any]:
+        """The saved-table definition a query stands for (bound when it's just a table function's arguments)."""
+        from . import views
+
+        return views.view_from_sql(self, sql)
+
+    # ------------------------------------------------------------------
     # Auto-registration of known wrappers (SharePoint, InsightVM, ...)
     # ------------------------------------------------------------------
 
@@ -399,6 +429,7 @@ class DuckAPI:
         secrets: Optional[Dict[str, Any]] = None,
         config_path: Optional[str] = None,
         on_error: Optional[str] = None,
+        views: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Instantiates and registers known API wrappers automatically
@@ -483,6 +514,11 @@ class DuckAPI:
             When ``services`` is loaded from a JSON file, a top-level
             ``"on_error"`` key in that file is used as the default —
             still overridden by explicitly passing this parameter.
+        views : dict, optional
+            Saved tables to register after the services (``{name:
+            {"table": ..., "args": {...}} | {"sql": ...}}`` — see
+            ``duckduck.views``); from a JSON file, its top-level ``views``.
+            ``on_error`` applies to them too.
 
         Returns
         -------
@@ -679,6 +715,12 @@ class DuckAPI:
                 raise
             instances[name] = instance
 
+        if views is None and base_dir is not None:
+            views = self._config_views
+        if views:
+            from . import views as saved
+
+            saved.register_all(self, views, on_error=on_error)
         return instances
 
     def resolve_credentials(self, auth: Dict[str, Any], name: str = "credentials") -> Dict[str, Any]:
@@ -848,6 +890,7 @@ class DuckAPI:
         self._config_path = os.path.abspath(path)
         self._config_base_dir = os.path.dirname(self._config_path)
 
+        self._config_views = config.get("views")
         file_services = config.get("services")
         if not file_services:
             raise ValueError(f"Config file '{path}' has no 'services' key.")
@@ -1399,6 +1442,7 @@ class DuckAPI:
         "duckduck.local_files": "Local files",
         "duckduck.python_source": "Python module",
         "duckduck.semantic.takeover": "Taken over (answer rows, in memory)",
+        "duckduck.views": "Saved query",
     }
 
     @classmethod
