@@ -733,7 +733,8 @@ def validate_config(data: Any, path: str = "") -> Dict[str, List[str]]:
     warnings: List[str] = []
     if not isinstance(data, dict):
         return {"errors": ["the config must be a JSON object"], "warnings": []}
-    known = {"services", "on_error", "ai_providers", "semantic", "views", "kql", "default_database", "sql_cache"}
+    known = {"services", "on_error", "ai_providers", "semantic", "views", "kql", "default_database", "sql_cache",
+             "pg_server"}
     for key in sorted(set(data) - known):
         warnings.append(f"unknown top-level key {key!r} (known: {', '.join(sorted(known))})")
     if data.get("on_error") not in (None, "raise", "warn"):
@@ -777,6 +778,10 @@ def validate_config(data: Any, path: str = "") -> Dict[str, List[str]]:
     default_db = data.get("default_database")
     if default_db is not None and not (isinstance(default_db, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", default_db)):
         errors.append("default_database must be a plain name (letters, digits and _), e.g. \"duckdefault\"")
+    if "pg_server" in data:
+        from ..pgserver.server import config_problems
+
+        errors.extend(config_problems(data["pg_server"]))
     if "sql_cache" in data:
         from ..cache import SourceCache
 

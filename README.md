@@ -539,6 +539,75 @@ run_kql(duck, "adx.ProxyLogs | where Host == 'web01' | take 10").df()
 KqlTranslator().to_sql("sn.incident | take 5", duck).sql   # the SQL (or the native call)
 ```
 
+## Connecting SQL clients (PostgreSQL protocol)
+
+duckduck can also speak PostgreSQL's wire protocol, so any PostgreSQL
+client connects to it as if it were a Postgres database: DBeaver, DataGrip,
+psql, Power BI, Tableau, Metabase, Superset, psycopg, JDBC. It's the same
+engine as `duck.sql()` and the SQL tab: the same tables, saved tables,
+push-down and source cache — nothing is copied.
+
+```bash
+python -m duckduck.pgserver --config duckduck.json            # 127.0.0.1:5433, database "duckduck"
+python -m duckduck.semantic serve --pg-port 5433              # with the web app, sharing its cache
+psql -h 127.0.0.1 -p 5433 -d duckduck -U me
+```
+
+```python
+from duckduck.pgserver import PGServer
+
+server = PGServer.from_config(duck, "duckduck.json").start()   # background thread; .serve_forever() blocks
+```
+
+**What a client sees.** Connectors are schemas: `nvd` holds `cves`, and a
+connector's database is its own schema — the saved table
+`s3_data.security.proxy_logs` shows as `proxy_logs` in schema
+`s3_data.security`. Every table that needs no arguments is listed (plain
+tables, catalogs, saved tables, taken-over answers); a saved query is a
+view, with its SQL. Table descriptions come along as comments. Tables
+without an address sit in `public`.
+
+- A **table function** (it needs arguments) isn't listed, but its address
+  works in any query: `SELECT * FROM s3_data.security.proxy_logs` — or save
+  it (*Register all* in the SQL tab) to see it in the client's tree.
+- **Columns**: an API's columns are only known once something read the
+  table. Until then it shows one column, `run_a_query_to_list_columns`;
+  run `SELECT * FROM it` once and refresh. What's learned is kept in
+  `~/.duckduck/pg_columns.json` (`pg_server.columns_file`).
+- What clients write works as they write it: `"s3_data.security"."proxy_logs"`,
+  `public.my_view`, `$1` parameters, prepared statements, binary values,
+  `setMaxRows` / fetch sizes, `SET` / `SHOW` / `BEGIN` / `ROLLBACK`, and
+  cancelling a running query (psql's Ctrl+C, DBeaver's Stop) — it stops
+  before the next API call or page.
+- **Read-only**: the SQL tab's guard (only read statements) and no file or
+  network access from SQL.
+
+**Signing in** — `pg_server` in `duckduck.json`:
+
+```json
+"pg_server": {
+  "enabled": true,
+  "host": "0.0.0.0",
+  "port": 5433,
+  "authentication": {"type": "aws", "secret_id": "prod/duckduck/pg-users"},
+  "tls": {"cert": "certs/server.crt", "key": "certs/server.key"},
+  "ssl_required": true
+}
+```
+
+`authentication` is resolved like any connector's block (`local`, `aws`,
+`azure`, `$secret.<key>`); its secret is `{"user": "password", ...}`.
+Without it, the `DUCKDUCK_PG_PASSWORD` environment variable is the
+password for any user name; with neither, there's no password — allowed
+only on `127.0.0.1`. Off this machine, set `tls` (clients connect with
+`sslmode=require`; `ssl_required` refuses the rest): passwords are sent as
+clients send them, in clear text inside the connection. `enabled` starts it
+with `serve`; `python -m duckduck.pgserver` always starts it.
+
+Every client queries with the connectors' own credentials — the server's,
+not the person's. Give access to the endpoint to whoever may read every
+table it lists.
+
 ## Discovering what's registered
 
 ```python
@@ -1021,6 +1090,7 @@ print(jev_check().ranked())                    # raises if the key/network/parsi
 | `calibrate questions.json` | `calibrate("questions.json")` → `CalibrationReport` (`.summary()`, `.thresholds`) |
 | `serve` | `serve()` — the web app ([Feedback](#feedback-learning-from-what-users-say)); `serve(run=False)` → the FastAPI app |
 | `serve --edit-config` / `serve --no-sql` | `serve(allow_config_edit=True)` — saving `duckduck.json` from the Config tab; `serve(allow_sql=False)` — turns the SQL tab off |
+| `serve --pg-port 5433` | `serve(pg_port=5433)` — also serve the tables over the PostgreSQL protocol, for SQL clients |
 | `feedback-report` | `feedback_report()` → `FeedbackReport` (`.summary()`, `.stats`) |
 | `feedback-to-eval` | `feedback_to_eval()` → `FeedbackEvaluation` (`.summary()`, `.dataset`, `.report`, `.calibration`) |
 | `feedback-suggest --accept ID` | `feedback_suggest(accept=["ID"])` → `SuggestionReport` (`.summary()`, `.suggestions`) |

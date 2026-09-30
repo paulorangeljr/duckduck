@@ -509,6 +509,9 @@ class DuckAPI:
         self.stream_pages = stream_pages
         from .cache import SourceCache
 
+        #: Called ``(table, [(column, DuckDB type), ...])`` whenever a read gives a table's full set of columns
+        #: (the PostgreSQL server's catalog learns them this way). None = nobody listens.
+        self.column_listener: Optional[Callable[[str, List[Tuple[str, str]]], None]] = None
         #: What sources returned, reused within its ttl (None = off). See ``duckduck.cache``.
         self.cache: Optional[SourceCache] = (cache if isinstance(cache, SourceCache) or cache is None
                                              else SourceCache.from_config(cache))
@@ -1419,7 +1422,8 @@ class DuckAPI:
             source_cache.note(function_name, False, len(df))
             logger.info("  %s: %s rows × %s columns in %.2fs", function_name, f"{len(df):,}", len(df.columns),
                         time.perf_counter() - started)
-        if len(df.columns) == 0:
+        shaped = len(df.columns) == 0  # columns made up from the query: not the table's
+        if shaped:
             # No rows and nothing to infer columns from (e.g. an empty JSON
             # list): shape an empty table from the columns the query itself
             # uses, so it runs and returns nothing instead of failing.
@@ -1433,7 +1437,20 @@ class DuckAPI:
         self._table_counter += 1
         table_name = f"_api_{function_name}_{self._table_counter}"
         self.conn.register(table_name, df)
+        if not shaped:
+            self._learn_columns(function_name, table_name)
         return table_name, list(df.columns)
+
+    def _learn_columns(self, function_name: str, table_name: str) -> None:
+        """Tells ``column_listener`` the columns (and DuckDB types) a table came back with. Never fails a query."""
+        listener = self.column_listener
+        if listener is None:
+            return
+        try:
+            described = self.conn.execute(f'DESCRIBE "{table_name}"').fetchall()
+            listener(function_name, [(str(r[0]), str(r[1])) for r in described])
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("  couldn't note the columns of %s: %s", function_name, exc)
 
     def _pages_instead(self, fn_name: str, kwargs: Dict[str, Any]) -> bool:
         """Read this table page by page: streaming on, a streaming function, and no LIMIT reached the source."""
@@ -1548,6 +1565,8 @@ class DuckAPI:
         self._table_counter += 1
         table_name = f"_api_{fn_name}_{self._table_counter}"
         self.conn.register(table_name, df)
+        if star and kept:  # every column of the pages, not just the ones the query used
+            self._learn_columns(fn_name, table_name)
         return table_name, list(df.columns), kwargs
 
     #: Sole column of an empty result when neither the source nor the query

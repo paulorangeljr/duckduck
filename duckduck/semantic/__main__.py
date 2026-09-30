@@ -86,7 +86,7 @@ def cmd_jev_check(args) -> int:
 
 def cmd_serve(args) -> int:
     serve(config_path=args.config, host=args.host, port=args.port, verbose=args.verbose,
-          allow_sql=args.sql, allow_config_edit=args.edit_config)
+          allow_sql=args.sql, allow_config_edit=args.edit_config, pg_port=args.pg_port)
     return 0
 
 
@@ -163,6 +163,9 @@ def build_parser() -> argparse.ArgumentParser:
                           "on by default, --no-sql turns it off")
     srv.add_argument("--edit-config", action="store_true",
                      help="Config tab may save duckduck.json (secrets stay masked; a .bak is kept) and reconnect")
+    srv.add_argument("--pg-port", type=int, default=None,
+                     help="also serve the tables over the PostgreSQL protocol on this port (e.g. 5433), for SQL "
+                          "clients like DBeaver, psql or Power BI; pg_server in duckduck.json sets the rest")
     srv.set_defaults(fn=cmd_serve, python=serve)
 
     rep = sub.add_parser("feedback-report", help="answer rates and what went wrong, from the feedback")

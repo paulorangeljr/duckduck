@@ -217,6 +217,7 @@ def serve(
     run: bool = True,
     allow_sql: bool = True,
     allow_config_edit: bool = False,
+    pg_port: Optional[int] = None,
 ):
     """
     The web app: ask questions, answer its clarifications, rate the answers,
@@ -234,6 +235,11 @@ def serve(
     and its *Semantic catalog* card may generate the catalog (what
     ``generate_catalog`` does, as a background job with its log live).
     Reading the config (masked) and its options reference is always there.
+
+    ``pg_port`` (or ``pg_server.enabled`` in the config): also serve the
+    tables over the PostgreSQL protocol, so SQL clients (DBeaver, psql,
+    Power BI…) connect — the same tables, saved tables and source cache as
+    the SQL tab (``duckduck.pgserver``).
     """
     from .admin import SQLConsole
     from .server import create_app, run as run_app
@@ -254,13 +260,20 @@ def serve(
         return factory
 
     current = {"duck": duck}
+    console = SQLConsole(duck) if allow_sql else None
+    pg = _pg_server(duck, cfg.config_file, pg_port, console)
 
     def rebuild():
         from .config import SemanticConfig
 
         d = connect(config_path, verbose)
         current["duck"] = d
-        return factory_for(d, SemanticConfig.load(d, config_path)), (SQLConsole(d) if allow_sql else None)
+        new_console = SQLConsole(d) if allow_sql else None
+        if pg is not None:  # SQL clients read the reconnected tables too
+            pg.use(d)
+            if new_console is not None and new_console.duck.cache is not None:
+                new_console.duck.cache = pg.cache
+        return factory_for(d, SemanticConfig.load(d, config_path)), new_console
 
     def generate(force, only):  # the Config tab's "Semantic catalog" card — what generate-catalog runs
         from .config import SemanticConfig
@@ -281,12 +294,17 @@ def serve(
         factory_for(duck, cfg), store, catalog_path=cfg.path(cfg.catalog_path),
         learned_shapes_path=cfg.path(cfg.feedback.learned_answer_shapes), min_support=cfg.feedback.min_support,
         token=token if token is not None else os.environ.get("DUCKDUCK_SERVER_TOKEN") or None,
-        console=SQLConsole(duck) if allow_sql else None, config_path=cfg.config_file,
+        console=console, config_path=cfg.config_file,
         allow_config_edit=allow_config_edit, rebuild=rebuild,
         catalog_runner=generate if cfg.config_file else None, catalog_info=catalog_info,
     )
+    app.state.pg_server = pg
     if not run:
         return app
+    if pg is not None:
+        pg.start()
+        print(f"duckduck: PostgreSQL clients connect to {pg.host}:{pg.port}, database {pg.database}"
+              f"{' (password required)' if pg.password_check else ' (no password: this machine only)'}")
     print(f"duckduck: http://{host}:{port}  (feedback in {store.path}"
           f"{'' if allow_sql else '; SQL tab off'}{'; config editing on' if allow_config_edit else ''})")
     if getattr(app.state.current_search(), "setup", None):  # a first run: the quick link to turn Ask on
@@ -295,6 +313,18 @@ def serve(
               + ("" if allow_config_edit else "  (start with --edit-config to draft the catalog from the page)"))
     run_app(app, host=host, port=port)
     return app
+
+
+def _pg_server(duck: Any, config_file: Optional[str], pg_port: Optional[int], console: Any) -> Any:
+    """The PostgreSQL endpoint ``serve`` runs too: with ``pg_port``, or ``pg_server.enabled`` in the config."""
+    from ..pgserver import PGServer
+    from ..pgserver.server import _section
+
+    section = _section(config_file)
+    if pg_port is None and not section.get("enabled"):
+        return None
+    cache = console.duck.cache if console is not None else None
+    return PGServer.from_config(duck, config_file, port=pg_port, **({"cache": cache} if cache is not None else {}))
 
 
 class FeedbackReport:

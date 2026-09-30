@@ -189,6 +189,14 @@
       }
     }
   },
+  "pg_server": {
+    "enabled": false,
+    "host": "127.0.0.1",
+    "port": 5433,
+    "database": "duckduck",
+    "authentication": {"type": "aws", "region_name": "us-east-1", "secret_id": "prod/duckduck/pg-users"},
+    "tls": {"cert": "certs/server.crt", "key": "certs/server.key"}
+  },
   "semantic": {
     "catalog_path": "semantic_catalog.yaml",
     "default_limit": 1000,
