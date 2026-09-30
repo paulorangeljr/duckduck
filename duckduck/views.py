@@ -541,7 +541,7 @@ def moved_name(duck: Any, name: str, database: Optional[str], connector: Optiona
     ``default`` where the connector has no databases) → ``connector.table``.
     A plain name needs ``connector``.
     """
-    from .addresses import DEFAULT_DATABASE, _ident, generic_function, services, _required
+    from .addresses import _ident, _required, default_database, generic_function, services
 
     parts = _split_address(name) if is_dotted(name) else [name]
     known = services(duck)
@@ -551,7 +551,7 @@ def moved_name(duck: Any, name: str, database: Optional[str], connector: Optiona
     db = (database or "").strip()
     table = generic_function(duck, service)
     has_databases = table is not None and len(_required(duck, table)) >= 2
-    if db.lower() == DEFAULT_DATABASE and not has_databases:
+    if db.lower() == default_database(duck).lower() and not has_databases:
         db = ""
     segments = [service] + [_ident(duck, p) for p in db.split(".") if p.strip()] + [_ident(duck, parts[-1])]
     return canonical_name(".".join(segments))

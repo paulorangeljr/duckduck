@@ -192,8 +192,8 @@ def test_the_page_groups_by_database():
 
 
 def test_default_is_the_database_of_tables_that_have_none():
-    """The SQL tab lists them under "default": connector.default.table reads the same as connector.table —
-    except where the connector's tables do have databases, and "default" may be a real one."""
+    """The SQL tab lists them under "duckdefault" (or the config's default_database): connector.duckdefault.table reads
+    the same as connector.table — where the connector's tables do have databases, only for its own tables."""
     pytest.importorskip("pydantic")
     from duckduck.semantic.admin import SQLConsole
 
@@ -207,15 +207,22 @@ def test_default_is_the_database_of_tables_that_have_none():
     duck.register_api_function("sn_table", sn_table)
     duck.service_of["sn_table"] = "sn"
     duck.service_prefix["sn"] = "sn"
-    assert duck.sql("SELECT count(*) FROM nvd.default.cves").fetchone() == (1,)
-    duck.sql("SELECT * FROM sn.default.incident").df()
+    assert duck.sql("SELECT count(*) FROM nvd.duckdefault.cves").fetchone() == (1,)
+    duck.sql("SELECT * FROM sn.duckdefault.incident").df()
     assert calls == ["incident"]  # not table_name='default.incident'
     duck.register_view("sn.problem", {"table": "sn_table", "args": {"table_name": "problem"}})
-    duck.sql("SELECT * FROM SN.Default.problem").df()
+    duck.sql("SELECT * FROM SN.DuckDefault.problem").df()
     assert calls[-1] == "problem"
-    # s3_data's tables have databases: default is a database there
+    # s3_data's tables have databases: "default" is one of them (Glue has a real one); duckdefault only names its own tables
     assert duck.resolve_addresses("SELECT * FROM s3_data.default.logs") == \
         "SELECT * FROM s3_data_table(database='default', table_name='logs') AS logs"
+    assert duck.resolve_addresses("SELECT * FROM s3_data.duckdefault.logs") == \
+        "SELECT * FROM s3_data_table(database='duckdefault', table_name='logs') AS logs"
+    # the name is the config's
+    duck.default_database = "home"
+    duck.sql("SELECT * FROM sn.home.incident").df()
+    assert calls[-1] == "incident"
+    del duck.default_database
     rows = {t["name"]: t for t in SQLConsole(duck).tables()}
-    assert rows["nvd_cves"]["default_address"] == "nvd.default.cves"
+    assert rows["nvd_cves"]["default_address"] == "nvd.duckdefault.cves"
     assert rows["s3_data_table"]["default_address"] is None

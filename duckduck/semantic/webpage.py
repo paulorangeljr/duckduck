@@ -1387,7 +1387,7 @@ async function openViewDialog({sql, previous = null, description = ""}) {
   $("#viewtitle").textContent = editing ? `Saved table “${previous}”` : "Save as a table";
   $("#vstmt").value = sql; $("#vdesc").value = description;
   $("#vname").value = previous || "";
-  fillConnectors(); splitName(previous || "");
+  fillConnectors(); splitName(previous || ""); $("#vdb").placeholder = DEFAULT_DB;
   $("#verr").hidden = true;
   $("#vdelete").hidden = $("#vopen").hidden = !editing;
   $("#vgo").textContent = editing ? "Save changes" : "Save table";
@@ -1476,7 +1476,7 @@ const NAME_OK = /^[a-z_][a-z0-9_]{0,62}$/, ADDRESS_OK = /^[A-Za-z_][A-Za-z0-9_]*
 function whereText(n) {
   const conn = $("#vconn").value, db = $("#vdb").value.trim();
   if (!conn) return "A plain name, listed under “saved tables” — pick a connector to keep it with that connector's tables.";
-  let text = !db ? `In ${conn} › default (the tables with no database), as ${conn}.<name>.`
+  let text = !db ? `In ${conn} › ${DEFAULT_DB} (the tables with no database), as ${conn}.<name>.`
     : databasesOf(conn).includes(db) ? `In ${conn} › ${db}, with that database's tables.`
     : `In ${conn} › ${db} — a new database: it only groups your saved tables (nothing is created in ${conn}).`;
   const behind = (NESTED[conn]?.tables || []).find(x => (x.address || "").toLowerCase() === n.toLowerCase());
@@ -2067,6 +2067,7 @@ async function loadTables() {
 async function loadConnections() {
   let c;
   try { c = await api("/api/connections"); } catch { $("#connstatus").innerHTML = ""; return; }
+  if (c.default_database && c.default_database !== DEFAULT_DB) { DEFAULT_DB = c.default_database; if (TABLES.length) drawTables(); }
   const svcs = c.services || [], failed = svcs.filter(x => !x.started), ok = svcs.length - failed.length;
   const where = c.config_path ? `<div class="muted mono" style="word-break:break-all">${esc(c.config_path)}</div>` : "";
   if (!svcs.length) {
@@ -2106,7 +2107,9 @@ function previewSql(sql) { $("#sqltext").value = inLang(sql); runSql(); }
 const JUST_SAVED = new Set(), JUST_SAVED_NAMES = new Set(), NEW_TABLES = new Set();
 // a connector's databases: closed until opened ("connector|database"); how many rows each list shows
 const OPEN_DBS = new Set(), CLOSED_DBS = new Set(), DB_SHOWN = {};
-const DEFAULT_DB = "default";  // where a connector's tables with no database of their own are listed
+// where a connector's tables with no database of their own are listed — the config's "default_database"
+// (from /api/connections), "duckdefault" until it says
+let DEFAULT_DB = "duckdefault";
 const nestedKey = (table, args) => table + "|" + JSON.stringify(Object.keys(args || {}).sort().map(k => [k, String(args[k])]));
 const nestedUsage = (n) => n.address ? `SELECT * FROM ${n.address} LIMIT 100` : n.usage;
 const KIND_TAGS = {"table function": "fn", catalog: "catalog", "raw query": "raw"};
@@ -2383,7 +2386,7 @@ function drawSelBar() {
   bar.hidden = false;
   bar.innerHTML = items.length ? `<div class="selbarin"><b>${items.length}</b> selected${svcs.length ? ` <span class="muted">in ${esc(svcs.join(", "))}</span>` : ""}
       <div class="selmove"><label class="small" for="seldb">Move to database</label>
-        <input id="seldb" list="seldblist" placeholder="default" autocomplete="off" spellcheck="false">
+        <input id="seldb" list="seldblist" placeholder="${esc(DEFAULT_DB)}" autocomplete="off" spellcheck="false">
         <datalist id="seldblist">${[...dbs].sort().map(d => `<option value="${esc(d)}">`).join("")}</datalist>
         <button type="button" class="primary small" id="selgo">Move</button>
         <button type="button" class="linkish" id="selclear">Clear</button></div>

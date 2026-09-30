@@ -66,6 +66,10 @@ class SQLConsole:
         console.service_prefix = getattr(duck, "service_prefix", {})  # service.table addresses read the same here
         console.failed_views = getattr(duck, "failed_views", {})
         self._config_path = getattr(duck, "_config_path", None)
+        default_db = _config_value(self._config_path, "default_database")
+        if isinstance(default_db, str) and default_db.strip():  # the file's name for tables with no database
+            duck.default_database = default_db.strip()
+        console.default_database = getattr(duck, "default_database", None)
         self._nested: Dict[Optional[str], Tuple[float, List[Dict[str, Any]], List[str], set]] = {}
         console._streaming_functions = getattr(duck, "_streaming_functions", {})
         console.conn.execute("SET enable_external_access = false")
@@ -264,7 +268,10 @@ class SQLConsole:
                 "started": f is None,
                 "tables": counts.get(name, 0), "error": (f or {}).get("error"),
             })
-        return {"config_path": self._config_path, "services": services, "tables": len(self.duck.functions)}
+        from ..addresses import default_database
+
+        return {"config_path": self._config_path, "services": services, "tables": len(self.duck.functions),
+                "default_database": default_database(self.duck)}
 
     def nested(self, refresh: bool = False, ttl: Optional[float] = None, service: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -327,17 +334,29 @@ class SQLConsole:
         return records
 
 
+def _config_value(path: Optional[str], key: str) -> Any:
+    """One top-level value of the config file, or None."""
+    if not path:
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return data.get(key) if isinstance(data, dict) else None
+
+
 def _default_address(duck: Any, name: str, address: Optional[str]) -> Optional[str]:
     """``nvd.default.cves`` for ``nvd.cves`` — when it reads back to the same table (never where
     ``default`` would be one of the connector's real databases)."""
-    from ..addresses import DEFAULT_DATABASE, _parts, resolve
+    from ..addresses import _parts, default_database, resolve
 
     if not address:
         return None
     parts = _parts(address)
     if len(parts) != 2:
         return None
-    alt = f"{address.split('.', 1)[0]}.{DEFAULT_DATABASE}.{address.split('.', 1)[1]}"
+    alt = f"{address.split('.', 1)[0]}.{default_database(duck)}.{address.split('.', 1)[1]}"
     try:
         back = resolve(duck, _parts(alt))
     except ValueError:
@@ -691,7 +710,7 @@ def validate_config(data: Any, path: str = "") -> Dict[str, List[str]]:
     warnings: List[str] = []
     if not isinstance(data, dict):
         return {"errors": ["the config must be a JSON object"], "warnings": []}
-    known = {"services", "on_error", "ai_providers", "semantic", "views", "kql"}
+    known = {"services", "on_error", "ai_providers", "semantic", "views", "kql", "default_database"}
     for key in sorted(set(data) - known):
         warnings.append(f"unknown top-level key {key!r} (known: {', '.join(sorted(known))})")
     if data.get("on_error") not in (None, "raise", "warn"):
@@ -732,6 +751,9 @@ def validate_config(data: Any, path: str = "") -> Dict[str, List[str]]:
             if extra and not takes_any:
                 warnings.append(f"services.{name}: {', '.join(sorted(extra))} — not an option of {connector!r} "
                                 f"(options: {', '.join(sorted(params))})")
+    default_db = data.get("default_database")
+    if default_db is not None and not (isinstance(default_db, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", default_db)):
+        errors.append("default_database must be a plain name (letters, digits and _), e.g. \"duckdefault\"")
     views = data.get("views", {})
     if not isinstance(views, dict):
         errors.append("views must be an object: {name: {table, args} | {sql}}")

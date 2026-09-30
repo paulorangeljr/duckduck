@@ -454,10 +454,14 @@ PostgreSQL, SQL Server, SQLite (the connection's) — puts it in the name:
 (the short `adx.ProxyLogs` still reads the same). *Register all* names them
 that way, and the SQL tab groups them under that database.
 
-A table with no database of its own — listed under **default** in the SQL
-tab — can be written either way: `nvd.cves` or `nvd.default.cves`,
-`sn.incident` or `sn.default.incident`. (Where a connector's tables do have
-databases, like `s3_data`, `default` is read as a real database of that name.)
+A table with no database of its own — listed under **duckdefault** in the
+SQL tab — can be written either way: `nvd.cves` or `nvd.duckdefault.cves`,
+`sn.incident` or `sn.duckdefault.incident`. The name is yours to pick:
+`"default_database": "home"` at the top of `duckduck.json` (a plain name).
+It isn't `default` out of the box because Glue and Hive have a real database
+called that; where a connector's tables do have databases, like `s3_data`,
+the name only reaches its own tables (`s3_data.duckdefault.tables`) —
+anything else is read as a real database.
 
 It's the same call underneath, so push-down, LIMIT and page-by-page
 reading are exactly the call's. The table function behind a service is the

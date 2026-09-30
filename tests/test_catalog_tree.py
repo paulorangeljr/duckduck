@@ -191,7 +191,7 @@ def test_the_page_shows_register_all_and_the_default_database():
     from duckduck.semantic.webpage import PAGE
 
     assert 'id="regstatus"' in PAGE and "function pollRegJob(" in PAGE and "background: true}" in PAGE
-    assert 'const DEFAULT_DB = "default"' in PAGE and "CLOSED_DBS" in PAGE  # a click closes even a lone one
+    assert 'let DEFAULT_DB = "duckdefault"' in PAGE and "c.default_database" in PAGE and "CLOSED_DBS" in PAGE  # a click closes even a lone one
     # every connector has a default: its tools (listed first) and its tables with no database; the catalog's header on top
     assert "tool: !t.saved && TOOL_KINDS.has(t.kind)" in PAGE and "part.catalogs.map(t => nestedBlock(t, svc))" in PAGE
 
@@ -262,3 +262,24 @@ def test_the_page_selects_and_moves():
     from duckduck.semantic.webpage import PAGE
 
     assert 'id="selmode"' in PAGE and 'id="selbar"' in PAGE and "function moveSelected(" in PAGE and "/api/views/move" in PAGE
+
+
+def test_the_default_database_is_named_in_the_config(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from duckduck.semantic.admin import validate_config
+    from duckduck.semantic.commands import serve
+
+    (tmp_path / "nvd_fake.py").write_text(
+        "import pandas as pd\n"
+        "def cves(limit=None):\n"
+        "    return pd.DataFrame({'id': ['CVE-1']})\n"
+        "TABLES = {'cves': cves}\n")
+    config = {"services": {"nvd": {"connector": "python", "module": "nvd_fake.py"}}, "default_database": "home"}
+    (tmp_path / "duckduck.json").write_text(json.dumps(config))
+    client = TestClient(serve(config_path=str(tmp_path / "duckduck.json"), run=False))
+    assert client.get("/api/connections").json()["default_database"] == "home"
+    assert client.post("/api/sql", json={"sql": "SELECT id FROM nvd.home.cves"}).json()["rows"] == [["CVE-1"]]
+    assert {t["name"]: t for t in client.get("/api/tables").json()}["nvd_cves"]["default_address"] == "nvd.home.cves"
+    assert not validate_config(config)["errors"] and not any("default_database" in w for w in validate_config(config)["warnings"])
+    assert validate_config({**config, "default_database": "my db"})["errors"]

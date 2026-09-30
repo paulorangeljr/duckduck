@@ -150,8 +150,16 @@ def resolve(duck: Any, parts: List[str]) -> Optional[Tuple[str, Dict[str, Any]]]
     return table, args
 
 
-#: The database the SQL tab lists a connector's tables with no database of their own under.
-DEFAULT_DATABASE = "default"
+#: The database the SQL tab lists a connector's tables with no database of their own under — unless
+#: ``duck.default_database`` says another (the config file's top-level ``"default_database"``).
+#: Not "default": Glue and Hive have a real database called that.
+DEFAULT_DATABASE = "duckdefault"
+
+
+def default_database(duck: Any) -> str:
+    """The name the tables with no database of their own are listed under: ``duck.default_database``, else ``duckdefault``."""
+    name = getattr(duck, "default_database", None)
+    return str(name).strip() if isinstance(name, str) and name.strip() else DEFAULT_DATABASE
 
 
 def native_database(duck: Any, table: str) -> Optional[str]:
@@ -198,12 +206,21 @@ def _without_default(duck: Any, parts: List[str]) -> List[str]:
     if len(parts) < 3 or parts[0].lower() not in services(duck):
         return parts
     service = parts[0].lower()
+    stripped = [parts[0]] + parts[2:]
     table = generic_function(duck, service)
+    is_default = parts[1].lower() == default_database(duck).lower()
     if table is not None and len(_required(duck, table)) >= 2:
+        # the connector's tables have databases: the default one only names its own tables (s3_data.duckdefault.tables),
+        # anything else is a real database of that name
+        if is_default and len(stripped) == 2:
+            prefix = services(duck).get(service, service)
+            direct = f"{prefix}_{stripped[1]}".lower() if prefix else stripped[1].lower()
+            if direct in duck.functions and not _required(duck, direct):
+                return stripped
         return parts
     native = database_of_service(duck, service)
-    if parts[1].lower() == DEFAULT_DATABASE or (native and parts[1].lower() == native.lower()):
-        return [parts[0]] + parts[2:]
+    if is_default or (native and parts[1].lower() == native.lower()):
+        return stripped
     return parts
 
 
