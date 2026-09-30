@@ -59,6 +59,7 @@ import requests
 
 from . import progress
 from .logs import PageProgress, get_logger, instrument_session
+from .sparkplan import spark_plan
 
 logger = get_logger("nvd")
 
@@ -265,6 +266,7 @@ class NVD:
             if not items or (total is not None and start >= int(total)) or (left is not None and left <= 0):
                 return
 
+    @spark_plan("driver", why="NVD allows 5 requests / 30 s (50 with a key): parallel reads only trip the limit")
     def cves(
         self,
         keyword: Optional[str] = None,

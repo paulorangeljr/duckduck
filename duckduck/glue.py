@@ -48,6 +48,7 @@ import pandas as pd
 from .kinds import catalog
 from .lakehouse import LakehouseConnection
 from .pushdown import Condition, LikePattern, require_like
+from .sparkplan import SparkSource, spark_plan
 
 _TABLE_COLUMNS = [
     "database", "table_name", "format", "table_type", "location", "partition_keys",
@@ -196,6 +197,7 @@ class GlueTable:
     # Reads
     # ------------------------------------------------------------------
 
+    @spark_plan("native", source="_spark_table", why="Parquet / Delta / Iceberg on S3, described by Glue")
     def table(
         self,
         database: str,
@@ -222,6 +224,7 @@ class GlueTable:
         scan_expr = self._scan_expression(database, table_name)
         return self._lake.scan(scan_expr, limit=limit, where=where)
 
+    @spark_plan("native", source="_spark_path", why="an S3 location Spark reads directly")
     def path(
         self,
         s3_path: str,
@@ -259,6 +262,24 @@ class GlueTable:
         return self._lake.scan(scan_expr, limit=limit, where=where)
 
     # ------------------------------------------------------------------
+    # Spark (``duckduck.spark``): where the data is, for a native read
+    # ------------------------------------------------------------------
+
+    def _spark_table(self, database: str, table_name: str) -> SparkSource:
+        """The table's location and format; Spark reads it by name when its catalog is this Glue catalog."""
+        table = self._describe(database, table_name)
+        location = (table.get("StorageDescriptor", {}) or {}).get("Location")
+        params = table.get("Parameters", {}) or {}
+        table_format = self._detect_format(table)
+        path = params.get("metadata_location") or location if table_format == "iceberg" else location
+        if not path:
+            raise ValueError(f"Glue table '{database}.{table_name}' has no location")
+        return SparkSource(table_format, path=path, table=f"{database}.{table_name}")
+
+    def _spark_path(self, s3_path: str, format: str = "parquet") -> SparkSource:
+        return SparkSource(format, path=s3_path)
+
+    # ------------------------------------------------------------------
     # Catalog discovery
     # ------------------------------------------------------------------
 
@@ -268,6 +289,7 @@ class GlueTable:
             items.extend(page.get(key, []))
         return items
 
+    @spark_plan("driver", why="catalog: a small listing")
     @catalog
     def databases(self, limit: Optional[int] = None) -> pd.DataFrame:
         """Lists the Glue Data Catalog's databases."""
@@ -283,6 +305,7 @@ class GlueTable:
         df = pd.DataFrame(rows, columns=["database", "description", "location", "created"])
         return df.head(limit) if limit is not None else df
 
+    @spark_plan("driver", why="catalog: a small listing")
     @catalog(lists="table")
     def tables(
         self,
@@ -330,6 +353,7 @@ class GlueTable:
                     return pd.DataFrame(rows, columns=_TABLE_COLUMNS)
         return pd.DataFrame(rows, columns=_TABLE_COLUMNS)
 
+    @spark_plan("driver", why="catalog: a small listing")
     @catalog
     def columns(self, database: str, table_name: str) -> pd.DataFrame:
         """A Glue table's columns (partition keys included), with types and comments."""

@@ -60,6 +60,7 @@ import pandas as pd
 from .kinds import catalog, raw_query
 from .logs import get_logger
 from .pushdown import Condition, parse_like
+from .sparkplan import spark_plan
 
 logger = get_logger("adx")
 
@@ -349,6 +350,7 @@ class DataExplorer:
     # Tables
     # ------------------------------------------------------------------
 
+    @spark_plan("driver", why="ADX answers a query in one response (the Kusto Spark connector would be native)")
     def table(
         self,
         table_name: str,
@@ -369,6 +371,7 @@ class DataExplorer:
         """
         return self._run(self._table_kql(table_name, where, limit))
 
+    @spark_plan("driver", why="ADX answers a query in one response (the Kusto Spark connector would be native)")
     @raw_query
     def query(self, kql: str, limit: Optional[int] = None) -> pd.DataFrame:
         """
@@ -387,6 +390,7 @@ class DataExplorer:
             kql = f"{kql.rstrip().rstrip(';')}\n| take {int(limit)}"
         return self._run(kql)
 
+    @spark_plan("driver", why="catalog: a small listing")
     @catalog(lists="table")
     def tables(self, folder: Optional[str] = None, limit: Optional[int] = None) -> pd.DataFrame:
         """
@@ -407,6 +411,7 @@ class DataExplorer:
         df = df.sort_values("table_name").reset_index(drop=True)
         return df.head(limit) if limit is not None else df
 
+    @spark_plan("driver", why="catalog: a small listing")
     @catalog
     def columns(self, table_name: str) -> pd.DataFrame:
         """A table's columns and their KQL types (structural ``table_name``)."""

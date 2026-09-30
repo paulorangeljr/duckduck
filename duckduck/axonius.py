@@ -57,6 +57,7 @@ import requests
 
 from .logs import PageProgress, instrument_session
 from .pushdown import require_like
+from .sparkplan import spark_plan
 
 
 class Axonius:
@@ -207,6 +208,7 @@ class Axonius:
     # Devices
     # ------------------------------------------------------------------
 
+    @spark_plan("driver", why="offset pages with no total reported: the split can't be planned")
     def devices(
         self,
         filter: Optional[str] = None,
@@ -247,6 +249,7 @@ class Axonius:
     # Users
     # ------------------------------------------------------------------
 
+    @spark_plan("driver", why="offset pages with no total reported: the split can't be planned")
     def users(
         self,
         filter: Optional[str] = None,

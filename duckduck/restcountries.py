@@ -53,6 +53,7 @@ import requests
 
 from .logs import PageProgress, get_logger, instrument_session
 from .pushdown import require_like
+from .sparkplan import spark_plan
 
 logger = get_logger("restcountries")
 
@@ -166,6 +167,7 @@ class RestCountries:
     # Table
     # ------------------------------------------------------------------
 
+    @spark_plan("driver", why="one small reference table")
     def countries(
         self,
         cca2: Optional[str] = None,

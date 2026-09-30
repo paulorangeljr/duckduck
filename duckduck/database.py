@@ -58,6 +58,7 @@ import pandas as pd
 from .kinds import catalog, raw_query
 from .logs import get_logger
 from .pushdown import Condition
+from .sparkplan import SparkSource, spark_plan
 
 logger = get_logger("database")
 
@@ -195,6 +196,37 @@ class SQLDatabase:
             translated = translated.replace("[", "\\[")
         return translated, "\\"
 
+    # Spark (``duckduck.spark``): JDBC — the driver jar must be on Spark's classpath
+    _JDBC = {"postgresql": ("jdbc:postgresql://{host}:{port}/{db}", "org.postgresql.Driver", 5432),
+             "mysql": ("jdbc:mysql://{host}:{port}/{db}", "com.mysql.cj.jdbc.Driver", 3306),
+             "mariadb": ("jdbc:mariadb://{host}:{port}/{db}", "org.mariadb.jdbc.Driver", 3306),
+             "mssql": ("jdbc:sqlserver://{host}:{port};databaseName={db}", "com.microsoft.sqlserver.jdbc.SQLServerDriver", 1433),
+             "oracle": ("jdbc:oracle:thin:@//{host}:{port}/{db}", "oracle.jdbc.OracleDriver", 1521)}
+
+    def jdbc_options(self) -> Dict[str, str]:
+        """Spark's JDBC options for this connection: url, driver, user, password."""
+        url = self.engine.url
+        name = url.get_backend_name()
+        if name == "sqlite":
+            return {"url": f"jdbc:sqlite:{url.database}", "driver": "org.sqlite.JDBC"}
+        if name not in self._JDBC:
+            raise ValueError(f"no JDBC mapping for {name!r} — add it to SQLDatabase._JDBC")
+        template, driver, port = self._JDBC[name]
+        options = {"url": template.format(host=url.host, port=url.port or port, db=url.database or ""),
+                   "driver": driver}
+        if url.username:
+            options["user"] = url.username
+        if url.password:
+            options["password"] = str(url.password)
+        return options
+
+    def _spark_table(self, table_name: str) -> SparkSource:
+        return SparkSource("jdbc", options={**self.jdbc_options(), "dbtable": table_name})
+
+    def _spark_query(self, sql: str) -> SparkSource:
+        return SparkSource("jdbc", options={**self.jdbc_options(), "query": sql})
+
+    @spark_plan("native", source="_spark_table", why="a database table: Spark reads it over JDBC")
     def table(
         self,
         table_name: str,
@@ -248,6 +280,7 @@ class SQLDatabase:
         "db_denydatareader", "db_denydatawriter",
     }
 
+    @spark_plan("driver", why="catalog: a small listing")
     @catalog(lists="table")
     def tables(self, schema: Optional[str] = None, limit: Optional[int] = None) -> pd.DataFrame:
         """
@@ -271,6 +304,7 @@ class SQLDatabase:
                         return pd.DataFrame(rows)
         return pd.DataFrame(rows, columns=["table_name", "schema", "name", "object_type"])
 
+    @spark_plan("native", source="_spark_query", why="the database runs the SQL; Spark reads the result over JDBC")
     @raw_query
     def query(
         self,

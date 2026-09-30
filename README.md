@@ -2186,6 +2186,55 @@ schema).
 See `examples/semantic/catalog.yaml` for the catalog format and the
 "Semantic search" section of `CLAUDE.md` for the design.
 
+## Reading into Spark
+
+`duckduck.spark` turns the same SQL into a Spark DataFrame, reading each table
+the way its connector declares — so Spark's parallelism is used where the
+source allows it, and nothing is read twice through Python when Spark can read
+the data itself.
+
+```bash
+pip install "duckduck[spark]"      # pyspark + pyarrow
+```
+
+```python
+from duckduck import DuckAPI
+from duckduck.spark import SparkReader
+
+duck = DuckAPI(); duck.auto_register()
+reader = SparkReader(spark, duck)
+
+df = reader.sql("""
+    SELECT a.hostname, a.ip, count(*) AS requests, sum(p.bytes) AS bytes
+    FROM insightvm.assets a
+    JOIN s3_data.security.proxy_logs p ON p.src_ip = a.ip
+    WHERE p.bytes > 1000000
+    GROUP BY a.hostname, a.ip
+""")                                    # a Spark DataFrame: the join and the aggregate run in Spark
+reader.decisions                        # how each table was read, and why
+reader.explain("insightvm_assets")      # the plan of one table, without reading it
+```
+
+Each table is read one of three ways:
+
+| Strategy | When | What happens |
+|---|---|---|
+| **native** | the data already sits where Spark reads it — Glue tables and S3 paths (Parquet/Delta/Iceberg), Blob Storage/ADLS, local files, databases over JDBC | Spark reads it directly (by name when the session's catalog knows the table); the WHERE's simple conditions become Spark filters (file pruning, JDBC push-down) |
+| **partitioned** | an API that reads any page on its own and reports the total (InsightVM, ServiceNow), or whose call splits into independent pieces | one request learns the size; the pages are cut into windows read by the executors in parallel — at most `max_parallel` at once, set by the API's rate limit |
+| **driver** | cursor pagination (SharePoint), strict rate limits (NVD), one-response APIs (ADX), listings | duckduck reads it on the driver and hands it to Spark; with `staging_path="s3://bucket/tmp/"` a table with a streaming function lands page by page as Parquet there, then Spark reads it |
+
+The same push-down as `duck.sql()` applies first: `WHERE hostname = 'web'`
+still reaches the API, and a `LIMIT` that can go to the source makes the read
+one request (then it's a driver read). A native read that fails in Spark (a
+format it lacks, no storage credentials) falls back to the driver read, with a
+warning (`SparkReader(fallback=False)` raises instead). On open-source Spark
+pass `path_schemes={"s3": "s3a"}`. JDBC reads need the database's driver jar
+on Spark's classpath, and file paths must be visible to the executors.
+
+Every connector's table methods declare their strategy with
+`@spark_plan(...)` (`duckduck.sparkplan`), and a test fails when one doesn't
+— see CLAUDE.md "Spark: choosing the strategy" when adding a connector.
+
 ## Adding your own API wrapper
 
 Any Python object works as long as its methods follow the convention:

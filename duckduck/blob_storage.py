@@ -19,12 +19,14 @@ DuckDB applies them on the scanned result, same as any push-down
 parameter a wrapper doesn't recognize.
 """
 
+import re
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
 from .lakehouse import LakehouseConnection
 from .pushdown import Condition
+from .sparkplan import SparkSource, spark_plan
 
 
 class BlobStorage:
@@ -49,6 +51,9 @@ class BlobStorage:
     ):
         self._lake = LakehouseConnection()
         self._lake.ensure_extension("azure")
+        found = re.search(r"AccountName=([^;]+)", connection_string or "")
+        #: the storage account (from the connection string when that's how it signs in) — Spark's abfss:// URLs
+        self.account_name = account_name or (found.group(1) if found else None)
 
         if connection_string:
             secret_sql = (
@@ -85,6 +90,14 @@ class BlobStorage:
     # Reads
     # ------------------------------------------------------------------
 
+    def _spark_table(self, container: str, path: str, format: str = "parquet") -> SparkSource:
+        """``abfss://container@account.dfs.core.windows.net/path`` — Spark signs in with its own Azure settings."""
+        if not self.account_name:
+            raise ValueError("the storage account isn't known (no account_name / AccountName=)")
+        url = f"abfss://{container}@{self.account_name}.dfs.core.windows.net/{path.lstrip('/')}"
+        options = {"header": "true", "inferSchema": "true"} if format == "csv" else {}
+        return SparkSource(format, path=url, options=options)
+
     def _scan_expression(self, container: str, path: str, format: str) -> str:
         full_path = f"az://{container}/{path.lstrip('/')}"
         if format == "parquet":
@@ -103,6 +116,7 @@ class BlobStorage:
             f"Unsupported format '{format}'. Use parquet, csv, json, delta, or iceberg."
         )
 
+    @spark_plan("native", source="_spark_table", why="files on ADLS / Blob Storage Spark reads directly")
     def table(
         self,
         container: str,

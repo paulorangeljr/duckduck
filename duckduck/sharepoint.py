@@ -61,6 +61,7 @@ import pandas as pd
 import requests
 
 from .logs import PageProgress, log_http
+from .sparkplan import spark_plan
 
 try:
     import msal
@@ -602,6 +603,7 @@ class SharePoint:
     # Sites
     # ------------------------------------------------------------------
 
+    @spark_plan("driver", why="Graph pages by @odata.nextLink: a cursor, pages can't be read out of order")
     def sites(
         self,
         limit: Optional[int] = None,
@@ -637,6 +639,7 @@ class SharePoint:
     # SharePoint Lists
     # ------------------------------------------------------------------
 
+    @spark_plan("driver", why="Graph pages by @odata.nextLink: a cursor, pages can't be read out of order")
     def lists(
         self,
         site_id: Optional[str] = None,
@@ -668,6 +671,7 @@ class SharePoint:
         url = f"{GRAPH_BASE}/sites/{sid}/lists"
         return pd.json_normalize(self._fetch(url, limit=limit), sep="_")
 
+    @spark_plan("driver", why="Graph pages by @odata.nextLink: a cursor, pages can't be read out of order")
     def list_columns(
         self,
         site_id: Optional[str] = None,
@@ -693,6 +697,7 @@ class SharePoint:
         url = f"{GRAPH_BASE}/sites/{sid}/lists/{lid}/columns"
         return pd.json_normalize(self._fetch(url, limit=limit), sep="_")
 
+    @spark_plan("driver", why="Graph pages by @odata.nextLink: a cursor, pages can't be read out of order")
     def list_items(
         self,
         site_id: Optional[str] = None,
@@ -759,6 +764,7 @@ class SharePoint:
     # Drives / Files
     # ------------------------------------------------------------------
 
+    @spark_plan("driver", why="Graph pages by @odata.nextLink: a cursor, pages can't be read out of order")
     def drives(
         self,
         site_id: Optional[str] = None,
@@ -777,6 +783,7 @@ class SharePoint:
         url = f"{GRAPH_BASE}/sites/{sid}/drives"
         return pd.json_normalize(self._fetch(url, limit=limit), sep="_")
 
+    @spark_plan("driver", why="Graph pages by @odata.nextLink: a cursor, pages can't be read out of order")
     def drive_items(
         self,
         site_id: Optional[str] = None,
@@ -821,6 +828,7 @@ class SharePoint:
 
         return df
 
+    @spark_plan("driver", why="Graph pages by @odata.nextLink: a cursor, pages can't be read out of order")
     def search_files(
         self,
         site_id: Optional[str] = None,
@@ -844,6 +852,7 @@ class SharePoint:
         url = f"{GRAPH_BASE}/sites/{sid}/drive/search(q='{query}')"
         return pd.json_normalize(self._fetch(url, limit=limit), sep="_")
 
+    @spark_plan("driver", why="Graph pages by @odata.nextLink: a cursor, pages can't be read out of order")
     def file_versions(
         self,
         site_id: Optional[str] = None,

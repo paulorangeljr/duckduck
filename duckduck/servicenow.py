@@ -58,8 +58,10 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 import pandas as pd
 import requests
 
+from . import slicing
 from .logs import PageProgress, get_logger, instrument_session, log_http
 from .pushdown import Condition, parse_like, require_like
+from .sparkplan import spark_plan
 
 logger = get_logger("servicenow")
 
@@ -404,12 +406,12 @@ class ServiceNow:
         yielding one page of records at a time.
         """
         query, _ = self._with_where(table_name, query, where)
-        offset = 0
         progress = PageProgress("servicenow", table_name)
-        while True:
+
+        def fetch_page(page: int):
             params: Dict[str, Any] = {
                 "sysparm_limit": self.default_page_size,
-                "sysparm_offset": offset,
+                "sysparm_offset": page * self.default_page_size,
             }
             if query:
                 params["sysparm_query"] = query
@@ -417,17 +419,15 @@ class ServiceNow:
                 params["sysparm_fields"] = ",".join(fields)
             if display_value:
                 params["sysparm_display_value"] = "true"
-
             payload = self._get(table_name, params)
             results = payload.get("result", [])
             total = self._last_total
             pages = -(-total // self.default_page_size) if total else None
             progress.page(len(results), total_pages=pages, total_rows=total)
-            if results:
-                yield results
-            if len(results) < self.default_page_size:
-                break
-            offset += self.default_page_size
+            return results, total
+
+        # every page, or the ones a Spark read asked for (``duckduck.slicing``)
+        yield from slicing.pages(fetch_page, self.default_page_size)
 
     def _fetch(
         self,
@@ -469,6 +469,7 @@ class ServiceNow:
     # Generic table access — any table, no dedicated method needed
     # ------------------------------------------------------------------
 
+    @spark_plan("partitioned", by="pages", max_parallel=4, why="sysparm_offset with X-Total-Count; instance rate limits: 4 at a time")
     def table(
         self,
         table_name: str,
@@ -499,6 +500,7 @@ class ServiceNow:
     # Incidents
     # ------------------------------------------------------------------
 
+    @spark_plan("partitioned", by="pages", max_parallel=4, why="sysparm_offset with X-Total-Count; instance rate limits: 4 at a time")
     def incidents(
         self,
         number: Optional[str] = None,
@@ -544,6 +546,7 @@ class ServiceNow:
     # Problems
     # ------------------------------------------------------------------
 
+    @spark_plan("partitioned", by="pages", max_parallel=4, why="sysparm_offset with X-Total-Count; instance rate limits: 4 at a time")
     def problems(
         self,
         number: Optional[str] = None,
@@ -569,6 +572,7 @@ class ServiceNow:
     # Change Requests
     # ------------------------------------------------------------------
 
+    @spark_plan("partitioned", by="pages", max_parallel=4, why="sysparm_offset with X-Total-Count; instance rate limits: 4 at a time")
     def change_requests(
         self,
         number: Optional[str] = None,
@@ -599,6 +603,7 @@ class ServiceNow:
     # Users
     # ------------------------------------------------------------------
 
+    @spark_plan("partitioned", by="pages", max_parallel=4, why="sysparm_offset with X-Total-Count; instance rate limits: 4 at a time")
     def users(
         self,
         user_name: Optional[str] = None,
@@ -631,6 +636,7 @@ class ServiceNow:
     # CMDB Configuration Items
     # ------------------------------------------------------------------
 
+    @spark_plan("partitioned", by="pages", max_parallel=4, why="sysparm_offset with X-Total-Count; instance rate limits: 4 at a time")
     def cmdb_ci(
         self,
         name: Optional[str] = None,

@@ -42,8 +42,10 @@ import pandas as pd
 import requests
 import urllib3
 
+from . import slicing
 from .logs import PageProgress, instrument_session
 from .pushdown import require_like
+from .sparkplan import spark_plan
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -139,22 +141,24 @@ class InsightVM:
         soon as the first request completes, without waiting for the
         total.
         """
-        params = params or {}
-        page = 0
+        yield from slicing.pages(self._page_reader(path, params or {}), self.default_page_size)
+
+    def _page_reader(self, path: str, params: Dict):
+        """``fetch_page(n)`` for ``duckduck.slicing.pages``: page ``n`` and the total the API reports."""
         progress = PageProgress("insightvm", path)
-        while True:
-            payload = self._get(
-                path, {**params, "size": self.default_page_size, "page": page}
-            )
+
+        def fetch_page(page: int):
+            payload = self._get(path, {**params, "size": self.default_page_size, "page": page})
             resources = payload.get("resources", [])
-            if resources:
-                yield resources
             page_info = payload.get("page", {})
-            total_pages = page_info.get("totalPages", 1)
-            progress.page(len(resources), total_pages=total_pages, total_rows=page_info.get("totalResources"))
-            page += 1
-            if page >= total_pages:
-                break
+            progress.page(len(resources), total_pages=page_info.get("totalPages", 1),
+                          total_rows=page_info.get("totalResources"))
+            total = page_info.get("totalResources")
+            if total is None and "totalPages" in page_info:
+                total = int(page_info["totalPages"]) * self.default_page_size
+            return resources, (int(total) if total is not None else None)
+
+        return fetch_page
 
     def _fetch(
         self,
@@ -175,21 +179,10 @@ class InsightVM:
             payload = self._get(path, {**params, "size": limit, "page": 0})
             return payload.get("resources", [])
 
-        # Full pagination
-        page = 0
+        # Full pagination (or the pages a Spark read asked for: ``duckduck.slicing``)
         all_resources: List[Dict] = []
-        progress = PageProgress("insightvm", path)
-        while True:
-            payload = self._get(path, {**params, "size": self.default_page_size, "page": page})
-            resources = payload.get("resources", [])
+        for resources in slicing.pages(self._page_reader(path, params), self.default_page_size):
             all_resources.extend(resources)
-            page_info = payload.get("page", {})
-            total_pages = page_info.get("totalPages", 1)
-            progress.page(len(resources), total_pages=total_pages, total_rows=page_info.get("totalResources"))
-            page += 1
-            if page >= total_pages:
-                break
-
         return all_resources
 
     # ------------------------------------------------------------------
@@ -199,6 +192,7 @@ class InsightVM:
     #: SQL LIKE pattern kind → InsightVM asset-search operator.
     _SEARCH_OPERATORS = {"contains": "contains", "startswith": "starts-with", "endswith": "ends-with", "equals": "is"}
 
+    @spark_plan("partitioned", by="pages", max_parallel=4, why="page=N with page.totalResources: any page can be read on its own")
     def assets(
         self,
         hostname: Optional[str] = None,
@@ -269,6 +263,7 @@ class InsightVM:
     # Vulnerabilities
     # ------------------------------------------------------------------
 
+    @spark_plan("partitioned", by="pages", max_parallel=4, why="page=N with page.totalResources: any page can be read on its own")
     def vulnerabilities(
         self,
         severity: Optional[str] = None,
@@ -314,6 +309,7 @@ class InsightVM:
     # Vulnerabilities of a specific asset
     # ------------------------------------------------------------------
 
+    @spark_plan("partitioned", by="pages", max_parallel=4, why="page=N with page.totalResources: any page can be read on its own")
     def asset_vulnerabilities(
         self,
         asset_id: int,
@@ -351,6 +347,7 @@ class InsightVM:
     # Sites
     # ------------------------------------------------------------------
 
+    @spark_plan("partitioned", by="pages", max_parallel=4, why="page=N with page.totalResources: any page can be read on its own")
     def sites(
         self,
         name: Optional[str] = None,
@@ -379,6 +376,7 @@ class InsightVM:
     # Scan Engines
     # ------------------------------------------------------------------
 
+    @spark_plan("partitioned", by="pages", max_parallel=4, why="page=N with page.totalResources: any page can be read on its own")
     def scan_engines(
         self,
         limit: Optional[int] = None,
@@ -391,6 +389,7 @@ class InsightVM:
     # Scans
     # ------------------------------------------------------------------
 
+    @spark_plan("partitioned", by="pages", max_parallel=4, why="page=N with page.totalResources: any page can be read on its own")
     def scans(
         self,
         status: Optional[str] = None,
@@ -423,6 +422,7 @@ class InsightVM:
     # Report Templates
     # ------------------------------------------------------------------
 
+    @spark_plan("driver", why="one request, no pages")
     def report_templates(
         self,
         limit: Optional[int] = None,
@@ -439,6 +439,7 @@ class InsightVM:
     # Reports
     # ------------------------------------------------------------------
 
+    @spark_plan("partitioned", by="pages", max_parallel=4, why="page=N with page.totalResources: any page can be read on its own")
     def reports(
         self,
         limit: Optional[int] = None,
@@ -451,6 +452,7 @@ class InsightVM:
     # Tags
     # ------------------------------------------------------------------
 
+    @spark_plan("partitioned", by="pages", max_parallel=4, why="page=N with page.totalResources: any page can be read on its own")
     def tags(
         self,
         name: Optional[str] = None,
@@ -485,6 +487,7 @@ class InsightVM:
     # Asset Groups
     # ------------------------------------------------------------------
 
+    @spark_plan("partitioned", by="pages", max_parallel=4, why="page=N with page.totalResources: any page can be read on its own")
     def asset_groups(
         self,
         name: Optional[str] = None,
@@ -519,6 +522,7 @@ class InsightVM:
     # Users
     # ------------------------------------------------------------------
 
+    @spark_plan("partitioned", by="pages", max_parallel=4, why="page=N with page.totalResources: any page can be read on its own")
     def users(
         self,
         login: Optional[str] = None,
@@ -547,6 +551,7 @@ class InsightVM:
     # Policies (compliance)
     # ------------------------------------------------------------------
 
+    @spark_plan("partitioned", by="pages", max_parallel=4, why="page=N with page.totalResources: any page can be read on its own")
     def policies(
         self,
         name: Optional[str] = None,
@@ -575,6 +580,7 @@ class InsightVM:
     # Policy Rules
     # ------------------------------------------------------------------
 
+    @spark_plan("partitioned", by="pages", max_parallel=4, why="page=N with page.totalResources: any page can be read on its own")
     def policy_rules(
         self,
         policy_id: int,
@@ -606,6 +612,7 @@ class InsightVM:
     # Remediation Projects
     # ------------------------------------------------------------------
 
+    @spark_plan("partitioned", by="pages", max_parallel=4, why="page=N with page.totalResources: any page can be read on its own")
     def remediation_projects(
         self,
         status: Optional[str] = None,

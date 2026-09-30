@@ -31,6 +31,7 @@ import pandas as pd
 from .kinds import catalog
 from .lakehouse import LakehouseConnection
 from .pushdown import Condition
+from .sparkplan import SparkSource, spark_plan
 
 #: extension → (format label, DuckDB reader call template).
 _READERS = {
@@ -71,8 +72,19 @@ class FileTable:
         self.scan_expression = scan
         self.__doc__ = f"{file_format.upper()} data at {path} (WHERE/LIMIT run inside the DuckDB scan)."
 
+    @spark_plan("native", source="_spark_source", why="a local file / folder Spark reads directly (the path must be visible to the executors)")
     def __call__(self, where: Optional[List[Condition]] = None, limit: Optional[int] = None) -> pd.DataFrame:
         return self._lake.scan(self.scan_expression, limit=limit, where=where)
+
+    def _spark_source(self) -> SparkSource:
+        """The file or folder itself, in Spark's reader for its format."""
+        fmt, options = {"csv": ("csv", {"header": "true", "inferSchema": "true"}),
+                        "tsv": ("csv", {"header": "true", "inferSchema": "true", "sep": "\t"}),
+                        "json": ("json", {"multiLine": "true"}),
+                        "jsonl": ("json", {})}.get(self.format, (self.format, {}))
+        if os.path.isdir(self.base_url) and fmt != "parquet":  # a folder of files: every file under it
+            options = {**options, "recursiveFileLookup": "true"}
+        return SparkSource(fmt, path=os.path.abspath(self.base_url), options=options)
 
     def __repr__(self) -> str:
         return f"FileTable({self.table_name!r}, {self.base_url!r})"
@@ -155,6 +167,7 @@ class LocalFiles:
         """``{table_name: callable}`` — what ``auto_register()`` registers."""
         return dict(self._tables)
 
+    @spark_plan("driver", why="catalog: a small listing")
     @catalog
     def tables(self, limit: Optional[int] = None) -> pd.DataFrame:
         """Lists the discovered tables: name, format, path, size and last modification."""
@@ -176,6 +189,7 @@ class LocalFiles:
         df = pd.DataFrame(rows, columns=["table_name", "format", "path", "files", "size_bytes", "modified"])
         return df.head(limit) if limit is not None else df
 
+    @spark_plan("driver", why="catalog: a small listing")
     @catalog
     def columns(self, table_name: str) -> pd.DataFrame:
         """A table's columns and DuckDB types (structural ``table_name``)."""
