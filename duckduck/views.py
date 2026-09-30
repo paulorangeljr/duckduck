@@ -417,8 +417,26 @@ def remove(path: str, name: str) -> bool:
     return True
 
 
+def statement(definition: Dict[str, Any]) -> str:
+    """The query a saved table stands for — what the page shows and edits (``sn_table(table_name='incident')`` …)."""
+    if definition.get("table"):
+        call = ", ".join(f"{k}={_literal(v)}" for k, v in (definition.get("args") or {}).items())
+        return f"SELECT * FROM {definition['table']}({call})"
+    return definition.get("sql") or ""
+
+
+def _literal(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "NULL"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    return "'" + str(value).replace("'", "''") + "'"
+
+
 def describe(duck: Any, name: str) -> Dict[str, Any]:
-    """One saved table for the page: name, kind, definition, service, whether it's registered now."""
+    """One saved table for the page: name, kind, definition, its statement, service."""
     d = duck.views.get(name) or {}
     return {"name": name, "kind": kind_of(d), "table": d.get("table"), "args": d.get("args"), "sql": d.get("sql"),
-            "description": d.get("description"), "service": duck.service_of.get(name)}
+            "description": d.get("description"), "service": duck.service_of.get(name), "statement": statement(d)}

@@ -31,6 +31,8 @@ import shutil
 import threading
 import time
 import typing
+import uuid
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..views import read_only_reason, statements as _statements  # noqa: F401 — the SQL guard, shared with saved tables
@@ -68,6 +70,10 @@ class SQLConsole:
         self.duck = console
         self.max_rows = max_rows
         self.timeout = timeout
+        #: The last results, whole (``keep_results``): the result viewer pages, sorts, searches and exports them.
+        self._results: "OrderedDict[str, Tuple[str, Any]]" = OrderedDict()
+        self.keep_results = 5
+        self._results_lock = threading.Lock()  # not the query lock: a paused query mustn't hold up the viewer
         self._lock = threading.Lock()  # one DuckDB connection: one query at a time
 
     def run(self, query: str, debug: bool = False, log: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -107,12 +113,82 @@ class SQLConsole:
         finally:
             self._lock.release()
         shown = df.head(self.max_rows)
+        result_id = uuid.uuid4().hex[:12]
+        with self._results_lock:
+            self._results[result_id] = (query, df)
+            while len(self._results) > self.keep_results:
+                self._results.popitem(last=False)
         return {
             "columns": [str(c) for c in df.columns],
-            "rows": shown.astype(object).where(shown.notna(), None).values.tolist(),
+            "rows": _json_rows(shown),
             "row_count": int(len(df)), "truncated": len(df) > self.max_rows,
-            "elapsed_ms": ms(), "log": log, "debug": debug,
+            "elapsed_ms": ms(), "log": log, "debug": debug, "result_id": result_id,
         }
+
+    def _kept(self, result_id: str) -> Any:
+        with self._results_lock:
+            kept = self._results.get(result_id)
+        if kept is None:
+            raise KeyError("this result isn't kept any more (only the last few are) — run the query again")
+        return kept[1]
+
+    def _view(self, result_id: str, sort: Optional[str], desc: bool, q: Optional[str],
+              columns: Optional[List[str]]) -> Tuple[Any, str, str, List[Any], List[str]]:
+        """A private DuckDB over one kept result: the FROM/WHERE/ORDER BY for its rows filtered and sorted."""
+        import duckdb
+
+        df = self._kept(result_id)
+        cols = [str(c) for c in df.columns]
+        frame = df.copy()
+        frame.columns = cols
+        frame.insert(0, "__row", range(1, len(frame) + 1))
+        con = duckdb.connect()
+        con.execute("SET enable_external_access = false")
+        con.register("r", frame)
+        quote = lambda c: '"' + c.replace('"', '""') + '"'  # noqa: E731
+        params: List[Any] = []
+        where = ""
+        if q:
+            where = " WHERE " + " OR ".join(f"contains(lower(CAST({quote(c)} AS VARCHAR)), ?)" for c in cols)
+            params = [q.lower()] * len(cols)
+        order = (f" ORDER BY {quote(sort)} {'DESC' if desc else 'ASC'} NULLS LAST, __row" if sort in cols
+                 else " ORDER BY __row")
+        shown = [c for c in (columns or cols) if c in cols] or cols
+        return con, f"FROM r{where}", order, params, shown
+
+    def page(self, result_id: str, offset: int = 0, limit: int = 200, sort: Optional[str] = None,
+             desc: bool = False, q: Optional[str] = None) -> Dict[str, Any]:
+        """One page of a kept result, searched (every column, case-insensitive) and sorted — over all its rows."""
+        con, source, order, params, cols = self._view(result_id, sort, desc, q, None)
+        try:
+            quote = lambda c: '"' + c.replace('"', '""') + '"'  # noqa: E731
+            total = con.execute("SELECT count(*) FROM r").fetchone()[0]
+            filtered = con.execute(f"SELECT count(*) {source}", params).fetchone()[0]
+            limit = max(1, min(int(limit), 1000))
+            offset = max(0, int(offset))
+            out = con.execute(f"SELECT __row, {', '.join(quote(c) for c in cols)} {source}{order} "
+                              f"LIMIT {limit} OFFSET {offset}", params).df()
+        finally:
+            con.close()
+        return {"columns": cols, "rows": _json_rows(out[[c for c in out.columns if c != "__row"]]),
+                "row_numbers": [int(n) for n in out["__row"]], "total": int(total), "filtered": int(filtered),
+                "offset": offset, "limit": limit}
+
+    def csv(self, result_id: str, sort: Optional[str] = None, desc: bool = False, q: Optional[str] = None,
+            columns: Optional[List[str]] = None) -> str:
+        """The whole kept result as CSV — searched, sorted and cut to ``columns`` like the viewer shows it."""
+        con, source, order, params, cols = self._view(result_id, sort, desc, q, columns)
+        try:
+            quote = lambda c: '"' + c.replace('"', '""') + '"'  # noqa: E731
+            out = con.execute(f"SELECT {', '.join(quote(c) for c in cols)} {source}{order}", params).df()
+        finally:
+            con.close()
+        for c in out.columns:  # nested values as JSON, like the page shows them
+            if out[c].dtype == object:
+                out[c] = [json.dumps(v, default=str, ensure_ascii=False) if isinstance(v, (dict, list)) or
+                          type(v).__name__ == "ndarray" else v for v in
+                          (x.tolist() if type(x).__name__ == "ndarray" else x for x in out[c])]
+        return out.to_csv(index=False)
 
     def interrupt(self) -> None:
         """Stops the query DuckDB is running now (a cancelled job; API calls stop at their next checkpoint)."""
@@ -177,6 +253,11 @@ class SQLConsole:
             saved = self.duck.views.get(r["name"])
             r["saved"] = None if saved is None else ("bound" if saved.get("table") else "query")
         return records
+
+
+def _json_rows(df: Any) -> List[List[Any]]:
+    """Rows as lists, NULL/NaN → None."""
+    return df.astype(object).where(df.notna(), None).values.tolist()
 
 
 class _ThreadLog(logging.Handler):

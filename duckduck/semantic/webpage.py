@@ -187,6 +187,20 @@ textarea.editor { width: 100%; min-height: 180px; resize: vertical; tab-size: 2;
 .nitem { display: flex; gap: 6px; align-items: center; padding: 2px 4px; border-radius: 6px; font-size: 13px; }
 .nitem:hover { background: var(--surface-2); }
 .nitem .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.tlisttools { display: flex; gap: 10px; align-items: center; margin-top: 6px; }
+.tlisttools .grow { flex: 1; }
+.tlist h4.tgroup { display: flex; align-items: center; gap: 6px; }
+.tlist h4.tgroup .expsvc { float: none; margin-left: auto; }
+.gtoggle { display: inline-flex; align-items: center; gap: 5px; background: none; border: 0; padding: 2px 4px 2px 0; cursor: pointer;
+           font: inherit; color: inherit; text-transform: inherit; letter-spacing: inherit; }
+.gtoggle:hover { color: var(--ink); }
+.gtoggle .chev { display: inline-block; font-size: 9px; transition: transform .12s; }
+.gtoggle[aria-expanded="true"] .chev { transform: rotate(90deg); }
+.gtoggle .gcount { font-weight: 400; color: var(--muted); letter-spacing: 0; }
+.trow { display: flex; align-items: center; }
+.trow .titem { flex: 1; min-width: 0; }
+.tedit { background: none; border: 0; color: var(--muted); cursor: pointer; padding: 2px 6px; border-radius: 6px; font-size: 13px; }
+.tedit:hover { color: var(--accent); background: var(--surface-2); }
 .tlist h4 .expsvc { float: right; display: inline-flex; gap: 6px; align-items: center; text-transform: none; letter-spacing: 0; font-weight: 400; }
 .tlist h4 .expsvc .spin { width: 11px; height: 11px; }
 button.linkish { background: none; border: 0; padding: 0; font: inherit; font-size: 12px; color: var(--accent); cursor: pointer; }
@@ -341,8 +355,55 @@ button.danger:hover { border-color: var(--bad); }
 .savedtag { font-size: 10.5px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--accent); color: var(--accent); margin-left: 4px; }
 .modal .vkind { background: var(--surface-2); border-radius: 10px; padding: 10px 12px; margin: 8px 0 14px; font-size: 13.5px; }
 .modal .vkind div { color: var(--ink-2); font-size: 13px; margin-top: 2px; }
-.modal .vsql { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; margin: 12px 0 0; font-size: 12.5px;
-               max-height: 120px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+.modal .vkind .bad { color: var(--bad); }
+.modal textarea.vsql { width: 100%; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12.5px;
+               min-height: 84px; max-height: 40vh; resize: vertical; background: var(--surface); color: var(--ink); line-height: 1.45; }
+/* result viewer */
+dialog.viewer { width: calc(100vw - 32px); height: calc(100vh - 32px); max-width: none; max-height: none; padding: 0;
+                border: 1px solid var(--border); border-radius: 14px; background: var(--surface); color: var(--ink);
+                box-shadow: 0 24px 60px rgba(0,0,0,.25); overflow: hidden; }
+dialog.viewer[open] { display: flex; flex-direction: column; }
+dialog.viewer::backdrop { background: rgba(10,10,10,.45); }
+.vwhead { display: flex; gap: 10px; align-items: center; padding: 12px 56px 12px 16px; border-bottom: 1px solid var(--grid);
+          flex-wrap: wrap; position: relative; }
+#vwclose { position: absolute; top: 14px; right: 14px; }
+.vwtitle { display: flex; flex-direction: column; min-width: 0; flex: 1 1 220px; }
+.vwtitle h2 { margin: 0; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#vwsearch { width: min(260px, 100%); padding: 6px 10px; }
+.vwhead > button, .vwhead > .vwcols > summary { white-space: nowrap; }
+.vwcols { position: relative; }
+.vwcols > summary { list-style: none; cursor: pointer; font-size: 13.5px; padding: 6px 12px; border: 1px solid var(--border); border-radius: 8px; }
+.vwcols > summary::-webkit-details-marker { display: none; }
+.vwcolpanel { position: absolute; right: 0; top: calc(100% + 6px); z-index: 3; background: var(--surface); border: 1px solid var(--border);
+              border-radius: 10px; padding: 10px 12px; width: 260px; max-height: 50vh; overflow: auto; box-shadow: 0 10px 30px rgba(0,0,0,.15); }
+.vwcolpanel label { display: flex; gap: 6px; align-items: center; font-size: 13px; padding: 2px 0; }
+.vwmain { flex: 1; min-height: 0; display: flex; }
+.vwgrid { flex: 1; min-width: 0; overflow: auto; }
+table.vwtable { width: max-content; min-width: 100%; font-size: 13.5px; }
+table.vwtable th { position: sticky; top: 0; z-index: 1; background: var(--surface); box-shadow: inset 0 -1px 0 var(--border);
+                   cursor: pointer; user-select: none; white-space: nowrap; }
+table.vwtable th:hover { color: var(--ink); }
+table.vwtable th .arrow { color: var(--accent); margin-left: 4px; }
+table.vwtable td { max-width: 360px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+table.vwtable.wrap td { white-space: pre-wrap; word-break: break-word; max-width: 480px; }
+table.vwtable td:hover { background: var(--surface-2); }
+table.vwtable td.sel { outline: 2px solid var(--accent); outline-offset: -2px; }
+table.vwtable .rn { width: 1%; white-space: nowrap; position: sticky; left: 0; background: var(--surface); color: var(--muted); font-size: 12px; text-align: right;
+                    cursor: default; z-index: 0; }
+table.vwtable th.rn { z-index: 2; }
+table.vwtable tbody tr:hover td.rn { background: var(--surface-2); }
+.vwcell { width: min(420px, 40vw); border-left: 1px solid var(--grid); padding: 12px 14px; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
+.vwcell pre { margin: 6px 0 0; white-space: pre-wrap; word-break: break-word; font-size: 12.5px; background: var(--surface-2);
+              border-radius: 8px; padding: 10px; flex: 1; overflow: auto; }
+.vwcell .grow, .vwfoot .grow { flex: 1; }
+.vwfoot { display: flex; gap: 10px; align-items: center; padding: 10px 16px; border-top: 1px solid var(--grid); flex-wrap: wrap; }
+.vwempty { padding: 40px; text-align: center; color: var(--muted); }
+.resbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.resbar .grow { flex: 1; }
+.sqlres .tablewrap { max-height: 480px; overflow: auto; }
+.sqlres .tablewrap th { position: sticky; top: 0; background: var(--surface); box-shadow: inset 0 -1px 0 var(--border); }
+@media (max-width: 700px) { .vwcell { position: absolute; inset: auto 0 0 0; width: auto; height: 45%; background: var(--surface);
+                                      border-left: 0; border-top: 1px solid var(--border); } .vwmain { position: relative; } }
 /* take-over dialog */
 dialog.modal { border: 1px solid var(--border); border-radius: 14px; padding: 0; width: min(560px, calc(100vw - 32px));
                background: var(--surface); color: var(--ink); box-shadow: 0 24px 60px rgba(0,0,0,.25); }
@@ -532,6 +593,9 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
       <aside class="card"><h3>Tables</h3>
         <div id="connstatus"></div>
         <input id="tablefilter" placeholder="filter tables" style="width:100%">
+        <div class="tlisttools"><span class="muted small" id="tablecount"></span><span class="grow"></span>
+          <button type="button" class="linkish" id="groupsopen" title="Show every connector's tables">Expand all</button>
+          <button type="button" class="linkish" id="groupsclose" title="Show only the connectors' names">Collapse all</button></div>
         <div class="tlist" id="tablelist"></div></aside>
       <div>
         <div class="card">
@@ -693,13 +757,42 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
       <div class="hint" id="vhint"></div>
       <label class="name" for="vdesc" style="margin-top:10px">Description <span class="muted" style="font-weight:400">— optional; helps people and Ask</span></label>
       <input id="vdesc" autocomplete="off" style="width:100%" placeholder="e.g. ServiceNow incidents">
-      <pre class="mono vsql" id="vsql"></pre>
+      <label class="name" for="vstmt" style="margin-top:12px">Statement <span class="muted" style="font-weight:400">— what the table reads; edit it here</span></label>
+      <textarea class="mono vsql" id="vstmt" spellcheck="false" rows="4"></textarea>
       <p class="err" id="verr" hidden></p>
     </div>
     <div class="mfoot"><span class="note" id="vnote"></span>
+      <button class="danger" type="button" id="vdelete" hidden style="margin-right:auto">Remove</button>
+      <button class="secondary" type="button" id="vopen" hidden title="Put the statement in the SQL editor, to run or change it there">Open in the editor</button>
       <button class="secondary" type="button" id="vcancel">Cancel</button>
       <button class="primary" type="submit" id="vgo">Save table</button></div>
   </form>
+</dialog>
+<dialog class="viewer" id="viewer" aria-labelledby="vwtitle">
+  <div class="vwhead">
+    <div class="vwtitle"><h2 id="vwtitle">Result</h2><span class="muted small" id="vwcount"></span></div>
+    <input type="search" id="vwsearch" placeholder="Search every column…" aria-label="Search the rows" autocomplete="off">
+    <details class="vwcols" id="vwcols"><summary>Columns</summary><div class="vwcolpanel">
+      <div class="row"><button type="button" class="linkish" id="vwallcols">All</button><button type="button" class="linkish" id="vwnocols">None</button></div>
+      <div id="vwcollist"></div></div></details>
+    <label class="check small" title="Show long values in full, on several lines"><input type="checkbox" id="vwwrap"> Wrap</label>
+    <button class="secondary" type="button" id="vwcopy" title="Copy the rows on this page (tab-separated — pastes into a spreadsheet)">Copy</button>
+    <button class="secondary" type="button" id="vwcsv" title="Every row (searched and sorted as shown), the columns shown">Download CSV</button>
+    <button class="x" type="button" id="vwclose" aria-label="Close" title="Close (Esc)">✕</button>
+  </div>
+  <div class="vwmain">
+    <div class="vwgrid" id="vwgrid"></div>
+    <aside class="vwcell" id="vwcell" hidden>
+      <div class="row"><strong id="vwcellname"></strong><span class="grow"></span>
+        <button class="secondary" type="button" id="vwcellcopy">Copy</button><button class="x" type="button" id="vwcellclose" aria-label="Close the value">✕</button></div>
+      <div class="muted small" id="vwcellwhere"></div>
+      <pre class="mono" id="vwcellvalue"></pre>
+    </aside>
+  </div>
+  <div class="vwfoot"><span id="vwrange" class="small"></span><span class="grow"></span>
+    <label class="small">Rows per page <select id="vwsize"><option>100</option><option selected>200</option><option>500</option><option>1000</option></select></label>
+    <button class="secondary" type="button" id="vwprev">‹ Previous</button>
+    <button class="secondary" type="button" id="vwnext">Next ›</button></div>
 </dialog>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <script>
@@ -1147,58 +1240,131 @@ $("#takeoverform").addEventListener("submit", async (e) => {
   }
 });
 
-// "Save as table": a query kept as a table (duckduck.json → views) — bound when it's just a table function's arguments
-let VIEWDLG = null;  // {sql, check}
+// "Save as table": a query kept as a table (duckduck.json → views) — bound when it's just a table function's arguments.
+// The same dialog edits one: its statement, name and description (VIEWDLG.previous = the name it has now).
+let VIEWDLG = null;  // {previous, check, timer}
 const sqlLiteral = (v) => typeof v === "string" ? `'${v.replace(/'/g, "''")}'` : String(v);
-async function saveAsTable(sql) {
+function saveAsTable(sql) { return openViewDialog({sql}); }
+async function editSavedTable(name) {
+  let v, all;
+  try { all = (await api("/api/views")).views; v = all.find(x => x.name === name); } catch (err) { toast(err.message); return; }
+  if (!v) { toast(`“${name}” isn't a saved table any more`); return; }
+  openViewDialog({sql: v.statement, previous: name, description: v.description || ""});
+  VIEWDLG.readers = readersOf(name, all);
+}
+// the other saved tables that read this one — renaming or removing it leaves them reading a name that's gone
+function readersOf(name, views) {
+  const word = new RegExp(`\\b${name}\\b`, "i");
+  return views.filter(v => v.name !== name && word.test(v.statement || "")).map(v => v.name);
+}
+async function openViewDialog({sql, previous = null, description = ""}) {
   sql = (sql || "").trim();
   if (!sql) { toast("Write a query first"); return; }
-  let c;
-  try { c = await api("/api/views/check", {sql}); } catch (err) { toast(err.message); return; }
-  if (c.error) { toast(c.error); return; }
-  VIEWDLG = {sql, check: c};
-  const call = c.kind === "bound" ? `${c.table}(${Object.entries(c.args || {}).map(([k, v]) => `${k}=${sqlLiteral(v)}`).join(", ")})` : "";
-  $("#vkind").innerHTML = c.kind === "bound"
-    ? `<b>A table over <span class="mono">${esc(call)}</span></b><div>Filters and LIMIT on it still go to the source, as they do on ${esc(c.table)}.</div>`
-    : `<b>A saved query</b><div>It runs each time the table is read; filters on it are applied after it runs.</div>`;
-  $("#vsql").textContent = c.kind === "bound" ? `SELECT * FROM ${call}` : c.sql;
-  $("#vname").value = c.name; $("#vdesc").value = "";
+  VIEWDLG = {previous, check: null, timer: null, readers: []};
+  const editing = !!previous;
+  $("#viewtitle").textContent = editing ? `Saved table “${previous}”` : "Save as a table";
+  $("#vstmt").value = sql; $("#vdesc").value = description;
+  $("#vname").value = previous || "";
   $("#verr").hidden = true;
-  $("#vgo").disabled = !!c.off; $("#vgo").textContent = "Save table";
+  $("#vdelete").hidden = $("#vopen").hidden = !editing;
+  $("#vgo").textContent = editing ? "Save changes" : "Save table";
+  $("#vkind").innerHTML = `<span class="muted">Reading the statement…</span>`;
+  $("#viewdlg").showModal();
+  await checkStatement(!editing);
+  (editing ? $("#vstmt") : $("#vname")).focus();
+  if (!editing) $("#vname").select();
+}
+// what the statement makes (a table over a function, or a saved query) — asked again as it's edited
+async function checkStatement(nameFromIt) {
+  const dlg = VIEWDLG; if (!dlg) return;
+  let c;
+  try { c = await api("/api/views/check", {sql: $("#vstmt").value}); } catch (err) { c = {error: err.message}; }
+  if (VIEWDLG !== dlg) return;
+  dlg.check = c;
+  if (c.error) {
+    $("#vkind").innerHTML = `<b class="bad">Can't be saved as it is</b><div>${esc(c.error)}</div>`;
+  } else {
+    const call = c.kind === "bound" ? `${c.table}(${Object.entries(c.args || {}).map(([k, v]) => `${k}=${sqlLiteral(v)}`).join(", ")})` : "";
+    $("#vkind").innerHTML = c.kind === "bound"
+      ? `<b>A table over <span class="mono">${esc(call)}</span></b><div>Filters and LIMIT on it still go to the source, as they do on ${esc(c.table)}.</div>`
+      : `<b>A saved query</b><div>It runs each time the table is read; filters on it are applied after it runs.</div>`;
+    if (nameFromIt && !$("#vname").value) $("#vname").value = c.name;
+  }
   $("#vnote").textContent = c.off ? `Can't save here: ${c.off}.` : "Kept in duckduck.json (a .bak is kept) — it's there after a restart.";
   checkViewName();
-  $("#viewdlg").showModal(); $("#vname").select();
 }
 function checkViewName() {
   const n = $("#vname").value.trim().toLowerCase(), hint = $("#vhint"), known = TABLES.find(t => t.name === n);
+  const previous = VIEWDLG?.previous;
   let bad = "";
   if (!/^[a-z_][a-z0-9_]{0,62}$/.test(n)) bad = "Letters, digits and _, starting with a letter.";
   else if (known && !known.saved) bad = `“${n}” is already a table (${known.service || "registered"}) — pick another name.`;
-  hint.textContent = bad || (known ? `Replaces the saved table “${n}”.` : "Letters, digits and _, starting with a letter.");
-  hint.classList.toggle("bad", !!bad);
-  if (!VIEWDLG?.check?.off) $("#vgo").disabled = !!bad;
+  else if (previous && known && n !== previous) bad = `“${n}” is another saved table — pick another name.`;
+  const readers = VIEWDLG?.readers || [];
+  hint.textContent = bad || (previous && n !== previous ? `Renames “${previous}” to “${n}”.` + (readers.length
+      ? ` ${readers.join(", ")} read${readers.length === 1 ? "s" : ""} “${previous}” — change ${readers.length === 1 ? "it" : "them"} too, or ${readers.length === 1 ? "it stops" : "they stop"} working.` : "")
+    : known && !previous ? `Replaces the saved table “${n}”.` : "Letters, digits and _, starting with a letter.");
+  hint.classList.toggle("bad", !!bad || !!(previous && n !== previous && readers.length));
+  const c = VIEWDLG?.check;
+  $("#vgo").disabled = !!bad || !c || !!c.error || !!c.off;
   return !bad;
 }
 $("#vname").addEventListener("input", checkViewName);
+$("#vstmt").addEventListener("input", () => {
+  $("#vgo").disabled = true;
+  clearTimeout(VIEWDLG?.timer);
+  if (VIEWDLG) VIEWDLG.timer = setTimeout(() => checkStatement(false), 400);
+});
 $("#vcancel").addEventListener("click", () => $("#viewdlg").close());
 $("#viewdlg").addEventListener("click", (e) => { if (e.target === $("#viewdlg")) $("#viewdlg").close(); });  // backdrop
+$("#vopen").addEventListener("click", () => {
+  $("#viewdlg").close(); openTab("sql");
+  $("#sqltext").value = $("#vstmt").value; $("#sqltext").focus();
+});
+// the Config tab's copy of the file follows, so a later Save there keeps what was done here
+function draftViews(change) { if (CFG) for (const o of [CFG.config, DRAFT]) { o.views = {...(o.views || {})}; change(o.views); if (!Object.keys(o.views).length) delete o.views; } }
+function afterSavedTables() {
+  loadTables(); loadCfgStatus();
+  if (CFG && !$("#tab-config").hidden && CFGPAGE === "saved") renderForm();
+}
+$("#vdelete").addEventListener("click", async () => {
+  const name = VIEWDLG?.previous; if (!name) return;
+  const readers = VIEWDLG.readers || [];
+  if (!confirm(`Remove the saved table “${name}”? It's taken out of duckduck.json (a .bak is kept).` +
+    (readers.length ? `\n\n${readers.join(", ")} read${readers.length === 1 ? "s" : ""} it and will stop working.` : ""))) return;
+  try { await fetchDelete(`/api/views/${encodeURIComponent(name)}`); }
+  catch (err) { $("#verr").textContent = err.message; $("#verr").hidden = false; return; }
+  draftViews(v => delete v[name]);
+  $("#viewdlg").close(); toast(`Removed “${name}”`); afterSavedTables();
+});
+async function fetchDelete(path) {
+  const headers = {}; const t = store.get("duckduck-token"); if (t) headers["X-Duckduck-Token"] = t;
+  const r = await fetch(path, {method: "DELETE", headers});
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.detail || r.statusText);
+  return d;
+}
 $("#viewform").addEventListener("submit", async (e) => {
   e.preventDefault();
-  if (!VIEWDLG || !checkViewName()) return;
-  const name = $("#vname").value.trim().toLowerCase(), c = VIEWDLG.check;
-  const body = {name, description: $("#vdesc").value.trim() || undefined, replace: !!TABLES.find(t => t.name === name && t.saved),
-    ...(c.kind === "bound" ? {table: c.table, args: c.args} : {sql: c.sql})};
+  const dlg = VIEWDLG;
+  if (!dlg || !checkViewName() || !dlg.check || dlg.check.error) return;
+  const name = $("#vname").value.trim().toLowerCase(), previous = dlg.previous;
+  const body = {name, sql: $("#vstmt").value.trim(), description: $("#vdesc").value.trim() || undefined,
+    ...(previous ? {previous} : {replace: !!TABLES.find(t => t.name === name && t.saved)})};
   $("#vgo").disabled = true; $("#vgo").textContent = "Saving…";
-  try { await api("/api/views", body); }
-  catch (err) { $("#verr").textContent = err.message; $("#verr").hidden = false; $("#vgo").disabled = false; $("#vgo").textContent = "Save table"; return; }
+  let saved;
+  try { saved = await api("/api/views", body); }
+  catch (err) {
+    $("#verr").textContent = err.message; $("#verr").hidden = false;
+    $("#vgo").disabled = false; $("#vgo").textContent = previous ? "Save changes" : "Save table"; return;
+  }
+  const def = saved.kind === "bound" ? {table: saved.table, args: saved.args} : {sql: saved.sql};
+  if (saved.description) def.description = saved.description;
+  draftViews(v => { if (previous && previous !== name) delete v[previous]; v[name] = def; });
   $("#viewdlg").close();
-  toast(`Saved “${name}” — it's a table now`);
-  // the Config tab's copy of the file gets it too, so a later Save there keeps it
-  const def = c.kind === "bound" ? {table: c.table, args: c.args} : {sql: c.sql};
-  if (body.description) def.description = body.description;
-  if (CFG) for (const o of [CFG.config, DRAFT]) o.views = {...(o.views || {}), [name]: def};
-  openTab("sql"); await loadTables();
-  $("#sqltext").value = `SELECT * FROM ${name} LIMIT 100`; $("#sqltext").focus();
+  toast(previous ? `Saved “${name}”` : `Saved “${name}” — it's a table now`);
+  afterSavedTables();
+  if (!previous) { openTab("sql"); $("#sqltext").value = `SELECT * FROM ${name} LIMIT 100`; $("#sqltext").focus(); }
 });
 $("#sqlsave").addEventListener("click", () => saveAsTable($("#sqltext").value));
 
@@ -1264,6 +1430,8 @@ function render(c) {
         title="Register these rows as a table and continue in the SQL tab">Take over from here</button>` : ""}</div>
       ${moreBar(c)}
       ${COLS_OPEN.has(c.conversation_id) ? columnPanel(r) : ""}
+      ${n ? `<div class="resbar" style="margin-top:6px"><span class="grow"></span><button class="secondary" type="button" data-expandrows
+        style="padding:3px 10px;font-size:12.5px" title="Open these rows full screen: search, sort, a value in full, CSV">⤢ Expand</button></div>` : ""}
       ${table(r.results)}
       ${r.summary ? `<details><summary>Where it was looked for</summary>${table(r.summary)}</details>` : ""}
       ${(r.sections || []).filter(s => s.results && s.results.length).map(s =>
@@ -1282,6 +1450,7 @@ function render(c) {
   box.querySelectorAll("button.option").forEach(b => b.addEventListener("click", () => reply(c.conversation_id, b.dataset.reply)));
   box.querySelector("[data-runsql]")?.addEventListener("click", () => { $("#sqltext").value = r.sql; openTab("sql"); });
   box.querySelector("[data-takeover]")?.addEventListener("click", () => takeOver(c.conversation_id));
+  box.querySelector("[data-expandrows]")?.addEventListener("click", () => openViewer(rowsSource(c.result.results || []), c.result.question));
   wireColumns(c);
   box.querySelector("[data-fetchall]")?.addEventListener("click", () =>
     runJob("/api/all", {conversation_id: c.conversation_id}, r.question));
@@ -1685,6 +1854,10 @@ function openTab(name) { document.querySelector(`nav button[data-tab="${name}"]`
 let TABLES = [];
 // the expanded catalog, per connector: service → {tables, notes, loading}; EXPANDED = the connectors shown expanded
 const NESTED = {}, EXPANDED = new Set();
+// connector groups the list shows closed — remembered in this browser
+const COLLAPSED = new Set((() => { try { return JSON.parse(store.get("duckduck-collapsed") || "[]"); } catch { return []; } })());
+function keepCollapsed() { store.set("duckduck-collapsed", JSON.stringify([...COLLAPSED])); }
+function groupsOf() { return [...new Set(TABLES.map(t => t.service || "other"))]; }
 async function loadTables() {
   loadConnections();
   try { TABLES = await api("/api/tables"); drawTables(); }
@@ -1742,11 +1915,18 @@ function drawTables() {
       <button type="button" class="linkish" data-expand="${esc(svc)}" aria-pressed="${on}"
         title="${on ? "Hide the tables behind this connector's catalog" : "List the tables behind this connector's catalog (reads it now)"}">${on ? "Collapse" : "Expand catalog"}</button></span>`;
   };
-  $("#tablelist").innerHTML = Object.entries(groups).map(([svc, ts]) => `<h4>${esc(svc)}${toggle(svc, ts)}</h4>` + ts.map(t => {
+  $("#tablecount").textContent = `${TABLES.length} table${TABLES.length === 1 ? "" : "s"}`;
+  $("#tablelist").innerHTML = Object.entries(groups).map(([svc, ts]) => {
+    const shut = COLLAPSED.has(svc) && !f;  // a filter shows what it matched, collapsed or not
+    return `<h4 class="tgroup"><button type="button" class="gtoggle" data-group="${esc(svc)}" aria-expanded="${!shut}"
+      title="${shut ? "Show" : "Hide"} ${esc(svc)}'s tables"><span class="chev" aria-hidden="true">▸</span>${esc(svc)}
+      <span class="gcount">${ts.length}</span></button>${shut ? "" : toggle(svc, ts)}</h4>` + (shut ? "" : ts.map(t => {
     const kids = nestedOf(t);
-    return `<button class="titem" type="button" data-usage="${esc(t.usage || ("SELECT * FROM " + t.name + " LIMIT 100"))}"
+    const item = `<button class="titem" type="button" data-usage="${esc(t.usage || ("SELECT * FROM " + t.name + " LIMIT 100"))}"
       title="${esc([t.description, t.pushdown ? "push-down: " + t.pushdown : ""].filter(Boolean).join("\n"))}">
-      ${icon(t.icon)}<span>${esc(t.name)}</span>${t.saved ? `<span class="savedtag" title="${t.saved === "bound" ? "A saved table over a table function" : "A saved query"} — in duckduck.json">saved</span>` : ""}<span class="kind">${esc(t.kind || "")}${kids.length ? ` · ${kids.length}` : ""}</span></button>` +
+      ${icon(t.icon)}<span>${esc(t.name)}</span>${t.saved ? `<span class="savedtag" title="${t.saved === "bound" ? "A saved table over a table function" : "A saved query"} — in duckduck.json">saved</span>` : ""}<span class="kind">${esc(t.kind || "")}${kids.length ? ` · ${kids.length}` : ""}</span></button>`;
+    return (t.saved ? `<div class="trow">${item}<button type="button" class="tedit" data-editview="${esc(t.name)}"
+      title="See and edit the statement behind it">✎</button></div>` : item) +
       (kids.length ? `<div class="nested">${kids.slice(0, MAXN).map(n => `<div class="nitem" title="${esc(n.usage)}">
         <span class="lbl" data-usage="${esc(n.usage)}">${esc(n.label)}</span>
         <button class="secondary" type="button" data-savetable="${esc(n.usage)}" title="Keep it as a table of its own, with a name">＋ Table</button>
@@ -1755,7 +1935,8 @@ function drawTables() {
       (EXPANDED.has(svc) && !NESTED[svc]?.loading && t.expandable && !(byCatalog[t.name] || []).length
         ? `<div class="nested muted small">no tables listed</div>` : "");
   }).join("") + (EXPANDED.has(svc) && NESTED[svc]?.notes?.length
-    ? `<div class="muted small nested">${NESTED[svc].notes.map(esc).join("<br>")}</div>` : "")).join("")
+    ? `<div class="muted small nested">${NESTED[svc].notes.map(esc).join("<br>")}</div>` : ""));
+  }).join("")
     || (TABLES.length ? `<p class="muted small">Nothing matches.</p>` : `<p class="muted small">No tables registered — see above for why.</p>`);
   $("#tablelist").querySelectorAll("[data-usage]").forEach(b => b.addEventListener("click", () => {
     let u = b.dataset.usage;
@@ -1764,6 +1945,11 @@ function drawTables() {
     $("#sqltext").value = u; $("#sqltext").focus();
   }));
   $("#tablelist").querySelectorAll("[data-preview]").forEach(b => b.addEventListener("click", () => previewSql(b.dataset.preview)));
+  $("#tablelist").querySelectorAll("[data-editview]").forEach(b => b.addEventListener("click", () => editSavedTable(b.dataset.editview)));
+  $("#tablelist").querySelectorAll("[data-group]").forEach(b => b.addEventListener("click", () => {
+    const g = b.dataset.group; if (COLLAPSED.has(g)) COLLAPSED.delete(g); else COLLAPSED.add(g);
+    keepCollapsed(); drawTables();
+  }));
   $("#tablelist").querySelectorAll("[data-savetable]").forEach(b => b.addEventListener("click", () =>
     saveAsTable(b.dataset.savetable.replace(/\s+limit\s+\d+\s*$/i, ""))));
   $("#tablelist").querySelectorAll("[data-expand]").forEach(b => b.addEventListener("click", () =>
@@ -1771,6 +1957,8 @@ function drawTables() {
   $("#tablelist").querySelectorAll("[data-exprefresh]").forEach(b => b.addEventListener("click", () => loadNested(b.dataset.exprefresh, true)));
 }
 $("#tablefilter").addEventListener("input", drawTables);
+$("#groupsopen").addEventListener("click", () => { COLLAPSED.clear(); keepCollapsed(); drawTables(); });
+$("#groupsclose").addEventListener("click", () => { groupsOf().forEach(g => COLLAPSED.add(g)); keepCollapsed(); drawTables(); });
 // a query runs as a job: its steps and log live, ⏸ Pause (between API calls and pages), ✕ Cancel (DuckDB too)
 let SQLJOB = null;  // {id, timer, debug}
 try { $("#sqldebug").checked = store.get("duckduck-sqldebug") === "1"; } catch {}
@@ -1836,13 +2024,171 @@ function drawSqlJob(v, debug) {
   const pre = $("#sqlresult pre.log"); if (pre) pre.scrollTop = pre.scrollHeight;
   $("#sqlresult").querySelectorAll("[data-sqljob]").forEach(b => b.addEventListener("click", () => sqlJobAction(b.dataset.sqljob)));
 }
+let LAST_SQL = null;  // {result, sql}: what ⤢ Expand opens
 function drawSqlResult(r) {
   const rows = (r.rows || []).map(row => Object.fromEntries(r.columns.map((c, i) => [c, row[i]])));
-  $("#sqlresult").innerHTML = `<div class="card">` + (r.error ? `<p class="error">${esc(r.error)}</p>` :
-    `<div class="muted small">${r.row_count} row${r.row_count === 1 ? "" : "s"} · ${r.elapsed_ms} ms${r.truncated ? " · first " + rows.length + " shown" : ""}</div>${table(rows)}`) +
+  LAST_SQL = r.error ? null : {result: r, sql: $("#sqltext").value.trim()};
+  $("#sqlresult").innerHTML = `<div class="card sqlres">` + (r.error ? `<p class="error">${esc(r.error)}</p>` :
+    `<div class="resbar"><span class="muted small">${r.row_count.toLocaleString()} row${r.row_count === 1 ? "" : "s"} · ${r.columns.length} column${r.columns.length === 1 ? "" : "s"} · ${r.elapsed_ms} ms${r.truncated ? " · first " + rows.length.toLocaleString() + " shown here" : ""}</span>
+      <span class="grow"></span>${r.columns.length ? `<button class="secondary" type="button" id="sqlexpand" title="Open the result full screen: search, sort, every row, CSV">⤢ Expand</button>` : ""}</div>${table(rows)}`) +
     ((r.log || []).length ? `<details${r.error || r.debug ? " open" : ""}><summary>${r.debug ? "Debug log" : "What went to each source (push-down)"}</summary><pre class="log mono">${esc(r.log.join("\n"))}</pre></details>` : "") + `</div>`;
 }
+$("#sqlresult").addEventListener("click", (e) => {
+  if (e.target.closest("#sqlexpand") && LAST_SQL) openViewer(resultSource(LAST_SQL.result), LAST_SQL.sql || "Result");
+});
 $("#sqlrun").addEventListener("click", runSql);
+
+// ---- the result viewer: a query's whole result full screen — search, sort, pages, columns, a value in full, CSV ----
+// A source gives pages: resultSource (a SQL result the server keeps whole) or rowsSource (rows the page already has).
+function resultSource(r) {
+  if (!r.result_id) return rowsSource((r.rows || []).map(row => Object.fromEntries(r.columns.map((c, i) => [c, row[i]]))));
+  const params = (o) => new URLSearchParams(Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && v !== null && v !== "")));
+  return {
+    fetch: (o) => api(`/api/sql/results/${r.result_id}?` + params({offset: o.offset, limit: o.limit, sort: o.sort, desc: o.desc ? 1 : 0, q: o.q})),
+    csv: async (o) => {
+      const headers = {}; const t = store.get("duckduck-token"); if (t) headers["X-Duckduck-Token"] = t;
+      const res = await fetch(`/api/sql/results/${r.result_id}/csv?` + params({sort: o.sort, desc: o.desc ? 1 : 0, q: o.q, columns: o.columns.join(",")}), {headers});
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+      return res.blob();
+    },
+  };
+}
+function rowsSource(rows) {
+  const columns = rows.length ? Object.keys(rows[0]) : [];
+  const numbered = rows.map((row, i) => ({row, n: i + 1}));
+  const view = (o) => {
+    let out = numbered;
+    if (o.q) { const q = o.q.toLowerCase(); out = out.filter(({row}) => columns.some(c => cellText(row[c]).toLowerCase().includes(q))); }
+    if (o.sort) {
+      const k = o.sort, dir = o.desc ? -1 : 1;
+      out = [...out].sort((a, b) => {
+        const x = a.row[k], y = b.row[k];
+        if (x === null || x === undefined) return (y === null || y === undefined) ? a.n - b.n : 1;
+        if (y === null || y === undefined) return -1;
+        const c = typeof x === "number" && typeof y === "number" ? x - y : cellText(x).localeCompare(cellText(y), undefined, {numeric: true});
+        return c ? c * dir : a.n - b.n;
+      });
+    }
+    return out;
+  };
+  return {
+    fetch: async (o) => { const all = view(o), page = all.slice(o.offset, o.offset + o.limit);
+      return {columns, rows: page.map(({row}) => columns.map(c => row[c] ?? null)), row_numbers: page.map(p => p.n),
+              total: rows.length, filtered: all.length, offset: o.offset, limit: o.limit}; },
+    csv: async (o) => {
+      const cell = (v) => { const t = v === null || v === undefined ? "" : cellText(v); return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+      const lines = [o.columns.map(cell).join(","), ...view(o).map(({row}) => o.columns.map(c => cell(row[c])).join(","))];
+      return new Blob([lines.join("\n") + "\n"], {type: "text/csv"});
+    },
+  };
+}
+const cellText = (v) => v === null || v === undefined ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
+let VW = null;  // {source, title, columns, hidden, sort, desc, q, offset, size, page, sel, timer}
+async function openViewer(source, title) {
+  VW = {source, title, columns: [], hidden: new Set(), sort: null, desc: false, q: "", offset: 0,
+        size: Number($("#vwsize").value) || 200, page: null, sel: null, timer: null};
+  $("#vwtitle").textContent = title; $("#vwtitle").title = title;
+  $("#vwsearch").value = ""; $("#vwcell").hidden = true; $("#vwcols").open = false;
+  try { $("#vwwrap").checked = store.get("duckduck-vwwrap") === "1"; } catch {}
+  $("#vwgrid").innerHTML = `<div class="vwempty">Loading…</div>`;
+  $("#viewer").showModal();
+  await loadViewerPage();
+}
+async function loadViewerPage() {
+  const vw = VW; if (!vw) return;
+  let page;
+  try { page = await vw.source.fetch({offset: vw.offset, limit: vw.size, sort: vw.sort, desc: vw.desc, q: vw.q}); }
+  catch (err) { $("#vwgrid").innerHTML = `<div class="vwempty error">${esc(err.message)}</div>`; return; }
+  if (VW !== vw) return;
+  vw.page = page;
+  if (!vw.columns.length) { vw.columns = page.columns; drawViewerColumns(); }
+  drawViewer();
+}
+function drawViewer() {
+  const vw = VW, p = vw.page, cols = p.columns.map((c, i) => ({c, i})).filter(({c}) => !vw.hidden.has(c));
+  const num = cols.map(({i}) => p.rows.length && p.rows.every(r => r[i] === null || typeof r[i] === "number"));
+  $("#vwcount").textContent = `${p.total.toLocaleString()} row${p.total === 1 ? "" : "s"} · ${p.columns.length} column${p.columns.length === 1 ? "" : "s"}` +
+    (vw.q ? ` · ${p.filtered.toLocaleString()} match “${vw.q}”` : "") + (vw.hidden.size ? ` · ${vw.hidden.size} hidden` : "");
+  const arrow = (c) => vw.sort === c ? `<span class="arrow">${vw.desc ? "▼" : "▲"}</span>` : "";
+  $("#vwgrid").innerHTML = !p.rows.length ? `<div class="vwempty">${vw.q ? "No row matches." : "No rows."}</div>` :
+    `<table class="vwtable${$("#vwwrap").checked ? " wrap" : ""}"><thead><tr><th class="rn" title="Row number in the result">#</th>
+      ${cols.map(({c}, k) => `<th class="${num[k] ? "num" : ""}" data-sort="${esc(c)}" title="Sort by ${esc(c)}">${esc(c)}${arrow(c)}</th>`).join("")}</tr></thead>
+    <tbody>${p.rows.map((r, ri) => `<tr><td class="rn">${p.row_numbers[ri].toLocaleString()}</td>${cols.map(({i}, k) => {
+      const v = r[i];
+      return `<td class="${num[k] ? "num" : ""}" data-r="${ri}" data-c="${i}">${v === null || v === undefined ? '<span class="muted">—</span>'
+        : typeof v === "object" ? `<span class="mono jcell">${esc(JSON.stringify(v))}</span>` : esc(v)}</td>`; }).join("")}</tr>`).join("")}</tbody></table>`;
+  const last = Math.min(p.offset + p.rows.length, p.filtered);
+  $("#vwrange").textContent = p.filtered ? `Rows ${(p.offset + 1).toLocaleString()}–${last.toLocaleString()} of ${p.filtered.toLocaleString()}` : "";
+  $("#vwprev").disabled = p.offset <= 0;
+  $("#vwnext").disabled = p.offset + p.rows.length >= p.filtered;
+}
+function drawViewerColumns() {
+  $("#vwcollist").innerHTML = VW.columns.map(c => `<label><input type="checkbox" data-col="${esc(c)}" ${VW.hidden.has(c) ? "" : "checked"}> <span class="mono">${esc(c)}</span></label>`).join("");
+}
+$("#vwcollist").addEventListener("change", (e) => {
+  const c = e.target.dataset.col; if (c === undefined) return;
+  if (e.target.checked) VW.hidden.delete(c); else VW.hidden.add(c);
+  drawViewer();
+});
+$("#vwallcols").addEventListener("click", () => { VW.hidden.clear(); drawViewerColumns(); drawViewer(); });
+$("#vwnocols").addEventListener("click", () => { VW.columns.forEach(c => VW.hidden.add(c)); drawViewerColumns(); drawViewer(); });
+$("#vwgrid").addEventListener("click", (e) => {
+  const th = e.target.closest("th[data-sort]");
+  if (th) {  // ascending → descending → as it came
+    const c = th.dataset.sort;
+    if (VW.sort !== c) { VW.sort = c; VW.desc = false; } else if (!VW.desc) VW.desc = true; else { VW.sort = null; VW.desc = false; }
+    VW.offset = 0; loadViewerPage(); return;
+  }
+  const td = e.target.closest("td[data-c]"); if (!td) return;
+  $("#vwgrid").querySelectorAll("td.sel").forEach(x => x.classList.remove("sel")); td.classList.add("sel");
+  const p = VW.page, ri = Number(td.dataset.r), ci = Number(td.dataset.c), v = p.rows[ri][ci];
+  VW.sel = v;
+  $("#vwcellname").textContent = p.columns[ci];
+  $("#vwcellwhere").textContent = `row ${p.row_numbers[ri].toLocaleString()}` + (v !== null && typeof v === "object" ? " · JSON" : "");
+  $("#vwcellvalue").textContent = v === null || v === undefined ? "NULL" : typeof v === "object" ? JSON.stringify(v, null, 2) : String(v);
+  $("#vwcell").hidden = false;
+});
+$("#vwcellclose").addEventListener("click", () => { $("#vwcell").hidden = true; $("#vwgrid").querySelectorAll("td.sel").forEach(x => x.classList.remove("sel")); });
+$("#vwcellcopy").addEventListener("click", () => copyText($("#vwcellvalue").textContent, "Value copied"));
+$("#vwsearch").addEventListener("input", () => {
+  clearTimeout(VW?.timer);
+  if (VW) VW.timer = setTimeout(() => { VW.q = $("#vwsearch").value.trim(); VW.offset = 0; loadViewerPage(); }, 300);
+});
+$("#vwwrap").addEventListener("change", () => { store.set("duckduck-vwwrap", $("#vwwrap").checked ? "1" : "0"); if (VW?.page) drawViewer(); });
+$("#vwsize").addEventListener("change", () => { if (!VW) return; VW.size = Number($("#vwsize").value); VW.offset = 0; loadViewerPage(); });
+$("#vwprev").addEventListener("click", () => { VW.offset = Math.max(0, VW.offset - VW.size); loadViewerPage(); });
+$("#vwnext").addEventListener("click", () => { VW.offset += VW.size; loadViewerPage(); });
+$("#vwclose").addEventListener("click", () => $("#viewer").close());
+$("#viewer").addEventListener("close", () => { VW = null; });
+$("#viewer").addEventListener("keydown", (e) => {
+  if (e.key === "/" && document.activeElement !== $("#vwsearch")) { e.preventDefault(); $("#vwsearch").focus(); }
+});
+$("#vwcopy").addEventListener("click", () => {
+  const p = VW?.page; if (!p) return;
+  const keep = p.columns.map((c, i) => i).filter(i => !VW.hidden.has(p.columns[i]));
+  const clean = (v) => cellText(v).replace(/[\t\n\r]+/g, " ");
+  const text = [keep.map(i => p.columns[i]).join("\t"), ...p.rows.map(r => keep.map(i => clean(r[i])).join("\t"))].join("\n");
+  copyText(text, `${p.rows.length.toLocaleString()} row${p.rows.length === 1 ? "" : "s"} copied`);
+});
+$("#vwcsv").addEventListener("click", async () => {
+  if (!VW) return;
+  const b = $("#vwcsv"); b.disabled = true; b.textContent = "Preparing…";
+  try {
+    const blob = await VW.source.csv({sort: VW.sort, desc: VW.desc, q: VW.q, columns: VW.columns.filter(c => !VW.hidden.has(c))});
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "result.csv";
+    document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  } catch (err) { toast(err.message); }
+  finally { b.disabled = false; b.textContent = "Download CSV"; }
+});
+async function copyText(text, done) {
+  try { await navigator.clipboard.writeText(text); }
+  catch {
+    const t = document.createElement("textarea"); t.value = text; t.style.position = "fixed"; t.style.opacity = "0";
+    $("#viewer").open ? $("#viewer").append(t) : document.body.append(t);
+    t.select(); try { document.execCommand("copy"); } finally { t.remove(); }
+  }
+  toast(done);
+}
 $("#sqltext").addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); runSql(); } });
 
 // ---- Semantic catalog (Config tab): generate it with the LLM, as a job with its log live ----------
@@ -2583,7 +2929,11 @@ function savedCard(views, name) {
                 h("textarea", {id: sqlId, class: "mono fjson", spellcheck: "false", value: def.sql || "", style: "min-height:90px",
                   oninput: (e) => sc.set("sql", e.target.value.trim() || undefined)}),
                 h("div", {class: "hint"}, "A read query over the registered tables — it runs each time the table is read.")))),
-      h("div", {class: "foot"}, h("button", {type: "button", class: "danger",
+      h("div", {class: "foot"},
+        saved ? h("button", {type: "button", class: "secondary", style: "margin-right:auto",
+          title: "Its statement in the editing dialog: change it, rename it — saved at once", onclick: () => editSavedTable(name)},
+          "✎ Edit the statement") : null,
+        h("button", {type: "button", class: "danger",
         onclick: () => { if (confirm(`Remove the saved table “${name}”? (Nothing changes until you Save.)`)) { views.set(name, undefined); OPEN.delete(key); renderForm(); } }},
         "Remove saved table"))));
   return card;

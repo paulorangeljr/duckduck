@@ -24,6 +24,7 @@ HTML page (``webpage.PAGE``) over a JSON API:
 ``GET  /api/export.md``                      the still-failing questions, as a brief for a developer
 ``GET  /api/meta``                           categories, answer kinds, tables (+ icon kind), entities, values
 ``GET  /api/connections`` · ``GET /api/tables/nested?service=&refresh=1``  each connector started or why not · the tables behind catalogs (one connector's, or all)
+``GET /api/sql/results/{id}[/csv]?offset&limit&sort&desc&q``  a query's whole result, paged / searched / sorted / as CSV
 ``POST /api/sql {sql, debug, background}`` · ``GET /api/tables``  the SQL console (``allow_sql``, on by default; read-only, no files/network; ``background`` → a job)
 ``POST /api/takeover {conversation_id, name, full, user}``  "take over from here": the answer's rows as a table (an unrated answer → answered)
 ``POST /api/takeover/proposal {conversation_id}``  what that would give: suggested name, rows, columns, capped
@@ -502,6 +503,26 @@ def create_app(
                              on_cancel=console.interrupt, log=log)
         return dump(console.run(sql, debug=debug))
 
+    @app.get("/api/sql/results/{result_id}")
+    def sql_result_page(result_id: str, offset: int = 0, limit: int = 200, sort: Optional[str] = None,
+                        desc: int = 0, q: Optional[str] = None):
+        """A page of a query's whole result (the last few are kept): searched, sorted — the result viewer."""
+        try:
+            return dump(the_console().page(result_id, offset, limit, sort, bool(desc), q))
+        except KeyError as exc:
+            raise HTTPException(404, str(exc).strip("'\""))
+
+    @app.get("/api/sql/results/{result_id}/csv")
+    def sql_result_csv(result_id: str, sort: Optional[str] = None, desc: int = 0, q: Optional[str] = None,
+                       columns: Optional[str] = None):
+        """All of it as CSV, searched / sorted / cut to ``columns`` (comma-separated) as the viewer shows it."""
+        try:
+            text = the_console().csv(result_id, sort, bool(desc), q, [c for c in (columns or "").split(",") if c] or None)
+        except KeyError as exc:
+            raise HTTPException(404, str(exc).strip("'\""))
+        return Response(text, media_type="text/csv; charset=utf-8",
+                        headers={"Content-Disposition": 'attachment; filename="result.csv"'})
+
     @app.get("/api/tables")
     def tables():
         return dump(the_console().tables())
@@ -538,7 +559,8 @@ def create_app(
 
     @app.post("/api/views")
     def create_view(body: Dict[str, Any] = Body(...)):
-        """``{name, sql | table + args, description, replace}`` → registered now, written to duckduck.json."""
+        """``{name, sql | table + args, description, replace, previous}`` → registered now, written to duckduck.json.
+        ``previous``: editing that saved table (same name → replaced; another → renamed)."""
         from .. import views as saved
 
         source = the_console().source
@@ -550,6 +572,13 @@ def create_app(
             found = source.view_from_sql(raw["sql"])  # a plain table-function call is kept bound: push-down stays
             raw = {**found, **({"description": raw["description"]} if raw.get("description") else {})}
         name = str(body.get("name") or "").strip().lower()
+        # editing: ``previous`` is the name it had — the same name replaces it, a new one renames it
+        renamed_from = str(body.get("previous") or "").strip().lower() or None
+        if renamed_from is not None and renamed_from not in source.views:
+            raise HTTPException(404, f"{renamed_from!r} isn't a saved table")
+        if renamed_from == name:
+            renamed_from = None
+            body = {**body, "replace": True}
         previous = source.views.get(name)
         try:
             definition = source.register_view(name, raw, replace=bool(body.get("replace")))
@@ -557,11 +586,15 @@ def create_app(
             raise HTTPException(400, str(exc).strip("'\""))
         try:
             saved.save(config_path, name, definition)
+            if renamed_from:
+                saved.remove(config_path, renamed_from)
         except Exception as exc:  # not kept: undo, so the page and the file agree
             saved.unregister(source, name)
             if previous is not None:
                 source.register_view(name, previous)
             raise HTTPException(500, f"couldn't write {config_path}: {exc}")
+        if renamed_from:
+            saved.unregister(source, renamed_from)
         return dump(saved.describe(source, name))
 
     @app.delete("/api/views/{name}")

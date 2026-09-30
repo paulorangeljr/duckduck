@@ -985,6 +985,21 @@ keep it as a saved table (below); ↻ reads the catalog again. In Python:
 `duck.nested_tables(service="lake")` (or every connector's with
 `duck.nested_tables()`).
 
+**The list** groups tables by connector; click a connector's name to
+fold its tables away (*Expand all* / *Collapse all* above; remembered in
+the browser, and a filter shows what matches either way).
+
+**Looking at a result.** Under the query, the first 1,000 rows (the header
+stays put while you scroll). **⤢ Expand** opens the whole result full
+screen: search every column, click a column to sort (again for
+descending, a third time to undo), pages of 100–1,000 rows, hide columns,
+wrap long values, click a value to read it in full (JSON laid out), copy
+the page for a spreadsheet, or **Download CSV** — every row, searched,
+sorted and with the columns shown. It works on all of the result, not just
+the first 1,000 rows: the server keeps the last few results whole, so
+nothing is read from the sources again. Ask's answers have the same
+**⤢ Expand**.
+
 **Saving a query as a table.** Some tables are only known when you query
 — `SELECT * FROM sn_table WHERE table_name = 'incident'`. **Save as
 table** (next to Run) gives the query a name, kept in `duckduck.json`
@@ -1001,8 +1016,12 @@ as a table to *Add*). What gets saved depends on the query:
   network access — and filters on it are applied after it runs.
 
 It needs `serve --edit-config` (it writes the file, keeping a `.bak`).
-Config → **Saved tables** lists them: edit, rename, remove. In the file,
-or from Python:
+Each saved table has a **✎** in the list: it opens the statement behind it
+(`SELECT * FROM sn_table(table_name='incident')`, or the saved query) to
+change it, rename the table, open the statement in the editor, or remove
+it — saved at once; renaming or removing one that another saved table reads
+says which. Config → **Saved tables** lists them too. In the file, or from
+Python:
 
 ```json
 "views": {
