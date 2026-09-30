@@ -502,3 +502,53 @@ def test_saved_tables_follow_the_config_file_and_sit_in_their_connector_s_schema
         w.close()
     finally:
         server.shutdown()
+
+
+def test_views_from_a_sql_client_are_saved_tables_in_duckduck_json(tmp_path):
+    """CREATE [OR REPLACE] / ALTER … RENAME / COMMENT ON / DROP VIEW — the web app's Save as table, from DBeaver."""
+    duck, _, _ = _duck()
+    config = tmp_path / "duckduck.json"
+    config.write_text(json.dumps({"services": {}, "views": {}}))
+    saved_views = lambda: json.loads(config.read_text())["views"]  # noqa: E731
+
+    off = PGServer.from_config(duck, str(config), port=0).start()
+    try:
+        w = Wire(off.port)
+        error = w.query("CREATE VIEW nvd.high AS SELECT * FROM nvd.cves WHERE severity = 'HIGH'")[3]
+        assert error.startswith("25006:") and saved_views() == {}  # off unless pg_server.allow_saved_tables
+        w.close()
+    finally:
+        off.shutdown()
+
+    server = PGServer.from_config(duck, str(config), port=0, allow_saved_tables=True).start()
+    try:
+        w = Wire(server.port)
+        # a new database, written the way DBeaver quotes a schema with a dot
+        assert w.query('CREATE VIEW "nvd.triage".high AS SELECT * FROM "nvd"."cves" WHERE severity = \'HIGH\'')[2] \
+            == ["CREATE VIEW"]
+        assert saved_views() == {"nvd.triage.high": {"sql": "SELECT * FROM nvd.cves WHERE severity = 'HIGH'"}}
+        assert w.query("SELECT id FROM nvd.triage.high")[1] == [["CVE-1"]]
+        assert w.query("CREATE VIEW nvd.triage.high AS SELECT 1")[3].startswith("42P07:")
+        assert w.query("CREATE VIEW IF NOT EXISTS nvd.triage.high AS SELECT 1")[3] is None
+        assert w.query("COMMENT ON VIEW nvd.triage.high IS 'The high ones'")[2] == ["COMMENT"]
+        assert w.query("CREATE OR REPLACE VIEW nvd.triage.high AS SELECT id FROM nvd.cves WHERE score > 5")[3] is None
+        assert saved_views()["nvd.triage.high"] == {"sql": "SELECT id FROM nvd.cves WHERE score > 5",
+                                                    "description": "The high ones"}  # kept across a replace
+        assert w.query("ALTER VIEW nvd.triage.high RENAME TO urgent")[2] == ["ALTER VIEW"]
+        assert list(saved_views()) == ["nvd.triage.urgent"]
+        # the existing saved table, as the tree names it (high_cves is in public)
+        assert w.query("CREATE OR REPLACE VIEW public.high_cves AS SELECT id FROM nvd.cves")[3] is None
+        assert saved_views()["high_cves"]["description"] == "The high ones" or "high_cves" in saved_views()
+        for bad, code in [("CREATE VIEW nvd.triage.x AS DELETE FROM y", "42601"),
+                          ("CREATE VIEW nope.x AS SELECT 1", "42602"),
+                          ("CREATE VIEW nvd.triage.x AS SELECT * FROM nvd.nothing", "42P01"),
+                          ("CREATE VIEW nvd.triage.x (a, b) AS SELECT 1, 2", "0A000"),
+                          ("DROP VIEW nvd.cves", "42P01")]:
+            assert w.query(bad)[3].startswith(code + ":"), bad
+        assert w.query("DROP VIEW nvd.triage.urgent")[2] == ["DROP VIEW"]
+        assert w.query("DROP VIEW IF EXISTS nvd.triage.urgent")[3] is None
+        assert "nvd.triage.urgent" not in saved_views() and "nvd_triage_urgent" not in duck.functions
+        assert (tmp_path / "duckduck.json.bak").exists()
+        w.close()
+    finally:
+        server.shutdown()

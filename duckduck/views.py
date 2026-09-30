@@ -288,6 +288,13 @@ def check_name(duck: Any, name: str, replace: bool = False) -> str:
         if not DOTTED_RE.match(name):
             raise ValueError(f"{name!r} isn't a table address: connector.table or connector.database.table "
                              f"(a part that isn't a plain name in double quotes)")
+        from .addresses import services
+
+        connector = name.split(".", 1)[0]
+        known = services(duck)
+        if known and connector not in known:
+            raise ValueError(f"{name!r} isn't a table address: {connector!r} isn't a connector "
+                             f"({', '.join(sorted(known))}) — or use a plain name")
     elif not NAME_RE.match(name):
         raise ValueError(f"{name!r} isn't a table name: letters, digits and _, starting with a letter "
                          f"— or an address, connector.database.table")

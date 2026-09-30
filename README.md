@@ -595,6 +595,25 @@ without an address sit in `public`.
   `duckduck.json`. A table that can't be read without some arguments
   (SharePoint's `list_items` needs a list) isn't listed bare: save it with
   them, or query it by address with `WHERE arg.list_name = '…'`.
+- **Saving tables from the client** (off by default — `"allow_saved_tables":
+  true` in `pg_server`, or `--allow-saved-tables`): `CREATE [OR REPLACE]
+  VIEW`, `DROP VIEW [IF EXISTS]`, `ALTER VIEW … RENAME TO` and `COMMENT ON
+  VIEW … IS` write the saved table into `duckduck.json` (a `.bak` kept),
+  exactly as *Save as table* in the web app does — the web app and other
+  clients see it on their next refresh. The name is where it goes:
+  `"sharepoint.projects".open_tasks` (or `sharepoint.projects.open_tasks`
+  with schema `sharepoint` active) creates the database `projects` under
+  `sharepoint`; a bare name with no connector schema active is a plain saved
+  table. A plain call of a table (`SELECT * FROM servicenow.incident`) is
+  stored bound, so push-down keeps working; anything else is stored as a
+  saved query. Only saved tables can be replaced, renamed or dropped; the
+  body must be a read query, and a dotted name must start with a connector.
+
+  ```sql
+  CREATE OR REPLACE VIEW "sharepoint.projects".open_tasks AS
+    SELECT * FROM sharepoint.list_items WHERE arg.list_name = 'Tasks' AND status = 'Open';
+  COMMENT ON VIEW "sharepoint.projects".open_tasks IS 'Open tasks of every project';
+  ```
 
 **Signing in** — `pg_server` in `duckduck.json`:
 
@@ -605,7 +624,8 @@ without an address sit in `public`.
   "port": 5433,
   "authentication": {"type": "aws", "secret_id": "prod/duckduck/pg-users"},
   "tls": {"cert": "certs/server.crt", "key": "certs/server.key"},
-  "ssl_required": true
+  "ssl_required": true,
+  "allow_saved_tables": false
 }
 ```
 

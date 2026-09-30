@@ -198,3 +198,16 @@ def test_the_page():
     assert 'id="sqlsave"' in PAGE and 'id="viewdlg"' in PAGE and "data-savetable=" in PAGE
     assert 'data-cfgpage="saved"' in PAGE and "function formSaved(" in PAGE
     assert 'id="expanded"' not in PAGE  # the catalog expands per connector only
+
+
+def test_a_dotted_name_starts_with_a_connector():
+    from duckduck import DuckAPI, views
+
+    duck = DuckAPI()
+    duck.register_api_function("nvd_cves", lambda limit=None: [{"id": "CVE-1"}])
+    duck.service_of["nvd_cves"] = "nvd"
+    assert views.check_name(duck, "nvd.triage.high") == "nvd.triage.high"
+    import pytest
+
+    with pytest.raises(ValueError, match="isn't a connector"):
+        views.check_name(duck, "nope.high")

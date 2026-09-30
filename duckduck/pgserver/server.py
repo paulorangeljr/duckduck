@@ -406,6 +406,9 @@ class Session:
         if self.status == "E":
             raise QueryError("current transaction is aborted, commands ignored until end of transaction block",
                              "25P02")
+        saved = self.server.saved_table_statement(self, sql)  # CREATE / DROP / ALTER / COMMENT ON VIEW
+        if saved is not None:
+            return saved
         reason = read_only_reason(sql)
         if reason:
             raise QueryError(reason, "25006", hint="duckduck is read-only: SELECT from its tables")
@@ -659,13 +662,15 @@ class PGServer:
     def __init__(self, duck: Any, host: str = "127.0.0.1", port: int = 5433, database: str = "duckduck",
                  password: Optional[str] = None, users: Optional[Dict[str, str]] = None,
                  tls: Optional[Tuple[str, str]] = None, ssl_required: bool = False, cache: Any = None,
-                 columns_file: Optional[str] = None):
+                 columns_file: Optional[str] = None, allow_saved_tables: bool = False):
         import duckdb
 
         from ..cache import SourceCache
 
         self.source = duck
         self.host, self.port, self.database = host, int(port), database
+        #: CREATE / DROP / ALTER / COMMENT ON VIEW from SQL clients save tables into duckduck.json
+        self.allow_saved_tables = bool(allow_saved_tables)
         if password is None and not users and host not in LOCAL_HOSTS:
             raise ValueError(f"a PostgreSQL endpoint on {host} needs a password: set DUCKDUCK_PG_PASSWORD, or "
                              f"users in pg_server.authentication — or listen on 127.0.0.1 only")
@@ -704,8 +709,8 @@ class PGServer:
         """From ``duckduck.json``'s ``pg_server`` section (``overrides`` win): host, port, database, tls, users."""
         section = _section(config_path)
         base = os.path.dirname(os.path.abspath(config_path)) if config_path else os.getcwd()
-        options: Dict[str, Any] = {k: section[k] for k in ("host", "port", "database", "ssl_required")
-                                   if k in section}
+        options: Dict[str, Any] = {k: section[k] for k in ("host", "port", "database", "ssl_required",
+                                                           "allow_saved_tables") if k in section}
         tls = section.get("tls")
         if tls:
             options["tls"] = (_path(tls["cert"], base), _path(tls["key"], base))
@@ -727,6 +732,184 @@ class PGServer:
             server.config_path = os.path.abspath(config_path)
             server._views_mtime = os.stat(server.config_path).st_mtime  # auto_register already read these
         return server
+
+    # -- saved tables from SQL clients: CREATE / DROP / ALTER / COMMENT ON VIEW --------------------------------
+
+    _NAME = r'(?:"(?:[^"]|"")+"|[\w$]+)(?:\s*\.\s*(?:"(?:[^"]|"")+"|[\w$]+))*'
+    _CREATE_VIEW = re.compile(r"^CREATE\s+(?P<replace>OR\s+REPLACE\s+)?(?:(?:TEMP|TEMPORARY)\s+)?VIEW\s+"
+                              r"(?P<ifnot>IF\s+NOT\s+EXISTS\s+)?(?P<name>" + _NAME + r")\s*(?P<cols>\([^)]*\))?"
+                              r"\s+AS\s+(?P<body>.+)$", re.I | re.S)
+    _DROP_VIEW = re.compile(r"^DROP\s+VIEW\s+(?P<ifexists>IF\s+EXISTS\s+)?(?P<names>.+?)\s*(?:CASCADE|RESTRICT)?$",
+                            re.I | re.S)
+    _ALTER_VIEW = re.compile(r"^ALTER\s+VIEW\s+(?P<ifexists>IF\s+EXISTS\s+)?(?P<name>" + _NAME + r")\s+RENAME\s+TO\s+"
+                             r"(?P<new>" + _NAME + r")$", re.I | re.S)
+    _COMMENT_VIEW = re.compile(r"^COMMENT\s+ON\s+VIEW\s+(?P<name>" + _NAME + r")\s+IS\s+(?P<text>'(?:[^']|'')*'|NULL)$",
+                               re.I | re.S)
+
+    def saved_table_statement(self, session: "Session", sql: str) -> Optional[Result]:
+        """A view statement from a SQL client, as the web app's *Save as table*: registered now, written to
+        duckduck.json (a ``.bak`` kept). Needs ``allow_saved_tables`` and a config file. None: not one of them."""
+        for pattern, handler in ((self._CREATE_VIEW, self._create_view), (self._DROP_VIEW, self._drop_view),
+                                 (self._ALTER_VIEW, self._rename_view), (self._COMMENT_VIEW, self._comment_view)):
+            m = pattern.match(sql)
+            if m is None:
+                continue
+            if not self.allow_saved_tables:
+                raise QueryError("saving tables from SQL clients is off", "25006",
+                                 hint="set pg_server.allow_saved_tables to true in duckduck.json "
+                                      "(or save it from the web app's SQL tab)")
+            if not self.config_path:
+                raise QueryError("no config file to save into (start with --config duckduck.json)", "25006")
+            with self._views_lock:
+                result = handler(session, m)
+                try:
+                    self._views_mtime = os.stat(self.config_path).st_mtime  # our own write: nothing to sync
+                except OSError:
+                    pass
+            return result
+        return None
+
+    def _client_parts(self, session: "Session", text: str) -> List[str]:
+        """A view name as a client writes it → name parts: ``"sharepoint.meu_db".x`` and ``sharepoint.meu_db.x``
+        alike; ``public.x`` → ``x``; a bare name in the active schema."""
+        parts: List[str] = []
+        for part in addresses._parts(text):
+            parts += part.split(".") if "." in part else [part]
+        if len(parts) == 2 and parts[0].lower() in ("public", "main"):
+            parts = parts[1:]
+        if len(parts) == 1 and session.schema:
+            parts = session.schema.split(".") + parts
+        return parts
+
+    def _saved_name(self, session: "Session", text: str) -> Tuple[str, Optional[str]]:
+        """(the saved table's name, the existing saved table it is — as the client's tree lists it — or None)."""
+        from .. import views as saved
+
+        parts = self._client_parts(session, text)
+        self.catalog.refresh()
+        fn = self.catalog.functions.get((".".join(parts[:-1]).lower() or "public", parts[-1].lower()))
+        existing = saved.name_of(self.source, fn) if fn else None
+        if existing is None:
+            candidate = saved.canonical_name(".".join(parts))
+            if candidate in self.source.views:
+                existing = candidate
+        return (existing or saved.canonical_name(".".join(parts))), existing
+
+    def portable_sql(self, sql: str, schema: Optional[str]) -> str:
+        """A view's SELECT as a client wrote it → SQL duckduck reads anywhere (the web app, another client):
+        tables as the tree lists them → their addresses."""
+        written = self.client_names(sql, schema, aliases=False)  # the address reads back with its own alias
+        for fn in sorted(self.source.functions, key=len, reverse=True):
+            if fn not in written:
+                continue
+            address = addresses.address_of(self.source, fn)
+            if address:
+                written = re.sub(rf"(?<![\w.\"]){re.escape(fn)}(?![\w.\"(])", address, written)
+        return written
+
+    def _create_view(self, session: "Session", m: re.Match) -> Result:
+        from .. import views as saved
+
+        if m.group("cols"):
+            raise QueryError("a column list isn't supported: name the columns in the SELECT (… AS name)", "0A000")
+        name, existing = self._saved_name(session, m.group("name"))
+        if existing and not m.group("replace"):
+            if m.group("ifnot"):
+                return Result("CREATE VIEW")
+            raise QueryError(f'view "{existing}" already exists (CREATE OR REPLACE VIEW replaces it)', "42P07")
+        body = m.group("body").strip().rstrip(";")
+        reason = read_only_reason(body)
+        if reason:
+            raise QueryError(f"a view is a read query: {reason}", "42601")
+        sql = self.portable_sql(body, session.schema)
+        try:
+            self.source.resolve_addresses(sql)  # an unknown table fails here, not on the first read
+            raw = self.source.view_from_sql(sql)  # a plain call of a table function stays bound: push-down kept
+        except ValueError as exc:
+            raise QueryError(str(exc), "42P01")
+        previous = self.source.views.get(existing) if existing else None
+        if previous and previous.get("description") and not raw.get("description"):
+            raw = {**raw, "description": previous["description"]}
+        try:
+            definition = self.source.register_view(name, raw, replace=existing is not None)
+        except (ValueError, LookupError) as exc:
+            raise QueryError(str(exc).strip("'\""), "42602")
+        try:
+            saved.save(self.config_path, name, definition)
+        except Exception as exc:  # noqa: BLE001 — not written: undo, so the file and the server agree
+            saved.unregister(self.source, name)
+            if previous is not None:
+                self.source.register_view(name, previous)
+            raise QueryError(f"couldn't write {self.config_path}: {exc}", "58030")
+        logger.info("PostgreSQL: %s %s saved as %s (by %s)", "replaced" if existing else "created", name,
+                    "a bound table" if definition.get("table") else "a query", session.user)
+        return Result("CREATE VIEW")
+
+    def _existing(self, session: "Session", text: str, if_exists: bool) -> Optional[str]:
+        _, existing = self._saved_name(session, text)
+        if existing is None and not if_exists:
+            raise QueryError(f'"{text.strip()}" isn\'t a saved table (only saved tables can be changed here)', "42P01")
+        return existing
+
+    def _drop_view(self, session: "Session", m: re.Match) -> Result:
+        from .. import views as saved
+
+        texts = [t.strip() for t in re.split(r",(?=(?:[^\"]|\"[^\"]*\")*$)", m.group("names")) if t.strip()]
+        names = [n for n in (self._existing(session, t, bool(m.group("ifexists"))) for t in texts) if n]
+        for name in names:
+            definition = self.source.views[name]
+            saved.unregister(self.source, name)
+            try:
+                saved.remove(self.config_path, name)
+            except Exception as exc:  # noqa: BLE001
+                self.source.register_view(name, definition)
+                raise QueryError(f"couldn't write {self.config_path}: {exc}", "58030")
+            logger.info("PostgreSQL: %s removed (by %s)", name, session.user)
+        return Result("DROP VIEW")
+
+    def _rename_view(self, session: "Session", m: re.Match) -> Result:
+        from .. import views as saved
+
+        old = self._existing(session, m.group("name"), bool(m.group("ifexists")))
+        if old is None:
+            return Result("ALTER VIEW")
+        new_parts = self._client_parts(session, m.group("new"))
+        if len(new_parts) == 1 and "." in old:  # RENAME TO x keeps the schema, as in PostgreSQL
+            new_parts = old.split(".")[:-1] + new_parts
+        new = saved.canonical_name(".".join(new_parts))
+        definition = self.source.views[old]
+        saved.unregister(self.source, old)
+        try:
+            self.source.register_view(new, definition)
+        except (ValueError, LookupError) as exc:
+            self.source.register_view(old, definition)
+            raise QueryError(str(exc).strip("'\""), "42602")
+        try:
+            saved.rename_many(self.config_path, {old: new})
+        except Exception as exc:  # noqa: BLE001
+            saved.unregister(self.source, new)
+            self.source.register_view(old, definition)
+            raise QueryError(f"couldn't write {self.config_path}: {exc}", "58030")
+        logger.info("PostgreSQL: %s renamed to %s (by %s)", old, new, session.user)
+        return Result("ALTER VIEW")
+
+    def _comment_view(self, session: "Session", m: re.Match) -> Result:
+        from .. import views as saved
+
+        name = self._existing(session, m.group("name"), False)
+        text = m.group("text")
+        description = None if text.upper() == "NULL" else text[1:-1].replace("''", "'")
+        previous = self.source.views[name]
+        definition = {k: v for k, v in previous.items() if k != "description"}
+        if description:
+            definition["description"] = description
+        self.source.register_view(name, definition, replace=True)
+        try:
+            saved.save(self.config_path, name, self.source.views[name])
+        except Exception as exc:  # noqa: BLE001
+            self.source.register_view(name, previous, replace=True)
+            raise QueryError(f"couldn't write {self.config_path}: {exc}", "58030")
+        return Result("COMMENT")
 
     def sync_views(self) -> None:
         """Saved tables added, changed or removed in the config file since it was last read: applied to ``source``."""
@@ -797,7 +980,7 @@ class PGServer:
         duck.column_listener = self.columns.learn
         return duck
 
-    def client_names(self, sql: str, schema: Optional[str] = None) -> str:
+    def client_names(self, sql: str, schema: Optional[str] = None, aliases: bool = True) -> str:
         """What a PostgreSQL client writes for our tables → duckduck's own names.
 
         ``"s3_data.security".proxy_logs`` (a schema with a dot, quoted) → ``s3_data.security.proxy_logs``;
@@ -816,7 +999,7 @@ class PGServer:
             if fn is None:
                 continue
             text = fn
-            if self.source._alias_at(masked, m.end(1)) is None and re.fullmatch(r"[A-Za-z_]\w*", parts[-1]) \
+            if aliases and self.source._alias_at(masked, m.end(1)) is None and re.fullmatch(r"[A-Za-z_]\w*", parts[-1]) \
                     and parts[-1].lower() != fn:
                 text += f" AS {addresses._ident(self.source, parts[-1])}"  # nvd.cves keeps the name cves
             edits.append((m.start(1), m.end(1), text))
@@ -847,7 +1030,8 @@ class PGServer:
                     found = None
                 listed_fn = listed.get((schema.lower(), name.lower()))
                 if listed_fn is not None and free(m.start(2), m.end()):
-                    edits.append((m.start(2), m.end(), listed_fn + f" AS {addresses._ident(self.source, name)}"))
+                    edits.append((m.start(2), m.end(),
+                                  listed_fn + (f" AS {addresses._ident(self.source, name)}" if aliases else "")))
                 elif found is not None and free(m.start(2), m.end()):
                     qualified = ".".join(addresses._ident(self.source, p) for p in parts + [name])
                     edits.append((m.start(2), m.end(), qualified))
@@ -912,7 +1096,8 @@ class PGServer:
 
 
 #: ``pg_server`` options in duckduck.json
-OPTIONS = {"enabled", "host", "port", "database", "tls", "ssl_required", "authentication", "columns_file"}
+OPTIONS = {"enabled", "host", "port", "database", "tls", "ssl_required", "authentication", "columns_file",
+           "allow_saved_tables"}
 
 
 def config_problems(section: Any) -> List[str]:
@@ -925,7 +1110,7 @@ def config_problems(section: Any) -> List[str]:
     port = section.get("port")
     if port is not None and (isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65535):
         out.append("pg_server.port must be a port number, e.g. 5433")
-    for key in ("enabled", "ssl_required"):
+    for key in ("enabled", "ssl_required", "allow_saved_tables"):
         if key in section and not isinstance(section[key], bool):
             out.append(f"pg_server.{key} must be true or false")
     for key in ("host", "database", "columns_file"):
