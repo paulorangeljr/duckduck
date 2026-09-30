@@ -2188,7 +2188,7 @@ function drawTables() {
     const names = [...part.dbs.keys()].sort((x, y) => (y === DEFAULT_DB) - (x === DEFAULT_DB) || x.localeCompare(y));  // default first
     if (!names.length) return "";
     const matched = [...part.dbs.values()].reduce((a, d) => a + d.saved.length + d.nested.length, 0);
-    const autoOpen = (f && matched <= 300) || names.length === 1;  // a search opens what it found; a lone database is open
+    const autoOpen = !!f && matched <= 300;  // every database starts closed (default too); a search opens what it found
     // …unless it was closed by hand: a click always wins
     const group = (db) => {
       const mine = part.dbs.get(db), all = full.dbs.get(db) || mine, key = svc + "|" + db;
