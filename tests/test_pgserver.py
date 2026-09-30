@@ -189,6 +189,7 @@ def test_arrays_are_found_the_way_npgsql_and_jdbc_look_for_them(served):
 
 def test_columns_are_learned_from_the_first_read_and_kept(served, tmp_path):
     server = served[0]
+    server.learn_at_most = 0  # not read on request: the placeholder until a query reads the table
     w = Wire(server.port)
     sql = ("SELECT a.attname, format_type(a.atttypid, a.atttypmod) FROM pg_attribute a "
            "JOIN pg_class c ON c.oid = a.attrelid WHERE c.relname = 'cves' ORDER BY a.attnum")
@@ -398,3 +399,59 @@ def test_catalog_rewrite_keeps_strings_and_comments():
                       "WHERE c.oid = 'nvd.cves'::regclass AND c.relname::name = 'x'", cat, "me", _masked)
     assert "'pg_class'" in q and "-- from pg_type" in q and f"{pgcat.SCHEMA}.pg_class c" in q
     assert str(cat.oids[("nvd", "cves")]) in q and "::VARCHAR" in q
+
+
+# -- what DBeaver / pgjdbc do beyond plain queries --------------------------------------------------------------------
+
+
+def test_array_literals_the_way_pgjdbc_sends_its_keyword_list(served):
+    w = Wire(served[0].port)
+    _, rows, _, error = w.query("SELECT count(*) FROM pg_catalog.pg_get_keywords() "
+                                "WHERE word <> ALL ('{a,abs,select,\"null\"}'::text[]) AND word = 'select'")
+    assert error is None and rows == [["0"]]
+    assert w.query("SELECT '{x,\"y z\",NULL}'::text[] AS a")[1] == [['{x,"y z",NULL}']]
+    assert w.query("SELECT '{not an array' AS t")[1] == [["{not an array"]]  # only real array casts change
+    w.close()
+
+
+def test_the_active_schema_is_current_schema_and_where_bare_names_are_found(served):
+    w = Wire(served[0].port)
+    assert w.query("SET search_path TO nvd, public")[2] == ["SET"]
+    assert w.query("SELECT current_schema()")[1] == [["nvd"]]
+    assert w.query("SELECT count(*) FROM cves")[1] == [["2"]]  # nvd.cves
+    assert w.query("SELECT count(*) FROM high_cves")[1] == [["1"]]  # a table of its own stays itself
+    w.query("SET search_path = \"$user\", public")
+    assert w.query("SELECT current_schema()")[1] == [["public"]]
+    w.close()
+
+
+def test_a_client_asking_for_one_table_s_columns_gets_them_read_now(served):
+    server, _, _, calls = served
+    w = Wire(server.port)
+    sql = ("SELECT a.attname FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class c ON c.oid = a.attrelid "
+           "WHERE c.relname = '{}' AND a.attnum > 0 ORDER BY a.attnum")
+    assert w.query(sql.format("cves"))[1] == [["id"], ["severity"], ["score"]]
+    assert calls["cves"] == 1
+    # a whole schema's listing doesn't read every table
+    before = calls["cves"]
+    w.query("SELECT c.relname, a.attname FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class c "
+            "ON c.oid = a.attrelid JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 's3_data'")
+    assert calls["cves"] == before
+    w.close()
+
+
+def test_sql_generated_from_the_placeholder_column_still_runs(served):
+    w = Wire(served[0].port)
+    cols, rows, _, error = w.query(f"SELECT x.{pgcat.UNKNOWN_COLUMN} FROM nvd.cves x ORDER BY {pgcat.UNKNOWN_COLUMN}")
+    assert error is None and [c[0] for c in cols] == ["id", "severity", "score"] and len(rows) == 2
+    error = w.query(f"SELECT * FROM nvd.cves WHERE {pgcat.UNKNOWN_COLUMN} = 'x'")[3]
+    assert error.startswith("42703:") and "run SELECT * FROM it once" in error
+    w.close()
+
+
+def test_psycopg_sends_a_list_as_an_array(served):
+    psycopg = pytest.importorskip("psycopg")
+    with psycopg.connect(f"host=127.0.0.1 port={served[0].port} dbname=duckduck user=me", autocommit=True) as c:
+        assert c.execute("SELECT %s::text[] AS a", [["x", "y z", None]]).fetchone() == (["x", "y z", None],)
+        assert c.execute("SELECT id FROM nvd.cves WHERE severity = ANY(%s) ORDER BY id", [["HIGH", "LOW"]]).fetchall() \
+            == [("CVE-1",), ("CVE-2",)]

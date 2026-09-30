@@ -19,6 +19,7 @@ connect with ``sslmode=require``.
 from __future__ import annotations
 
 import hmac
+import inspect
 import logging
 import os
 import random
@@ -110,6 +111,8 @@ class Session:
         self.statements: Dict[str, Tuple[str, List[int]]] = {}
         self.portals: Dict[str, Dict[str, Any]] = {}
         self.skip_until_sync = False
+        #: the active schema (``SET search_path``): unqualified names are looked up in it first
+        self.schema: Optional[str] = None
         self.progress: Optional[progress.Progress] = None
         self.cursor: Any = None
         self.duck: Any = None
@@ -413,9 +416,11 @@ class Session:
             self.progress = None
 
     def _query(self, sql: str) -> Result:
+        sql = pg.array_literals(sql, addresses._masked)  # '{a,b}'::text[] → ['a', 'b']::text[]
         masked = addresses._masked(sql)
         tables = self.server.reads_tables(masked)
         if pgcat.is_catalog_query(masked):
+            self._learn_columns_for(sql, masked)
             self.server.catalog.refresh()
             rewritten = pgcat.rewrite(sql, self.server.catalog, self.user, addresses._masked)
             if rewritten != sql:
@@ -424,9 +429,49 @@ class Session:
                 return self._result(self.cursor.sql(rewritten), [], names=pgcat.column_name)
             sql = rewritten  # version(), current_user… next to duckduck's tables
         before = self._temp_views()
-        rel = self.duck.sql(self.server.client_names(sql))
+        rel = self.duck.sql(_without_placeholder(self.server.client_names(sql, self.schema)))
         created = [v for v in self._temp_views() if v not in before]
         return self._result(rel, created, names=pgcat.column_name)
+
+    _ASKS_COLUMNS = re.compile(r"pg_attribute|\bcolumns\b|\battname\b", re.I)
+
+    def _learn_columns_for(self, sql: str, masked: str) -> None:
+        """A client asking for one table's columns (expanding it in its tree) while they're still unknown:
+        read one row of it now, so the answer is its real columns. Never for more than a few tables at once
+        (a whole schema's listing isn't worth an API call per table), never when a row can't be asked for alone."""
+        if not self._ASKS_COLUMNS.search(masked):
+            return
+        catalog = self.server.catalog
+        catalog.refresh()
+        names = catalog.unknown_in(sql)
+        if not names or len(names) > self.server.learn_at_most:
+            return
+        for name in names:
+            fn = self.source_fn(name)
+            if fn is None or not ("limit" in inspect.signature(fn).parameters
+                                  or name in getattr(self.duck, "_streaming_functions", {})):
+                continue
+            p = progress.Progress()
+            timer = threading.Timer(self.server.learn_timeout, p.cancel)
+            timer.start()
+            before = self._temp_views()
+            try:
+                with progress.tracking(p):
+                    self.duck.sql(f"SELECT * FROM {name} LIMIT 1").fetchall()
+                logger.info("PostgreSQL: learned the columns of %s (a client asked for them)", name)
+            except BaseException as exc:  # noqa: BLE001 — Cancelled by the timer, an API error: the placeholder stays
+                logger.info("PostgreSQL: couldn't learn the columns of %s: %s", name, exc)
+            finally:
+                timer.cancel()
+                for view in self._temp_views():
+                    if view not in before:
+                        try:
+                            self.cursor.unregister(view)
+                        except Exception:  # noqa: BLE001
+                            pass
+
+    def source_fn(self, name: str) -> Any:
+        return self.duck.functions.get(name)
 
     def describe_fields(self, sql: str) -> Optional[List[Tuple[str, int, int]]]:
         """A statement's columns before it runs: DESCRIBE for the catalog, a run (reads kept by the cache) otherwise."""
@@ -501,7 +546,10 @@ class Session:
         if first == "SET":
             m = self._SET.match(sql)
             if m and not dry:
-                self.params[m.group(1).strip().lower()] = m.group(2).strip().strip("'\"")
+                name, value = m.group(1).strip().lower(), m.group(2).strip()
+                self.params[name] = value.strip("'\"")
+                if name == "search_path":  # DBeaver's "set active schema", pgjdbc's setSchema
+                    self.use_schema(value)
             return Result("SET")
         if first == "SHOW":
             m = self._SHOW.match(sql)
@@ -522,12 +570,52 @@ class Session:
             return Result("SHOW", text_field(low), iter([(value,)]))
         return None
 
+    def use_schema(self, search_path: str) -> None:
+        """The first schema of a search_path (``"$user"`` skipped) becomes current_schema() and the schema
+        unqualified table names are looked up in."""
+        first = None
+        for part in re.split(r",(?=(?:[^\"']|\"[^\"]*\"|'[^']*')*$)", search_path):
+            part = part.strip().strip("'").strip('"')
+            if part and part != "$user":
+                first = part
+                break
+        self.schema = None if not first or first in ("public", "pg_catalog") else first
+        self.cursor.execute("SET VARIABLE duckduck_schema = ?", [first or "public"])
+
     def setting(self, name: str) -> Optional[str]:
         if name in self.params:
             return self.params[name]
         row = self.cursor.execute(f"SELECT setting FROM {pgcat.SCHEMA}.pg_settings WHERE lower(name) = ?",
                                   [name]).fetchone()
         return row[0] if row else None
+
+
+def _without_placeholder(sql: str) -> str:
+    """A client that built its SQL from the catalog may name the placeholder column of a table whose columns
+    aren't known yet: in the SELECT list it means every column (``*``); in ORDER BY it's dropped."""
+    if pgcat.UNKNOWN_COLUMN not in sql:
+        return sql
+    import sqlglot
+    from sqlglot import exp
+
+    tree = sqlglot.parse_one(sql, dialect="duckdb")
+    for col in list(tree.find_all(exp.Column)):
+        if col.name != pgcat.UNKNOWN_COLUMN:
+            continue
+        parent = col.parent
+        if isinstance(parent, exp.Select) and col in parent.expressions:
+            col.replace(exp.Column(this=exp.Star(), table=col.args.get("table")) if col.table else exp.Star())
+        elif isinstance(parent, exp.Alias) and isinstance(parent.parent, exp.Select):
+            parent.replace(exp.Column(this=exp.Star(), table=col.args.get("table")) if col.table else exp.Star())
+        elif isinstance(parent, exp.Ordered):
+            parent.pop()
+        else:
+            raise QueryError(f"this table's columns aren't known yet ({pgcat.UNKNOWN_COLUMN} is a placeholder): "
+                             f"run SELECT * FROM it once, then refresh", "42703")
+    order = tree.args.get("order")
+    if order is not None and not order.expressions:
+        order.pop()
+    return tree.sql(dialect="duckdb")
 
 
 def _sqlstate(exc: BaseException) -> str:
@@ -599,6 +687,9 @@ class PGServer:
         self.db.execute("SET enable_external_access = false")
         self.db.execute("SET lock_configuration = true")
         self.sessions: Dict[int, Session] = {}
+        #: a client asking for the columns of at most this many unknown tables gets them read now (1 row each)
+        self.learn_at_most = 3
+        self.learn_timeout = 15.0
         self._tcp: Optional[_TCPServer] = None
         self._thread: Optional[threading.Thread] = None
 
@@ -650,11 +741,12 @@ class PGServer:
         duck.column_listener = self.columns.learn
         return duck
 
-    def client_names(self, sql: str) -> str:
+    def client_names(self, sql: str, schema: Optional[str] = None) -> str:
         """What a PostgreSQL client writes for our tables → duckduck's own names.
 
         ``"s3_data.security".proxy_logs`` (a schema with a dot, quoted) → ``s3_data.security.proxy_logs``;
-        ``public.my_view`` → ``my_view``."""
+        ``public.my_view`` → ``my_view``; with an active ``schema`` (``SET search_path``), a bare ``cves``
+        that isn't a table of its own → ``nvd.cves``."""
         masked = addresses._masked(sql)
         services = addresses.services(self.source)
         edits: List[Tuple[int, int, str]] = []
@@ -666,6 +758,19 @@ class PGServer:
         for m in re.finditer(r'(?<![\w."])(?:"?(?:public|main)"?)\s*\.\s*("?)([A-Za-z_]\w*)\1', masked):
             if m.group(2).lower() in self.source.functions:
                 edits.append((m.start(), m.end(), m.group(2)))
+        if schema:
+            for m in re.finditer(r'(\b(?:FROM|JOIN)\s+)("?)([A-Za-z_]\w*)\2(?!\s*[.(])', masked, re.I):
+                name = m.group(3)
+                if name.lower() in self.source.functions:
+                    continue
+                parts = addresses._parts(schema) if schema.startswith('"') else schema.split(".")
+                try:
+                    found = addresses.resolve(self.source, parts + [name])
+                except ValueError:
+                    found = None
+                if found is not None:
+                    qualified = ".".join(addresses._ident(self.source, p) for p in parts + [name])
+                    edits.append((m.start(2), m.end(), qualified))
         for start, end, text in sorted(edits, reverse=True):
             sql = sql[:start] + text + sql[end:]
         return sql

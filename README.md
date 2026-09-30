@@ -571,9 +571,15 @@ without an address sit in `public`.
   works in any query: `SELECT * FROM s3_data.security.proxy_logs` — or save
   it (*Register all* in the SQL tab) to see it in the client's tree.
 - **Columns**: an API's columns are only known once something read the
-  table. Until then it shows one column, `run_a_query_to_list_columns`;
-  run `SELECT * FROM it` once and refresh. What's learned is kept in
-  `~/.duckduck/pg_columns.json` (`pg_server.columns_file`).
+  table. When a client asks for one table's columns (expanding it in its
+  tree, *Generate SQL*), the server reads one row of it right then
+  (`LIMIT 1`, at most 3 tables per request, 15 s) and answers with the real
+  ones. Otherwise the table shows one column, `run_a_query_to_list_columns`
+  — SQL a client builds from it still runs (in a SELECT list it means every
+  column). What's learned is kept in `~/.duckduck/pg_columns.json`
+  (`pg_server.columns_file`); refresh the client's tree to see it.
+- The client's active schema (DBeaver's *Set active schema*, `SET
+  search_path`) works: `SELECT * FROM cves` with `nvd` active reads `nvd.cves`.
 - What clients write works as they write it: `"s3_data.security"."proxy_logs"`,
   `public.my_view`, `$1` parameters, prepared statements, binary values,
   `setMaxRows` / fetch sizes, `SET` / `SHOW` / `BEGIN` / `ROLLBACK`, and

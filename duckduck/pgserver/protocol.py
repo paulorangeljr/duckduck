@@ -234,10 +234,71 @@ def to_binary(v: Any, oid: int) -> bytes:
     return to_text(v, oid).encode("utf-8")
 
 
+def parse_array(text: str) -> List[Optional[str]]:
+    """PostgreSQL's array text ``{a,"b c",NULL}`` → ``["a", "b c", None]`` (one dimension; nested ones as text)."""
+    body = text.strip()
+    if not (body.startswith("{") and body.endswith("}")):
+        raise ValueError(f"not an array literal: {text[:40]!r}")
+    body = body[1:-1]
+    items: List[Optional[str]] = []
+    i, n = 0, len(body)
+    while i < n:
+        while i < n and body[i] in " \t\n":
+            i += 1
+        if i >= n:
+            break
+        if body[i] == '"':
+            i += 1
+            out = []
+            while i < n and body[i] != '"':
+                if body[i] == "\\" and i + 1 < n:
+                    i += 1
+                out.append(body[i])
+                i += 1
+            i += 1  # the closing quote
+            items.append("".join(out))
+            while i < n and body[i] != ",":
+                i += 1
+        else:
+            depth, start = 0, i
+            while i < n and (body[i] != "," or depth):
+                depth += body[i] == "{"
+                depth -= body[i] == "}"
+                i += 1
+            word = body[start:i].strip()
+            items.append(None if word.upper() == "NULL" else word)
+        i += 1  # the comma
+    return items
+
+
+def _binary_array(raw: bytes) -> List[Any]:
+    ndim, _, element = struct.unpack_from("!iii", raw, 0)
+    if ndim == 0:
+        return []
+    pos = 12
+    count = 1
+    for _ in range(ndim):
+        size, _lower = struct.unpack_from("!ii", raw, pos)
+        count *= size
+        pos += 8
+    out = []
+    for _ in range(count):
+        size = struct.unpack_from("!i", raw, pos)[0]
+        pos += 4
+        if size < 0:
+            out.append(None)
+        else:
+            out.append(decode_param(raw[pos:pos + size], 1, element))
+            pos += size
+    return out
+
+
 def decode_param(raw: Optional[bytes], fmt: int, oid: int) -> Any:
-    """A Bind parameter → a Python value (None for NULL)."""
+    """A Bind parameter → a Python value (None for NULL; a list for an array)."""
     if raw is None:
         return None
+    if oid in ELEMENT_OF:
+        return _binary_array(raw) if fmt == 1 else parse_array(raw.decode("utf-8"))
     if fmt == 0:
         return raw.decode("utf-8")
     if oid == BOOL:
@@ -269,6 +330,9 @@ def sql_literal(value: Any, oid: int = 0) -> str:
     """A parameter written into the query: numbers bare (when they are numbers), everything else quoted."""
     if value is None:
         return "NULL"
+    if isinstance(value, (list, tuple)):
+        element = ELEMENT_OF.get(oid, 0)
+        return "[" + ", ".join(sql_literal(v, element) for v in value) + "]"
     if isinstance(value, bool):
         return "TRUE" if value else "FALSE"
     if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -284,6 +348,8 @@ def sql_literal(value: Any, oid: int = 0) -> str:
 
 
 _DOLLAR = re.compile(r"\$(\d+)")
+_IN_ANY = re.compile(r"\b(?:ANY|ALL|SOME)\s*\(\s*$", re.I)
+_ARRAY_AFTER = re.compile(r"\s*::\s*(?:\w+|\"char\")\s*\[\s*\]")
 
 
 def bind_params(query: str, values: Sequence[Any], oids: Sequence[int], masked: Callable[[str], str]) -> str:
@@ -296,8 +362,41 @@ def bind_params(query: str, values: Sequence[Any], oids: Sequence[int], masked: 
         n = int(m.group(1))
         if not 1 <= n <= len(values):
             continue
+        value, oid = values[n - 1], oids[n - 1] if n - 1 < len(oids) else 0
+        if (not oid and isinstance(value, str) and value.startswith("{") and value.endswith("}")
+                and (_IN_ANY.search(hidden[:m.start()]) or _ARRAY_AFTER.match(hidden[m.end():]))):
+            try:  # an untyped '{a,b}' where an array goes (psycopg sends lists this way): the array
+                value = parse_array(value)
+            except ValueError:
+                pass
         out.append(query[last:m.start()])
-        out.append(sql_literal(values[n - 1], oids[n - 1] if n - 1 < len(oids) else 0))
+        out.append(sql_literal(value, oid))
+        last = m.end()
+    out.append(query[last:])
+    return "".join(out)
+
+
+_ARRAY_CAST = re.compile(r"'[^']*'(\s*::\s*(?:pg_catalog\s*\.\s*)?(?:\w+|\"char\")\s*\[\s*\])")
+
+
+def array_literals(query: str, masked: Callable[[str], str]) -> str:
+    """``'{a,b}'::text[]`` (PostgreSQL's array text, as pgjdbc's getSQLKeywords sends it) → ``['a', 'b']::text[]``."""
+    if "{" not in query:
+        return query
+    hidden = masked(query)  # strings blanked (same length): only real casts of real literals match
+    out, last = [], 0
+    for m in _ARRAY_CAST.finditer(hidden):
+        cast_at = m.start(1)
+        literal = query[m.start():cast_at].rstrip()
+        text = literal[1:-1].replace("''", "'")
+        if not text.lstrip().startswith("{"):
+            continue
+        try:
+            items = parse_array(text)
+        except ValueError:
+            continue
+        out.append(query[last:m.start()])
+        out.append("[" + ", ".join(sql_literal(x) for x in items) + "]" + query[cast_at:m.end()])
         last = m.end()
     out.append(query[last:])
     return "".join(out)

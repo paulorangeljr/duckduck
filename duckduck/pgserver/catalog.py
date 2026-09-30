@@ -286,11 +286,12 @@ _MACROS = [
     "pg_get_function_sqlbody(o) AS NULL::VARCHAR",
     "to_regclass(t) AS (SELECT oid FROM {s}.pg_class c WHERE c.relname = split_part(t, '.', -1) LIMIT 1)",
     "current_database() AS (SELECT datname FROM {s}.duckduck_server)",
-    "current_schema() AS 'public'",
+    "current_schema() AS coalesce(getvariable('duckduck_schema'), 'public')",
     "current_user_() AS getvariable('duckduck_user')",
     "session_user_() AS getvariable('duckduck_user')",
     "set_config(n, v, l) AS v",
-    "current_schemas(b) AS CASE WHEN b THEN ['pg_catalog', 'public'] ELSE ['public'] END",
+    "current_schemas(b) AS CASE WHEN b THEN ['pg_catalog', coalesce(getvariable('duckduck_schema'), 'public')] "
+    "ELSE [coalesce(getvariable('duckduck_schema'), 'public')] END",
     "quote_ident(t) AS CASE WHEN regexp_full_match(t, '[a-z_][a-z0-9_$]*') THEN t "
     "ELSE '\"' || replace(t, '\"', '\"\"') || '\"' END",
     "array_upper(a, d) AS CASE WHEN len(a) > 0 THEN len(a) END",
@@ -614,12 +615,31 @@ class PgCatalog:
             cur.close()
         self.oids = oids
         self.namespaces = namespaces
+        #: tables whose columns aren't known yet: oid → function, table name → functions
+        self.unknown_oids = {e["oid"]: e["function"] for e in entries if not e["columns"]}
+        self.unknown_names: Dict[str, List[str]] = {}
+        for e in entries:
+            if not e["columns"]:
+                self.unknown_names.setdefault(e["table"].lower(), []).append(e["function"])
 
     @staticmethod
     def _class_row(oid: int, name: str, namespace: int, kind: str, natts: int) -> tuple:
         return (oid, name, namespace, 0, 0, _OWNER, 2 if kind == "r" else 0, oid, 0, 0, -1.0, 0, 0, False, False,
                 "p", kind, natts, 0, False, False, False, False, False, False, True, "d", False, 0, 0, 0,
                 None, None, None)
+
+    def unknown_in(self, sql: str) -> List[str]:
+        """The tables with unknown columns a catalog query names — by oid (a number) or by table name (a string)."""
+        found: List[str] = []
+        for number in re.findall(r"(?<![\w.])(\d{5,10})(?![\w.])", sql):
+            fn = getattr(self, "unknown_oids", {}).get(int(number))
+            if fn and fn not in found:
+                found.append(fn)
+        for text in re.findall(r"'((?:[^']|'')*)'", sql):
+            for fn in getattr(self, "unknown_names", {}).get(text.replace("''", "'").lower(), []):
+                if fn not in found:
+                    found.append(fn)
+        return found
 
     # -- rewriting a client's catalog query ------------------------------------------------------------
 
