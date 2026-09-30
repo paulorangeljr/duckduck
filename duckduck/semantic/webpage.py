@@ -318,6 +318,7 @@ button.linkish[aria-pressed="true"] { color: var(--ink-2); }
 .whereb label em { font-style: normal; color: var(--muted); }
 .whereb select, .whereb input { width: 100%; font-family: var(--mono, monospace); font-size: 13px; }
 .whereb .wdot { font-weight: 700; padding-bottom: 7px; color: var(--muted); }
+.betapill { display: inline-block; font-size: 11px; font-weight: 700; padding: 0 7px; border-radius: 999px; background: #b45309; color: #fff; margin-right: 4px; }
 .routepill { display: inline-block; font-size: 11.5px; padding: 1px 8px; border-radius: 999px; background: var(--surface-2); color: var(--ink-2); margin-left: 6px; }
 #cfgform h4 { margin: 18px 0 6px; font-size: 14px; display: flex; gap: 8px; align-items: center; }
 #cfgform h4:first-child { margin-top: 4px; }
@@ -2238,6 +2239,9 @@ function drawTables() {
   });
   on("[data-fninfo]", b => showFunctionInfo(b.dataset.fninfo));
 }
+// the push-down summary (hostname =, name LIKE/ILIKE, bytes >…) in KQL's operators
+const kqlPushdown = (text) => String(text).replace(/(^|[\s(])=(?=[,\s)]|$)/g, "$1==")
+  .replace(/\bLIKE\/ILIKE\b|\bILIKE\b|\bLIKE\b/g, "contains / startswith / endswith").replace(/\bLIMIT\b/g, "take");
 // ⓘ on every table: what it is, what it takes (required and optional arguments) and the ways to query it
 const KIND_ABOUT = {
   "table function": "A table function: it's a table once its arguments say which one.",
@@ -2258,19 +2262,21 @@ function showFunctionInfo(name) {
   const altNote = alts.length ? ` Or ${alts.map(p => `${p.name} instead of ${p.name.slice(0, -3)}_name`).join(", ")}.` : "";
   const ph = (p) => p.type === "int" || p.type === "float" || /Optional\[(int|float)\]/.test(p.type || "") ? `<${p.name}>` : `'<${p.name}>'`;
   const argsWhere = (ps) => ps.map(p => `arg.${p.name} = ${ph(p)}`).join("\n  AND ");
-  const ref = t.address || t.name, ways = [];
+  const ref = t.address || t.name, ways = [], K = LANG === "kql";
+  const IN_WHERE = K ? "in a | where" : "in the WHERE";
   if (t.address_pattern) ways.push({t: "By address — like any table", d: "connector.part.part: each part fills an argument, in order.",
     sql: `SELECT * FROM ${t.address_pattern} LIMIT 10`});
   if (!req.length) ways.push({t: t.address ? "By address — like any table" : "As a table", d: "",
     sql: `SELECT * FROM ${ref} LIMIT 10`});
-  if (req.length) ways.push({t: "Arguments in the WHERE", d: "arg. says it's an argument of the table, not a column of the result.",
+  if (req.length) ways.push({t: `Arguments ${IN_WHERE}`, d: "arg. says it's an argument of the table, not a column of the result.",
     sql: `SELECT * FROM ${t.name}\nWHERE ${argsWhere(req)}\nLIMIT 10`});
-  else if (optShown.length) ways.push({t: "With its optional arguments, in the WHERE",
+  else if (optShown.length) ways.push({t: `With its optional arguments, ${IN_WHERE}`,
     d: "Give only the ones you need (the description says which go together). arg. says it's an argument, not a column." + altNote,
     sql: `SELECT * FROM ${ref}\nWHERE ${argsWhere(optShown)}\nLIMIT 10`});
   const callArgs = req.length ? req : optShown;
   if (callArgs.length) ways.push({t: "Arguments in the call", d: "",
     sql: `SELECT * FROM ${t.name}(${callArgs.map(p => `${p.name}=${ph(p)}`).join(", ")}) LIMIT 10`});
+  ways.forEach(w => { w.code = inLang(w.sql); });  // KQL in the editor → the examples in KQL
   $("#fntitle").textContent = t.saved_name || t.name;
   $("#fnsub").textContent = t.saved === "query" ? "A saved query: it runs each time the table is read."
     : t.saved === "bound" ? "A saved table over a table function, its arguments fixed."
@@ -2284,15 +2290,15 @@ function showFunctionInfo(name) {
       ${[...req, ...opt].map(p => `<tr><td class="mono">${esc(p.name)}</td><td>${p.required ? "<b>required</b>" : `<span class="muted">optional</span>`}</td>
         <td class="mono muted">${esc(p.type || "")}</td><td class="mono muted">${esc(p.default ?? "")}</td></tr>`).join("")}</tbody></table>`
       : `<p class="muted small">It takes no arguments.</p>`}
-    <h4>How to query it</h4>
+    <h4>How to query it${K ? ` <span class="routepill">KQL</span>` : ""}</h4>
     ${ways.map((w, i) => `<div class="way"><div class="t">${esc(w.t)}</div>${w.d ? `<div class="d">${esc(w.d)}</div>` : ""}
-      <div class="row"><pre class="mono">${esc(w.sql)}</pre><button class="mini" type="button" data-fnuse="${i}" title="Put it in the editor">Use</button></div></div>`).join("")}
-    <p class="muted small">${t.pushdown ? `Filters that reach the source: ${esc(t.pushdown)}. Any other filter is applied after reading.`
+      <div class="row"><pre class="mono">${esc(w.code)}</pre><button class="mini" type="button" data-fnuse="${i}" title="Put it in the editor">Use</button></div></div>`).join("")}
+    <p class="muted small">${t.pushdown ? `${K ? "| where filters" : "Filters"} that reach the source: ${esc(K ? kqlPushdown(t.pushdown) : t.pushdown)}. Any other filter is applied after reading.`
       : "Filters are applied after reading (none reach the source)."}</p>
     ${t.address_pattern && META?.features?.saved_tables ? `<p class="muted small">Want one of its tables as a table of its own? Write it by address and press
       <b>Save as table</b> — it's kept as ${esc(t.address_pattern)}.</p>` : ""}`;
   $("#fnbody").querySelectorAll("[data-fnuse]").forEach(b => b.addEventListener("click", () => {
-    const sql = inLang(ways[Number(b.dataset.fnuse)].sql), ta = $("#sqltext");
+    const sql = inLang(ways[Number(b.dataset.fnuse)].sql), ta = $("#sqltext");  // in the editor's language now
     $("#fninfo").close(); openTab("sql"); ta.value = sql; ta.focus();
     const at = sql.search(/'?<[^>]+>'?/);  // the first placeholder selected: type over it
     if (at >= 0) { const m = sql.slice(at).match(/'?<[^>]+>'?/)[0]; ta.setSelectionRange(at, at + m.length); }
@@ -2422,14 +2428,17 @@ async function loadKql() {
   if (saved === "kql" && usable && LANG !== "kql") setLang("kql");
   kqlNote();
 }
+// KQL is beta: say so, and only what it can't do
 function kqlNote() {
   const note = $("#kqlnote"); if (!note) return;
-  if (LANG !== "kql" || !KQL) { note.textContent = ""; return; }
+  if (LANG !== "kql" || !KQL) { note.innerHTML = ""; return; }
   const nat = (KQL.native || []).join(", ");
-  note.textContent = KQL.available
-    ? `Translated to SQL — joins across every source work${nat ? `; only ${nat} tables → runs on ADX as KQL` : ""}. A table function: sn_table('incident'), sn.incident or | where arg.table_name == 'incident'.`
-      + (KQL.checks_syntax === false ? " ⚠ This extension build doesn't check syntax — rebuild it with scripts/build_kql_extension.sh." : "")
-    : `Runs on ${nat} as KQL (adx.Table). Joining other sources needs the kql extension: ${KQL.reason || ""}`;
+  const limits = KQL.available
+    ? ["queries only (no .commands)", "some operators and functions don't translate yet",
+       ...(nat ? [`a query reading only ${nat} runs on ADX itself`] : []), "times in UTC"]
+    : [`only ${nat} tables (runs on ADX) — other sources need the kql extension`];
+  if (KQL.available && KQL.checks_syntax === false) limits.push("this build doesn't check syntax — rebuild it");
+  note.innerHTML = `<span class="betapill">Beta</span> Limits: ${limits.map(esc).join(" · ")}`;
 }
 function setLang(lang, text) {
   if (lang === LANG && text === undefined) return;

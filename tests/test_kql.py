@@ -162,6 +162,8 @@ def test_the_page():
 
     assert 'data-lang="kql"' in PAGE and "function inLang(" in PAGE and "/api/sql/kql" in PAGE
     assert "language: LANG" in PAGE and "Translated to SQL" in PAGE and "/api/sql/translate" in PAGE
+    # beta, with its limits; the ⓘ's examples in the editor's language
+    assert 'class="betapill">Beta' in PAGE and "w.code = inLang(w.sql)" in PAGE and "esc(w.code)" in PAGE and "kqlPushdown(" in PAGE
 
 
 # --- with the real extension (skipped when it isn't built) ----------------------

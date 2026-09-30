@@ -462,7 +462,8 @@ Python: `duck.address_of("nvd_cves")` → `"nvd.cves"`,
 
 ## Writing queries in KQL
 
-The SQL tab has a **SQL | KQL** switch: write Kusto Query Language instead,
+The SQL tab has a **SQL | KQL** switch (KQL is in **beta**; the editor lists
+its limits, and every table's ⓘ shows its examples in KQL): write Kusto Query Language instead,
 over every registered table — ADX's and everyone else's, joined:
 
 ```kql
