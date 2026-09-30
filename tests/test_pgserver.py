@@ -455,3 +455,50 @@ def test_psycopg_sends_a_list_as_an_array(served):
         assert c.execute("SELECT %s::text[] AS a", [["x", "y z", None]]).fetchone() == (["x", "y z", None],)
         assert c.execute("SELECT id FROM nvd.cves WHERE severity = ANY(%s) ORDER BY id", [["HIGH", "LOW"]]).fetchall() \
             == [("CVE-1",), ("CVE-2",)]
+
+
+# -- saved tables, as a client's tree shows them ---------------------------------------------------------------------
+
+
+def test_saved_tables_follow_the_config_file_and_sit_in_their_connector_s_schema(tmp_path):
+    """Saved from the web app — even another process — they show up (and go) without a restart; a name with the
+    default database (sharepoint.duckdefault.x) sits in schema sharepoint, like the table itself."""
+    from typing import Optional
+
+    from duckduck.kinds import needs_arguments
+
+    @needs_arguments(("list_id", "list_name"))
+    def list_items(site_name: Optional[str] = None, list_id: Optional[str] = None,
+                   list_name: Optional[str] = None, limit: Optional[int] = None):
+        if not (list_id or list_name):
+            raise ValueError("list_id or list_name is required")
+        return pd.DataFrame({"Title": [f"{site_name}/{list_name}"], "Status": ["Open"]})
+
+    duck = DuckAPI()
+    duck.register_api_function("sharepoint_list_items", list_items)
+    duck.service_of["sharepoint_list_items"] = "sharepoint"
+    duck.service_prefix["sharepoint"] = "sharepoint"
+    config = tmp_path / "duckduck.json"
+    first = "select * from sharepoint.duckdefault.list_items where site_name='a' and list_name='tasks'"
+    config.write_text(json.dumps({"services": {}, "views": {"sharepoint.duckdefault.tasks": {"sql": first}}}))
+    duck.register_view("sharepoint.duckdefault.tasks", {"sql": first})
+    server = PGServer.from_config(duck, str(config), port=0)
+    server.start()
+    try:
+        w = Wire(server.port)
+        tree = "SELECT n.nspname || '.' || c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace " \
+               "WHERE n.nspname = 'sharepoint' ORDER BY 1"
+        assert w.query(tree)[1] == [["sharepoint.tasks"]]  # list_items itself isn't: it can't be read bare
+        views = json.loads(config.read_text())
+        views["views"]["sharepoint.duckdefault.tickets"] = {"sql": first.replace("'tasks'", "'tickets'")}
+        del views["views"]["sharepoint.duckdefault.tasks"]
+        time.sleep(0.01)
+        config.write_text(json.dumps(views))
+        os.utime(config, (time.time() + 5, time.time() + 5))
+        assert w.query(tree)[1] == [["sharepoint.tickets"]]
+        for sql in ['SELECT "Title" FROM "sharepoint"."tickets"', "SELECT t.Title FROM sharepoint.tickets t",
+                    "SELECT tickets.Title FROM sharepoint.tickets", "SELECT Title FROM sharepoint.duckdefault.tickets"]:
+            assert w.query(sql)[1] == [["a/tickets"]], sql
+        w.close()
+    finally:
+        server.shutdown()

@@ -587,6 +587,14 @@ without an address sit in `public`.
   before the next API call or page.
 - **Read-only**: the SQL tab's guard (only read statements) and no file or
   network access from SQL.
+- **Saved tables** appear in their connector's schema (a name with the
+  default database, `sharepoint.duckdefault.tasks`, shows as
+  `sharepoint.tasks`), as views when they're saved queries. Saved in the web
+  app — even while `python -m duckduck.pgserver` runs as another process —
+  they show up on the client's next refresh: the server follows
+  `duckduck.json`. A table that can't be read without some arguments
+  (SharePoint's `list_items` needs a list) isn't listed bare: save it with
+  them, or query it by address with `WHERE arg.list_name = '…'`.
 
 **Signing in** — `pg_server` in `duckduck.json`:
 

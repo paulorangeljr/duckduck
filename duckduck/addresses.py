@@ -114,8 +114,9 @@ def _required(duck: Any, name: str) -> List[str]:
 
 def resolve(duck: Any, parts: List[str]) -> Optional[Tuple[str, Dict[str, Any]]]:
     """``[service, part, …]`` → (registered table, its arguments), None when the first part isn't a service. Raises ``ValueError`` when it is but the rest can't be read."""
+    saved = _saved_named(duck, parts)  # a saved table named by this address is that table (as written…
     parts = _without_default(duck, parts)
-    saved = _saved_named(duck, parts)  # a saved table named by this address is that table
+    saved = saved or _saved_named(duck, parts)  # …or without its connection's own database)
     if saved is not None:
         return saved, {}
     known = services(duck)
@@ -225,10 +226,19 @@ def _without_default(duck: Any, parts: List[str]) -> List[str]:
 
 
 def _saved_named(duck: Any, parts: List[str]) -> Optional[str]:
-    """The registered table of a saved table whose name is this address (case aside), or None."""
-    wanted = ".".join(parts).lower()
+    """The registered table of a saved table whose name is this address (case aside), or None. The default
+    database doesn't count on either side: ``sharepoint.duckdefault.x`` and ``sharepoint.x`` name one table."""
+    default = default_database(duck).lower()
+
+    def plain(p: List[str]) -> str:
+        p = list(p)
+        if len(p) >= 3 and p[1].lower() == default:
+            p = [p[0]] + p[2:]
+        return ".".join(p).lower()
+
+    wanted = plain(parts)
     for key, name in (getattr(duck, "view_key", None) or {}).items():
-        if "." in name and ".".join(_parts(name)).lower() == wanted:
+        if "." in name and plain(_parts(name)) == wanted:
             return key
     return None
 

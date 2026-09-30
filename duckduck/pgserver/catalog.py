@@ -365,7 +365,7 @@ class ColumnMemory:
 def table_entries(duck: Any, columns: ColumnMemory) -> List[Dict[str, Any]]:
     """Every table a client can select from without arguments: schema, name, the function behind it, columns."""
     from .. import addresses
-    from ..kinds import kind_of
+    from ..kinds import kind_of, needed_arguments
 
     out = []
     for name, fn in list(duck.functions.items()):
@@ -375,11 +375,15 @@ def table_entries(duck: Any, columns: ColumnMemory) -> List[Dict[str, Any]]:
             continue
         if kind not in ("table", "catalog"):
             continue
+        if needed_arguments(fn):  # can't be read bare (@needs_arguments): only its saved tables are listed
+            continue
         try:
             address = addresses.address_of(duck, name)
         except Exception:  # noqa: BLE001
             address = None
         parts = addresses._parts(address) if address else []
+        if len(parts) >= 3 and parts[1].lower() == addresses.default_database(duck).lower():
+            parts = [parts[0]] + parts[2:]  # sharepoint.duckdefault.x is sharepoint's own x: schema sharepoint
         schema, table = (".".join(parts[:-1]), parts[-1]) if len(parts) >= 2 else ("public", name)
         view = (getattr(duck, "views", None) or {}).get((getattr(duck, "view_key", None) or {}).get(name, name)) or {}
         try:
@@ -615,6 +619,8 @@ class PgCatalog:
             cur.close()
         self.oids = oids
         self.namespaces = namespaces
+        #: (schema, table) as a client sees them, lowercased → the registered function
+        self.functions = {(e["schema"].lower(), e["table"].lower()): e["function"] for e in entries}
         #: tables whose columns aren't known yet: oid → function, table name → functions
         self.unknown_oids = {e["oid"]: e["function"] for e in entries if not e["columns"]}
         self.unknown_names: Dict[str, List[str]] = {}

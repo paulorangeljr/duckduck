@@ -396,6 +396,7 @@ class Session:
     # -- statements -----------------------------------------------------------------------------------------
 
     def run_statement(self, sql: str) -> Result:
+        self.server.sync_views()  # tables saved from the web app since (this may be another process)
         sql = sql.strip().rstrip(";").strip()
         if not sql:
             return Result("EMPTY")
@@ -690,6 +691,11 @@ class PGServer:
         #: a client asking for the columns of at most this many unknown tables gets them read now (1 row each)
         self.learn_at_most = 3
         self.learn_timeout = 15.0
+        #: the config file whose saved tables this server follows (``from_config``): a table saved, edited or
+        #: removed there — from the web app, even in another process — shows up without a restart
+        self.config_path: Optional[str] = None
+        self._views_mtime: Optional[float] = None
+        self._views_lock = threading.Lock()
         self._tcp: Optional[_TCPServer] = None
         self._thread: Optional[threading.Thread] = None
 
@@ -716,7 +722,57 @@ class PGServer:
 
             options["cache"] = SourceCache.from_config(_section(config_path, "sql_cache"))
         options.update({k: v for k, v in overrides.items() if v is not None})
-        return cls(duck, **options)
+        server = cls(duck, **options)
+        if config_path and os.path.exists(config_path):
+            server.config_path = os.path.abspath(config_path)
+            server._views_mtime = os.stat(server.config_path).st_mtime  # auto_register already read these
+        return server
+
+    def sync_views(self) -> None:
+        """Saved tables added, changed or removed in the config file since it was last read: applied to ``source``."""
+        path = self.config_path
+        if not path:
+            return
+        try:
+            mtime = os.stat(path).st_mtime
+        except OSError:
+            return
+        if mtime == self._views_mtime:
+            return
+        from .. import views as saved
+
+        with self._views_lock:
+            if mtime == self._views_mtime:
+                return
+            self._views_mtime = mtime
+            try:
+                wanted = {saved.canonical_name(n): d for n, d in (saved._read(path).get("views") or {}).items()}
+            except Exception as exc:  # noqa: BLE001 — a file being written: next time
+                logger.info("PostgreSQL: couldn't read the saved tables in %s: %s", path, exc)
+                self._views_mtime = None
+                return
+            duck = self.source
+            current = dict(getattr(duck, "views", {}) or {})
+            changed = []
+            for name in current:
+                if name not in wanted:
+                    saved.unregister(duck, name)
+                    changed.append(f"-{name}")
+            todo = {}
+            for name, raw in wanted.items():
+                try:
+                    clean = saved.clean_definition(raw)
+                except Exception:  # noqa: BLE001 — the web app validates; a hand edit gone wrong is skipped
+                    continue
+                if current.get(name) == clean:
+                    continue
+                if name in current:
+                    saved.unregister(duck, name)
+                todo[name] = raw
+            if todo:
+                changed += saved.register_all(duck, todo, on_error="warn")
+            if changed:
+                logger.info("PostgreSQL: saved tables updated from %s: %s", path, ", ".join(changed))
 
     def use(self, duck: Any) -> None:
         """The web app reconnected (its config was saved): new sessions read these tables."""
@@ -750,13 +806,34 @@ class PGServer:
         masked = addresses._masked(sql)
         services = addresses.services(self.source)
         edits: List[Tuple[int, int, str]] = []
+        listed = getattr(self.catalog, "functions", {})
+        taken: List[Tuple[int, int]] = []
+        for m in self._TARGET.finditer(masked):  # a table as the catalog lists it (schema.table) → its function
+            parts = addresses._parts(sql[m.start(1):m.end(1)])
+            if len(parts) < 2:
+                continue
+            fn = listed.get((".".join(parts[:-1]).lower(), parts[-1].lower()))
+            if fn is None:
+                continue
+            text = fn
+            if self.source._alias_at(masked, m.end(1)) is None and re.fullmatch(r"[A-Za-z_]\w*", parts[-1]) \
+                    and parts[-1].lower() != fn:
+                text += f" AS {addresses._ident(self.source, parts[-1])}"  # nvd.cves keeps the name cves
+            edits.append((m.start(1), m.end(1), text))
+            taken.append((m.start(1), m.end(1)))
+
+        def free(start: int, end: int) -> bool:
+            return not any(a < end and start < b for a, b in taken)
+
         for m in re.finditer(r'"((?:[^"]|"")+)"(?=\s*\.)', masked):
+            if not free(m.start(), m.end()):
+                continue
             inner = sql[m.start() + 1:m.end() - 1].replace('""', '"')
             parts = inner.split(".")
             if len(parts) > 1 and parts[0].lower() in services:
                 edits.append((m.start(), m.end(), ".".join(addresses._ident(self.source, p) for p in parts)))
         for m in re.finditer(r'(?<![\w."])(?:"?(?:public|main)"?)\s*\.\s*("?)([A-Za-z_]\w*)\1', masked):
-            if m.group(2).lower() in self.source.functions:
+            if free(m.start(), m.end()) and m.group(2).lower() in self.source.functions:
                 edits.append((m.start(), m.end(), m.group(2)))
         if schema:
             for m in re.finditer(r'(\b(?:FROM|JOIN)\s+)("?)([A-Za-z_]\w*)\2(?!\s*[.(])', masked, re.I):
@@ -768,7 +845,10 @@ class PGServer:
                     found = addresses.resolve(self.source, parts + [name])
                 except ValueError:
                     found = None
-                if found is not None:
+                listed_fn = listed.get((schema.lower(), name.lower()))
+                if listed_fn is not None and free(m.start(2), m.end()):
+                    edits.append((m.start(2), m.end(), listed_fn + f" AS {addresses._ident(self.source, name)}"))
+                elif found is not None and free(m.start(2), m.end()):
                     qualified = ".".join(addresses._ident(self.source, p) for p in parts + [name])
                     edits.append((m.start(2), m.end(), qualified))
         for start, end, text in sorted(edits, reverse=True):

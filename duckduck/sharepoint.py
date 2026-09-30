@@ -61,6 +61,7 @@ import pandas as pd
 import requests
 
 from .logs import PageProgress, log_http
+from .kinds import needs_arguments
 from .sparkplan import spark_plan
 
 try:
@@ -672,6 +673,7 @@ class SharePoint:
         return pd.json_normalize(self._fetch(url, limit=limit), sep="_")
 
     @spark_plan("driver", why="Graph pages by @odata.nextLink: a cursor, pages can't be read out of order")
+    @needs_arguments(("list_id", "list_name"))
     def list_columns(
         self,
         site_id: Optional[str] = None,
@@ -698,6 +700,7 @@ class SharePoint:
         return pd.json_normalize(self._fetch(url, limit=limit), sep="_")
 
     @spark_plan("driver", why="Graph pages by @odata.nextLink: a cursor, pages can't be read out of order")
+    @needs_arguments(("list_id", "list_name"))
     def list_items(
         self,
         site_id: Optional[str] = None,
@@ -784,6 +787,7 @@ class SharePoint:
         return pd.json_normalize(self._fetch(url, limit=limit), sep="_")
 
     @spark_plan("driver", why="Graph pages by @odata.nextLink: a cursor, pages can't be read out of order")
+    @needs_arguments("drive_id")
     def drive_items(
         self,
         site_id: Optional[str] = None,
@@ -829,6 +833,7 @@ class SharePoint:
         return df
 
     @spark_plan("driver", why="Graph pages by @odata.nextLink: a cursor, pages can't be read out of order")
+    @needs_arguments("query")
     def search_files(
         self,
         site_id: Optional[str] = None,
@@ -853,6 +858,7 @@ class SharePoint:
         return pd.json_normalize(self._fetch(url, limit=limit), sep="_")
 
     @spark_plan("driver", why="Graph pages by @odata.nextLink: a cursor, pages can't be read out of order")
+    @needs_arguments("drive_id", "item_id")
     def file_versions(
         self,
         site_id: Optional[str] = None,

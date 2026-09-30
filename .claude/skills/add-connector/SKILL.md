@@ -32,6 +32,9 @@ the shapes you couldn't verify in one place.
 - **Page loop**: a page-numbered or offset API that reports a total pages through
   `duckduck.slicing.pages(fetch_page, page_size)` — `fetch_page(n) -> (rows, total_rows or None)` — never its own
   `while` loop. That is what lets Spark split the read. Cursor APIs keep their own loop.
+- `@needs_arguments(...)` (`duckduck.kinds`) on a table whose optional arguments are really needed — one of a
+  group (`("list_id", "list_name")`) or a single one (`"drive_id"`); leave out what the config can supply. SQL
+  clients then don't see it bare (it would only fail), and its usage example shows the arguments.
 - `@catalog` on listing methods (with `lists="<table fn>"` when its rows are that function's arguments),
   `@raw_query` on a passthrough of the source's own query language.
 - `iter_<table>` streaming methods yielding one DataFrame per page when the API pages.

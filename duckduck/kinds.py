@@ -15,11 +15,14 @@ not everything is a plain table:
 
 ``table`` vs ``table function`` is inferred from the signature (required
 parameters or not). ``catalog`` and ``raw query`` can't be, so connectors
-mark those methods with the decorators below.
+mark those methods with the decorators below — and so is a table whose
+arguments are optional in its signature but needed in practice, one of a
+group (``@needs_arguments``: SharePoint's ``list_items`` takes ``list_id``
+*or* ``list_name``).
 """
 
 import inspect
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List, Optional, Tuple
 
 TABLE = "table"
 TABLE_FUNCTION = "table function"
@@ -63,6 +66,34 @@ def lists_of(fn: Callable) -> Optional[str]:
     return getattr(fn, _LISTS_ATTR, None)
 
 
+_NEEDS_ATTR = "__duckduck_needs__"
+
+
+def needs_arguments(*groups: Any) -> Callable:
+    """
+    Marks a table whose arguments are optional in its signature but not in
+    practice: each group is one argument name, or a tuple of alternatives of
+    which one must be given. ``@needs_arguments(("list_id", "list_name"))``
+    on ``SharePoint.list_items``; ``@needs_arguments("drive_id", "item_id")``
+    on ``file_versions``. Declare it whenever a call without them can only
+    fail: the PostgreSQL endpoint doesn't list the table bare (it would only
+    error in a client's tree — saved with its arguments, it is listed), and
+    ``usage`` writes them into the example.
+    """
+    normalized = tuple(tuple(g) if isinstance(g, (tuple, list)) else (g,) for g in groups)
+
+    def mark(fn: Callable) -> Callable:
+        setattr(fn, _NEEDS_ATTR, normalized)
+        return fn
+
+    return mark
+
+
+def needed_arguments(fn: Callable) -> Tuple[Tuple[str, ...], ...]:
+    """The argument groups ``@needs_arguments`` declared (one of each group is needed), or ()."""
+    return getattr(fn, _NEEDS_ATTR, ())
+
+
 def raw_query(fn: Callable) -> Callable:
     """Marks a method that runs a query written in the source's own language."""
     setattr(fn, _ATTR, RAW_QUERY)
@@ -102,6 +133,9 @@ def usage(name: str, fn: Callable, kind: Optional[str] = None) -> str:
     required = required_params(fn)
     target = f"{name}({', '.join(f'{p.name}={_placeholder(p)}' for p in required)})" if required else name
     example = f"SELECT * FROM {target}"
+    needed = needed_arguments(fn)
+    if needed:  # the first of each group, as an argument
+        example += " WHERE " + " AND ".join(f"arg.{g[0]} = '<{g[0]}>'" for g in needed)
     return example + " LIMIT 10" if kind in (TABLE, TABLE_FUNCTION) else example
 
 
