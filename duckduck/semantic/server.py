@@ -632,9 +632,13 @@ def create_app(
 
     @app.post("/api/views/many")
     def create_views(body: Dict[str, Any] = Body(...)):
-        """``{items: [{table, args, name?, description?}]}`` — "Register all": each gets a name (the suggested one
-        unless given); one already saved (same table and arguments) is skipped; one write to duckduck.json."""
+        """``{items: [{table, args, name?, description?}], background?}`` — "Register all": each gets a name (the
+        suggested one unless given); one already saved (same table and arguments) is skipped; one write to
+        duckduck.json. Every item, however many. ``background``: as a job (progress per table, cancel → nothing
+        saved) → 202."""
+        from .. import progress
         from .. import views as saved
+        from ..progress import Cancelled
 
         source = the_console().source
         off = saved_tables_off()
@@ -643,31 +647,46 @@ def create_app(
         items = body.get("items")
         if not isinstance(items, list) or not items:
             raise HTTPException(400, "items: a list of {table, args}")
-        created: Dict[str, Dict[str, Any]] = {}
-        skipped = []
-        for item in items[:500]:
-            if not isinstance(item, dict) or not item.get("table"):
-                skipped.append({"item": item, "why": "not {table, args}"})
-                continue
-            args = item.get("args") or {}
-            already = saved.saved_as(source, str(item["table"]).lower(), args)
-            if already:
-                skipped.append({"table": item["table"], "args": args, "why": f"already saved as {already}"})
-                continue
-            raw = {"table": item["table"], "args": args, **({"description": item["description"]} if item.get("description") else {})}
-            name = saved.canonical_name(str(item.get("name") or saved.suggested_name(source, saved.clean_definition(raw))))
+
+        def register_all() -> Dict[str, Any]:
+            created: Dict[str, Dict[str, Any]] = {}
+            skipped = []
+            total = len(items)
+            progress.step("saving", f"Saving {total} table{'s' if total != 1 else ''}")
             try:
-                created[name] = source.register_view(name, raw)
-            except (ValueError, LookupError) as exc:
-                skipped.append({"table": item["table"], "args": args, "why": str(exc).strip("'\"")})
-        if created:
-            try:
-                saved.save_many(config_path, created)
-            except Exception as exc:
+                for i, item in enumerate(items, 1):
+                    if i % 25 == 0 or i == total:
+                        progress.update(f"Saving {i} of {total}")
+                        progress.checkpoint()  # cancel: what was registered so far is taken back below
+                    if not isinstance(item, dict) or not item.get("table"):
+                        skipped.append({"item": item, "why": "not {table, args}"})
+                        continue
+                    args = item.get("args") or {}
+                    already = saved.saved_as(source, str(item["table"]).lower(), args)
+                    if already:
+                        skipped.append({"table": item["table"], "args": args, "why": f"already saved as {already}"})
+                        continue
+                    raw = {"table": item["table"], "args": args,
+                           **({"description": item["description"]} if item.get("description") else {})}
+                    name = saved.canonical_name(str(item.get("name") or saved.suggested_name(source, saved.clean_definition(raw))))
+                    try:
+                        created[name] = source.register_view(name, raw)
+                    except (ValueError, LookupError) as exc:
+                        skipped.append({"table": item["table"], "args": args, "why": str(exc).strip("'\"")})
+                if created:
+                    progress.step("writing", f"Writing {len(created)} to duckduck.json")
+                    saved.save_many(config_path, created)
+            except BaseException as exc:
                 for name in created:
                     saved.unregister(source, name)
-                raise HTTPException(500, f"couldn't write {config_path}: {exc}")
-        return dump({"created": [saved.describe(source, n) for n in created], "skipped": skipped})
+                if isinstance(exc, (Cancelled, HTTPException)):
+                    raise
+                raise HTTPException(500, f"couldn't write {config_path}: {exc}") from exc
+            return {"created": [saved.describe(source, n) for n in created], "skipped": skipped}
+
+        if body.get("background"):
+            return start_job(register_all, render=lambda r: r)
+        return dump(register_all())
 
     @app.delete("/api/views/{name}")
     def delete_view(name: str):

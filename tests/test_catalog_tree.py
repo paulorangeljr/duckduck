@@ -116,3 +116,79 @@ def test_the_page():
     assert "const treeOf = " in PAGE and "const dbSection = " in PAGE and "const placeOf = " in PAGE
     assert 'id="vconn"' in PAGE and 'id="vdb"' in PAGE and 'id="vtbl"' in PAGE and "function composeName(" in PAGE
     assert "NEW_TABLES" in PAGE and "reuse" in PAGE and "SHOW_SAVED" not in PAGE
+
+
+def _app(tmp_path, n):
+    from fastapi.testclient import TestClient
+
+    from duckduck.semantic.commands import serve
+
+    (tmp_path / "lake.py").write_text(
+        "import pandas as pd\n"
+        "from duckduck.kinds import catalog\n"
+        "class Lake:\n"
+        "    @catalog(lists='table')\n"
+        "    def tables(self, limit=None):\n"
+        f"        return pd.DataFrame([{{'database': 'db' + str(i % 7), 'table_name': 't' + str(i)}} for i in range({n})])\n"
+        "    def table(self, database: str, table_name: str, limit=None):\n"
+        "        return pd.DataFrame({'n': [1]})\n"
+        "lake = Lake()\n"
+        "TABLES = {'tables': lake.tables, 'table': lake.table}\n")
+    (tmp_path / "duckduck.json").write_text(json.dumps({"services": {"s3": {"connector": "python", "module": "lake.py"}}}))
+    client = TestClient(serve(config_path=str(tmp_path / "duckduck.json"), run=False, allow_config_edit=True))
+    nested = client.get("/api/tables/nested", params={"service": "s3"}).json()["tables"]
+    return client, [{"table": x["table"], "args": x["args"]} for x in nested]
+
+
+def test_register_all_saves_every_table_however_many(tmp_path):
+    """It used to stop at the first 500, silently."""
+    import time
+
+    client, items = _app(tmp_path, 1389)
+    started = client.post("/api/views/many", json={"items": items, "background": True})
+    assert started.status_code == 202
+    job = started.json()["job_id"]
+    for _ in range(200):
+        view = client.get(f"/api/jobs/{job}").json()
+        if view["state"] == "done":
+            break
+        time.sleep(0.05)
+    assert view["state"] == "done" and len(view["result"]["created"]) == 1389 and view["result"]["skipped"] == []
+    assert any("Saving" in (e or {}).get("text", "") for e in view["events"])
+    assert len(json.loads((tmp_path / "duckduck.json").read_text())["views"]) == 1389
+
+
+def test_a_cancelled_register_all_saves_nothing(tmp_path):
+    from duckduck import progress
+
+    client, items = _app(tmp_path, 60)
+    real = progress.checkpoint
+    calls = {"n": 0}
+
+    def cancel_on_second():  # the job is cancelled while it's saving
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise progress.Cancelled()
+        real()
+
+    progress.checkpoint = cancel_on_second
+    try:
+        import time
+
+        job = client.post("/api/views/many", json={"items": items, "background": True}).json()["job_id"]
+        for _ in range(100):
+            view = client.get(f"/api/jobs/{job}").json()
+            if view["state"] not in ("running", "pausing"):
+                break
+            time.sleep(0.05)
+    finally:
+        progress.checkpoint = real
+    assert "views" not in json.loads((tmp_path / "duckduck.json").read_text())
+    assert client.get("/api/views").json()["views"] == []
+
+
+def test_the_page_shows_register_all_and_the_default_database():
+    from duckduck.semantic.webpage import PAGE
+
+    assert 'id="regstatus"' in PAGE and "function pollRegJob(" in PAGE and "background: true}" in PAGE
+    assert 'const DEFAULT_DB = "default"' in PAGE and "TOOL_KINDS" in PAGE

@@ -1086,9 +1086,13 @@ with a **Preview** (`SELECT * FROM s3_data.security.proxy_logs LIMIT
 100`) and **＋ Table** to keep it as a saved table (below). One saved this
 way is marked **✓ its name** with an edit button; **Register all N** saves
 every one not saved yet in one go (each named after its address,
-`s3_data.security.proxy_logs`; rename later with ✎ Edit).
+`s3_data.security.proxy_logs`; rename later with ✎ Edit). It runs in the
+background with a progress bar over the list (*Cancel* saves nothing of that
+run), then says how many were saved and, for any skipped, why.
 
-Each connector is one tree: its own tables first, then its **databases** —
+Each connector is one tree: its tools first (table functions, catalogs,
+raw queries), then its **databases** — tables with no database of their
+own (`nvd.cves`, `adx.ProxyLogs`, `sn.incident`) are in **default** —
 each closed until you open it (*Open all* / *Close all*), holding the saved
 tables named `connector.database.table` together with (catalog expanded)
 the ones behind the catalog not saved yet, with their own **Register N**.
