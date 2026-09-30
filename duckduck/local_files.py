@@ -62,6 +62,9 @@ class FileTable:
     push-down ``where`` and ``limit`` and it scans the data with DuckDB.
     """
 
+    #: ``where`` goes into the DuckDB scan (``conditions_to_sql``), join key values included
+    WHERE_OPS = frozenset({"eq", "like", "ilike", "gt", "gte", "lt", "lte", "in"})
+
     __module__ = __name__  # list_tables() labels it "Local files"
 
     def __init__(self, lake: LakehouseConnection, table_name: str, path: str, file_format: str, scan: str):

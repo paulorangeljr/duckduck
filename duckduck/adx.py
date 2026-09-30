@@ -174,6 +174,10 @@ class DataExplorer:
         run on the cluster anyway.
     """
 
+    #: ``where`` applies join key values as ``col in (…)`` (case-sensitive, like SQL ``=``)
+    WHERE_OPS = frozenset({"eq", "like", "ilike", "gt", "gte", "lt", "lte", "in"})
+    IN_MAX = 1000
+
     def __init__(
         self,
         cluster: str,
@@ -333,6 +337,11 @@ class DataExplorer:
             if not case_sensitive:
                 regex = "(?i)" + regex
             return f"{text_col} matches regex {kql_string(regex)}"
+        if cond.op == "in":
+            values = list(cond.value or ())
+            if not values:
+                return "false"
+            return f"{col} in ({', '.join(self._literal(v, kql_type) for v in values)})"
         if cond.op not in _COMPARISONS:
             raise ValueError(f"unsupported push-down operator {cond.op!r}")
         return f"{col} {_COMPARISONS[cond.op]} {self._literal(cond.value, kql_type)}"

@@ -86,6 +86,11 @@ class SQLDatabase:
         Passed straight to ``sqlalchemy.create_engine`` (e.g. ``pool_size``).
     """
 
+    #: ``where`` applies join key values as ``col IN (…)`` — bound parameters, at most ``IN_MAX`` per query
+    #: (SQL Server takes 2100 parameters): DuckAPI splits more into several calls
+    WHERE_OPS = frozenset({"eq", "like", "ilike", "gt", "gte", "lt", "lte", "in"})
+    IN_MAX = 1000
+
     def __init__(self, connection_string: str, **engine_kwargs):
         if sa is None:
             raise ImportError(
@@ -181,6 +186,8 @@ class SQLDatabase:
                 clauses.append(col < cond.value)
             elif cond.op == "lte":
                 clauses.append(col <= cond.value)
+            elif cond.op == "in":
+                clauses.append(col.in_(list(cond.value or ())))
         return clauses
 
     def _portable_like(self, pattern: str):

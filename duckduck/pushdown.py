@@ -14,6 +14,8 @@ SQL                    parameter                     connector receives
 ``col > v`` (etc.)     ``col_gt`` / ``_gte`` /       ``v``
                        ``_lt`` / ``_lte``
 any of the above       ``where``                     ``List[Condition]`` (all)
+a join's key values    ``col_in`` / ``where``        a list (``op="in"``): the
+                       (``WHERE_OPS`` has ``"in"``)  values the other side has
 =====================  ============================  ==========================
 
 - ``col_like``: the server matches *case-sensitively* (exact LIKE).
@@ -31,6 +33,7 @@ DuckDB always re-applies the full ``WHERE`` on what comes back, so a
 connector may return a *superset* (looser match) but never a subset.
 """
 
+import inspect
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
@@ -46,7 +49,9 @@ class Condition:
     """One simple ``WHERE`` condition: ``column <op> value``."""
 
     column: str
-    #: ``eq`` / ``like`` / ``ilike`` / ``gt`` / ``gte`` / ``lt`` / ``lte``.
+    #: ``eq`` / ``like`` / ``ilike`` / ``gt`` / ``gte`` / ``lt`` / ``lte``; ``in`` (``value`` a tuple) only
+    #: comes from a join (``DuckAPI`` pushes the other side's key values) and only reaches a ``col_in``
+    #: parameter or the ``where`` of a connector whose ``WHERE_OPS`` include it.
     op: str
     value: Any
     #: Table qualifier as written (``a`` in ``a.col``), lowercased; None if bare.
@@ -92,7 +97,20 @@ def require_like(pattern: str, param: str = "pattern") -> LikePattern:
     return parsed
 
 
-_SQL_OPS = {"eq": "=", "like": "LIKE", "ilike": "ILIKE", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
+_SQL_OPS = {"eq": "=", "like": "LIKE", "ilike": "ILIKE", "gt": ">", "gte": ">=", "lt": "<", "lte": "<=", "in": "IN"}
+
+#: The operators a ``where`` parameter receives unless its connector declares ``WHERE_OPS``: ``in`` is newer
+#: than most ``where`` implementations, so it only goes to one that says it applies it.
+DEFAULT_WHERE_OPS = frozenset({"eq", "like", "ilike", "gt", "gte", "lt", "lte"})
+
+
+def where_ops_of(fetch_function: Any) -> frozenset:
+    """The operators a function's ``where`` applies: its connector's ``WHERE_OPS``, else the default ones."""
+    owner = getattr(fetch_function, "__self__", None)
+    if owner is None and not inspect.isfunction(fetch_function):
+        owner = fetch_function  # a callable object (FileTable): the table is the object
+    ops = getattr(owner, "WHERE_OPS", None) if owner is not None else None
+    return frozenset(ops) if ops else DEFAULT_WHERE_OPS
 
 
 def _sql_literal(value: Any) -> str:
@@ -117,6 +135,10 @@ def conditions_to_sql(conditions: Iterable[Condition], columns: Iterable[str]) -
         if column is None or c.op not in _SQL_OPS:
             continue
         ident = '"' + column.replace('"', '""') + '"'
+        if c.op == "in":
+            values = list(c.value or ())
+            parts.append(f"{ident} IN ({', '.join(_sql_literal(v) for v in values)})" if values else "FALSE")
+            continue
         parts.append(f"{ident} {_SQL_OPS[c.op]} {_sql_literal(c.value)}")
     return " AND ".join(parts) if parts else None
 
@@ -136,6 +158,7 @@ def assign_conditions(
     params: Iterable[str],
     conditions: Iterable[Condition],
     blocker: Optional[Callable[[Condition], Optional[str]]] = None,
+    where_ops: Iterable[str] = DEFAULT_WHERE_OPS,
 ) -> Dict[Condition, str]:
     """
     Which parameter each condition goes to; conditions left out stay with
@@ -157,12 +180,15 @@ def assign_conditions(
             target = next((p for p in candidates if p in params), None)
         elif c.op in COMPARISON_SUFFIXES:
             target = c.column + COMPARISON_SUFFIXES[c.op]
+        elif c.op == "in":
+            target = c.column + "_in"
         if target and target != WHERE_PARAM and target in params and target not in used:
             assigned[c] = target
             used.add(target)
     if WHERE_PARAM in params:
+        where_ops = set(where_ops)
         for c in conditions:
-            if c not in assigned and (blocker is None or blocker(c) is None):
+            if c not in assigned and c.op in where_ops and (blocker is None or blocker(c) is None):
                 assigned[c] = WHERE_PARAM
     return assigned
 
@@ -171,6 +197,7 @@ def map_conditions(
     params: Iterable[str],
     conditions: Iterable[Condition],
     blocker: Optional[Callable[[Condition], Optional[str]]] = None,
+    where_ops: Iterable[str] = DEFAULT_WHERE_OPS,
 ) -> Tuple[Dict[str, Any], List[Condition]]:
     """
     Maps conditions onto a function's parameters.
@@ -181,12 +208,12 @@ def map_conditions(
     targets here; the caller decides what else to pass.
     """
     conditions = list(conditions)
-    assigned = assign_conditions(params, conditions, blocker)
+    assigned = assign_conditions(params, conditions, blocker, where_ops)
     consumed = [c for c in conditions if c in assigned]
     kwargs: Dict[str, Any] = {}
     for c, target in assigned.items():
         if target == WHERE_PARAM:
             kwargs[WHERE_PARAM] = [x for x in consumed if assigned[x] == WHERE_PARAM]
         else:
-            kwargs[target] = c.value
+            kwargs[target] = list(c.value) if c.op == "in" else c.value
     return kwargs, consumed

@@ -466,7 +466,7 @@ class _SparkDuck(DuckAPI):
     """``DuckAPI.sql()``'s planning (addresses, arguments, push-down) with every table read into Spark."""
 
     def __init__(self, reader: SparkReader):
-        super().__init__(stream_pages=False)
+        super().__init__(stream_pages=False, join_pushdown=False)  # its conn is Spark: no DuckDB to read key values from
         self.conn.close()
         self.conn = _SparkConnection(reader)
         self._reader = reader

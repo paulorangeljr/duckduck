@@ -18,9 +18,10 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import duckdb
@@ -29,7 +30,8 @@ import sqlglot
 import sqlglot.expressions as exp
 
 from .logs import get_logger, set_verbose, short, verbose_from_env
-from .pushdown import Condition, assign_conditions, blocker_of, conditions_to_sql, map_conditions, parse_like
+from .pushdown import (Condition, assign_conditions, blocker_of, conditions_to_sql, map_conditions, parse_like,
+                       where_ops_of)
 
 logger = get_logger("core")
 
@@ -314,6 +316,10 @@ _OP_SQL = {"eq": "=", "like": "LIKE", "ilike": "ILIKE", "gt": ">", "gte": ">=", 
 
 def _describe_condition(c: Condition) -> str:
     column = f"{c.table}.{c.column}" if c.table else c.column
+    if c.op == "in":
+        values = list(c.value or ())
+        shown = ", ".join(repr(v) for v in values[:3]) + (f", … ({len(values)} values)" if len(values) > 3 else "")
+        return f"{column} IN ({shown})"
     return f"{column} {_OP_SQL.get(c.op, c.op)} {c.value!r}"
 
 
@@ -327,7 +333,173 @@ def _why_not_pushed(c: Condition, accepted: set) -> str:
         return f"no {c.column}_like/_ilike parameter, DuckDB filters"
     if c.op == "eq":
         return f"no '{c.column}' parameter, DuckDB filters"
+    if c.op == "in":
+        return f"no {c.column}_in parameter, and its where doesn't take IN — DuckDB joins"
     return f"no {c.column}_{c.op} parameter, DuckDB filters"
+
+
+# ---------------------------------------------------------------------------
+# Joins: one side's key values narrow the other side's read
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class JoinEdge:
+    """``ON probe.probe_column = build.build_column``: once ``build`` is read, ``probe`` only needs rows whose
+    ``probe_column`` is one of ``build``'s values — every other row of it can't be in the answer."""
+
+    probe: str
+    probe_column: str
+    build: str
+    build_column: str
+    #: the join as written, for the log (``LEFT JOIN``)
+    join: str = "JOIN"
+
+
+def _table_ref(node: Any) -> Optional[str]:
+    """How a table is referred to in the query (its alias, else its name or function name), lowercased."""
+    if not isinstance(node, exp.Table):
+        return None
+    name = node.alias or node.name or (node.this.name if isinstance(node.this, exp.Anonymous) else "")
+    return name.lower() or None
+
+
+def _conjuncts(node: Optional[exp.Expression]) -> List[exp.Expression]:
+    if node is None:
+        return []
+    if isinstance(node, exp.Paren):
+        return _conjuncts(node.this)
+    if isinstance(node, exp.And):
+        return _conjuncts(node.this) + _conjuncts(node.expression)
+    return [node]
+
+
+def _join_plan(parsed: Optional[exp.Expression]) -> Tuple[List[JoinEdge], List[Condition]]:
+    """
+    The joins between tables whose rows one side can narrow, and the ON
+    conditions that filter one side only (``ON b.table_name = 'incident'``).
+
+    Which side gets narrowed — the side whose unmatched rows the join
+    drops anyway: the joined table in ``[INNER] JOIN`` / ``LEFT JOIN`` /
+    ``SEMI`` / ``ANTI``, the table before it in ``RIGHT JOIN``; never in
+    ``FULL`` / ``CROSS`` / ``ASOF`` / ``POSITIONAL``. Only equalities
+    between two qualified columns (``b.id = a.b_id``) or ``USING`` with one
+    table before it; a table referred to twice by the same name is left
+    alone. ON constants go to the narrowed side (and, in an inner join,
+    to either side).
+    """
+    edges: List[JoinEdge] = []
+    constants: List[Condition] = []
+    if parsed is None:
+        return edges, constants
+    counts: Dict[str, int] = {}
+    for t in parsed.find_all(exp.Table):
+        ref = _table_ref(t)
+        if ref:
+            counts[ref] = counts.get(ref, 0) + 1
+    for select in parsed.find_all(exp.Select):
+        frm = select.args.get("from_") or select.args.get("from")
+        left = [_table_ref(frm.this)] if frm is not None and _table_ref(frm.this) else []
+        for join in select.args.get("joins") or []:
+            jref = _table_ref(join.this)
+            side = (join.args.get("side") or "").upper()
+            kind = (join.args.get("kind") or "").upper()
+            if jref is None:
+                continue
+            written = " ".join(x for x in (side, kind, "JOIN") if x)
+            if side == "FULL" or kind not in ("", "INNER", "OUTER", "SEMI", "ANTI") or counts.get(jref, 0) > 1:
+                left.append(jref)
+                continue
+            narrow_joined = side != "RIGHT"
+            pairs: List[Tuple[str, str, str, str]] = []  # (joined column, left ref, left column)
+            using = join.args.get("using") or []
+            if using and len(left) == 1:
+                pairs += [(u.name.lower(), left[0], u.name.lower(), "") for u in using if isinstance(u, exp.Identifier)]
+            for cond in _conjuncts(join.args.get("on")):
+                if isinstance(cond, exp.EQ) and isinstance(cond.this, exp.Column) and \
+                        isinstance(cond.expression, exp.Column):
+                    a, b = cond.this, cond.expression
+                    ta, tb = (a.table or "").lower(), (b.table or "").lower()
+                    if ta == jref and tb in left:
+                        pairs.append((a.name.lower(), tb, b.name.lower(), ""))
+                    elif tb == jref and ta in left:
+                        pairs.append((b.name.lower(), ta, a.name.lower(), ""))
+                    continue
+                op = _CONDITION_OPS.get(type(cond))
+                if op and isinstance(cond.this, exp.Column) and not isinstance(cond.expression, exp.Column):
+                    value = _literal_value(cond.expression)
+                    table = (cond.this.table or "").lower()
+                    if value is None or not table or counts.get(table, 0) > 1:
+                        continue
+                    inner = not side and kind in ("", "INNER")
+                    # the side whose rows the ON only filters: the joined one (unless RIGHT), the earlier
+                    # ones in an inner join or a RIGHT JOIN — never a side the join keeps whole
+                    if (table == jref and narrow_joined) or (table in left and (inner or side == "RIGHT")):
+                        constants.append(Condition(cond.this.name.lower(), op, value, table))
+            for jcol, lref, lcol, _ in pairs:
+                if counts.get(lref, 0) > 1:
+                    continue
+                if narrow_joined:
+                    edges.append(JoinEdge(jref, jcol, lref, lcol, written))
+                else:
+                    edges.append(JoinEdge(lref, lcol, jref, jcol, written))
+            left.append(jref)
+    return edges, constants
+
+
+def _mask_strings(query: str) -> str:
+    """String literals blanked (same length), so a ``)`` inside one doesn't end a call."""
+    return re.sub(r"'(?:[^']|'')*'", lambda m: "'" + " " * (len(m.group(0)) - 2) + "'", query)
+
+
+_UNUSABLE = object()
+
+
+def _join_value(value: Any) -> Any:
+    """A key value as a source compares it: 12.0 (pandas' ints next to a NULL) → 12, lists/structs unusable."""
+    if hasattr(value, "item") and not isinstance(value, (list, dict)):
+        try:
+            value = value.item()
+        except (ValueError, AttributeError):
+            pass
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, (list, tuple, dict, set, bytes)):
+        return _UNUSABLE
+    return value
+
+
+def _with_in(kwargs: Dict[str, Any], cond: Condition, param: str, chunk: List[Any]) -> Dict[str, Any]:
+    out = dict(kwargs)
+    if param in out:
+        out[param] = list(chunk)
+    else:
+        piece = replace(cond, value=tuple(chunk))
+        out["where"] = [piece if x is cond else x for x in out.get("where") or []]
+    return out
+
+
+def _without_in(kwargs: Dict[str, Any], cond: Condition, param: str) -> Dict[str, Any]:
+    out = dict(kwargs)
+    out.pop(param, None)
+    if "where" in out:
+        out["where"] = [x for x in out["where"] if x.column != cond.column or x.op != "in" or x.table != cond.table]
+        if not out["where"]:
+            del out["where"]
+    return out
+
+
+_PARSER: Optional[Any] = None
+_PARSER_LOCK = threading.Lock()
+
+
+def check_syntax(query: str) -> None:
+    """DuckDB's own parser on the query — before any source is read, so a typo (a JOIN without ON) costs nothing."""
+    global _PARSER
+    with _PARSER_LOCK:
+        if _PARSER is None:
+            _PARSER = duckdb.connect()
+        _PARSER.extract_statements(query)
 
 
 # ---------------------------------------------------------------------------
@@ -459,7 +631,8 @@ class DuckAPI:
     correctness even when the API returns extra data.
     """
 
-    def __init__(self, database: str = ":memory:", verbose=None, stream_pages: bool = True, cache: Any = None):
+    def __init__(self, database: str = ":memory:", verbose=None, stream_pages: bool = True, cache: Any = None,
+                 join_pushdown: bool = True, join_values_max: int = 1000, join_calls_max: int = 20):
         """
         Parameters
         ----------
@@ -484,6 +657,18 @@ class DuckAPI:
             — ``True`` (10 minutes), ``{"ttl": "10m", "max_rows": …}`` or a
             ``duckduck.cache.SourceCache``. Off by default. See
             ``duckduck.cache`` (``refreshing()`` reads again).
+        join_pushdown : bool
+            In a JOIN between two sources, read one side first and send its
+            key values to the other (``ON b.id = a.b_id`` → ``b`` gets
+            ``id IN (…)``, through ``where`` / ``id_in``, or one call per
+            value on an ``id`` parameter). See ``_join_plan``.
+        join_values_max : int
+            More distinct key values than this: the other side isn't
+            narrowed (read as without the join).
+        join_calls_max : int
+            At most this many calls to narrow one side — one per value on an
+            ``id`` parameter, or the values split in chunks of the
+            connector's ``IN_MAX``.
         """
         if verbose is None:
             verbose = verbose_from_env()
@@ -507,6 +692,9 @@ class DuckAPI:
         self._config_views: Optional[Dict[str, Any]] = None
         self._table_counter = 0
         self.stream_pages = stream_pages
+        self.join_pushdown = join_pushdown
+        self.join_values_max = int(join_values_max)
+        self.join_calls_max = int(join_calls_max)
         from .cache import SourceCache
 
         #: Called ``(table, [(column, DuckDB type), ...])`` whenever a read gives a table's full set of columns
@@ -1214,8 +1402,9 @@ class DuckAPI:
         blocker = blocker_of(fetch_function)
         # a parameter set by arg.x is taken: a bare x = … next to it is a column filter, not that argument
         by_arg = {c.column for c in arg_conditions if c.op == "eq"}
-        merged, consumed = map_conditions(accepted - by_arg, applicable, blocker)
-        targets = assign_conditions(accepted - by_arg, applicable, blocker)
+        where_ops = where_ops_of(fetch_function)
+        merged, consumed = map_conditions(accepted - by_arg, applicable, blocker, where_ops)
+        targets = assign_conditions(accepted - by_arg, applicable, blocker, where_ops)
 
         report: List[str] = []
         args_taken = 0
@@ -1230,7 +1419,7 @@ class DuckAPI:
         for c in applicable:
             if c in targets:
                 report.append(f"✓ {_describe_condition(c)} → {targets[c]}")
-            elif blocker is not None and "where" in accepted:
+            elif blocker is not None and "where" in accepted and c.op in where_ops:
                 report.append(f"✗ {_describe_condition(c)} — {blocker(c)}, DuckDB filters")
             else:
                 report.append(f"✗ {_describe_condition(c)} — {_why_not_pushed(c, accepted)}")
@@ -1682,8 +1871,6 @@ class DuckAPI:
             return query
 
         where = tree.find(exp.Where)
-        if not where:
-            return query
 
         def _should_keep(node: exp.Expression) -> bool:
             if isinstance(node, (exp.EQ, exp.Like, exp.ILike, exp.GT, exp.LT, exp.GTE, exp.LTE, exp.NEQ)):
@@ -1706,12 +1893,34 @@ class DuckAPI:
                 return exp.And(this=left, expression=right)
             return node if _should_keep(node) else None
 
-        new_condition = _rebuild(where.this)
-        if new_condition is None:
-            where.pop()
-        else:
-            where.set("this", new_condition)
+        if where is not None:
+            new_condition = _rebuild(where.this)
+            if new_condition is None:
+                where.pop()
+            else:
+                where.set("this", new_condition)
 
+        # a join's ON constant that filled an argument (JOIN sn_table t ON t.table_name = 'incident' AND …)
+        def _on_keep(node: exp.Expression) -> bool:
+            if isinstance(node, exp.EQ) and isinstance(node.this, exp.Column) \
+                    and not isinstance(node.expression, exp.Column):
+                name, table = node.this.name.lower(), (node.this.table or "").lower()
+                if name in keys and table and table in (qualified or {}).get(name, ()):
+                    return False
+            return True
+
+        changed_on = False
+        for join in tree.find_all(exp.Join):
+            on = join.args.get("on")
+            if on is None:
+                continue
+            kept = [c for c in _conjuncts(on) if _on_keep(c)]
+            if len(kept) == len(_conjuncts(on)):
+                continue
+            changed_on = True
+            join.set("on", exp.and_(*kept) if kept else exp.true())
+        if where is None and not changed_on:
+            return query
         return tree.sql(dialect="duckdb")
 
     # ------------------------------------------------------------------
@@ -1977,6 +2186,7 @@ class DuckAPI:
         if query != written:
             logger.debug("  addresses → %s", " ".join(query.split()))
 
+        check_syntax(self._calls_blanked(query))  # a typo (a JOIN without ON) fails here, before any source is read
         pushdown = self._extract_pushdown(query)
         self._check_arguments(query, pushdown)
         rewritten = query
@@ -1989,57 +2199,57 @@ class DuckAPI:
         except Exception:
             parsed = None
 
-        for fn_name, fn in self.functions.items():
-
-            # ---- 1. func(args) ----------------------------------------
-            with_args_pat = re.compile(
-                rf"\b{re.escape(fn_name)}\s*\((.*?)\)",
-                flags=re.IGNORECASE | re.DOTALL,
-            )
-
-            while m := with_args_pat.search(rewritten):
-                explicit = self._parse_kwargs(m.group(1))
-                names = {fn_name, self._alias_at(rewritten, m.end())} - {None}
-                kwargs, report = self._plan_call(fn, pushdown, explicit, names)
-                fallback = self._referenced_columns(parsed, names, self._structural_names(fn, explicit))
-                if self._pages_instead(fn_name, kwargs):
-                    tname, df_cols, kwargs = self._materialize_pages(fn_name, pushdown, explicit, names, parsed,
-                                                                     fallback)
-                else:
-                    self._log_call(fn_name, kwargs, report)
-                    tname, df_cols = self._materialize(fn_name, fn, kwargs, fallback)
-                sources += 1
-                # WHERE filters that reached the function but aren't result columns
-                for k in pushdown.filters:
-                    if k in kwargs and k not in df_cols:
-                        structural_used.add(k)
-                        structural_of.setdefault(k, set()).update(n.lower() for n in names)
-                rewritten = rewritten[: m.start()] + tname + rewritten[m.end() :]
-
-            # ---- 2. FROM/JOIN func  (no parentheses) ------------------
-            bare_pat = re.compile(
-                rf"\b(FROM|JOIN)\s+{re.escape(fn_name)}\b(?!\s*\()",
-                flags=re.IGNORECASE,
-            )
-
-            while m := bare_pat.search(rewritten):
-                names = {fn_name, self._alias_at(rewritten, m.end())} - {None}
-                kwargs, report = self._plan_call(fn, pushdown, {}, names)
-                fallback = self._referenced_columns(parsed, names, self._structural_names(fn, {}))
-                if self._pages_instead(fn_name, kwargs):
-                    tname, df_cols, kwargs = self._materialize_pages(fn_name, pushdown, {}, names, parsed, fallback)
-                else:
-                    self._log_call(fn_name, kwargs, report)
-                    tname, df_cols = self._materialize(fn_name, fn, kwargs, fallback)
-                sources += 1
-                for k in pushdown.filters:
-                    if k in kwargs and k not in df_cols:
-                        structural_used.add(k)
-                        structural_of.setdefault(k, set()).update(n.lower() for n in names)
-                op = m.group(1)
-                # no alias written: the temp table keeps the function's name (SELECT nvd_cves.id FROM nvd_cves)
-                keep = "" if self._has_alias(rewritten, m.end()) else f" AS {fn_name}"
-                rewritten = rewritten[: m.start()] + f"{op} {tname}{keep}" + rewritten[m.end() :]
+        # Joins between two sources: read one side first, its key values narrow the other (see _join_plan)
+        edges: List[JoinEdge] = []
+        on_conditions: List[Condition] = []
+        if self.join_pushdown and parsed is not None:
+            refs = self._function_refs(parsed)
+            edges, on_conditions = _join_plan(parsed)
+            edges = [e for e in edges if e.probe in refs and e.build in refs]
+            on_conditions = [c for c in on_conditions if c.table in refs]
+        single_select = isinstance(parsed, exp.Select) and len(list(parsed.find_all(exp.Select))) == 1
+        read: Dict[str, Tuple[str, List[str]]] = {}  # a table's ref → (its temp table, its columns)
+        force = False
+        while True:
+            waited = progressed = False
+            for fn_name, fn in list(self.functions.items()):
+                patterns = (
+                    (False, re.compile(rf"\b{re.escape(fn_name)}\s*\((.*?)\)", flags=re.IGNORECASE | re.DOTALL)),
+                    (True, re.compile(rf"\b(FROM|JOIN)\s+{re.escape(fn_name)}\b(?!\s*\()", flags=re.IGNORECASE)),
+                )
+                for bare, pattern in patterns:
+                    pos = 0
+                    while m := pattern.search(rewritten, pos):
+                        names = {fn_name, self._alias_at(rewritten, m.end())} - {None}
+                        if not force and any(e.probe in names and e.build not in read and e.build not in names
+                                             for e in edges):
+                            waited = True  # the other side of its join isn't read yet: after it
+                            pos = m.end()
+                            continue
+                        explicit = {} if bare else self._parse_kwargs(m.group(1))
+                        tname, df_cols, used = self._read_source(fn_name, fn, pushdown, explicit, names, parsed,
+                                                                 edges, on_conditions, read, single_select)
+                        sources += 1
+                        progressed = True
+                        for n in names:
+                            read[n] = (tname, df_cols)
+                        # WHERE / ON filters that reached the function but aren't result columns
+                        for k in used:
+                            if k not in df_cols:
+                                structural_used.add(k)
+                                structural_of.setdefault(k, set()).update(n.lower() for n in names)
+                        if bare:
+                            # no alias written: the temp table keeps the function's name (SELECT nvd_cves.id …)
+                            keep = "" if self._has_alias(rewritten, m.end()) else f" AS {fn_name}"
+                            replacement = f"{m.group(1)} {tname}{keep}"
+                        else:
+                            replacement = tname
+                        rewritten = rewritten[: m.start()] + replacement + rewritten[m.end():]
+                        pos = m.start() + len(replacement)
+            if not waited:
+                break
+            if not progressed:
+                force = True  # a cycle, or a side that never shows up: read the rest as they are
 
         if structural_used or self._arg_conditions(pushdown):
             rewritten = self._strip_where_conditions(rewritten, structural_used, self.ARG_QUALIFIERS, structural_of)
@@ -2049,6 +2259,184 @@ class DuckAPI:
                         time.perf_counter() - started)
             logger.debug("    %s", " ".join(rewritten.split()))
         return self.conn.sql(rewritten)
+
+    # ------------------------------------------------------------------
+    # One source of a query, and what a join sends it
+    # ------------------------------------------------------------------
+
+    def _calls_blanked(self, query: str) -> str:
+        """The query with each registered function's inline arguments emptied (``assets(limit=3)`` → ``assets()``):
+        ``k=v`` isn't SQL DuckDB's parser takes when ``k`` is a keyword, and they're ours to read anyway."""
+        masked = _mask_strings(query)
+        for fn_name in sorted(self.functions, key=len, reverse=True):
+            pattern = re.compile(rf"\b{re.escape(fn_name)}\s*\((.*?)\)", flags=re.IGNORECASE | re.DOTALL)
+            spans = [(m.start(1), m.end(1)) for m in pattern.finditer(masked)]
+            for start, end in reversed(spans):
+                query = query[:start] + " " * (end - start) + query[end:]
+                masked = masked[:start] + " " * (end - start) + masked[end:]
+        return query
+
+    def _function_refs(self, parsed: exp.Expression) -> set:
+        """The refs (alias, else name) of the tables in the query that are registered functions."""
+        refs = set()
+        for t in parsed.find_all(exp.Table):
+            name = (t.this.name if isinstance(t.this, exp.Anonymous) else t.name).lower()
+            if name in self.functions:
+                ref = _table_ref(t)
+                if ref:
+                    refs.add(ref)
+        return refs
+
+    def _read_source(self, fn_name: str, fn: Any, pushdown: PushDownContext, explicit: Dict[str, Any],
+                     names: set, parsed: Optional[exp.Expression], edges: List[JoinEdge],
+                     on_conditions: List[Condition], read: Dict[str, Tuple[str, List[str]]],
+                     single_select: bool) -> Tuple[str, List[str], set]:
+        """Reads one function reference of the query: (temp table, its columns, the eq filters it was given)."""
+        extra, notes = self._join_conditions(names, edges, on_conditions, read, pushdown, single_select)
+        fallback = self._referenced_columns(parsed, names, self._structural_names(fn, explicit))
+        if extra is None:  # the other side of its join has no rows: nothing of this one can be in the answer
+            self._log_call(fn_name, {}, notes)
+            columns = list(fallback or []) or [self.EMPTY_PLACEHOLDER_COLUMN]
+            df = pd.DataFrame({c: pd.Series(dtype="object") for c in columns})
+            self._table_counter += 1
+            tname = f"_api_{fn_name}_{self._table_counter}"
+            self.conn.register(tname, df)
+            takes = set(inspect.signature(fn).parameters)  # its arguments in the WHERE / ON aren't columns
+            return tname, list(df.columns), {k for k in pushdown.filters if k in takes} | {
+                c.column for c in on_conditions if c.table in names and c.op == "eq" and c.column in takes}
+        call = replace(pushdown, conditions=pushdown.conditions + extra) if extra else pushdown
+        calls, report, fanned = self._plan_calls(fn, call, explicit, names, [c for c in extra if c.op == "in"])
+        report = notes + report
+        used = {k for k in list(pushdown.filters) + [c.column for c in extra if c.op == "eq"]
+                if any(k in kw for kw in calls)}
+        if len(calls) == 1 and self._pages_instead(fn_name, calls[0]):
+            for line in notes:
+                logger.info("    %s", line)
+            tname, df_cols, kwargs = self._materialize_pages(fn_name, call, explicit, names, parsed, fallback)
+            return tname, df_cols, {k for k in used if k in kwargs}
+        if len(calls) == 1:
+            self._log_call(fn_name, calls[0], report)
+            tname, df_cols = self._materialize(fn_name, fn, calls[0], fallback)
+            return tname, df_cols, used
+        self._log_call(f"{fn_name} × {len(calls)} calls", calls[0], report)
+        tname, df_cols = self._materialize_calls(fn_name, fn, calls, fallback, fanned)
+        return tname, df_cols, used
+
+    def _join_conditions(self, names: set, edges: List[JoinEdge], on_conditions: List[Condition],
+                         read: Dict[str, Tuple[str, List[str]]], pushdown: PushDownContext,
+                         single_select: bool) -> Tuple[Optional[List[Condition]], List[str]]:
+        """
+        What joins add to a table's conditions: its ON constants, and
+        ``col IN (values)`` for each join whose other side was read — the
+        distinct, non-null values of that side's key, after that side's own
+        WHERE conditions (a single SELECT's; else unfiltered, a superset).
+        None: the other side has no such values, so this one needn't be read.
+        """
+        extra = [c for c in on_conditions if c.table in names]
+        notes = [f"✓ ON {_describe_condition(c)} — a join condition on this table only" for c in extra]
+        for e in edges:
+            if e.probe not in names or e.build not in read:
+                continue
+            tname, columns = read[e.build]
+            column = {c.lower(): c for c in columns}.get(e.build_column.lower())
+            what = f"{e.join} {e.probe}.{e.probe_column} = {e.build}.{e.build_column}"
+            if column is None:
+                notes.append(f"✗ {what} — {e.build} came back without {e.build_column}")
+                continue
+            own = [c for c in pushdown.conditions if single_select and c.table == e.build and c.op != "in"]
+            where = conditions_to_sql(own, columns)
+            ident = '"' + column.replace('"', '""') + '"'
+            sql = (f'SELECT DISTINCT {ident} FROM "{tname}" WHERE {ident} IS NOT NULL'
+                   + (f" AND {where}" if where else "") + f" LIMIT {self.join_values_max + 1}")
+            try:
+                values = [_join_value(r[0]) for r in self.conn.execute(sql).fetchall()]
+            except Exception as exc:  # noqa: BLE001 — narrowing is an optimisation: the join still runs
+                notes.append(f"✗ {what} — couldn't read {e.build}'s values ({exc.__class__.__name__})")
+                continue
+            if any(v is _UNUSABLE for v in values):
+                notes.append(f"✗ {what} — {e.build}.{e.build_column} isn't a plain value (list/struct)")
+                continue
+            if len(values) > self.join_values_max:
+                notes.append(f"✗ {what} — more than {self.join_values_max:,} values (join_values_max): not narrowed")
+                continue
+            if not values:
+                notes.append(f"✓ {what} — {e.build} has none: not read")
+                return None, notes
+            notes.append(f"  {what}: {len(values):,} value(s) from {e.build}")
+            extra.append(Condition(e.probe_column, "in", tuple(values), e.probe))
+        return extra, notes
+
+    def _plan_calls(self, fn: Any, pushdown: PushDownContext, explicit: Dict[str, Any], names: set,
+                    in_conditions: List[Condition]) -> Tuple[List[Dict[str, Any]], List[str], Optional[str]]:
+        """
+        ``_plan_call``, then a join's ``IN`` made to fit: split into chunks
+        of the connector's ``IN_MAX`` (several calls), or — when the function
+        takes no ``col_in`` and its ``where`` no ``in`` — one call per value
+        on its ``col`` parameter (a lookup join; ``asset_id`` of
+        ``asset_vulnerabilities``). At most ``join_calls_max`` calls, and
+        only one condition expands; beyond that DuckDB joins what's read.
+        Returns (the calls' kwargs, the report, the parameter fanned out on).
+        """
+        kwargs, report = self._plan_call(fn, pushdown, explicit, names)
+        calls = [kwargs]
+        fanned: Optional[str] = None
+        if not in_conditions:
+            return calls, report, fanned
+        accepted = set(inspect.signature(fn).parameters)
+        owner = getattr(fn, "__self__", None) or (fn if not inspect.isfunction(fn) else None)
+        in_max = getattr(owner, "IN_MAX", None)
+        expanded = False
+        for c in in_conditions:
+            values = list(c.value)
+            said = _describe_condition(c)
+            param = f"{c.column}_in"
+            in_where = any(x is c for x in (kwargs.get("where") or []))
+            if param in kwargs or in_where:
+                size = int(in_max) if in_max else len(values)
+                if len(values) <= size:
+                    continue
+                chunks = [values[i:i + size] for i in range(0, len(values), size)]
+                if expanded or len(chunks) > self.join_calls_max:
+                    calls = [_without_in(kw, c, param) for kw in calls]
+                    report.append(f"✗ {said} — {len(chunks)} calls of ≤ {size} (join_calls_max "
+                                  f"{self.join_calls_max}): DuckDB joins")
+                    continue
+                calls = [_with_in(kw, c, param, chunk) for kw in calls for chunk in chunks]
+                expanded = True
+                report.append(f"✓ {said} → {len(chunks)} calls of ≤ {size} values (IN_MAX)")
+                continue
+            target = c.column if (c.column in accepted and c.column not in ("where", "limit")
+                                  and c.column not in kwargs) else None
+            if target is None:
+                continue
+            if expanded or len(values) > self.join_calls_max:
+                report.append(f"✗ {said} — one call per value would be {len(values):,} calls "
+                              f"(join_calls_max {self.join_calls_max}): DuckDB joins")
+                continue
+            calls = [dict(kw, **{target: v}) for kw in calls for v in values]
+            expanded, fanned = True, target
+            report = [line for line in report if not line.startswith(f"✗ {said}")]
+            report.append(f"✓ {said} → one call per value on {target} ({len(values)} calls)")
+        return calls, report, fanned
+
+    def _materialize_calls(self, fn_name: str, fn: Any, calls: List[Dict[str, Any]],
+                           fallback: Optional[List[str]], fanned: Optional[str]) -> Tuple[str, List[str]]:
+        """Several calls of one table (a join's values split up): read each, keep them as one table. A call per
+        value on a parameter that isn't a result column gets it as one, so the join's ON still binds."""
+        frames = []
+        for kwargs in calls:
+            tname, _ = self._materialize(fn_name, fn, kwargs, fallback)
+            df = self.conn.execute(f'SELECT * FROM "{tname}"').df()
+            self.conn.unregister(tname)
+            if fanned and fanned.lower() not in {c.lower() for c in df.columns}:
+                df[fanned] = kwargs[fanned]
+            frames.append(df)
+        df = json_for_mixed_objects(pd.concat(frames, ignore_index=True)) if frames else pd.DataFrame()
+        self._table_counter += 1
+        tname = f"_api_{fn_name}_{self._table_counter}"
+        self.conn.register(tname, df)
+        logger.info("  %s: %s rows from %d calls", fn_name, f"{len(df):,}", len(calls))
+        return tname, list(df.columns)
 
     # ------------------------------------------------------------------
     # Streaming (incremental pagination)

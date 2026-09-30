@@ -26,7 +26,8 @@ the shapes you couldn't verify in one place.
 
 - `duckduck/<name>.py`, a class with `from_secret(cls, secret, **overrides)`.
 - Table methods: structural args required and positional; column filters `Optional[X] = None`; `where` when the
-  server takes arbitrary conditions (plus `pushdown_blocker` for what it can't); `limit: Optional[int] = None`
+  server takes arbitrary conditions (plus `pushdown_blocker` for what it can't; declare `WHERE_OPS` with `"in"` and
+  an `IN_MAX` per request when it can take a list of values — that's what narrows it in a JOIN); `limit: Optional[int] = None`
   last. Return a `pd.DataFrame` (`pd.json_normalize(..., sep="_")`).
 - Log HTTP with `instrument_session(self.session)`; report pages with `PageProgress`.
 - **Page loop**: a page-numbered or offset API that reports a total pages through

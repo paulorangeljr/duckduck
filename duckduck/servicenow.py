@@ -290,6 +290,11 @@ class ServiceNow:
         self._last_total = int(total) if isinstance(total, str) and total.isdigit() else None
         return r.json()
 
+    #: ``where`` applies join key values (``fieldINa,b,c``) — at most ``IN_MAX`` per request (the URL's length):
+    #: DuckAPI splits more into several calls
+    WHERE_OPS = frozenset({"eq", "like", "ilike", "gt", "gte", "lt", "lte", "in"})
+    IN_MAX = 100
+
     #: SQL LIKE pattern kind (``duckduck.pushdown.parse_like``) → encoded-query operator.
     _LIKE_OPERATORS = {"contains": "LIKE", "startswith": "STARTSWITH", "endswith": "ENDSWITH", "equals": "="}
 
@@ -341,6 +346,13 @@ class ServiceNow:
             # <field>_link / <field>_value — neither is a real field name.
             return None, "reference sub-column (<field>_link/_value)"
         value = cond.value
+        if cond.op == "in":  # a join's key values: fieldINa,b,c
+            texts = [("true" if v else "false") if isinstance(v, bool) else str(v) for v in (value or ())]
+            if not texts:
+                return None, "no values"
+            if any("," in t or "^" in t or "\n" in t for t in texts):
+                return None, "a value contains ',' or '^' (encoded-query separators)"
+            return f"{field}IN{','.join(texts)}", ""
         text = ("true" if value else "false") if isinstance(value, bool) else str(value)
         if "^" in text or "\n" in text:
             return None, "value contains '^' (the encoded-query separator)"

@@ -44,6 +44,9 @@ class BlobStorage:
         ``account_name``/credential-chain auth when given.
     """
 
+    #: ``where`` goes into the DuckDB scan (``conditions_to_sql``), join key values included
+    WHERE_OPS = frozenset({"eq", "like", "ilike", "gt", "gte", "lt", "lte", "in"})
+
     def __init__(
         self,
         account_name: Optional[str] = None,

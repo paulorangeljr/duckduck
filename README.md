@@ -86,6 +86,49 @@ table_name)`). The bare form (`WHERE table_name = 'incident'`) still fills
 it too; with `arg.table_name` also given, a bare `table_name` is a filter
 on the column of that name.
 
+### Joins between sources: one side narrows the other
+
+Each source is read before DuckDB runs the query, so a JOIN between two
+sources would otherwise read both whole. duckduck reads one side first and
+sends its key values to the other:
+
+```sql
+SELECT s3.*, sn.number
+FROM s3_data.my_table s3
+LEFT JOIN servicenow."table" sn
+  ON sn.sys_id = s3.sn_id AND sn.table_name = 'incident'
+WHERE s3.name = 'xxxx'
+```
+
+`s3` is read with its WHERE; the distinct `sn_id` values of the rows kept
+(say 37) go to ServiceNow as `sys_idINa,b,…` — at most 100 per request
+(`IN_MAX`), so more become several requests. `sn.table_name = 'incident'`
+in the ON fills the table function's argument. Verbose mode shows it:
+
+```
+▶ servicenow_table(table_name='incident', where=[1 conditions])
+    ✓ ON sn.table_name = 'incident' — a join condition on this table only
+      LEFT JOIN sn.sys_id = s3.sn_id: 37 value(s) from s3
+    ✓ sn.sys_id IN ('a', 'b', 'c', … (37 values)) → where
+```
+
+- **Which side**: the joined table in `JOIN` / `LEFT JOIN` / `SEMI` /
+  `ANTI`, the first one in `RIGHT JOIN`; never in `FULL` or `CROSS`. Only
+  `a.x = b.y` between two qualified columns (or `USING` after one table).
+- **How it's sent**: a `where` whose connector applies `IN` (ServiceNow,
+  SQL databases, ADX, Glue / Blob / local files), a `<col>_in` parameter,
+  or — for an API that only takes one value (`asset_vulnerabilities(asset_id)`)
+  — one call per value, the value kept as a column so the ON still joins.
+- **Limits**: more than `join_values_max` (1000) values, or more than
+  `join_calls_max` (20) calls → that side is read as before and DuckDB
+  joins. No rows on the first side → the other isn't read at all.
+  `DuckAPI(join_pushdown=False)` turns it off.
+- DuckDB still runs the whole join over what was read: the values only
+  decide what's worth reading.
+
+A query DuckDB can't parse (a JOIN without ON) fails before any source is
+read.
+
 ## Using the SharePoint wrapper
 
 ```python
