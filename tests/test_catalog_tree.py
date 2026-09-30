@@ -300,3 +300,11 @@ def test_the_edit_dialog_says_it_is_loading():
     from duckduck.semantic.webpage import PAGE
 
     assert "Loading “${esc(name)}”…" in PAGE and "api(`/api/views/${encodeURIComponent(name)}`)" in PAGE and "Removing…" in PAGE
+
+
+def test_the_sql_editor_has_an_autocomplete():
+    from duckduck.semantic.webpage import PAGE
+
+    assert 'id="sqlac"' in PAGE and "function acContext(" in PAGE and "function tableItems(" in PAGE
+    assert 'if (LANG !== "sql") { acClose(); return; }' in PAGE  # SQL mode only, for now
+    assert "rememberColumns(" in PAGE and "duckduck-columns" in PAGE and "arg.${p.name}" in PAGE

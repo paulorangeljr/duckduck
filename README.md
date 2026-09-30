@@ -1143,6 +1143,15 @@ instead) — each with **Use** to put it in the editor.
 fold its tables away (*Expand all* / *Collapse all* above; remembered in
 the browser, and a filter shows what matches either way).
 
+**Autocomplete** (SQL mode): after `FROM` / `JOIN` it offers connectors,
+then their databases, then their tables (`s3_data.` → `s3_data.finance.` →
+`s3_data.finance.orders`, or the `s3_data.<database>.<table_name>` pattern
+with its first part selected); `arg.` offers the arguments of the query's
+tables (required ones marked); inside `sn_table(` the parameters; `alias.`
+that table's columns; elsewhere columns, keywords and functions. Columns
+come from results you've already seen (kept in the browser) and from the
+filters a table takes. Ctrl+Space opens it anywhere; ↑↓, Tab/Enter, Esc.
+
 **Looking at a result.** Under the query, the first 1,000 rows (the header
 stays put while you scroll). **⤢ Expand** opens the whole result full
 screen: search every column, click a column to sort (again for

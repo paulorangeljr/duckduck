@@ -248,6 +248,16 @@ button.mini:hover { border-color: var(--accent); color: var(--accent); }
 .connbox .dot.ok { background: var(--good-ink); } .connbox .dot.bad { background: var(--bad); }
 .connbox details { margin-top: 4px; } .connbox summary { cursor: pointer; color: var(--bad); }
 textarea.editor { width: 100%; min-height: 180px; resize: vertical; tab-size: 2; line-height: 1.45; }
+.edwrap { position: relative; }
+.acpop { position: absolute; z-index: 20; min-width: 260px; max-width: min(520px, 90%); max-height: 260px; overflow-y: auto;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.16); padding: 3px; font-size: 13px; }
+.acitem { display: flex; align-items: baseline; gap: 8px; padding: 4px 8px; border-radius: 6px; cursor: pointer; }
+.acitem[aria-selected="true"] { background: var(--accent); color: #fff; }
+.acitem[aria-selected="true"] .acdetail, .acitem[aria-selected="true"] .ackind { color: #fff; opacity: .85; }
+.acitem .aclabel { font-family: var(--mono, monospace); white-space: nowrap; }
+.acitem .ackind { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); flex: none; }
+.acitem .acdetail { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: auto; }
+.achint { padding: 3px 8px 2px; font-size: 11px; color: var(--muted); border-top: 1px solid var(--grid); margin-top: 2px; }
 #cfgtext { min-height: 520px; }
 .tlist { max-height: 70vh; overflow: auto; margin-top: 8px; }
 .tlist h4 { margin: 10px 0 4px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
@@ -708,7 +718,9 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
               <button type="button" data-lang="sql" aria-pressed="true" title="DuckDB SQL">SQL</button>
               <button type="button" data-lang="kql" aria-pressed="false" title="Kusto Query Language — translated to SQL, or run on ADX as it is">KQL</button></div>
             <span class="muted small" id="kqlnote"></span></div>
-          <textarea class="editor mono" id="sqltext" spellcheck="false" aria-label="SQL">SHOW TABLES</textarea>
+          <div class="edwrap"><textarea class="editor mono" id="sqltext" spellcheck="false" aria-label="SQL" aria-autocomplete="list"
+              aria-controls="sqlac">SHOW TABLES</textarea>
+            <div class="acpop" id="sqlac" role="listbox" hidden></div></div>
           <div class="row" style="margin-top:8px"><button class="primary" id="sqlrun">Run</button>
             <button class="secondary" type="button" id="sqlsave" title="Keep this query as a table with a name — in duckduck.json, for SQL and Ask">Save as table</button>
             <label class="check small" title="Log at DEBUG: request bodies, bound parameters, every page (secrets stay masked)">
@@ -2569,6 +2581,7 @@ let LAST_SQL = null;  // {result, sql}: what ⤢ Expand opens
 function drawSqlResult(r) {
   const rows = (r.rows || []).map(row => Object.fromEntries(r.columns.map((c, i) => [c, row[i]])));
   LAST_SQL = r.error ? null : {result: r, sql: $("#sqltext").value.trim()};
+  if (!r.error && LANG === "sql") rememberColumns($("#sqltext").value, r.columns);  // for the autocomplete
   const tr = r.translation;
   const trHtml = tr ? `<details class="translated" ${r.error ? "open" : ""}><summary>${tr.route === "native"
       ? `Ran on <b>${esc(tr.service)}</b> as KQL<span class="routepill">native ADX</span>` : `Translated to SQL<span class="routepill">KQL → SQL</span>`}</summary>
@@ -2636,6 +2649,214 @@ function inLang(sql) {
   return ref + (conds.length ? `\n| where ${conds.join("\n    and ")}` : "") + `\n| take ${m[3]}`;
 }
 $("#sqlrun").addEventListener("click", runSql);
+
+// ---- SQL autocomplete (SQL mode only): tables by address after FROM / JOIN, level by level (connector →
+// database → table), arg.<x> of the query's tables, fn(<param>=, alias.<column>, columns, keywords, functions.
+// Columns come from results already seen (kept per table in the browser) and the filters a table takes.
+const AC = {items: [], at: 0, start: 0, open: false};
+const SQL_KEYWORDS = ["SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "JOIN", "LEFT JOIN", "INNER JOIN", "ON", "AS", "GROUP BY",
+  "ORDER BY", "HAVING", "LIMIT", "DISTINCT", "UNION ALL", "IN", "BETWEEN", "LIKE", "ILIKE", "IS NULL", "IS NOT NULL", "DESC", "ASC",
+  "WITH", "CASE", "WHEN", "THEN", "ELSE", "END", "SHOW TABLES", "DESCRIBE"];
+const SQL_FUNCS = ["count(*)", "count(DISTINCT )", "sum()", "avg()", "min()", "max()", "lower()", "upper()", "coalesce()", "cast( AS VARCHAR)",
+  "date_trunc('day', )", "strftime(, '%Y-%m-%d')", "now()", "regexp_matches(, '')", "string_agg(, ', ')", "json_extract_string(, '$.')"];
+let COLUMN_CACHE = {};
+try { COLUMN_CACHE = JSON.parse(store.get("duckduck-columns") || "{}") || {}; } catch { COLUMN_CACHE = {}; }
+// remember a result's columns for the table it read (a single FROM)
+function rememberColumns(sql, columns) {
+  const refs = queryRefs(sql);
+  if (refs.length !== 1 || !columns?.length) return;
+  COLUMN_CACHE[refs[0].ref.toLowerCase()] = columns.slice(0, 300);
+  const keys = Object.keys(COLUMN_CACHE); if (keys.length > 300) delete COLUMN_CACHE[keys[0]];
+  try { store.set("duckduck-columns", JSON.stringify(COLUMN_CACHE)); } catch {}
+}
+const maskStrings = (t) => t.replace(/'(?:[^']|'')*'?/g, m => "'" + " ".repeat(Math.max(0, m.length - 2)) + (m.length > 1 ? "'" : ""));
+// the tables a query reads: FROM / JOIN <ref> [AS] [alias]
+function queryRefs(sql) {
+  const out = [], m = maskStrings(sql), re = /\b(?:from|join)\s+((?:"[^"]*"|[A-Za-z_][\w$]*)(?:\s*\.\s*(?:"[^"]*"|[A-Za-z_][\w$]*))*)(\s*\([^)]*\))?(?:\s+(?:as\s+)?([A-Za-z_]\w*))?/gi;
+  let x;
+  const notAlias = /^(where|join|left|right|inner|full|cross|on|group|order|limit|union|having|natural|using|as)$/i;
+  while ((x = re.exec(m))) {
+    const ref = sql.slice(x.index + x[0].indexOf(x[1]), x.index + x[0].indexOf(x[1]) + x[1].length).replace(/\s+/g, "");
+    const alias = x[3] && !notAlias.test(x[3]) ? x[3] : null;
+    out.push({ref, alias, call: !!x[2]});
+  }
+  return out;
+}
+// the registered table a reference reads (by name, saved name, address, or its connector's table function)
+function tableOfRef(ref) {
+  const r = ref.replace(/"/g, "").toLowerCase();
+  const direct = TABLES.find(t => t.name.toLowerCase() === r || (t.saved_name || "").toLowerCase() === r || (t.address || "").toLowerCase() === r
+    || (t.default_address || "").toLowerCase() === r);
+  if (direct) return {t: direct, byAddress: r.includes(".") && direct.name.toLowerCase() !== r};
+  const svc = r.split(".")[0];
+  const fn = TABLES.find(t => t.service === svc && t.address_pattern);
+  return fn ? {t: fn, byAddress: true} : null;
+}
+function columnsOf(ref) {
+  const found = tableOfRef(ref), cols = new Set(COLUMN_CACHE[ref.toLowerCase()] || []);
+  if (found) {
+    [found.t.name, found.t.saved_name, found.t.address].filter(Boolean).forEach(k => (COLUMN_CACHE[k.toLowerCase()] || []).forEach(c => cols.add(c)));
+    (found.t.params || []).filter(p => !p.required && (p.default == null || p.default === "None"))  // filters it takes → its columns
+      .forEach(p => cols.add(p.name.replace(/_(i?like|gte?|lte?)$/, "")));
+  }
+  return [...cols];
+}
+function acContext(text, pos) {
+  const before = text.slice(0, pos), masked = maskStrings(before);
+  if (/'[^']*$/.test(masked.replace(/''/g, ""))) return null;  // inside a string
+  const word = (before.match(/[A-Za-z0-9_$."]*$/) || [""])[0];
+  const start = pos - word.length;
+  const head = masked.slice(0, start).replace(/\s+$/, "");
+  // inside fn( … ) of a table → its parameters
+  const call = masked.slice(0, start).match(/\b([A-Za-z_][\w$]*(?:\.[\w$]+)*)\s*\(([^()]*)$/);
+  if (call) {
+    const t = TABLES.find(x => x.name.toLowerCase() === call[1].toLowerCase());
+    if (t && (t.params || []).length) {
+      const given = new Set([...call[2].matchAll(/(\w+)\s*=/g)].map(g => g[1]));
+      return {start, word, items: t.params.filter(p => !given.has(p.name)).map(p => ({label: `${p.name}=`, insert: `${p.name}=`,
+        kind: p.required ? "required" : "arg", detail: p.type || ""}))};
+    }
+  }
+  const lastKw = (head.match(/\b(from|join|where|and|or|on|select|by|having|limit|as|set|when|then|else)\s*$/i) || [])[1];
+  const refs = queryRefs(text);
+  // arg.<x>: the arguments of the query's tables
+  if (/^args?\./i.test(word)) {
+    const seen = new Set(), items = [];
+    refs.forEach(r => {
+      const f = tableOfRef(r.ref); if (!f) return;
+      (f.t.params || []).forEach(p => {
+        if (seen.has(p.name) || (f.byAddress && p.required)) return;  // an address already gives the required ones
+        seen.add(p.name);
+        items.push({label: `arg.${p.name}`, insert: `arg.${p.name} = ${p.type === "int" || p.type === "float" ? "" : "''"}`, caret: p.type === "int" || p.type === "float" ? 0 : -1,
+          kind: p.required ? "required" : "arg", detail: `${f.t.name}${p.type ? " · " + p.type : ""}`});
+      });
+    });
+    return {start, word, items};
+  }
+  // a table after FROM / JOIN: connector → database → table
+  if (/^(from|join)$/i.test(lastKw || "")) return {start, word, items: tableItems(word)};
+  // alias.<column>
+  const dot = word.lastIndexOf(".");
+  if (dot > 0) {
+    const q = word.slice(0, dot).replace(/"/g, "").toLowerCase();
+    const r = refs.find(x => (x.alias || "").toLowerCase() === q || x.ref.toLowerCase() === q || x.ref.toLowerCase().split(".").pop() === q);
+    if (r) return {start: start + dot + 1, word: word.slice(dot + 1), items: columnsOf(r.ref).map(c => ({label: c, insert: /^[A-Za-z_]\w*$/.test(c) ? c : `"${c}"`, kind: "column", detail: r.ref}))};
+    return null;
+  }
+  const items = [];
+  const cols = new Map(); refs.forEach(r => columnsOf(r.ref).forEach(c => { if (!cols.has(c)) cols.set(c, r.alias || r.ref); }));
+  cols.forEach((from, c) => items.push({label: c, insert: /^[A-Za-z_]\w*$/.test(c) ? c : `"${c}"`, kind: "column", detail: from}));
+  if (/^(where|and|or|on)$/i.test(lastKw || "") && refs.some(r => (tableOfRef(r.ref)?.t.params || []).length)) {
+    items.push({label: "arg.", insert: "arg.", kind: "argument", detail: "an argument of the table, not a column", reopen: true});
+  }
+  SQL_FUNCS.forEach(fn => items.push({label: fn, insert: fn, kind: "function", caret: fn.indexOf("(") + 1 - fn.length + (fn.endsWith("()") ? 0 : 0)}));
+  SQL_KEYWORDS.forEach(k => items.push({label: k, insert: k + " ", kind: "keyword"}));
+  return {start, word, items};
+}
+// tables by address, one level at a time
+function tableItems(word) {
+  const parts = word.replace(/"/g, "").split("."), svcs = [...new Set(TABLES.map(t => t.service).filter(sv => sv && sv !== "saved tables" && sv !== "taken over"))];
+  if (parts.length === 1) {
+    const items = svcs.map(sv => ({label: sv + ".", insert: sv + ".", kind: "connector", detail: `${TABLES.filter(t => t.service === sv).length} tables`, reopen: true}));
+    TABLES.filter(t => !t.address).forEach(t => items.push({label: t.saved_name || t.name, insert: t.saved_name || t.name, kind: t.saved ? "saved" : (t.kind === "table" ? "table" : t.kind), detail: t.description || ""}));
+    return items;
+  }
+  const svc = parts[0].toLowerCase();
+  const nested = (NESTED[svc]?.tables || []);
+  const saved = TABLES.filter(t => (t.service || "") === svc);
+  const addr = (t) => (t.saved_name && t.saved_name.includes(".") ? t.saved_name : t.address) || "";
+  if (parts.length === 2) {  // svc.<database> or svc.<table>
+    const dbs = new Set(databasesOf(svc));
+    nested.forEach(n => { if (n.database) dbs.add(n.database); });
+    const items = [...dbs].sort().map(db => ({label: `${svc}.${db}.`, insert: `${svc}.${quotePart(db)}.`, kind: "database", detail: "", reopen: true}));
+    saved.forEach(t => { const a = addr(t); if (a && a.split(".").length === 2) items.push({label: a, insert: a, kind: t.saved ? "saved" : "table", detail: t.description || ""}); });
+    nested.filter(n => !n.database && n.address).forEach(n => items.push({label: n.address, insert: n.address, kind: "table", detail: "behind the catalog"}));
+    const fn = saved.find(t => t.address_pattern);
+    if (fn) items.push({label: fn.address_pattern, insert: fn.address_pattern, kind: "pattern", detail: "fill the parts", select: true});
+    return items;
+  }
+  const db = parts.slice(1, -1).join(".").toLowerCase(), items = [], seen = new Set();
+  saved.forEach(t => { const a = addr(t), p = a.split("."); if (p.length >= 3 && p.slice(1, -1).join(".").toLowerCase() === db) { seen.add(a.toLowerCase()); items.push({label: a, insert: a, kind: "saved", detail: t.description || ""}); } });
+  nested.filter(n => (n.database || "").toLowerCase() === db && n.address && !seen.has(n.address.toLowerCase()))
+    .forEach(n => items.push({label: n.address, insert: n.address, kind: "table", detail: "behind the catalog"}));
+  return items;
+}
+function acRank(items, word) {
+  const w = word.replace(/"/g, "").toLowerCase();
+  if (!w) return items.slice(0, 60);
+  const scored = [];
+  items.forEach(it => {
+    const l = it.label.toLowerCase(), last = l.split(".").filter(Boolean).pop() || l;
+    const s = l.startsWith(w) ? 0 : last.startsWith(w.split(".").pop()) && l.startsWith(w.slice(0, w.lastIndexOf(".") + 1)) ? 1 : l.includes(w) ? 2 : -1;
+    if (s >= 0 && l !== w) scored.push([s, it]);
+  });
+  return scored.sort((a, b) => a[0] - b[0] || a[1].label.length - b[1].label.length).slice(0, 60).map(x => x[1]);
+}
+function caretXY(ta, pos) {
+  const div = document.createElement("div"), cs = getComputedStyle(ta);
+  ["fontFamily", "fontSize", "fontWeight", "lineHeight", "letterSpacing", "paddingTop", "paddingLeft", "paddingRight", "borderTopWidth",
+   "borderLeftWidth", "boxSizing", "width", "tabSize"].forEach(k => { div.style[k] = cs[k]; });
+  Object.assign(div.style, {position: "absolute", visibility: "hidden", whiteSpace: "pre-wrap", wordWrap: "break-word", top: "0", left: "0"});
+  div.textContent = ta.value.slice(0, pos);
+  const span = document.createElement("span"); span.textContent = "​"; div.appendChild(span);
+  document.body.appendChild(div);
+  const lh = parseFloat(cs.lineHeight) || 18, x = span.offsetLeft - ta.scrollLeft, y = span.offsetTop - ta.scrollTop + lh;
+  div.remove();
+  return {x: Math.max(4, Math.min(x, ta.clientWidth - 200)), y: Math.min(y, ta.clientHeight) + 4};
+}
+function acOpen(force) {
+  const ta = $("#sqltext");
+  if (LANG !== "sql") { acClose(); return; }
+  const ctx = acContext(ta.value, ta.selectionStart);
+  if (!ctx) { acClose(); return; }
+  const items = acRank(ctx.items, ctx.word);
+  if (!items.length || (!force && !ctx.word && !/\.$/.test(ctx.word))) {
+    if (!force || !items.length) { acClose(); return; }
+  }
+  Object.assign(AC, {items, at: 0, start: ctx.start, open: true});
+  const pop = $("#sqlac"), xy = caretXY(ta, ta.selectionStart);
+  pop.style.left = xy.x + "px"; pop.style.top = xy.y + "px";
+  acDraw();
+  pop.hidden = false;
+}
+function acDraw() {
+  const pop = $("#sqlac");
+  pop.innerHTML = AC.items.map((it, i) => `<div class="acitem" role="option" id="ac${i}" aria-selected="${i === AC.at}" data-ac="${i}">
+      <span class="aclabel">${esc(it.label)}</span><span class="ackind">${esc(it.kind)}</span>${it.detail ? `<span class="acdetail">${esc(it.detail)}</span>` : ""}</div>`).join("")
+    + `<div class="achint">↑↓ · Tab/Enter to insert · Esc · Ctrl+Space</div>`;
+  $("#sqltext").setAttribute("aria-activedescendant", "ac" + AC.at);
+  pop.querySelector('[aria-selected="true"]')?.scrollIntoView({block: "nearest"});
+}
+function acClose() { AC.open = false; $("#sqlac").hidden = true; $("#sqltext").removeAttribute("aria-activedescendant"); }
+function acAccept(i) {
+  const it = AC.items[i ?? AC.at]; if (!it) return;
+  const ta = $("#sqltext"), pos = ta.selectionStart;
+  ta.value = ta.value.slice(0, AC.start) + it.insert + ta.value.slice(pos);
+  let caret = AC.start + it.insert.length + (it.caret || 0);
+  ta.focus();
+  const ph = it.select ? it.insert.search(/<[^>]+>/) : -1;  // a pattern: its first <part> selected, to type over
+  if (ph >= 0) { const m = it.insert.slice(ph).match(/<[^>]+>/)[0]; ta.setSelectionRange(AC.start + ph, AC.start + ph + m.length); }
+  else ta.setSelectionRange(caret, caret);
+  acClose();
+  if (it.reopen) setTimeout(() => acOpen(true), 0);
+}
+$("#sqltext").addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === " ") { e.preventDefault(); acOpen(true); return; }
+  if (!AC.open) return;
+  if (e.key === "ArrowDown") { e.preventDefault(); AC.at = (AC.at + 1) % AC.items.length; acDraw(); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); AC.at = (AC.at - 1 + AC.items.length) % AC.items.length; acDraw(); }
+  else if ((e.key === "Enter" && !(e.ctrlKey || e.metaKey)) || e.key === "Tab") { e.preventDefault(); e.stopImmediatePropagation(); acAccept(); }
+  else if (e.key === "Escape") { e.preventDefault(); acClose(); }
+}, true);
+$("#sqltext").addEventListener("input", (e) => {
+  if (LANG !== "sql") return;
+  const typed = e.data || "", ta = $("#sqltext");
+  if (typed === " " && /\b(from|join)\s$/i.test(ta.value.slice(0, ta.selectionStart))) { acOpen(true); return; }  // a table goes here
+  if (/[\w.]/.test(typed) || e.inputType === "deleteContentBackward" && AC.open) acOpen(false); else acClose();
+});
+$("#sqltext").addEventListener("blur", () => setTimeout(acClose, 150));
+$("#sqltext").addEventListener("click", acClose);
+$("#sqlac").addEventListener("mousedown", (e) => { const it = e.target.closest("[data-ac]"); if (it) { e.preventDefault(); acAccept(Number(it.dataset.ac)); } });
 
 // ---- the result viewer: a query's whole result full screen — search, sort, pages, columns, a value in full, CSV ----
 // A source gives pages: resultSource (a SQL result the server keeps whole) or rowsSource (rows the page already has).
