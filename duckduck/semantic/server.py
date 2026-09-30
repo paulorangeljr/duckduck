@@ -564,7 +564,7 @@ def create_app(
     @app.post("/api/views/check")
     def check_view(body: Dict[str, Any] = Body(...)):
         """What saving this query would make: bound (a table function's arguments) or a query, and a name."""
-        from ..views import kind_of, read_only_reason, suggested_name
+        from ..views import kind_of, read_only_reason, suggested_name, suggested_place
 
         source, sql = the_console().source, str(body.get("sql") or "")
         reason = read_only_reason(sql)
@@ -575,8 +575,12 @@ def create_app(
         except ValueError as exc:  # an address whose service didn't start, a table it doesn't have
             return dump({"error": str(exc)})
         address = source.address_of(definition["table"], definition["args"]) if definition.get("table") else None
+        # where it would go: connector / database / name — the page's picker starts there
+        place = suggested_place(source, definition, sql)
         return dump({"kind": kind_of(definition), **definition, "address": address,
-                     "name": suggested_name(source, definition), "off": saved_tables_off()})
+                     "name": suggested_name(source, definition) if definition.get("table") else
+                     ".".join(p for p in (place["connector"], place["database"], place["name"]) if p),
+                     "place": place, "off": saved_tables_off()})
 
     @app.post("/api/views")
     def create_view(body: Dict[str, Any] = Body(...)):
@@ -698,7 +702,7 @@ def create_app(
     def nested_tables(refresh: int = 0, service: Optional[str] = None):
         """The tables behind catalogs (glue_tables → glue_table(...), …) — the SQL tab's expanded catalog, of every connector or one."""
         from ..views import saved_as
-        from .admin import nested_group
+        from .admin import _nested_id, nested_group
 
         console = the_console()
         found = console.nested(refresh=bool(refresh), service=service or None)
@@ -708,7 +712,7 @@ def create_app(
         for t in found["tables"]:
             database, name = nested_group(console.source, t["table"], t["args"])
             tables.append({**t, "saved_as": saved_as(console.source, t["table"], t["args"]),
-                           "database": database, "name": name})
+                           "database": database, "name": name, "id": _nested_id(t)})
         return dump({**found, "tables": tables})
 
     @app.post("/api/takeover/proposal")

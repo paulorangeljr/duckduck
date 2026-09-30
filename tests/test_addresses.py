@@ -155,7 +155,7 @@ def test_the_page():
     from duckduck.semantic.webpage import PAGE
 
     assert "data-regall=" in PAGE and "function registerAll(" in PAGE and "JUST_SAVED" in PAGE
-    assert 'class="editbtn"' in PAGE and "data-showsaved" in PAGE
+    assert 'class="editbtn"' in PAGE
 
 
 def test_the_tables_behind_a_catalog_are_grouped_by_database(tmp_path):

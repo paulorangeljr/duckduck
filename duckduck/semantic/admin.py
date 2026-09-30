@@ -35,7 +35,7 @@ import uuid
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..addresses import address_pattern
+from ..addresses import address_pattern, services
 from ..views import read_only_reason, statements as _statements  # noqa: F401 — the SQL guard, shared with saved tables
 
 MASK = "***"
@@ -66,7 +66,7 @@ class SQLConsole:
         console.service_prefix = getattr(duck, "service_prefix", {})  # service.table addresses read the same here
         console.failed_views = getattr(duck, "failed_views", {})
         self._config_path = getattr(duck, "_config_path", None)
-        self._nested: Dict[Optional[str], Tuple[float, List[Dict[str, Any]], List[str]]] = {}
+        self._nested: Dict[Optional[str], Tuple[float, List[Dict[str, Any]], List[str], set]] = {}
         console._streaming_functions = getattr(duck, "_streaming_functions", {})
         console.conn.execute("SET enable_external_access = false")
         console.conn.execute("SET lock_configuration = true")
@@ -266,18 +266,26 @@ class SQLConsole:
             })
         return {"config_path": self._config_path, "services": services, "tables": len(self.duck.functions)}
 
-    def nested(self, refresh: bool = False, ttl: float = 300.0, service: Optional[str] = None) -> Dict[str, Any]:
+    def nested(self, refresh: bool = False, ttl: Optional[float] = None, service: Optional[str] = None) -> Dict[str, Any]:
         """
-        ``DuckAPI.nested_tables`` for the expanded catalog — every catalog read
-        is a call, so cached ``ttl`` s, per ``service`` (None = every connector).
+        ``DuckAPI.nested_tables`` for the expanded catalog, per ``service`` (None =
+        every connector). Every catalog read is a call to the source, so it's
+        kept until ``refresh`` (or ``ttl`` seconds, when given). A refresh says
+        which tables are ``new`` since the last read and how many are ``gone``.
         """
         now = time.time()
         cached = self._nested.get(service)
-        if refresh or cached is None or now - cached[0] > ttl:
+        new: List[str] = []
+        gone = 0
+        if refresh or cached is None or (ttl is not None and now - cached[0] > ttl):
             tables, notes = self.duck.nested_tables(service=service)
-            cached = self._nested[service] = (now, tables, notes)
-        at, tables, notes = cached
-        return {"tables": tables, "notes": notes, "read_at": at, "service": service}
+            now_ids = {_nested_id(t) for t in tables}  # a snapshot: the list itself may be the source's own
+            if cached is not None:
+                new = sorted(now_ids - cached[3])
+                gone = len(cached[3] - now_ids)
+            cached = self._nested[service] = (now, list(tables), notes, now_ids)
+        at, tables, notes, _ = cached
+        return {"tables": tables, "notes": notes, "read_at": at, "service": service, "new": new, "gone": gone}
 
     def _expandable(self, name: str) -> bool:
         """A catalog whose rows feed a registered table function: the expanded catalog can list what's behind it."""
@@ -299,6 +307,10 @@ class SQLConsole:
             r["saved_name"] = self.duck.view_key.get(r["name"])  # the saved table's own name (maybe an address)
             saved = self.duck.views.get(r["saved_name"]) if r["saved_name"] else None
             r["saved"] = None if saved is None else ("bound" if saved.get("table") else "query")
+            if saved is not None and "." in r["saved_name"]:  # listed under the connector its name starts with
+                first = r["saved_name"].split(".")[0].lower()
+                if first in services(self.duck):
+                    r["service"] = first
             # how it's written by address (nvd.cves); a service's table function by its pattern (s3_data.<database>.<table_name>)
             r["address"] = self.duck.address_of(r["name"]) if r["kind"] == "table" else None
             pattern = None if r["address"] else address_pattern(self.duck, r["name"])
@@ -312,6 +324,12 @@ class SQLConsole:
             r["params"] = _params_of(fn)
             r["doc"] = (inspect.getdoc(fn) or "") if fn is not None else ""
         return records
+
+
+def _nested_id(t: Dict[str, Any]) -> str:
+    """One table behind a catalog, stable across reads and saves: its catalog, table function and arguments."""
+    args = sorted((str(k), str(v)) for k, v in (t.get("args") or {}).items())
+    return f"{t.get('catalog')}|{t.get('table')}|{json.dumps(args)}"
 
 
 def nested_group(duck: Any, table: str, args: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:

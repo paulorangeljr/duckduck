@@ -217,6 +217,66 @@ def suggested_name(duck: Any, definition: Dict[str, Any]) -> str:
     return candidate
 
 
+def _split_address(name: str) -> List[str]:
+    """``s3_data.db."a b"`` → ``['s3_data', 'db', 'a b']``."""
+    return [p[1:-1].replace('""', '"') if p.startswith('"') else p
+            for p in re.findall(r'"(?:[^"]|"")+"|[^.]+', name)]
+
+
+def suggested_place(duck: Any, definition: Dict[str, Any], sql: str = "") -> Dict[str, Any]:
+    """
+    Where a new saved table goes: ``{connector, database, name}`` — joined, its
+    name (``connector.database.name``, ``connector.name``, or a plain ``name``).
+    A table over a table function → its address (``s3_data.security.proxy_logs``);
+    a saved query → the connector and database it reads from (its first table
+    written by address, else the connector of its first registered table),
+    named after that table + ``_view`` (so it never takes the table's own address).
+    """
+    from .addresses import _REF, _masked, _parts, services
+
+    known = services(duck)
+    connector = database = None
+    if definition.get("table"):
+        name = suggested_name(duck, definition)
+        parts = _split_address(name) if is_dotted(name) else [name]
+        if len(parts) > 1 and parts[0].lower() in known:
+            return {"connector": parts[0].lower(), "database": ".".join(parts[1:-1]) or None, "name": parts[-1]}
+        return {"connector": None, "database": None, "name": name}
+    base = "saved_query"
+    masked = _masked(sql or "")
+    for m in _REF.finditer(masked):
+        parts = _parts(m.group(3))
+        if parts[0].lower() in known:
+            connector, base = parts[0].lower(), parts[-1]
+            database = ".".join(parts[1:-1]) or None
+            break
+    else:
+        try:
+            import sqlglot
+            from sqlglot import exp
+
+            tables = [t for t in sqlglot.parse_one(sql, dialect="duckdb").find_all(exp.Table)] if sql else []
+        except Exception:
+            tables = []
+        for t in tables:
+            fn = (t.name or (t.this.name if isinstance(t.this, exp.Func) else "")).lower()
+            svc = duck.service_of.get(fn)
+            if fn in duck.functions:
+                prefix = known.get(svc, "") if svc in known else ""
+                connector = svc if svc in known else None
+                base = fn[len(prefix) + 1:] if prefix and fn.startswith(prefix + "_") else fn
+                break
+    base = re.sub(r"[^A-Za-z0-9_]+", "_", base).strip("_") or "saved_query"
+    base = (base if re.match(r"^[A-Za-z_]", base) else "t_" + base) + "_view"
+    name, i = base, 2
+    while True:
+        full = ".".join(p for p in (connector, database, name) if p)
+        if full not in getattr(duck, "views", {}) and function_key(full) not in duck.functions:
+            break
+        name, i = f"{base}_{i}", i + 1
+    return {"connector": connector, "database": database, "name": name}
+
+
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------

@@ -5,11 +5,11 @@
 #   scripts/build_kql_extension.sh            # the pinned commit
 #   KQL_TO_SQL_REF=main scripts/build_kql_extension.sh
 #
-# Needs: git, python3, the .NET 10 SDK (https://dotnet.microsoft.com/download — on Ubuntu 24.04:
+# Needs: git, python3, the .NET 10 SDK (https://dotnet.microsoft.com/download - on Ubuntu 24.04:
 # `apt-get install dotnet-sdk-10.0`) and a C toolchain for Native AOT (clang or gcc, zlib).
 # Linux, macOS, and Windows under Git Bash (Native AOT there needs Visual Studio's C++ build tools).
 # No .NET here? The repo's GitHub Actions workflow "kql extension" builds it for Linux, macOS and
-# Windows — run it from the Actions tab and download the file for your platform.
+# Windows - run it from the Actions tab and download the file for your platform.
 set -euo pipefail
 
 REF="${KQL_TO_SQL_REF:-04ad97ab24d2d6e380412f965069db10058ec16d}"   # tested with duckduck
@@ -21,19 +21,19 @@ command -v dotnet >/dev/null || { echo "dotnet not found: install the .NET 10 SD
 PY="$(command -v python3 || command -v python || true)"
 [ -n "$PY" ] || { echo "python not found" >&2; exit 1; }
 
-echo "Fetching kql-to-sql@$REF…"
+echo "Fetching kql-to-sql@${REF}..."
 git -C "$WORK" init -q kql-to-sql
 git -C "$WORK/kql-to-sql" remote add origin https://github.com/saoc90/kql-to-sql
-git -C "$WORK/kql-to-sql" fetch -q --depth 1 origin "$REF"
+git -C "$WORK/kql-to-sql" fetch -q --depth 1 origin "${REF}"
 git -C "$WORK/kql-to-sql" checkout -q FETCH_HEAD
 git -C "$WORK/kql-to-sql" submodule update -q --init --depth 1
 # the packaging script that turns the native library into a .duckdb_extension
 git clone -q --depth 1 https://github.com/duckdb/extension-ci-tools \
   "$WORK/kql-to-sql/src/KqlToSql.DuckDbExtension/extension-ci-tools"
 
-# duckduck's addition: kql_syntax_errors(kql) — the Kusto parser's own syntax errors. kql_to_sql translates
+# duckduck's addition: kql_syntax_errors(kql) - the Kusto parser's own syntax errors. kql_to_sql translates
 # whatever the parser recovered, so without it a typo quietly becomes another query
-# ("T | where x == 1 | projct a" → "SELECT * FROM a"); duckduck checks this first.
+# ("T | where x == 1 | projct a" -> "SELECT * FROM a"); duckduck checks this first.
 "$PY" - "$WORK/kql-to-sql/src/KqlToSql.DuckDbExtension/KqlExtension.cs" <<'PY'
 import sys
 p = sys.argv[1]; s = open(p).read()
@@ -64,15 +64,15 @@ case "$(uname -s)-$(uname -m)" in
   *) echo "unsupported platform $(uname -s)-$(uname -m)" >&2; exit 1 ;;
 esac
 
-echo "Building for $RID (Native AOT — a few minutes the first time)…"
-(cd "$WORK/kql-to-sql/src/KqlToSql.DuckDbExtension" && dotnet publish -c Release -r "$RID" -v quiet -nologo)
+echo "Building for ${RID} (Native AOT - a few minutes the first time)..."
+(cd "$WORK/kql-to-sql/src/KqlToSql.DuckDbExtension" && dotnet publish -c Release -r "${RID}" -v quiet -nologo)
 
-BUILT="$WORK/kql-to-sql/src/KqlToSql.DuckDbExtension/bin/Release/net10.0/$RID/publish/kql.duckdb_extension"
+BUILT="$WORK/kql-to-sql/src/KqlToSql.DuckDbExtension/bin/Release/net10.0/${RID}/publish/kql.duckdb_extension"
 [ -f "$BUILT" ] || { echo "the build didn't produce kql.duckdb_extension" >&2; exit 1; }
 mkdir -p "$(dirname "$DEST")"
 cp "$BUILT" "$DEST"
 echo "Installed: $DEST"
-"$PY" - "$DEST" <<'PY' || echo "(couldn't check it with the duckdb Python package — install duckduck's requirements and try again)"
+"$PY" - "$DEST" <<'PY' || echo "(couldn't check it with the duckdb Python package - install duckduck's requirements and try again)"
 import sys, duckdb
 c = duckdb.connect(config={"allow_unsigned_extensions": "true"})
 c.execute(f"LOAD '{sys.argv[1]}'")

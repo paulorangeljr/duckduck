@@ -217,7 +217,11 @@ aside.tables .tlist { flex: 1; min-height: 120px; max-height: none; }
 .dbtoggle .gcount { color: var(--muted); font-size: 12px; flex: none; }
 .dbtoggle .okc { flex: none; }
 .dbitems { margin: 0 0 4px 12px; border-left: 1px dashed var(--grid); padding-left: 4px; }
-.dbacts { display: flex; gap: 10px; padding: 0 4px 4px; }
+.dbacts { display: flex; gap: 10px; padding: 0 4px 4px; align-items: center; }
+.dbsection { margin: 4px 0 2px; }
+.dbitems .trow { margin-left: 0; }
+.newchip { font-size: 10.5px; padding: 0 6px; border-radius: 999px; background: var(--accent); color: #fff; flex: none; }
+.trow.just { animation: justsaved 1.6s ease-out 1; }
 .nmore { padding: 3px 4px; }
 .nitem.saved .lbl { color: var(--ink-2); }
 .nitem.just { background: rgba(46,160,67,.10); animation: justsaved 1.6s ease-out 1; }
@@ -309,6 +313,11 @@ button.linkish[aria-pressed="true"] { color: var(--ink-2); }
 .edhead { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
 .edhead #kqlnote { flex: 1; min-width: 200px; }
 .translated pre { max-height: 240px; overflow: auto; }
+.whereb { display: flex; align-items: flex-end; gap: 4px; flex-wrap: wrap; margin: 4px 0 8px; }
+.whereb label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--ink-2); flex: 1 1 120px; min-width: 0; }
+.whereb label em { font-style: normal; color: var(--muted); }
+.whereb select, .whereb input { width: 100%; font-family: var(--mono, monospace); font-size: 13px; }
+.whereb .wdot { font-weight: 700; padding-bottom: 7px; color: var(--muted); }
 .routepill { display: inline-block; font-size: 11.5px; padding: 1px 8px; border-radius: 999px; background: var(--surface-2); color: var(--ink-2); margin-left: 6px; }
 #cfgform h4 { margin: 18px 0 6px; font-size: 14px; display: flex; gap: 8px; align-items: center; }
 #cfgform h4:first-child { margin-top: 4px; }
@@ -836,8 +845,14 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
     </div>
     <div class="mbody">
       <div class="vkind" id="vkind"></div>
-      <label class="name" for="vname">Table name</label>
-      <div class="namebox"><span>SELECT * FROM</span><input id="vname" autocomplete="off" spellcheck="false" required></div>
+      <div class="name">Where it's saved</div>
+      <div class="whereb" role="group" aria-label="Where the table is saved">
+        <label><span>Connector</span><select id="vconn"></select></label><span class="wdot">.</span>
+        <label><span>Database <em>optional</em></span><input id="vdb" list="vdblist" autocomplete="off" spellcheck="false" placeholder="none"></label><span class="wdot">.</span>
+        <label><span>Table name</span><input id="vtbl" autocomplete="off" spellcheck="false" required></label>
+        <datalist id="vdblist"></datalist></div>
+      <div class="namebox"><span>SELECT * FROM</span><input id="vname" autocomplete="off" spellcheck="false" required
+        aria-label="The table's full name" title="The full name — edit the parts above, or type it here"></div>
       <div class="hint" id="vhint"></div>
       <label class="name" for="vdesc" style="margin-top:10px">Description <span class="muted" style="font-weight:400">— optional; helps people and Ask</span></label>
       <input id="vdesc" autocomplete="off" style="width:100%" placeholder="e.g. ServiceNow incidents">
@@ -1357,6 +1372,7 @@ async function openViewDialog({sql, previous = null, description = ""}) {
   $("#viewtitle").textContent = editing ? `Saved table “${previous}”` : "Save as a table";
   $("#vstmt").value = sql; $("#vdesc").value = description;
   $("#vname").value = previous || "";
+  fillConnectors(); splitName(previous || "");
   $("#verr").hidden = true;
   $("#vdelete").hidden = $("#vopen").hidden = !editing;
   $("#vgo").textContent = editing ? "Save changes" : "Save table";
@@ -1380,17 +1396,76 @@ async function checkStatement(nameFromIt) {
     $("#vkind").innerHTML = c.kind === "bound"
       ? `<b>A table over <span class="mono">${esc(call)}</span></b><div>Filters and LIMIT on it still go to the source, as they do on ${esc(c.table)}.</div>`
       : `<b>A saved query</b><div>It runs each time the table is read; filters on it are applied after it runs.</div>`;
-    if (nameFromIt && !$("#vname").value) $("#vname").value = c.name;
+    if (nameFromIt && !$("#vname").value) {  // where it goes by default: the connector/database the query reads from
+      const pl = c.place || {};
+      if (pl.name) { setPlace(pl.connector || "", pl.database || "", pl.name); } else { $("#vname").value = c.name; splitName(c.name); }
+    }
   }
   $("#vnote").textContent = c.off ? `Can't save here: ${c.off}.` : "Kept in duckduck.json (a .bak is kept) — it's there after a restart.";
   checkViewName();
 }
+// Where it's saved: connector . database . table name — composed into the full name (and split back from it).
+// The database is free text: one that exists is suggested, a new one just groups your saved tables.
+const PLAIN_PART = /^[A-Za-z_][A-Za-z0-9_$]*$/;
+const quotePart = (p) => PLAIN_PART.test(p) ? p : `"${p.replace(/"/g, '""')}"`;
+const connectorsOf = () => [...new Set(TABLES.map(t => t.service).filter(sv => sv && sv !== "saved tables" && sv !== "taken over"))].sort();
+function fillConnectors() {
+  const sel = $("#vconn"), keep = sel.value;
+  sel.innerHTML = `<option value="">— none (a plain name)</option>` + connectorsOf().map(sv => `<option value="${esc(sv)}">${esc(sv)}</option>`).join("");
+  sel.value = keep;
+}
+function databasesOf(svc) {
+  const dbs = new Set();
+  (NESTED[svc]?.tables || []).forEach(n => { if (n.database != null) dbs.add(n.database); });
+  TABLES.forEach(t => {
+    const p = (t.saved_name || "").match(/"(?:[^"]|"")+"|[^.]+/g) || [];
+    if (p.length >= 3 && p[0].toLowerCase() === svc) dbs.add(p.slice(1, -1).map(x => x.replace(/^"|"$/g, "")).join("."));
+  });
+  return [...dbs].sort();
+}
+function setPlace(conn, db, tbl) {
+  fillConnectors();
+  $("#vconn").value = connectorsOf().includes(conn) ? conn : "";
+  $("#vdb").value = db; $("#vtbl").value = tbl;
+  composeName();
+}
+function composeName() {
+  const conn = $("#vconn").value, db = $("#vdb").value.trim(), tbl = $("#vtbl").value.trim();
+  $("#vdb").disabled = !conn;
+  $("#vdblist").innerHTML = conn ? databasesOf(conn).map(d => `<option value="${esc(d)}">`).join("") : "";
+  const dbParts = db ? db.split(".").map(x => x.trim()).filter(Boolean).map(quotePart) : [];
+  $("#vname").value = conn ? [conn, ...dbParts, quotePart(tbl)].join(".") : tbl;
+  checkViewName();
+}
+function splitName(name) {
+  const parts = (name.match(/"(?:[^"]|"")+"|[^.]+/g) || []).map(p => p.startsWith('"') ? p.slice(1, -1).replace(/""/g, '"') : p);
+  fillConnectors();
+  const conn = parts.length > 1 && connectorsOf().includes(parts[0].toLowerCase()) ? parts[0].toLowerCase() : "";
+  $("#vconn").value = conn;
+  $("#vdb").value = conn ? parts.slice(1, -1).join(".") : "";
+  $("#vtbl").value = conn ? (parts[parts.length - 1] || "") : name;
+  $("#vdb").disabled = !conn;
+  $("#vdblist").innerHTML = conn ? databasesOf(conn).map(d => `<option value="${esc(d)}">`).join("") : "";
+}
+["#vconn", "#vdb", "#vtbl"].forEach(id => $(id).addEventListener("input", composeName));
+$("#vconn").addEventListener("change", composeName);
 // a saved table's name: a plain one (sn_incident) or an address like every connector's tables (s3_data.db.table)
 const canonicalName = (n) => { n = n.trim(); const i = n.indexOf("."); return i < 0 ? n.toLowerCase() : n.slice(0, i).toLowerCase() + n.slice(i); };
 const keyOfName = (n) => { n = canonicalName(n); if (!n.includes(".")) return n;
   const k = n.replace(/"((?:[^"]|"")+)"/g, (_, x) => x.replace(/""/g, '"')).toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
   return /^[a-z_]/.test(k) ? k : "t_" + k; };
 const NAME_OK = /^[a-z_][a-z0-9_]{0,62}$/, ADDRESS_OK = /^[A-Za-z_][A-Za-z0-9_]*(\.([A-Za-z_][A-Za-z0-9_$]*|"([^"]|"")+")){1,4}$/;
+// what the picked place means, in words — and a saved query over a catalog table's own address hides that table
+function whereText(n) {
+  const conn = $("#vconn").value, db = $("#vdb").value.trim();
+  if (!conn) return "A plain name, listed under “saved tables” — pick a connector to keep it with that connector's tables.";
+  let text = !db ? `In ${conn}, next to its tables.`
+    : databasesOf(conn).includes(db) ? `In ${conn} › ${db}, with that database's tables.`
+    : `In ${conn} › ${db} — a new database: it only groups your saved tables (nothing is created in ${conn}).`;
+  const behind = (NESTED[conn]?.tables || []).find(x => (x.address || "").toLowerCase() === n.toLowerCase());
+  if (behind && VIEWDLG?.check?.kind === "query") text += " ⚠ That's the name of a table behind the catalog: this saved query would hide it — pick another name.";
+  return text;
+}
 function checkViewName() {
   const n = canonicalName($("#vname").value), hint = $("#vhint"), key = keyOfName(n);
   const known = TABLES.find(t => t.name === key || t.saved_name === n);
@@ -1402,13 +1477,13 @@ function checkViewName() {
   const readers = VIEWDLG?.readers || [];
   hint.textContent = bad || (previous && n !== previous ? `Renames “${previous}” to “${n}”.` + (readers.length
       ? ` ${readers.join(", ")} read${readers.length === 1 ? "s" : ""} “${previous}” — change ${readers.length === 1 ? "it" : "them"} too, or ${readers.length === 1 ? "it stops" : "they stop"} working.` : "")
-    : known && !previous ? `Replaces the saved table “${n}”.` : n.includes(".") ? "Named by its address, like the connector's own tables." : "A plain name — or an address: connector.database.table.");
+    : known && !previous ? `Replaces the saved table “${n}”.` : whereText(n));
   hint.classList.toggle("bad", !!bad || !!(previous && n !== previous && readers.length));
   const c = VIEWDLG?.check;
   $("#vgo").disabled = !!bad || !c || !!c.error || !!c.off;
   return !bad;
 }
-$("#vname").addEventListener("input", checkViewName);
+$("#vname").addEventListener("input", () => { splitName($("#vname").value); checkViewName(); });
 $("#vstmt").addEventListener("input", () => {
   $("#vgo").disabled = true;
   clearTimeout(VIEWDLG?.timer);
@@ -1461,6 +1536,7 @@ $("#viewform").addEventListener("submit", async (e) => {
   if (saved.description) def.description = saved.description;
   draftViews(v => { if (previous && previous !== name) delete v[previous]; v[name] = def; });
   if (saved.kind === "bound") JUST_SAVED.add(nestedKey(saved.table, saved.args));  // its catalog row shows ✓ name
+  JUST_SAVED_NAMES.add(name.toLowerCase());
   $("#viewdlg").close();
   toast(previous ? `Saved “${name}”` : `Saved “${name}” — it's a table now`);
   afterSavedTables();
@@ -1990,20 +2066,28 @@ async function loadConnections() {
     ${!failed.length && !c.tables ? where : ""}</div>`;
 }
 // one connector's catalogs: the tables behind them (Glue, ADX, a database…), under each catalog
-async function loadNested(svc, refresh) {
-  EXPANDED.add(svc); NESTED[svc] = {...(NESTED[svc] || {tables: [], notes: []}), loading: true};
+// Expanding again shows what was read (no call to the source); ↻ reads the catalog again and says what's new.
+async function loadNested(svc, refresh, reuse = false) {
+  EXPANDED.add(svc);
+  if (reuse && !refresh && NESTED[svc]?.read_at && !NESTED[svc].loading) { drawTables(); return; }
+  NESTED[svc] = {...(NESTED[svc] || {tables: [], notes: []}), loading: !NESTED[svc]?.read_at || refresh};
   drawTables();
   let got;
   try { got = await api("/api/tables/nested?" + new URLSearchParams({service: svc, ...(refresh ? {refresh: 1} : {})})); }
-  catch (err) { got = {tables: [], notes: [err.message]}; }
-  NESTED[svc] = {tables: got.tables, notes: got.notes, loading: false};
+  catch (err) { got = {tables: NESTED[svc]?.tables || [], notes: [err.message]}; }
+  NESTED[svc] = {tables: got.tables, notes: got.notes, loading: false, read_at: got.read_at};
+  if (refresh) {
+    (got.new || []).forEach(k => NEW_TABLES.add(k));
+    const n = (got.new || []).length;
+    toast(`${svc}: ${n ? `${n} new table${n === 1 ? "" : "s"}` : "no new tables"}${got.gone ? ` · ${got.gone} gone` : ""}`);
+  }
   drawTables();
 }
 function collapseNested(svc) { EXPANDED.delete(svc); drawTables(); }
 function previewSql(sql) { $("#sqltext").value = inLang(sql); runSql(); }
-// nested rows saved in this session stay listed, marked; ones saved before are skipped (they're tables above)
-const JUST_SAVED = new Set(), SHOW_SAVED = new Set();
-// databases of an expanded catalog: closed until opened ("catalog|database"); how many rows each list shows
+// saved in this session: highlighted once (behind-the-catalog rows by table+args, saved tables by name)
+const JUST_SAVED = new Set(), JUST_SAVED_NAMES = new Set(), NEW_TABLES = new Set();
+// a connector's databases: closed until opened ("connector|database"); how many rows each list shows
 const OPEN_DBS = new Set(), DB_SHOWN = {};
 const nestedKey = (table, args) => table + "|" + JSON.stringify(Object.keys(args || {}).sort().map(k => [k, String(args[k])]));
 const nestedUsage = (n) => n.address ? `SELECT * FROM ${n.address} LIMIT 100` : n.usage;
@@ -2014,7 +2098,7 @@ function drawTables() {
   EXPANDED.forEach(svc => (NESTED[svc]?.tables || []).forEach(n => (byCatalog[n.catalog] ||= []).push(n)));
   const matches = (n) => !f || `${n.label} ${n.database || ""} ${n.table} ${n.address || ""} ${n.saved_as || ""}`.toLowerCase().includes(f);
   const nestedOf = t => (byCatalog[t.name] || []).filter(matches);
-  const rows = TABLES.filter(t => !f || `${t.name} ${t.address || ""} ${t.description || ""} ${t.service || ""}`.toLowerCase().includes(f)
+  const rows = TABLES.filter(t => !f || `${t.name} ${t.saved_name || ""} ${t.address || ""} ${t.description || ""} ${t.service || ""}`.toLowerCase().includes(f)
                                  || nestedOf(t).length);
   const groups = {};
   rows.forEach(t => (groups[t.service || "other"] ||= []).push(t));
@@ -2029,16 +2113,16 @@ function drawTables() {
         title="${on ? "Hide the tables behind this connector's catalog" : "List the tables behind this connector's catalog (reads it now)"}">${on ? "Hide catalog" : "Expand catalog"}</button></span>`;
   };
   const short = (t) => t.address ? t.address.split(".").slice(1).join(".").replace(/"/g, "") : t.name;
-  const tableRow = (t, kids) => {
+  const tableRow = (t, kids, leaf) => {
     const tip = [t.name + (t.address && t.address !== t.name ? `  ·  ${t.address}` : ""), t.description,
                  t.pushdown ? "push-down: " + t.pushdown : ""].filter(Boolean).join("\n");
     const tag = !t.saved && KIND_TAGS[t.kind] ? `<span class="ktag" title="${esc(t.kind)}">${KIND_TAGS[t.kind]}</span>` : "";
     // database.table: the table's own name always whole, the database before it muted (and cut first)
     const sn = short(t), cut = sn.lastIndexOf(".");
-    const label = cut > 0 ? `<span class="tdb">${esc(sn.slice(0, cut + 1))}</span><span class="tname">${esc(sn.slice(cut + 1))}</span>`
+    const label = leaf ? `<span class="tname">${esc(leaf)}</span>` : cut > 0 ? `<span class="tdb">${esc(sn.slice(0, cut + 1))}</span><span class="tname">${esc(sn.slice(cut + 1))}</span>`
       : `<span class="tname">${esc(sn)}</span>`;
     const savedTip = t.saved ? `\n${t.saved === "bound" ? "A saved table over a table function" : "A saved query"} — kept in duckduck.json` : "";
-    return `<div class="trow ${t.saved ? "saved" : ""}"><button class="titem" type="button" data-usage="${esc(t.usage || ("SELECT * FROM " + t.name + " LIMIT 100"))}" title="${esc(tip + savedTip)}">
+    return `<div class="trow ${t.saved ? "saved" : ""} ${JUST_SAVED_NAMES.has((t.saved_name || "").toLowerCase()) ? "just" : ""}"><button class="titem" type="button" data-usage="${esc(t.usage || ("SELECT * FROM " + t.name + " LIMIT 100"))}" title="${esc(tip + savedTip)}">
       ${icon(t.icon)}<span class="tlabel">${label}</span>${tag}${kids ? `<span class="kcount">${kids}</span>` : ""}</button>
       <button type="button" class="infobtn" data-fninfo="${esc(t.name)}" title="What this table is, what it takes and how to query it" aria-label="How to use ${esc(t.name)}">i</button>
       ${t.saved ? `<button type="button" class="editbtn" data-editview="${esc(t.saved_name || t.name)}" title="See and edit the statement behind it">✎ Edit</button>` : ""}</div>`;
@@ -2046,63 +2130,88 @@ function drawTables() {
   // one table behind a catalog: preview / ＋ Table, or ✓ saved + edit
   const nestedItem = (n, short) => {
     const use = nestedUsage(n), key = nestedKey(n.table, n.args);
+    const fresh = NEW_TABLES.has(n.id);
     return `<div class="nitem ${n.saved_as ? "saved" : ""} ${JUST_SAVED.has(key) ? "just" : ""}" title="${esc(n.address || n.usage)}">
-      <span class="lbl" data-usage="${esc(n.saved_as ? `SELECT * FROM ${n.saved_as} LIMIT 100` : use)}">${esc(short && n.name ? n.name : n.label)}</span>
+      <span class="lbl" data-usage="${esc(n.saved_as ? `SELECT * FROM ${n.saved_as} LIMIT 100` : use)}">${esc(short && n.name ? n.name : n.label)}</span>${fresh ? `<span class="newchip" title="Not there the last time the catalog was read">new</span>` : ""}
       ${n.saved_as ? `<span class="savedok" title="Saved as the table ${esc(n.saved_as)}">✓ ${n.address && n.saved_as.toLowerCase() === n.address.toLowerCase() ? "saved" : esc(n.saved_as)}</span>
           <button type="button" class="editbtn" data-editview="${esc(n.saved_as)}" title="See and edit its statement">✎</button>`
         : `${canSave ? `<button class="mini" type="button" data-savetable="${esc(use)}" title="Keep it as a table of its own, with a name">＋ Table</button>` : ""}
           <button class="mini" type="button" data-preview="${esc(use)}" title="Run SELECT * … LIMIT 100">Preview</button>`}</div>`;
   };
   // a page of items, then "show more" (thousands of tables stay light)
-  const pageOf = (items, key, short) => {
+  const pageOf = (items, key, render) => {
     const n = DB_SHOWN[key] || MAXN;
-    return items.slice(0, n).map(x => nestedItem(x, short)).join("")
+    return items.slice(0, n).map(render).join("")
       + (items.length > n ? `<div class="muted small nmore">${n} of ${items.length}
           <button type="button" class="linkish" data-showmore="${esc(key)}">show ${Math.min(MAXN, items.length - n)} more</button></div>` : "");
   };
+  // A connector is one tree: its tables, then its databases — each holding the saved tables named
+  // connector.database.table and (catalog expanded) the tables behind the catalog not saved yet.
+  const addrParts = (name) => (name.match(/"(?:[^"]|"")+"|[^.]+/g) || []).map(p => p.startsWith('"') ? p.slice(1, -1).replace(/""/g, '"') : p);
+  const placeOf = (t, svc) => {
+    if (!t.saved || !(t.saved_name || "").includes(".")) return null;
+    const p = addrParts(t.saved_name);
+    return p.length >= 3 && p[0].toLowerCase() === svc ? {db: p.slice(1, -1).join("."), leaf: p[p.length - 1]} : null;
+  };
+  const treeOf = (svc, tables, nested) => {
+    const top = [], dbs = new Map(), placed = new Set();
+    const dbOf = (db) => dbs.get(db) || dbs.set(db, {saved: [], nested: []}).get(db);
+    TABLES.forEach(t => { if ((t.service || "other") === svc && placeOf(t, svc)) placed.add(t.saved_name.toLowerCase()); });
+    tables.forEach(t => { const pl = placeOf(t, svc); if (pl) dbOf(pl.db).saved.push({t, leaf: pl.leaf}); else top.push(t); });
+    nested.forEach(n => { if (n.database != null && !(n.saved_as && placed.has(n.saved_as.toLowerCase()))) dbOf(n.database).nested.push(n); });
+    return {top, dbs};
+  };
+  const nestedOfSvc = (svc) => EXPANDED.has(svc) && !NESTED[svc]?.loading ? (NESTED[svc]?.tables || []) : [];
+  const dbSection = (svc, part, full) => {
+    const names = [...part.dbs.keys()].sort((x, y) => x.localeCompare(y));
+    if (!names.length) return "";
+    const matched = [...part.dbs.values()].reduce((a, d) => a + d.saved.length + d.nested.length, 0);
+    const autoOpen = f && matched <= 300;  // a search opens what it found (when it's not everything)
+    const group = (db) => {
+      const mine = part.dbs.get(db), all = full.dbs.get(db) || mine, key = svc + "|" + db, open = OPEN_DBS.has(key) || autoOpen;
+      const total = all.saved.length + all.nested.length, shown = mine.saved.length + mine.nested.length;
+      const todo = all.nested.filter(n => !n.saved_as), catalog = todo[0]?.catalog;
+      const items = [...mine.saved.map(x => ({name: x.leaf, html: () => tableRow(x.t, 0, x.leaf)})),
+                     ...mine.nested.map(n => ({name: n.name || n.label, html: () => nestedItem(n, true)}))]
+        .sort((x, y) => String(x.name).localeCompare(String(y.name)));
+      return `<div class="dbgroup"><div class="dbhead"><button type="button" class="dbtoggle" data-db="${esc(key)}" aria-expanded="${open}"
+          title="${open ? "Hide" : "Show"} the tables of ${esc(db)}"><span class="chev" aria-hidden="true">▸</span>${icon("database")}<span class="dbname">${esc(db)}</span>
+          <span class="gcount">${f ? `${shown} of ${total}` : total}</span>${all.saved.length ? `<span class="okc small">${all.saved.length} saved</span>` : ""}</button>
+        ${canSave && todo.length && catalog ? `<button type="button" class="mini" data-regall="${esc(catalog)}" data-regdb="${esc(db)}"
+            title="Save the ${todo.length} table${todo.length === 1 ? "" : "s"} of ${esc(db)} not saved yet">Register ${todo.length}</button>` : ""}</div>
+        ${open ? `<div class="dbitems">${pageOf(items, key, x => x.html())}</div>` : ""}</div>`;
+    };
+    return `<div class="dbsection"><div class="dbacts small"><span class="muted">${names.length} database${names.length === 1 ? "" : "s"}</span>
+        ${names.length > 1 ? `<span class="grow"></span><button type="button" class="linkish" data-dbsall="${esc(svc)}" data-names="${esc(JSON.stringify(names))}" data-open="1">Open all</button>
+        <button type="button" class="linkish" data-dbsall="${esc(svc)}" data-names="${esc(JSON.stringify(names))}" data-open="0">Close all</button>` : ""}</div>
+      ${names.map(group).join("")}</div>`;
+  };
+  // under a catalog: how many are behind it, Register all, and the ones with no database
   const nestedBlock = (t, svc) => {
     const all = byCatalog[t.name] || [], kids = nestedOf(t);
     if (!EXPANDED.has(svc) || NESTED[svc]?.loading || !t.expandable) return "";
     if (!all.length) return `<div class="nested"><div class="nhead muted small">No tables listed</div></div>`;
-    const savedBefore = kids.filter(n => n.saved_as && !JUST_SAVED.has(nestedKey(n.table, n.args)));
-    const shown = SHOW_SAVED.has(t.name) ? kids : kids.filter(n => !savedBefore.includes(n));
-    const todo = all.filter(n => !n.saved_as);
-    // grouped by database whenever the catalog has one (s3_data.<database>.<table>): collapsed until opened
-    const dbs = new Map();
-    shown.forEach(n => { if (n.database != null) { if (!dbs.has(n.database)) dbs.set(n.database, []); dbs.get(n.database).push(n); } });
-    const loose = shown.filter(n => n.database == null);
-    const allDbs = new Set(all.filter(n => n.database != null).map(n => n.database));
-    const autoOpen = f && shown.length <= 300;  // a search opens what it found (when it's not everything)
-    const dbHead = (db, items) => {
-      const key = t.name + "|" + db, open = OPEN_DBS.has(key) || autoOpen;
-      const inDb = all.filter(n => n.database === db), saved = inDb.filter(n => n.saved_as).length, left = inDb.length - saved;
-      return `<div class="dbgroup"><div class="dbhead"><button type="button" class="dbtoggle" data-db="${esc(key)}" aria-expanded="${open}"
-          title="${open ? "Hide" : "Show"} the tables of ${esc(db)}"><span class="chev" aria-hidden="true">▸</span>${icon("database")}<span class="dbname">${esc(db)}</span>
-          <span class="gcount">${f ? `${items.length} of ${inDb.length}` : inDb.length}</span>${saved ? `<span class="okc small">${saved} saved</span>` : ""}</button>
-        ${canSave && left ? `<button type="button" class="mini" data-regall="${esc(t.name)}" data-regdb="${esc(db)}"
-            title="Save the ${left} table${left === 1 ? "" : "s"} of ${esc(db)} not saved yet">Register ${left}</button>` : ""}</div>
-        ${open ? `<div class="dbitems">${pageOf(items, key, true)}</div>` : ""}</div>`;
-    };
-    return `<div class="nested"><div class="nhead"><span class="small"><b>${all.length}</b> behind it${allDbs.size ? ` · ${allDbs.size} database${allDbs.size === 1 ? "" : "s"}` : ""}${all.length - todo.length ? ` · <span class="okc">${all.length - todo.length} saved</span>` : ""}</span>
+    const todo = all.filter(n => !n.saved_as), dbCount = new Set(all.filter(n => n.database != null).map(n => n.database)).size;
+    const loose = kids.filter(n => n.database == null);
+    const at = NESTED[svc]?.read_at ? new Date(NESTED[svc].read_at * 1000) : null;
+    return `<div class="nested"><div class="nhead"><span class="small"><b>${all.length}</b> behind it${dbCount ? ` · in ${dbCount} database${dbCount === 1 ? "" : "s"} below` : ""}${all.length - todo.length ? ` · <span class="okc">${all.length - todo.length} saved</span>` : ""}
+          ${at ? `<span class="muted" title="Expanding again shows this read — ↻ reads the catalog again">· read ${at.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}</span>` : ""}</span>
         ${canSave && todo.length ? `<button type="button" class="pillbtn accent" data-regall="${esc(t.name)}"
           title="Save each of the ${todo.length} not saved yet as a table of its own (the ones already saved are skipped)">Register all ${todo.length}</button>` : ""}</div>
-      ${dbs.size > 1 ? `<div class="dbacts small"><button type="button" class="linkish" data-dbsall="${esc(t.name)}" data-open="1">Open all databases</button>
-          <button type="button" class="linkish" data-dbsall="${esc(t.name)}" data-open="0">Close all</button></div>` : ""}
-      ${[...dbs.entries()].sort((x, y) => x[0].localeCompare(y[0])).map(([db, items]) => dbHead(db, items)).join("")}
-      ${pageOf(loose, t.name + "|", false)}
-      ${f && !shown.length && all.length ? `<div class="muted small">Nothing behind it matches “${esc(f)}”.</div>` : ""}
-      ${savedBefore.length ? `<div class="muted small nnote">${savedBefore.length} already saved ${SHOW_SAVED.has(t.name) ? "" : "(listed above as tables) — skipped"}
-        <button type="button" class="linkish" data-showsaved="${esc(t.name)}">${SHOW_SAVED.has(t.name) ? "hide them" : "show them"}</button></div>` : ""}</div>`;
+      ${pageOf(loose, t.name + "|", n => nestedItem(n, false))}
+      ${f && !kids.length ? `<div class="muted small">Nothing behind it matches “${esc(f)}”.</div>` : ""}</div>`;
   };
   $("#tablecount").textContent = `${TABLES.length} table${TABLES.length === 1 ? "" : "s"}`;
   $("#tablelist").innerHTML = Object.entries(groups).map(([svc, ts]) => {
     const shut = COLLAPSED.has(svc) && !f;  // a filter shows what it matched, collapsed or not
+    const full = treeOf(svc, TABLES.filter(t => (t.service || "other") === svc), nestedOfSvc(svc));
+    const part = f ? treeOf(svc, ts, nestedOfSvc(svc).filter(matches)) : full;
     return `<div class="tgroup"><div class="ghead"><button type="button" class="gtoggle" data-group="${esc(svc)}" aria-expanded="${!shut}"
       title="${shut ? "Show" : "Hide"} ${esc(svc)}'s tables"><span class="chev" aria-hidden="true">▸</span><span class="gname">${esc(svc)}</span>
-      <span class="gcount">${ts.length}</span></button>${shut ? "" : toggle(svc, ts)}</div>` + (shut ? "" : ts.map(t => {
+      <span class="gcount">${ts.length}</span></button>${shut ? "" : toggle(svc, ts)}</div>` + (shut ? "" : part.top.map(t => {
       const kids = (byCatalog[t.name] || []).length;
       return tableRow(t, kids) + nestedBlock(t, svc);
-    }).join("") + (EXPANDED.has(svc) && NESTED[svc]?.notes?.length
+    }).join("") + dbSection(svc, part, full) + (EXPANDED.has(svc) && NESTED[svc]?.notes?.length
       ? `<div class="muted small nested">${NESTED[svc].notes.map(esc).join("<br>")}</div>` : "")) + `</div>`;
   }).join("")
     || (TABLES.length ? `<p class="muted small">Nothing matches.</p>` : `<p class="muted small">No tables registered — see above for why.</p>`);
@@ -2117,15 +2226,14 @@ function drawTables() {
   on("[data-editview]", b => editSavedTable(b.dataset.editview));
   on("[data-group]", b => { const g = b.dataset.group; if (COLLAPSED.has(g)) COLLAPSED.delete(g); else COLLAPSED.add(g); keepCollapsed(); drawTables(); });
   on("[data-savetable]", b => saveAsTable(b.dataset.savetable.replace(/\s+limit\s+\d+\s*$/i, "")));
-  on("[data-expand]", b => EXPANDED.has(b.dataset.expand) ? collapseNested(b.dataset.expand) : loadNested(b.dataset.expand, false));
+  on("[data-expand]", b => EXPANDED.has(b.dataset.expand) ? collapseNested(b.dataset.expand) : loadNested(b.dataset.expand, false, true));
   on("[data-exprefresh]", b => loadNested(b.dataset.exprefresh, true));
-  on("[data-showsaved]", b => { const c = b.dataset.showsaved; if (SHOW_SAVED.has(c)) SHOW_SAVED.delete(c); else SHOW_SAVED.add(c); drawTables(); });
   on("[data-regall]", b => registerAll(b.dataset.regall, b, b.dataset.regdb));
   on("[data-db]", b => { const k = b.dataset.db; if (OPEN_DBS.has(k)) OPEN_DBS.delete(k); else OPEN_DBS.add(k); drawTables(); });
   on("[data-showmore]", b => { const k = b.dataset.showmore; DB_SHOWN[k] = (DB_SHOWN[k] || MAXN) + MAXN; drawTables(); });
   on("[data-dbsall]", b => {
-    const c = b.dataset.dbsall, open = b.dataset.open === "1";
-    new Set((byCatalog[c] || []).filter(n => n.database != null).map(n => n.database)).forEach(db => open ? OPEN_DBS.add(c + "|" + db) : OPEN_DBS.delete(c + "|" + db));
+    const svc = b.dataset.dbsall, open = b.dataset.open === "1";
+    JSON.parse(b.dataset.names || "[]").forEach(db => open ? OPEN_DBS.add(svc + "|" + db) : OPEN_DBS.delete(svc + "|" + db));
     drawTables();
   });
   on("[data-fninfo]", b => showFunctionInfo(b.dataset.fninfo));
@@ -2207,7 +2315,7 @@ async function registerAll(catalog, button, database) {
   let r;
   try { r = await api("/api/views/many", {items: todo.map(n => ({table: n.table, args: n.args}))}); }
   catch (err) { toast(err.message); button.disabled = false; button.textContent = label; return; }
-  (r.created || []).forEach(v => { JUST_SAVED.add(nestedKey(v.table, v.args)); draftViews(views => { views[v.name] = {table: v.table, args: v.args}; }); });
+  (r.created || []).forEach(v => { JUST_SAVED.add(nestedKey(v.table, v.args)); JUST_SAVED_NAMES.add(v.name.toLowerCase()); draftViews(views => { views[v.name] = {table: v.table, args: v.args}; }); });
   const skipped = (r.skipped || []).length;
   toast(`Saved ${(r.created || []).length} table${(r.created || []).length === 1 ? "" : "s"}` + (skipped ? ` · ${skipped} skipped` : ""));
   if (skipped) console.info("skipped:", r.skipped);

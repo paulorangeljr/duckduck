@@ -169,7 +169,7 @@ def test_the_web_app_saves_and_removes_them(tmp_path):
     assert client.get("/api/meta").json()["features"]["saved_tables"] is True
     check = client.post("/api/views/check", json={"sql": "SELECT * FROM sn_table WHERE table_name = 'incident'"}).json()
     assert check == {"kind": "bound", "table": "sn_table", "args": {"table_name": "incident"}, "name": "sn.incident", "off": None,
-                     "address": "sn.incident"}
+                     "address": "sn.incident", "place": {"connector": "sn", "database": None, "name": "incident"}}
     assert client.post("/api/views/check", json={"sql": "DELETE FROM x"}).json()["error"]
     made = client.post("/api/views", json={"name": "sn_incident", "sql": "SELECT * FROM sn_table(table_name='incident')",
                                             "description": "Incidents"})

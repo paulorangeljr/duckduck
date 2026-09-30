@@ -492,8 +492,14 @@ adx.ProxyLogs
 - Queries only: management commands are refused, except `.show tables`.
   **Save as table** keeps the SQL a KQL query translates to.
 
-**The extension** is built once from source (needs the .NET 10 SDK — on
-Ubuntu `apt-get install dotnet-sdk-10.0`):
+**The extension, without .NET**: the repo's GitHub Actions workflow
+*kql extension* builds it for Linux x64, macOS (Apple Silicon) and Windows
+x64 — Actions → *kql extension* → the latest run (or *Run workflow*) →
+download `kql-extension-<platform>`, unzip, and put `kql.duckdb_extension` in
+`~/.duckduck/extensions/` (on Windows `%USERPROFILE%\.duckduck\extensions\`).
+
+**Or build it** from source (needs the .NET 10 SDK — on Ubuntu
+`apt-get install dotnet-sdk-10.0`):
 
 ```bash
 scripts/build_kql_extension.sh   # → ~/.duckduck/extensions/kql.duckdb_extension
@@ -1079,15 +1085,18 @@ with a **Preview** (`SELECT * FROM s3_data.security.proxy_logs LIMIT
 100`) and **＋ Table** to keep it as a saved table (below). One saved this
 way is marked **✓ its name** with an edit button; **Register all N** saves
 every one not saved yet in one go (each named after its address,
-`s3_data.security.proxy_logs`; rename later with ✎ Edit). Tables already
-saved before you expanded aren't listed again — they're in the list as
-tables; *show them* brings them back. ↻ reads the catalog again. When
-its tables have a database (`s3_data.<database>.<table>`), they're grouped
-by database, each closed until you open it (*Open all databases* / *Close
-all*), with its own **Register N**; a long list shows 200 at a time
-(*show more*). Typing in the filter searches every table's name and
-database and opens the databases with a match — a catalog with thousands
-of tables stays easy to browse. In
+`s3_data.security.proxy_logs`; rename later with ✎ Edit).
+
+Each connector is one tree: its own tables first, then its **databases** —
+each closed until you open it (*Open all* / *Close all*), holding the saved
+tables named `connector.database.table` together with (catalog expanded)
+the ones behind the catalog not saved yet, with their own **Register N**.
+Saving never moves a table out of its database. A long list shows 200 at a
+time (*show more*); the filter searches names and databases and opens the
+databases with a match — a catalog with thousands of tables stays easy to
+browse. The catalog is read once: expanding it again shows what was read
+(the time is shown), and ↻ reads it again and marks what's **new** (and
+says how many are gone). In
 Python: `duck.nested_tables(service="lake")` (or every connector's with
 `duck.nested_tables()`). Saved tables are marked *saved* in the list,
 with a **✎ Edit** button on each. Every table has an **ⓘ** on the right:
@@ -1129,12 +1138,22 @@ as a table to *Add*). What gets saved depends on the query:
   query**: it runs each time the table is read — read-only, with no file or
   network access — and filters on it are applied after it runs.
 
-**Names.** The name suggested is the table's address whenever it has one
-— `s3_data.security.proxy_logs`, `sn.incident` — so a saved table reads
-like every other table of its connector (`SELECT * FROM
-s3_data.security.proxy_logs`); a plain name (`open_p1`) works too. A dotted
-name must start with a connector and can't be the address of a table
-another saved table already is.
+**Where it's saved.** The dialog asks for a **connector**, a **database**
+(optional) and a **table name**, and shows the full name they make:
+
+- a table over a table function starts at its address —
+  `s3_data.security.proxy_logs`, `sn.incident`;
+- a saved query starts where it reads from: `SELECT … FROM
+  s3_data.finance.orders …` → `s3_data.finance.orders_view`;
+- the database can be one that exists (suggested as you type) or a new one
+  — then it's only a name that groups your saved tables under that
+  connector (`s3_data.my_reports.orders_view`); nothing is created in the
+  source;
+- no connector → a plain name (`open_p1`), listed under *saved tables*.
+
+The full name can also be typed directly. It can't be the address of a
+table another saved table already is, and the dialog warns when a saved
+query would take the name of a table behind the catalog (it would hide it).
 
 It needs `serve --edit-config` (it writes the file, keeping a `.bak`).
 Each saved table has a **✎** in the list: it opens the statement behind it
