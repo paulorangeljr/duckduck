@@ -1367,17 +1367,23 @@ $("#takeoverform").addEventListener("submit", async (e) => {
 let VIEWDLG = null;  // {previous, check, timer}
 const sqlLiteral = (v) => typeof v === "string" ? `'${v.replace(/'/g, "''")}'` : String(v);
 function saveAsTable(sql) { return openViewDialog({sql}); }
+// ✎ Edit: the dialog opens at once, saying it's loading, while just this one saved table is fetched
 async function editSavedTable(name) {
-  let v, all;
-  try { all = (await api("/api/views")).views; v = all.find(x => x.name === name); } catch (err) { toast(err.message); return; }
-  if (!v) { toast(`“${name}” isn't a saved table any more`); return; }
-  openViewDialog({sql: v.statement, previous: name, description: v.description || ""});
-  VIEWDLG.readers = readersOf(name, all);
-}
-// the other saved tables that read this one — renaming or removing it leaves them reading a name that's gone
-function readersOf(name, views) {
-  const word = new RegExp(`(^|[^A-Za-z0-9_.])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9_])`, "i");
-  return views.filter(v => v.name !== name && word.test(v.statement || "")).map(v => v.name);
+  VIEWDLG = {previous: name, check: null, timer: null, readers: [], loading: true};
+  $("#viewtitle").textContent = `Saved table “${name}”`;
+  $("#vkind").innerHTML = `<span class="spin" aria-hidden="true"></span> <span class="muted">Loading “${esc(name)}”…</span>`;
+  $("#vstmt").value = ""; $("#vdesc").value = ""; $("#verr").hidden = true; $("#vhint").textContent = "";
+  ["#vstmt", "#vdesc", "#vname", "#vconn", "#vdb", "#vtbl"].forEach(id => { $(id).disabled = true; });
+  $("#vgo").disabled = true; $("#vdelete").hidden = $("#vopen").hidden = true;
+  if (!$("#viewdlg").open) $("#viewdlg").showModal();
+  let v;
+  try { v = await api(`/api/views/${encodeURIComponent(name)}`); }
+  catch (err) { $("#vkind").innerHTML = `<b class="bad">Couldn't open it</b><div>${esc(err.message)}</div>`; return; }
+  finally { ["#vstmt", "#vdesc", "#vname", "#vconn", "#vtbl"].forEach(id => { $(id).disabled = false; }); }
+  if (!VIEWDLG || VIEWDLG.previous !== name || !$("#viewdlg").open) return;  // closed or replaced meanwhile
+  await openViewDialog({sql: v.statement, previous: name, description: v.description || ""});
+  VIEWDLG.readers = v.readers || [];
+  checkViewName();
 }
 async function openViewDialog({sql, previous = null, description = ""}) {
   sql = (sql || "").trim();
@@ -1385,14 +1391,15 @@ async function openViewDialog({sql, previous = null, description = ""}) {
   VIEWDLG = {previous, check: null, timer: null, readers: []};
   const editing = !!previous;
   $("#viewtitle").textContent = editing ? `Saved table “${previous}”` : "Save as a table";
+  ["#vstmt", "#vdesc", "#vname", "#vconn", "#vtbl"].forEach(id => { $(id).disabled = false; });
   $("#vstmt").value = sql; $("#vdesc").value = description;
   $("#vname").value = previous || "";
   fillConnectors(); splitName(previous || ""); $("#vdb").placeholder = DEFAULT_DB;
   $("#verr").hidden = true;
   $("#vdelete").hidden = $("#vopen").hidden = !editing;
   $("#vgo").textContent = editing ? "Save changes" : "Save table";
-  $("#vkind").innerHTML = `<span class="muted">Reading the statement…</span>`;
-  $("#viewdlg").showModal();
+  $("#vkind").innerHTML = `<span class="spin" aria-hidden="true"></span> <span class="muted">Reading the statement…</span>`;
+  if (!$("#viewdlg").open) $("#viewdlg").showModal();
   await checkStatement(!editing);
   (editing ? $("#vstmt") : $("#vname")).focus();
   if (!editing) $("#vname").select();
@@ -1523,8 +1530,10 @@ $("#vdelete").addEventListener("click", async () => {
   const readers = VIEWDLG.readers || [];
   if (!confirm(`Remove the saved table “${name}”? It's taken out of duckduck.json (a .bak is kept).` +
     (readers.length ? `\n\n${readers.join(", ")} read${readers.length === 1 ? "s" : ""} it and will stop working.` : ""))) return;
+  $("#vdelete").disabled = true; $("#vdelete").textContent = "Removing…";
   try { await fetchDelete(`/api/views/${encodeURIComponent(name)}`); }
   catch (err) { $("#verr").textContent = err.message; $("#verr").hidden = false; return; }
+  finally { $("#vdelete").disabled = false; $("#vdelete").textContent = "Remove"; }
   draftViews(v => delete v[name]);
   $("#viewdlg").close(); toast(`Removed “${name}”`); afterSavedTables();
 });

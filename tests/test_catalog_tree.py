@@ -283,3 +283,20 @@ def test_the_default_database_is_named_in_the_config(tmp_path):
     assert {t["name"]: t for t in client.get("/api/tables").json()}["nvd_cves"]["default_address"] == "nvd.home.cves"
     assert not validate_config(config)["errors"] and not any("default_database" in w for w in validate_config(config)["warnings"])
     assert validate_config({**config, "default_database": "my db"})["errors"]
+
+
+def test_edit_fetches_just_that_saved_table_and_who_reads_it(tmp_path):
+    client, items = _app(tmp_path, 3)
+    client.post("/api/views/many", json={"items": items})
+    client.post("/api/views", json={"name": "s3.reports.reader", "sql": "SELECT * FROM s3.db0.t0"})
+    one = client.get("/api/views/s3.db0.t0").json()
+    assert one["name"] == "s3.db0.t0" and one["kind"] == "bound" and one["readers"] == ["s3.reports.reader"]
+    assert "arg.table_name = 't0'" in one["statement"]
+    assert client.get("/api/views/S3.db1.t1").json()["readers"] == []  # the connector part in any case
+    assert client.get("/api/views/nope").status_code == 404
+
+
+def test_the_edit_dialog_says_it_is_loading():
+    from duckduck.semantic.webpage import PAGE
+
+    assert "Loading “${esc(name)}”…" in PAGE and "api(`/api/views/${encodeURIComponent(name)}`)" in PAGE and "Removing…" in PAGE

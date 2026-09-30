@@ -561,6 +561,22 @@ def create_app(
         return dump({"views": [describe(source, n) for n in sorted(source.views)],
                      "failed": dict(source.failed_views), "off": saved_tables_off()})
 
+    @app.get("/api/views/{name}")
+    def get_view(name: str):
+        """One saved table — what ✎ Edit opens (not the whole list: thousands take seconds) — and ``readers``:
+        the saved queries that read it (renaming or removing it breaks them)."""
+        import re as _re
+
+        from ..views import canonical_name, describe
+
+        source = the_console().source
+        name = canonical_name(name)
+        if name not in source.views:
+            raise HTTPException(404, f"“{name}” isn't a saved table any more")
+        word = _re.compile(rf"(^|[^A-Za-z0-9_.]){_re.escape(name)}(?![A-Za-z0-9_])", _re.IGNORECASE)
+        readers = [n for n, d in source.views.items() if n != name and d.get("sql") and word.search(d["sql"])]
+        return dump({**describe(source, name), "readers": sorted(readers)})
+
     @app.post("/api/views/check")
     def check_view(body: Dict[str, Any] = Body(...)):
         """What saving this query would make: bound (a table function's arguments) or a query, and a name."""
