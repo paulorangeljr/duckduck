@@ -7,7 +7,9 @@
 #
 # Needs: git, python3, the .NET 10 SDK (https://dotnet.microsoft.com/download — on Ubuntu 24.04:
 # `apt-get install dotnet-sdk-10.0`) and a C toolchain for Native AOT (clang or gcc, zlib).
-# Linux / macOS; on Windows run the same steps with the repo's build-extension.ps1.
+# Linux, macOS, and Windows under Git Bash (Native AOT there needs Visual Studio's C++ build tools).
+# No .NET here? The repo's GitHub Actions workflow "kql extension" builds it for Linux, macOS and
+# Windows — run it from the Actions tab and download the file for your platform.
 set -euo pipefail
 
 REF="${KQL_TO_SQL_REF:-04ad97ab24d2d6e380412f965069db10058ec16d}"   # tested with duckduck
@@ -16,6 +18,8 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 command -v dotnet >/dev/null || { echo "dotnet not found: install the .NET 10 SDK first" >&2; exit 1; }
+PY="$(command -v python3 || command -v python || true)"
+[ -n "$PY" ] || { echo "python not found" >&2; exit 1; }
 
 echo "Fetching kql-to-sql@$REF…"
 git -C "$WORK" init -q kql-to-sql
@@ -30,7 +34,7 @@ git clone -q --depth 1 https://github.com/duckdb/extension-ci-tools \
 # duckduck's addition: kql_syntax_errors(kql) — the Kusto parser's own syntax errors. kql_to_sql translates
 # whatever the parser recovered, so without it a typo quietly becomes another query
 # ("T | where x == 1 | projct a" → "SELECT * FROM a"); duckduck checks this first.
-python3 - "$WORK/kql-to-sql/src/KqlToSql.DuckDbExtension/KqlExtension.cs" <<'PY'
+"$PY" - "$WORK/kql-to-sql/src/KqlToSql.DuckDbExtension/KqlExtension.cs" <<'PY'
 import sys
 p = sys.argv[1]; s = open(p).read()
 if "kql_syntax_errors" not in s:
@@ -55,6 +59,8 @@ PY
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64) RID=linux-x64 ;;  Linux-aarch64) RID=linux-arm64 ;;
   Darwin-x86_64) RID=osx-x64 ;;   Darwin-arm64) RID=osx-arm64 ;;
+  MINGW*-x86_64|MSYS*-x86_64|CYGWIN*-x86_64) RID=win-x64 ;;
+  MINGW*-aarch64|MSYS*-aarch64|MINGW*-arm64|MSYS*-arm64) RID=win-arm64 ;;
   *) echo "unsupported platform $(uname -s)-$(uname -m)" >&2; exit 1 ;;
 esac
 
@@ -66,7 +72,7 @@ BUILT="$WORK/kql-to-sql/src/KqlToSql.DuckDbExtension/bin/Release/net10.0/$RID/pu
 mkdir -p "$(dirname "$DEST")"
 cp "$BUILT" "$DEST"
 echo "Installed: $DEST"
-python3 - "$DEST" <<'PY' || echo "(couldn't check it with the duckdb Python package — install duckduck's requirements and try again)"
+"$PY" - "$DEST" <<'PY' || echo "(couldn't check it with the duckdb Python package — install duckduck's requirements and try again)"
 import sys, duckdb
 c = duckdb.connect(config={"allow_unsigned_extensions": "true"})
 c.execute(f"LOAD '{sys.argv[1]}'")

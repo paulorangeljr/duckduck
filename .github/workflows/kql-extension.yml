@@ -1,0 +1,51 @@
+# Builds the kql DuckDB extension (KQL in the SQL tab) for each platform, so nobody needs the .NET SDK:
+# Actions → "kql extension" → Run workflow, then download "kql-extension-<platform>" from the run and put
+# kql.duckdb_extension in ~/.duckduck/extensions/ (or point duckduck.json's "kql": {"extension": …} at it).
+name: kql extension
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - scripts/build_kql_extension.sh
+      - .github/workflows/kql-extension.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux_amd64
+          - os: macos-latest
+            platform: osx_arm64
+          - os: windows-latest
+            platform: windows_amd64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: duckdb, to check the build
+        run: python -m pip install duckdb
+      - name: Build
+        shell: bash
+        env:
+          DUCKDUCK_KQL_EXTENSION: out/kql.duckdb_extension
+        run: bash scripts/build_kql_extension.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kql-extension-${{ matrix.platform }}
+          path: out/kql.duckdb_extension
+          if-no-files-found: error
+          retention-days: 90
