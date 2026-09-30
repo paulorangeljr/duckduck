@@ -1438,7 +1438,9 @@ function setPlace(conn, db, tbl) {
   composeName();
 }
 function composeName() {
-  const conn = $("#vconn").value, db = $("#vdb").value.trim(), tbl = $("#vtbl").value.trim();
+  const conn = $("#vconn").value, tbl = $("#vtbl").value.trim();
+  let db = $("#vdb").value.trim();
+  if (conn && db.toLowerCase() === DEFAULT_DB && !databasesOf(conn).length) db = "";  // default = no database: conn.table
   $("#vdb").disabled = !conn;
   $("#vdblist").innerHTML = conn ? databasesOf(conn).map(d => `<option value="${esc(d)}">`).join("") : "";
   const dbParts = db ? db.split(".").map(x => x.trim()).filter(Boolean).map(quotePart) : [];
@@ -2310,7 +2312,8 @@ function showFunctionInfo(name) {
   const doc = (t.doc || t.description || "").trim(), first = doc.split(/\n\s*\n/)[0], rest = doc.slice(first.length).trim();
   $("#fnbody").innerHTML = `${first ? `<div class="doc">${esc(first)}</div>` : ""}
     ${rest ? `<details class="small"><summary>More about it</summary><div class="doc">${esc(rest)}</div></details>` : ""}
-    ${t.source ? `<p class="muted small">Source: ${esc(t.source)}${t.address && t.address !== t.name ? ` · also written <span class="mono">${esc(t.address)}</span>` : ""}</p>` : ""}
+    ${t.source ? `<p class="muted small">Source: ${esc(t.source)}${t.address && t.address !== t.name ? ` · also written <span class="mono">${esc(t.address)}</span>` : ""}${t.default_address
+      ? ` or <span class="mono">${esc(t.default_address)}</span> (its database in the list)` : ""}</p>` : ""}
     ${params.length ? `<h4>It takes</h4>
     <table><thead><tr><th>argument</th><th></th><th>type</th><th>default</th></tr></thead><tbody>
       ${[...req, ...opt].map(p => `<tr><td class="mono">${esc(p.name)}</td><td>${p.required ? "<b>required</b>" : `<span class="muted">optional</span>`}</td>

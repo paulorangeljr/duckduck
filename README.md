@@ -447,6 +447,11 @@ SELECT * FROM sqlserver.dbo.Customers                    -- sqlserver_table(tabl
 SELECT * FROM adls.raw."events 2026"                     -- a part that isn't a plain name goes in double quotes
 ```
 
+A table with no database of its own — listed under **default** in the SQL
+tab — can be written either way: `nvd.cves` or `nvd.default.cves`,
+`sn.incident` or `sn.default.incident`. (Where a connector's tables do have
+databases, like `s3_data`, `default` is read as a real database of that name.)
+
 It's the same call underneath, so push-down, LIMIT and page-by-page
 reading are exactly the call's. The table function behind a service is the
 one its catalog lists (Glue, ADX, a database), else `<service>_table`

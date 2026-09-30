@@ -189,3 +189,33 @@ def test_the_page_groups_by_database():
     from duckduck.semantic.webpage import PAGE
 
     assert "OPEN_DBS" in PAGE and "data-db=" in PAGE and "data-showmore=" in PAGE and "data-regdb=" in PAGE
+
+
+def test_default_is_the_database_of_tables_that_have_none():
+    """The SQL tab lists them under "default": connector.default.table reads the same as connector.table —
+    except where the connector's tables do have databases, and "default" may be a real one."""
+    pytest.importorskip("pydantic")
+    from duckduck.semantic.admin import SQLConsole
+
+    duck, _ = _duck()
+    calls = []
+
+    def sn_table(table_name: str, limit=None):
+        calls.append(table_name)
+        return pd.DataFrame({"t": [table_name]})
+
+    duck.register_api_function("sn_table", sn_table)
+    duck.service_of["sn_table"] = "sn"
+    duck.service_prefix["sn"] = "sn"
+    assert duck.sql("SELECT count(*) FROM nvd.default.cves").fetchone() == (1,)
+    duck.sql("SELECT * FROM sn.default.incident").df()
+    assert calls == ["incident"]  # not table_name='default.incident'
+    duck.register_view("sn.problem", {"table": "sn_table", "args": {"table_name": "problem"}})
+    duck.sql("SELECT * FROM SN.Default.problem").df()
+    assert calls[-1] == "problem"
+    # s3_data's tables have databases: default is a database there
+    assert duck.resolve_addresses("SELECT * FROM s3_data.default.logs") == \
+        "SELECT * FROM s3_data_table(database='default', table_name='logs') AS logs"
+    rows = {t["name"]: t for t in SQLConsole(duck).tables()}
+    assert rows["nvd_cves"]["default_address"] == "nvd.default.cves"
+    assert rows["s3_data_table"]["default_address"] is None

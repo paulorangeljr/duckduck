@@ -114,6 +114,7 @@ def _required(duck: Any, name: str) -> List[str]:
 
 def resolve(duck: Any, parts: List[str]) -> Optional[Tuple[str, Dict[str, Any]]]:
     """``[service, part, …]`` → (registered table, its arguments), None when the first part isn't a service. Raises ``ValueError`` when it is but the rest can't be read."""
+    parts = _without_default(duck, parts)
     saved = _saved_named(duck, parts)  # a saved table named by this address is that table
     if saved is not None:
         return saved, {}
@@ -147,6 +148,25 @@ def resolve(duck: Any, parts: List[str]) -> Optional[Tuple[str, Dict[str, Any]]]
     args = dict(zip(head, rest[:len(head)]))
     args[required[-1]] = ".".join(rest[len(head):])  # the last one takes whatever's left: dbo.Customers
     return table, args
+
+
+#: The database the SQL tab lists a connector's tables with no database of their own under.
+DEFAULT_DATABASE = "default"
+
+
+def _without_default(duck: Any, parts: List[str]) -> List[str]:
+    """
+    ``svc.default.x`` → ``svc.x`` for a connector whose tables have no database
+    (``sn.default.incident`` is ``sn.incident``, ``nvd.default.cves`` is ``nvd.cves``).
+    Where the connector's tables do have databases (a table function taking one before
+    the name — Glue, a lakehouse), ``default`` is read as a real database of that name.
+    """
+    if len(parts) < 3 or parts[1].lower() != DEFAULT_DATABASE or parts[0].lower() not in services(duck):
+        return parts
+    table = generic_function(duck, parts[0].lower())
+    if table is not None and len(_required(duck, table)) >= 2:
+        return parts
+    return [parts[0]] + parts[2:]
 
 
 def _saved_named(duck: Any, parts: List[str]) -> Optional[str]:

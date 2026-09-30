@@ -313,6 +313,7 @@ class SQLConsole:
                     r["service"] = first
             # how it's written by address (nvd.cves); a service's table function by its pattern (s3_data.<database>.<table_name>)
             r["address"] = self.duck.address_of(r["name"]) if r["kind"] == "table" else None
+            r["default_address"] = _default_address(self.duck, r["name"], r["address"])
             pattern = None if r["address"] else address_pattern(self.duck, r["name"])
             if r["address"]:
                 r["usage"] = f"SELECT * FROM {r['address']} LIMIT 100"
@@ -324,6 +325,24 @@ class SQLConsole:
             r["params"] = _params_of(fn)
             r["doc"] = (inspect.getdoc(fn) or "") if fn is not None else ""
         return records
+
+
+def _default_address(duck: Any, name: str, address: Optional[str]) -> Optional[str]:
+    """``nvd.default.cves`` for ``nvd.cves`` — when it reads back to the same table (never where
+    ``default`` would be one of the connector's real databases)."""
+    from ..addresses import DEFAULT_DATABASE, _parts, resolve
+
+    if not address:
+        return None
+    parts = _parts(address)
+    if len(parts) != 2:
+        return None
+    alt = f"{address.split('.', 1)[0]}.{DEFAULT_DATABASE}.{address.split('.', 1)[1]}"
+    try:
+        back = resolve(duck, _parts(alt))
+    except ValueError:
+        return None
+    return alt if back is not None and back[0] == name and not back[1] else None
 
 
 def _nested_id(t: Dict[str, Any]) -> str:
