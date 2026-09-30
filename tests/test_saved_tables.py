@@ -69,7 +69,7 @@ def test_a_bound_table_is_the_function_underneath_push_down_included():
     assert duck.service_of["sn_incident"] == "sn"
     # no LIMIT to push → page by page, through the bound streaming function
     assert len(duck.sql("SELECT * FROM sn_incident WHERE priority = '1'").df()) == 2 and api.calls[-1].get("pages")
-    assert suggested_name(duck, {"table": "sn_table", "args": {"table_name": "change_request"}}) == "sn_change_request"
+    assert suggested_name(duck, {"table": "sn_table", "args": {"table_name": "change_request"}}) == "sn.change_request"
 
 
 def test_a_saved_query_runs_each_time_and_can_read_other_saved_tables():
@@ -168,7 +168,7 @@ def test_the_web_app_saves_and_removes_them(tmp_path):
     client = TestClient(serve(config_path=str(path), run=False, allow_config_edit=True))
     assert client.get("/api/meta").json()["features"]["saved_tables"] is True
     check = client.post("/api/views/check", json={"sql": "SELECT * FROM sn_table WHERE table_name = 'incident'"}).json()
-    assert check == {"kind": "bound", "table": "sn_table", "args": {"table_name": "incident"}, "name": "sn_incident", "off": None,
+    assert check == {"kind": "bound", "table": "sn_table", "args": {"table_name": "incident"}, "name": "sn.incident", "off": None,
                      "address": "sn.incident"}
     assert client.post("/api/views/check", json={"sql": "DELETE FROM x"}).json()["error"]
     made = client.post("/api/views", json={"name": "sn_incident", "sql": "SELECT * FROM sn_table(table_name='incident')",

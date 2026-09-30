@@ -71,6 +71,21 @@ duck.sql(
 )
 ```
 
+Or in the `WHERE`, qualified with `arg.` — explicit that it's an argument
+of the table function and not a column:
+
+```sql
+SELECT * FROM asset_vulnerabilities WHERE arg.asset_id = 42 AND severity = 'critical'
+SELECT * FROM sn_table WHERE arg.table_name = 'incident' LIMIT 10
+```
+
+`arg.x` only fills an argument (never filters rows), must be given with
+`=`, and a name no table in the query takes is an error (`arg.tabel_name:
+no table in this query takes an argument 'tabel_name' (sn_table takes
+table_name)`). The bare form (`WHERE table_name = 'incident'`) still fills
+it too; with `arg.table_name` also given, a bare `table_name` is a filter
+on the column of that name.
+
 ## Using the SharePoint wrapper
 
 ```python
@@ -1012,12 +1027,17 @@ with a **Preview** (`SELECT * FROM s3_data.security.proxy_logs LIMIT
 100`) and **＋ Table** to keep it as a saved table (below). One saved this
 way is marked **✓ its name** with an edit button; **Register all N** saves
 every one not saved yet in one go (each named after its address,
-`s3_data_security_proxy_logs`; rename later with ✎ Edit). Tables already
+`s3_data.security.proxy_logs`; rename later with ✎ Edit). Tables already
 saved before you expanded aren't listed again — they're in the list as
 tables; *show them* brings them back. ↻ reads the catalog again. In
 Python: `duck.nested_tables(service="lake")` (or every connector's with
 `duck.nested_tables()`). Saved tables are marked *saved* in the list,
-with a **✎ Edit** button on each.
+with a **✎ Edit** button on each. A table function (a table that needs
+arguments, like `s3_data_table`) has an **ⓘ** on the right: what it
+does, the arguments it takes, and the ways to call it — by address
+(`s3_data.<database>.<table_name>`), `WHERE arg.database = '…' AND
+arg.table_name = '…'`, or `s3_data_table(database='…', table_name='…')` —
+each with **Use** to put it in the editor.
 
 **The list** groups tables by connector; click a connector's name to
 fold its tables away (*Expand all* / *Collapse all* above; remembered in
@@ -1044,14 +1064,22 @@ as a table to *Add*). What gets saved depends on the query:
 - just a table function with its arguments — `SELECT * FROM
   sn_table(table_name='incident')`, or the same with the arguments in the
   WHERE — becomes a **table over that function**: filters and LIMIT on
-  `sn_incident` still go to ServiceNow, exactly as on `sn_table`;
+  `sn.incident` still go to ServiceNow, exactly as on `sn_table`;
 - anything else (columns picked, other filters, joins) is a **saved
   query**: it runs each time the table is read — read-only, with no file or
   network access — and filters on it are applied after it runs.
 
+**Names.** The name suggested is the table's address whenever it has one
+— `s3_data.security.proxy_logs`, `sn.incident` — so a saved table reads
+like every other table of its connector (`SELECT * FROM
+s3_data.security.proxy_logs`); a plain name (`open_p1`) works too. A dotted
+name must start with a connector and can't be the address of a table
+another saved table already is.
+
 It needs `serve --edit-config` (it writes the file, keeping a `.bak`).
 Each saved table has a **✎** in the list: it opens the statement behind it
-(`SELECT * FROM sn_table(table_name='incident')`, or the saved query) to
+(`SELECT * FROM sn.incident`, `SELECT * FROM sn_table WHERE
+arg.table_name = 'incident'` when it has no address, or the saved query) to
 change it, rename the table, open the statement in the editor, or remove
 it — saved at once; renaming or removing one that another saved table reads
 says which. Config → **Saved tables** lists them too. In the file, or from
@@ -1059,14 +1087,14 @@ Python:
 
 ```json
 "views": {
-  "sn_incident": {"table": "sn_table", "args": {"table_name": "incident"}, "description": "Incidents"},
-  "open_p1": {"sql": "SELECT number, short_description FROM sn_incident WHERE priority = '1'"}
+  "sn.incident": {"table": "sn_table", "args": {"table_name": "incident"}, "description": "Incidents"},
+  "open_p1": {"sql": "SELECT number, short_description FROM sn.incident WHERE priority = '1'"}
 }
 ```
 
 ```python
-duck.register_view("sn_incident", {"table": "sn_table", "args": {"table_name": "incident"}})
-duck.register_view("open_p1", duck.view_from_sql("SELECT number FROM sn_incident WHERE priority = '1'"))
+duck.register_view("sn.incident", {"table": "sn_table", "args": {"table_name": "incident"}})
+duck.register_view("open_p1", duck.view_from_sql("SELECT number FROM sn.incident WHERE priority = '1'"))
 ```
 
 `auto_register()` registers the file's `views` after the services (in

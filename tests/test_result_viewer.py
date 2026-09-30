@@ -82,7 +82,7 @@ def test_a_saved_tables_statement_is_shown_and_edited(tmp_path):
                                "reader": {"sql": "SELECT number FROM sn_incident"}}, broken=False)
     client = TestClient(serve(config_path=str(path), run=False, allow_config_edit=True))
     views = {v["name"]: v for v in client.get("/api/views").json()["views"]}
-    assert views["sn_incident"]["statement"] == "SELECT * FROM sn_table(table_name='incident')"
+    assert views["sn_incident"]["statement"] == "SELECT * FROM sn_table\nWHERE arg.table_name = 'incident'"
     assert views["reader"]["statement"] == "SELECT number FROM sn_incident"
     # edit in place: another statement, same name
     same = client.post("/api/views", json={"name": "sn_incident", "previous": "sn_incident",

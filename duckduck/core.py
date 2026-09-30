@@ -347,6 +347,8 @@ class DuckAPI:
         self._streaming_functions: Dict[str, Any] = {}
         #: Saved tables (``duckduck.views``): name → definition ({table, args} or {sql}).
         self.views: Dict[str, Dict[str, Any]] = {}
+        #: registered table → the saved table it is (``s3_data_a_b`` → ``s3_data.a.b``)
+        self.view_key: Dict[str, str] = {}
         #: Saved tables that couldn't be registered (``on_error="warn"``): name → why.
         self.failed_views: Dict[str, str] = {}
         self._config_views: Optional[Dict[str, Any]] = None
@@ -1037,15 +1039,28 @@ class DuckAPI:
     ) -> Tuple[Dict[str, Any], List[str]]:
         """``_merge_kwargs`` plus a human-readable push-down report (one line per decision)."""
         accepted = set(inspect.signature(fetch_function).parameters.keys())
+        # WHERE arg.table_name = 'x': explicitly an argument, never a column — fills that parameter, nothing else
+        arg_conditions = self._arg_conditions(pushdown)
         applicable = [
             c for c in pushdown.conditions
-            if c.table is None or names is None or c.table in names
+            if c not in arg_conditions and (c.table is None or names is None or c.table in names)
         ]
         blocker = blocker_of(fetch_function)
-        merged, consumed = map_conditions(accepted, applicable, blocker)
-        targets = assign_conditions(accepted, applicable, blocker)
+        # a parameter set by arg.x is taken: a bare x = … next to it is a column filter, not that argument
+        by_arg = {c.column for c in arg_conditions if c.op == "eq"}
+        merged, consumed = map_conditions(accepted - by_arg, applicable, blocker)
+        targets = assign_conditions(accepted - by_arg, applicable, blocker)
 
         report: List[str] = []
+        args_taken = 0
+        for c in arg_conditions:
+            if c.op == "eq" and c.column in accepted and c.column not in ("where", "limit"):
+                merged[c.column] = c.value
+                args_taken += 1
+                report.append(f"✓ arg.{c.column} = {c.value!r} → {c.column}")
+            else:
+                report.append(f"✗ arg.{c.column} — " + ("an argument is given with =" if c.op != "eq"
+                                                         else "not an argument of this table"))
         for c in applicable:
             if c in targets:
                 report.append(f"✓ {_describe_condition(c)} → {targets[c]}")
@@ -1066,7 +1081,7 @@ class DuckAPI:
                 blocker = f"{pushdown.limit_blocker} in the query"
             elif not pushdown.complete:
                 blocker = "WHERE has conditions DuckDB must apply first"
-            elif len(consumed) != len(pushdown.conditions):
+            elif len(consumed) + args_taken != len(pushdown.conditions):
                 blocker = "not every WHERE condition reached the source"
             if blocker is None:
                 merged["limit"] = pushdown.limit
@@ -1076,6 +1091,30 @@ class DuckAPI:
 
         merged.update(explicit)
         return merged, report
+
+    #: ``WHERE arg.<param> = 'x'`` — the qualifier that marks a table function's argument (never a column).
+    ARG_QUALIFIERS = ("arg", "args")
+
+    @classmethod
+    def _arg_conditions(cls, pushdown: PushDownContext) -> List[Condition]:
+        return [c for c in pushdown.conditions if (c.table or "").lower() in cls.ARG_QUALIFIERS]
+
+    def _check_arguments(self, query: str, pushdown: PushDownContext) -> None:
+        """Every ``arg.x`` must be an argument of a table the query reads — else it'd be silently ignored."""
+        from .kinds import required_params
+
+        for c in self._arg_conditions(pushdown):
+            takers = [n for n, fn in self.functions.items()
+                      if re.search(rf"\b{re.escape(n)}\b", query, re.IGNORECASE)
+                      and c.column in inspect.signature(fn).parameters and c.column not in ("where", "limit")]
+            if c.op != "eq":
+                raise ValueError(f"arg.{c.column}: an argument is given with = (arg.{c.column} = 'value')")
+            if not takers:
+                reads = [n for n in self.functions if re.search(rf"\b{re.escape(n)}\b", query, re.IGNORECASE)]
+                hint = "; ".join(f"{n} takes {', '.join(p.name for p in required_params(self.functions[n]))}"
+                                 for n in reads if required_params(self.functions[n]))
+                raise ValueError(f"arg.{c.column}: no table in this query takes an argument '{c.column}'"
+                                 + (f" ({hint})" if hint else ""))
 
     @staticmethod
     def _structural_names(fn, explicit: Dict[str, Any]) -> set:
@@ -1384,16 +1423,17 @@ class DuckAPI:
             if close is not None:  # stopped early (enough rows): let the connector stop paging
                 close()
 
-    def _strip_where_conditions(self, query: str, keys: set) -> str:
+    def _strip_where_conditions(self, query: str, keys: set, qualifiers: Tuple[str, ...] = ()) -> str:
         """
         Removes WHERE conditions that reference columns in ``keys``.
 
         Used to discard push-down filters that were consumed by the
         function but don't exist as columns in the resulting
         DataFrame — typically structural parameters like ``site_name``,
-        ``list_name``.
+        ``list_name`` — and every condition qualified by one of
+        ``qualifiers`` (``arg.table_name = 'x'``: an argument, never a column).
         """
-        if not keys:
+        if not keys and not qualifiers:
             return query
         try:
             tree = sqlglot.parse_one(query, dialect="duckdb")
@@ -1405,9 +1445,11 @@ class DuckAPI:
             return query
 
         def _should_keep(node: exp.Expression) -> bool:
-            if isinstance(node, (exp.EQ, exp.Like, exp.GT, exp.LT, exp.GTE, exp.LTE)):
+            if isinstance(node, (exp.EQ, exp.Like, exp.ILike, exp.GT, exp.LT, exp.GTE, exp.LTE, exp.NEQ)):
                 if isinstance(node.this, exp.Column):
-                    if node.this.name.lower() in keys:
+                    if (node.this.table or "").lower() in qualifiers:
+                        return False
+                    if node.this.name.lower() in keys and not node.this.table:
                         return False
             return True
 
@@ -1693,6 +1735,7 @@ class DuckAPI:
             logger.debug("  addresses → %s", " ".join(query.split()))
 
         pushdown = self._extract_pushdown(query)
+        self._check_arguments(query, pushdown)
         rewritten = query
         structural_used: set = set()  # WHERE filters consumed that aren't columns
         started = time.perf_counter()
@@ -1752,8 +1795,8 @@ class DuckAPI:
                 op = m.group(1)
                 rewritten = rewritten[: m.start()] + f"{op} {tname}" + rewritten[m.end() :]
 
-        if structural_used:
-            rewritten = self._strip_where_conditions(rewritten, structural_used)
+        if structural_used or self._arg_conditions(pushdown):
+            rewritten = self._strip_where_conditions(rewritten, structural_used, self.ARG_QUALIFIERS)
 
         if sources:
             logger.info("%d source(s) fetched in %.2fs — DuckDB runs the rest of the query", sources,
@@ -1801,6 +1844,7 @@ class DuckAPI:
         """
         query = self.resolve_addresses(query)
         pushdown = self._extract_pushdown(query)
+        self._check_arguments(query, pushdown)
 
         for fn_name, iter_fn in self._streaming_functions.items():
             if not re.search(rf"\b{re.escape(fn_name)}\b", query, re.IGNORECASE):
@@ -1828,6 +1872,8 @@ class DuckAPI:
                 flags=re.IGNORECASE,
             )
             chunk_query = bare_pat.sub(rf"\1 {chunk_table}", chunk_query)
+            if self._arg_conditions(pushdown):  # arg.x = … are arguments, not columns of the chunk
+                chunk_query = self._strip_where_conditions(chunk_query, set(), self.ARG_QUALIFIERS)
 
             started, chunks, rows_in, rows_out = time.perf_counter(), 0, 0, 0
             for chunk_df in iter_fn(**kwargs):

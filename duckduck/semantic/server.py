@@ -578,18 +578,23 @@ def create_app(
             except ValueError as exc:
                 raise HTTPException(400, str(exc))
             raw = {**found, **({"description": raw["description"]} if raw.get("description") else {})}
-        name = str(body.get("name") or "").strip().lower()
+        name = saved.canonical_name(str(body.get("name") or ""))
         # editing: ``previous`` is the name it had — the same name replaces it, a new one renames it
-        renamed_from = str(body.get("previous") or "").strip().lower() or None
+        renamed_from = saved.canonical_name(str(body.get("previous") or "")) or None
         if renamed_from is not None and renamed_from not in source.views:
             raise HTTPException(404, f"{renamed_from!r} isn't a saved table")
         if renamed_from == name:
             renamed_from = None
             body = {**body, "replace": True}
         previous = source.views.get(name)
+        old = source.views.get(renamed_from) if renamed_from else None
+        if renamed_from:  # frees its registered name: sn_incident → sn.incident is the same table underneath
+            saved.unregister(source, renamed_from)
         try:
             definition = source.register_view(name, raw, replace=bool(body.get("replace")))
         except (ValueError, LookupError) as exc:
+            if renamed_from:
+                source.register_view(renamed_from, old)
             raise HTTPException(400, str(exc).strip("'\""))
         try:
             saved.save(config_path, name, definition)
@@ -599,9 +604,9 @@ def create_app(
             saved.unregister(source, name)
             if previous is not None:
                 source.register_view(name, previous)
+            if renamed_from:
+                source.register_view(renamed_from, old)
             raise HTTPException(500, f"couldn't write {config_path}: {exc}")
-        if renamed_from:
-            saved.unregister(source, renamed_from)
         return dump(saved.describe(source, name))
 
     @app.post("/api/views/many")
@@ -629,7 +634,7 @@ def create_app(
                 skipped.append({"table": item["table"], "args": args, "why": f"already saved as {already}"})
                 continue
             raw = {"table": item["table"], "args": args, **({"description": item["description"]} if item.get("description") else {})}
-            name = str(item.get("name") or saved.suggested_name(source, saved.clean_definition(raw))).lower()
+            name = saved.canonical_name(str(item.get("name") or saved.suggested_name(source, saved.clean_definition(raw))))
             try:
                 created[name] = source.register_view(name, raw)
             except (ValueError, LookupError) as exc:
@@ -651,7 +656,7 @@ def create_app(
         off = saved_tables_off()
         if off:
             raise HTTPException(403, off)
-        name = name.lower()
+        name = saved.canonical_name(name)
         if name not in source.views and name not in source.failed_views:
             raise HTTPException(404, f"{name!r} isn't a saved table")
         if name in source.views:

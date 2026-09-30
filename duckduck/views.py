@@ -36,8 +36,40 @@ import re
 import shutil
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-#: A saved table's name: lowercase letters, digits and _.
+#: A saved table's name: lowercase letters, digits and _ …
 NAME_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
+#: … or an address, like every connector's tables: ``s3_data.accountable_cyber.sharepoint_lists``
+#: (a part that isn't a plain name in double quotes: ``adls.raw."events 2026"``).
+_PART = r'(?:[A-Za-z_][A-Za-z0-9_$]*|"(?:[^"]|"")+")'
+DOTTED_RE = re.compile(rf"^[A-Za-z_][A-Za-z0-9_]*(?:\.{_PART}){{1,4}}$")
+
+
+def is_dotted(name: str) -> bool:
+    return "." in (name or "")
+
+
+def canonical_name(name: str) -> str:
+    """How a name is kept: a plain one lowercased, an address as written (its connector lowercased)."""
+    name = (name or "").strip()
+    if not is_dotted(name):
+        return name.lower()
+    head, _, rest = name.partition(".")
+    return f"{head.lower()}.{rest}"
+
+
+def function_key(name: str) -> str:
+    """The registered table behind a name: itself, or an address's parts joined by _ (``s3_data_accountable_cyber_sharepoint_lists``)."""
+    name = canonical_name(name)
+    if not is_dotted(name):
+        return name
+    parts = [p[1:-1].replace('""', '"') if p.startswith('"') else p for p in re.findall(_PART, name)]
+    key = re.sub(r"[^a-z0-9_]+", "_", "_".join(parts).lower()).strip("_")
+    return (key if re.match(r"^[a-z_]", key) else "t_" + key)[:120]
+
+
+def name_of(duck: Any, key: str) -> Optional[str]:
+    """The saved table a registered name is (its name as saved), or None."""
+    return (getattr(duck, "view_key", None) or {}).get(key)
 #: What ``service_of`` / the SQL tab call a query-kind saved table's system.
 SERVICE = "saved tables"
 #: Marks a registered function as a saved table (its definition).
@@ -146,7 +178,8 @@ def view_from_sql(duck: Any, sql: str) -> Dict[str, Any]:
             args = duck._parse_kwargs(m.group(2) or "")
             if m.group(3):
                 pushdown = duck._extract_pushdown(m.group(0))
-                if not pushdown.complete or any(c.op != "eq" or c.table not in (None, name) for c in pushdown.conditions):
+                if not pushdown.complete or any(c.op != "eq" or c.table not in (None, name, "arg", "args")
+                                                for c in pushdown.conditions):
                     raise ValueError
                 for c in pushdown.conditions:
                     if c.column in args:
@@ -164,7 +197,13 @@ def view_from_sql(duck: Any, sql: str) -> Dict[str, Any]:
 
 
 def suggested_name(duck: Any, definition: Dict[str, Any]) -> str:
-    """``sn_table(table_name='incident')`` → ``sn_incident``; a query → ``saved_query``."""
+    """By address when the table has one, like every connector's tables — ``s3_data_table(database='a',
+    table_name='b')`` → ``s3_data.a.b``, ``sn_table(table_name='incident')`` → ``sn.incident`` —; else a plain
+    name (``sn_incident``); a query → ``saved_query``."""
+    if definition.get("table") and hasattr(duck, "address_of"):
+        address = duck.address_of(definition["table"], definition.get("args"))
+        if address and address not in duck.views and function_key(address) not in duck.functions:
+            return canonical_name(address)
     if definition.get("table"):
         base = re.sub(r"_(table|query)$", "", definition["table"])
         parts = [base] + [str(v) for v in (definition.get("args") or {}).values()]
@@ -184,22 +223,30 @@ def suggested_name(duck: Any, definition: Dict[str, Any]) -> str:
 
 
 def check_name(duck: Any, name: str, replace: bool = False) -> str:
-    name = (name or "").strip().lower()
-    if not NAME_RE.match(name):
-        raise ValueError(f"{name!r} isn't a table name: letters, digits and _, starting with a letter")
+    name = canonical_name(name)
+    if is_dotted(name):
+        if not DOTTED_RE.match(name):
+            raise ValueError(f"{name!r} isn't a table address: connector.table or connector.database.table "
+                             f"(a part that isn't a plain name in double quotes)")
+    elif not NAME_RE.match(name):
+        raise ValueError(f"{name!r} isn't a table name: letters, digits and _, starting with a letter "
+                         f"— or an address, connector.database.table")
+    key = function_key(name)
     try:
         reserved = duck.conn.execute(
             "SELECT 1 FROM duckdb_keywords() WHERE keyword_name = ? AND keyword_category = 'reserved'",
-            [name]).fetchone()
+            [key]).fetchone()
     except Exception:
         reserved = None
     if reserved:
         raise ValueError(f"{name!r} is a reserved word in SQL — pick another name")
-    if name in duck.functions:
-        if name not in duck.views:
-            raise ValueError(f"{name!r} is already a table ({duck.service_of.get(name) or 'registered'}) — pick another name")
-        if not replace:
-            raise ValueError(f"{name!r} is already a saved table — pick another name, or replace it")
+    owner = name_of(duck, key)
+    if key in duck.functions and owner is None:
+        raise ValueError(f"{name!r} is already a table ({duck.service_of.get(key) or 'registered'}) — pick another name")
+    if owner is not None and owner != name:
+        raise ValueError(f"{name!r} would be the same table as the saved table {owner!r} — pick another name")
+    if owner is not None and not replace:
+        raise ValueError(f"{name!r} is already a saved table — pick another name, or replace it")
     return name
 
 
@@ -207,40 +254,45 @@ def register(duck: Any, name: str, raw: Any, replace: bool = False) -> Dict[str,
     """Registers a saved table on ``duck`` (its functions, streaming function and service). Returns the definition."""
     definition = clean_definition(raw)
     name = check_name(duck, name, replace)
+    key = function_key(name)
     if definition.get("table"):
         base_name = definition["table"]
-        if base_name == name:
+        if base_name == key:
             raise ValueError(f"{name!r} can't be a saved table over itself")
         base = duck.functions.get(base_name)
         if base is None:
             raise LookupError(_missing(duck, base_name))
-        fn = _bound(base, definition["args"], name, definition, base_name)
+        fn = _bound(base, definition["args"], key, definition, base_name)
         iter_fn = duck._streaming_functions.get(base_name)
         streaming = None
         if iter_fn is not None and _accepts(iter_fn, definition["args"]):
-            streaming = _bound(iter_fn, definition["args"], name, definition, base_name)
+            streaming = _bound(iter_fn, definition["args"], key, definition, base_name)
         service = duck.service_of.get(base_name) or SERVICE
     else:
-        fn, streaming, service = _query(duck, name, definition), None, SERVICE
-    duck.functions[name] = fn
+        fn, streaming, service = _query(duck, key, definition), None, SERVICE
+    duck.functions[key] = fn
     if streaming is not None:
-        duck._streaming_functions[name] = streaming
+        duck._streaming_functions[key] = streaming
     else:
-        duck._streaming_functions.pop(name, None)
-    duck.service_of[name] = service
+        duck._streaming_functions.pop(key, None)
+    duck.service_of[key] = service
     duck.views[name] = definition
+    duck.view_key[key] = name
     duck.failed_views.pop(name, None)
     return definition
 
 
 def unregister(duck: Any, name: str) -> None:
-    name = (name or "").lower()
+    name = canonical_name(name)
+    name = name if name in duck.views else (name_of(duck, function_key(name)) or name)
     if name not in duck.views:
         raise KeyError(f"{name!r} isn't a saved table")
+    key = function_key(name)
     duck.views.pop(name)
-    duck.functions.pop(name, None)
-    duck._streaming_functions.pop(name, None)
-    duck.service_of.pop(name, None)
+    duck.view_key.pop(key, None)
+    duck.functions.pop(key, None)
+    duck._streaming_functions.pop(key, None)
+    duck.service_of.pop(key, None)
 
 
 def register_all(duck: Any, views: Dict[str, Any], on_error: str = "raise") -> List[str]:
@@ -259,8 +311,8 @@ def register_all(duck: Any, views: Dict[str, Any], on_error: str = "raise") -> L
         moved, waiting = False, {}
         for name, raw in list(pending.items()):
             try:
-                register(duck, name, raw, replace=name.lower() in duck.views)
-                done.append(name.lower())
+                register(duck, name, raw, replace=canonical_name(name) in duck.views)
+                done.append(canonical_name(name))
             except LookupError as exc:  # the table it's over may be a saved table further down
                 waiting[name] = exc
                 continue
@@ -280,7 +332,7 @@ def _fail(duck: Any, name: str, exc: Exception, on_error: str) -> None:
 
     if on_error != "warn":
         raise ValueError(f"saved table '{name}': {exc}") from exc
-    duck.failed_views[name.lower()] = f"{exc.__class__.__name__}: {exc}"
+    duck.failed_views[canonical_name(name)] = f"{exc.__class__.__name__}: {exc}"
     with warnings.catch_warnings():
         warnings.simplefilter("always", RuntimeWarning)
         warnings.warn(f"saved table '{name}' skipped: {exc}", RuntimeWarning, stacklevel=3)
@@ -365,6 +417,7 @@ def run_query(duck: Any, sql: str, limit: Optional[int] = None) -> Any:
     runner.service_of = duck.service_of
     runner.failed_services = duck.failed_services
     runner.views, runner.failed_views = duck.views, duck.failed_views
+    runner.view_key = getattr(duck, "view_key", {})
     runner.service_prefix = getattr(duck, "service_prefix", {})
     try:
         runner.conn.execute("SET enable_external_access = false")
@@ -437,13 +490,18 @@ def remove(path: str, name: str) -> bool:
 
 def statement(definition: Dict[str, Any], duck: Any = None) -> str:
     """The query a saved table stands for — what the page shows and edits: by address when it has one
-    (``SELECT * FROM sn.incident``), else the call (``sn_table(table_name='incident')``) or the saved query."""
+    (``SELECT * FROM sn.incident``), else its arguments as ``arg.`` (``SELECT * FROM sn_table WHERE
+    arg.table_name = 'incident'``), or the saved query."""
     if definition.get("table"):
         address = duck.address_of(definition["table"], definition.get("args")) if duck is not None else None
         if address:
             return f"SELECT * FROM {address}"
-        call = ", ".join(f"{k}={_literal(v)}" for k, v in (definition.get("args") or {}).items())
-        return f"SELECT * FROM {definition['table']}({call})"
+        args = definition.get("args") or {}
+        if not args:
+            return f"SELECT * FROM {definition['table']}"
+        # the arguments said as arguments: arg.x, never a column
+        return (f"SELECT * FROM {definition['table']}\nWHERE "
+                + "\n  AND ".join(f"arg.{k} = {_literal(v)}" for k, v in args.items()))
     return definition.get("sql") or ""
 
 
@@ -458,7 +516,9 @@ def _literal(value: Any) -> str:
 
 
 def describe(duck: Any, name: str) -> Dict[str, Any]:
-    """One saved table for the page: name, kind, definition, its statement, service."""
+    """One saved table for the page: name, the registered table behind it, kind, definition, its statement, service."""
     d = duck.views.get(name) or {}
-    return {"name": name, "kind": kind_of(d), "table": d.get("table"), "args": d.get("args"), "sql": d.get("sql"),
-            "description": d.get("description"), "service": duck.service_of.get(name), "statement": statement(d, duck)}
+    key = function_key(name)
+    return {"name": name, "key": key, "kind": kind_of(d), "table": d.get("table"), "args": d.get("args"),
+            "sql": d.get("sql"), "description": d.get("description"), "service": duck.service_of.get(key),
+            "statement": statement(d, duck)}

@@ -90,8 +90,8 @@ def generic_function(duck: Any, service: str) -> Optional[str]:
     """The table function a service reads its tables by name with, or None."""
     from .kinds import CATALOG, TABLE_FUNCTION, kind_of, lists_of
 
-    views = getattr(duck, "views", {}) or {}
-    mine = {n: f for n, f in duck.functions.items() if duck.service_of.get(n) == service and n not in views}
+    saved = getattr(duck, "view_key", {}) or {}
+    mine = {n: f for n, f in duck.functions.items() if duck.service_of.get(n) == service and n not in saved}
     for fn in mine.values():
         method = lists_of(fn)
         if method and kind_of(fn) == CATALOG:
@@ -114,6 +114,9 @@ def _required(duck: Any, name: str) -> List[str]:
 
 def resolve(duck: Any, parts: List[str]) -> Optional[Tuple[str, Dict[str, Any]]]:
     """``[service, part, …]`` → (registered table, its arguments), None when the first part isn't a service. Raises ``ValueError`` when it is but the rest can't be read."""
+    saved = _saved_named(duck, parts)  # a saved table named by this address is that table
+    if saved is not None:
+        return saved, {}
     known = services(duck)
     service = parts[0].lower()
     if service not in known or len(parts) < 2:
@@ -146,6 +149,15 @@ def resolve(duck: Any, parts: List[str]) -> Optional[Tuple[str, Dict[str, Any]]]
     return table, args
 
 
+def _saved_named(duck: Any, parts: List[str]) -> Optional[str]:
+    """The registered table of a saved table whose name is this address (case aside), or None."""
+    wanted = ".".join(parts).lower()
+    for key, name in (getattr(duck, "view_key", None) or {}).items():
+        if "." in name and ".".join(_parts(name)).lower() == wanted:
+            return key
+    return None
+
+
 def resolve_addresses(duck: Any, query: str) -> str:
     """Every ``service.table`` / ``service.database.table`` after FROM / JOIN rewritten into its table (or call)."""
     if "." not in query:
@@ -171,6 +183,9 @@ def resolve_addresses(duck: Any, query: str) -> str:
 
 def address_of(duck: Any, table: str, args: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """How a table (or a call of a service's table function) is written by address — only when it reads back the same."""
+    saved = (getattr(duck, "view_key", None) or {}).get(table)
+    if not args and saved and "." in saved:
+        return saved  # a saved table named by its address
     service = duck.service_of.get(table)
     known = services(duck)
     if service is None or service not in known:

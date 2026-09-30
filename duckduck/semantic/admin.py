@@ -62,6 +62,7 @@ class SQLConsole:
         console.service_of = duck.service_of
         console.failed_services = getattr(duck, "failed_services", {})  # why a configured connector has no tables
         console.views = getattr(duck, "views", {})
+        console.view_key = getattr(duck, "view_key", {})
         console.service_prefix = getattr(duck, "service_prefix", {})  # service.table addresses read the same here
         console.failed_views = getattr(duck, "failed_views", {})
         self._config_path = getattr(duck, "_config_path", None)
@@ -252,7 +253,8 @@ class SQLConsole:
             r["icon"] = kinds.get(r["name"], "api")
             r["service"] = self.duck.service_of.get(r["name"])
             r["expandable"] = self._expandable(r["name"])
-            saved = self.duck.views.get(r["name"])
+            r["saved_name"] = self.duck.view_key.get(r["name"])  # the saved table's own name (maybe an address)
+            saved = self.duck.views.get(r["saved_name"]) if r["saved_name"] else None
             r["saved"] = None if saved is None else ("bound" if saved.get("table") else "query")
             # how it's written by address (nvd.cves); a service's table function by its pattern (s3_data.<database>.<table_name>)
             r["address"] = self.duck.address_of(r["name"]) if r["kind"] == "table" else None
@@ -262,7 +264,27 @@ class SQLConsole:
             elif pattern:
                 r["usage"] = f"SELECT * FROM {pattern} LIMIT 100"
                 r["address_pattern"] = pattern
+            if r["kind"] in ("table function", "raw query"):  # the page's ⓘ: what it takes and how to call it
+                r["params"] = _params_of(self.duck.functions.get(r["name"]))
+                r["doc"] = inspect.getdoc(self.duck.functions.get(r["name"])) or ""
         return records
+
+
+def _params_of(fn: Any) -> List[Dict[str, Any]]:
+    """A table function's parameters for the page: name, required, type, default (``where``/``limit`` left out)."""
+    out: List[Dict[str, Any]] = []
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return out
+    for p in params:
+        if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD) or p.name in ("where", "limit"):
+            continue
+        ann = p.annotation
+        kind = "" if ann is inspect.Parameter.empty else getattr(ann, "__name__", None) or str(ann).replace("typing.", "")
+        out.append({"name": p.name, "required": p.default is inspect.Parameter.empty, "type": kind,
+                    "default": None if p.default is inspect.Parameter.empty else repr(p.default)})
+    return out
 
 
 def _json_rows(df: Any) -> List[List[Any]]:
@@ -613,10 +635,11 @@ def validate_config(data: Any, path: str = "") -> Dict[str, List[str]]:
         errors.append("views must be an object: {name: {table, args} | {sql}}")
         views = {}
     for name, definition in views.items():
-        from ..views import NAME_RE, clean_definition
+        from ..views import DOTTED_RE, NAME_RE, clean_definition
 
-        if not NAME_RE.match(str(name)):
-            errors.append(f"views.{name}: a table name is lowercase letters, digits and _, starting with a letter")
+        if not (NAME_RE.match(str(name)) or DOTTED_RE.match(str(name))):
+            errors.append(f"views.{name}: a table name is lowercase letters, digits and _, starting with a letter "
+                          f"— or an address, connector.database.table")
         try:
             clean_definition(definition)
         except ValueError as exc:

@@ -140,10 +140,10 @@ def test_register_all_skips_the_saved_ones_and_writes_once(tmp_path):
     assert [(n["address"], n["saved_as"]) for n in nested] == [("wh.a", "mine"), ("wh.b", None), ("wh.c", None)]
     items = [{"table": n["table"], "args": n["args"]} for n in nested]
     got = client.post("/api/views/many", json={"items": items}).json()
-    assert [v["name"] for v in got["created"]] == ["wh_b", "wh_c"]
+    assert [v["name"] for v in got["created"]] == ["wh.b", "wh.c"]
     assert got["skipped"] == [{"table": "wh_table", "args": {"table_name": "a"}, "why": "already saved as mine"}]
-    assert set(json.loads(path.read_text())["views"]) == {"mine", "wh_b", "wh_c"}
-    assert {n["saved_as"] for n in client.get("/api/tables/nested", params={"service": "wh"}).json()["tables"]} == {"mine", "wh_b", "wh_c"}
+    assert set(json.loads(path.read_text())["views"]) == {"mine", "wh.b", "wh.c"}
+    assert {n["saved_as"] for n in client.get("/api/tables/nested", params={"service": "wh"}).json()["tables"]} == {"mine", "wh.b", "wh.c"}
     assert client.post("/api/sql", json={"sql": "SELECT t FROM wh.c"}).json()["rows"] == [["c"]]
     again = client.post("/api/views/many", json={"items": items}).json()
     assert again["created"] == [] and len(again["skipped"]) == 3

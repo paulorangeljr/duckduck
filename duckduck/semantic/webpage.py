@@ -192,7 +192,10 @@ aside.tables .tlist { flex: 1; min-height: 120px; max-height: none; }
 .trow .titem { flex: 1; min-width: 0; }
 .trow .titem:hover { background: none; }
 .trow.saved { box-shadow: inset 3px 0 0 var(--accent); }
-.titem .tname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.titem .tlabel { display: flex; min-width: 0; white-space: nowrap; }
+.titem .tdb { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--muted); flex-shrink: 1; }
+.titem .tname { overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; max-width: 100%; }
+.trow.saved .titem .tname { font-weight: 600; }
 .titem .ktag, .titem .kcount { flex: none; font-size: 10.5px; padding: 0 6px; border-radius: 999px; background: var(--surface-2);
                                color: var(--muted); margin-left: 4px; }
 .trow:hover .titem .ktag, .trow:hover .titem .kcount { background: var(--surface); }
@@ -451,6 +454,19 @@ table.vwtable tbody tr:hover td.rn { background: var(--surface-2); }
 .sqlres .tablewrap th { position: sticky; top: 0; background: var(--surface); box-shadow: inset 0 -1px 0 var(--border); }
 @media (max-width: 700px) { .vwcell { position: absolute; inset: auto 0 0 0; width: auto; height: 45%; background: var(--surface);
                                       border-left: 0; border-top: 1px solid var(--border); } .vwmain { position: relative; } }
+.infobtn { flex: none; width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--accent); background: var(--surface);
+           color: var(--accent); font: italic 700 12px/1 Georgia, "Times New Roman", serif; cursor: pointer; padding: 0; margin-right: 4px; }
+.infobtn:hover { background: var(--accent); color: #fff; }
+.fninfo { width: min(640px, calc(100vw - 32px)); }
+.fninfo .doc { color: var(--ink-2); font-size: 13.5px; white-space: pre-wrap; margin: 4px 0 12px; }
+.fninfo h4 { margin: 14px 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-2); }
+.fninfo table td, .fninfo table th { font-size: 13px; padding: 4px 8px; }
+.fninfo .way { border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; margin: 8px 0; }
+.fninfo .way .t { font-size: 13px; font-weight: 600; } .fninfo .way .d { font-size: 12.5px; color: var(--muted); margin: 2px 0 6px; }
+.fninfo .way pre { margin: 0; background: var(--surface-2); border-radius: 8px; padding: 8px 10px; font-size: 12.5px;
+                   white-space: pre-wrap; word-break: break-word; }
+.fninfo .way .row { display: flex; gap: 8px; align-items: flex-start; }
+.fninfo .way .row pre { flex: 1; }
 /* take-over dialog */
 dialog.modal { border: 1px solid var(--border); border-radius: 14px; padding: 0; width: min(560px, calc(100vw - 32px));
                background: var(--surface); color: var(--ink); box-shadow: 0 24px 60px rgba(0,0,0,.25); }
@@ -799,8 +815,7 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
     <div class="mbody">
       <div class="vkind" id="vkind"></div>
       <label class="name" for="vname">Table name</label>
-      <div class="namebox"><span>SELECT * FROM</span><input id="vname" autocomplete="off" spellcheck="false"
-        pattern="[a-z_][a-z0-9_]{0,62}" required></div>
+      <div class="namebox"><span>SELECT * FROM</span><input id="vname" autocomplete="off" spellcheck="false" required></div>
       <div class="hint" id="vhint"></div>
       <label class="name" for="vdesc" style="margin-top:10px">Description <span class="muted" style="font-weight:400">— optional; helps people and Ask</span></label>
       <input id="vdesc" autocomplete="off" style="width:100%" placeholder="e.g. ServiceNow incidents">
@@ -814,6 +829,14 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
       <button class="secondary" type="button" id="vcancel">Cancel</button>
       <button class="primary" type="submit" id="vgo">Save table</button></div>
   </form>
+</dialog>
+<dialog class="modal fninfo" id="fninfo" aria-labelledby="fntitle">
+  <div class="mhead">
+    <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M8 7.2v4M8 4.8v.1"/></svg>
+    <div><h2 id="fntitle"></h2><p class="sub" id="fnsub"></p></div>
+  </div>
+  <div class="mbody" id="fnbody"></div>
+  <div class="mfoot"><button class="secondary" type="button" id="fnclose">Close</button></div>
 </dialog>
 <dialog class="viewer" id="viewer" aria-labelledby="vwtitle">
   <div class="vwhead">
@@ -1301,7 +1324,7 @@ async function editSavedTable(name) {
 }
 // the other saved tables that read this one — renaming or removing it leaves them reading a name that's gone
 function readersOf(name, views) {
-  const word = new RegExp(`\\b${name}\\b`, "i");
+  const word = new RegExp(`(^|[^A-Za-z0-9_.])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9_])`, "i");
   return views.filter(v => v.name !== name && word.test(v.statement || "")).map(v => v.name);
 }
 async function openViewDialog({sql, previous = null, description = ""}) {
@@ -1340,17 +1363,24 @@ async function checkStatement(nameFromIt) {
   $("#vnote").textContent = c.off ? `Can't save here: ${c.off}.` : "Kept in duckduck.json (a .bak is kept) — it's there after a restart.";
   checkViewName();
 }
+// a saved table's name: a plain one (sn_incident) or an address like every connector's tables (s3_data.db.table)
+const canonicalName = (n) => { n = n.trim(); const i = n.indexOf("."); return i < 0 ? n.toLowerCase() : n.slice(0, i).toLowerCase() + n.slice(i); };
+const keyOfName = (n) => { n = canonicalName(n); if (!n.includes(".")) return n;
+  const k = n.replace(/"((?:[^"]|"")+)"/g, (_, x) => x.replace(/""/g, '"')).toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+  return /^[a-z_]/.test(k) ? k : "t_" + k; };
+const NAME_OK = /^[a-z_][a-z0-9_]{0,62}$/, ADDRESS_OK = /^[A-Za-z_][A-Za-z0-9_]*(\.([A-Za-z_][A-Za-z0-9_$]*|"([^"]|"")+")){1,4}$/;
 function checkViewName() {
-  const n = $("#vname").value.trim().toLowerCase(), hint = $("#vhint"), known = TABLES.find(t => t.name === n);
+  const n = canonicalName($("#vname").value), hint = $("#vhint"), key = keyOfName(n);
+  const known = TABLES.find(t => t.name === key || t.saved_name === n);
   const previous = VIEWDLG?.previous;
   let bad = "";
-  if (!/^[a-z_][a-z0-9_]{0,62}$/.test(n)) bad = "Letters, digits and _, starting with a letter.";
+  if (!(n.includes(".") ? ADDRESS_OK.test(n) : NAME_OK.test(n))) bad = "An address — connector.database.table — or a plain name: letters, digits and _.";
   else if (known && !known.saved) bad = `“${n}” is already a table (${known.service || "registered"}) — pick another name.`;
-  else if (previous && known && n !== previous) bad = `“${n}” is another saved table — pick another name.`;
+  else if (previous && known && known.saved_name !== previous) bad = `“${n}” is another saved table — pick another name.`;
   const readers = VIEWDLG?.readers || [];
   hint.textContent = bad || (previous && n !== previous ? `Renames “${previous}” to “${n}”.` + (readers.length
       ? ` ${readers.join(", ")} read${readers.length === 1 ? "s" : ""} “${previous}” — change ${readers.length === 1 ? "it" : "them"} too, or ${readers.length === 1 ? "it stops" : "they stop"} working.` : "")
-    : known && !previous ? `Replaces the saved table “${n}”.` : "Letters, digits and _, starting with a letter.");
+    : known && !previous ? `Replaces the saved table “${n}”.` : n.includes(".") ? "Named by its address, like the connector's own tables." : "A plain name — or an address: connector.database.table.");
   hint.classList.toggle("bad", !!bad || !!(previous && n !== previous && readers.length));
   const c = VIEWDLG?.check;
   $("#vgo").disabled = !!bad || !c || !!c.error || !!c.off;
@@ -1395,9 +1425,9 @@ $("#viewform").addEventListener("submit", async (e) => {
   e.preventDefault();
   const dlg = VIEWDLG;
   if (!dlg || !checkViewName() || !dlg.check || dlg.check.error) return;
-  const name = $("#vname").value.trim().toLowerCase(), previous = dlg.previous;
+  const name = canonicalName($("#vname").value), previous = dlg.previous;
   const body = {name, sql: $("#vstmt").value.trim(), description: $("#vdesc").value.trim() || undefined,
-    ...(previous ? {previous} : {replace: !!TABLES.find(t => t.name === name && t.saved)})};
+    ...(previous ? {previous} : {replace: !!TABLES.find(t => t.saved_name === name)})};
   $("#vgo").disabled = true; $("#vgo").textContent = "Saving…";
   let saved;
   try { saved = await api("/api/views", body); }
@@ -1972,11 +2002,16 @@ function drawTables() {
   const tableRow = (t, kids) => {
     const tip = [t.name + (t.address && t.address !== t.name ? `  ·  ${t.address}` : ""), t.description,
                  t.pushdown ? "push-down: " + t.pushdown : ""].filter(Boolean).join("\n");
-    const tag = t.saved ? `<span class="savedtag" title="${t.saved === "bound" ? "A saved table over a table function" : "A saved query"} — kept in duckduck.json">saved</span>`
-      : KIND_TAGS[t.kind] ? `<span class="ktag" title="${esc(t.kind)}">${KIND_TAGS[t.kind]}</span>` : "";
-    return `<div class="trow ${t.saved ? "saved" : ""}"><button class="titem" type="button" data-usage="${esc(t.usage || ("SELECT * FROM " + t.name + " LIMIT 100"))}" title="${esc(tip)}">
-      ${icon(t.icon)}<span class="tname">${esc(short(t))}</span>${tag}${kids ? `<span class="kcount">${kids}</span>` : ""}</button>
-      ${t.saved ? `<button type="button" class="editbtn" data-editview="${esc(t.name)}" title="See and edit the statement behind it">✎ Edit</button>` : ""}</div>`;
+    const tag = !t.saved && KIND_TAGS[t.kind] ? `<span class="ktag" title="${esc(t.kind)}">${KIND_TAGS[t.kind]}</span>` : "";
+    // database.table: the table's own name always whole, the database before it muted (and cut first)
+    const sn = short(t), cut = sn.lastIndexOf(".");
+    const label = cut > 0 ? `<span class="tdb">${esc(sn.slice(0, cut + 1))}</span><span class="tname">${esc(sn.slice(cut + 1))}</span>`
+      : `<span class="tname">${esc(sn)}</span>`;
+    const savedTip = t.saved ? `\n${t.saved === "bound" ? "A saved table over a table function" : "A saved query"} — kept in duckduck.json` : "";
+    return `<div class="trow ${t.saved ? "saved" : ""}"><button class="titem" type="button" data-usage="${esc(t.usage || ("SELECT * FROM " + t.name + " LIMIT 100"))}" title="${esc(tip + savedTip)}">
+      ${icon(t.icon)}<span class="tlabel">${label}</span>${tag}${kids ? `<span class="kcount">${kids}</span>` : ""}</button>
+      ${t.params ? `<button type="button" class="infobtn" data-fninfo="${esc(t.name)}" title="A table function: what it takes and how to call it" aria-label="How to use ${esc(t.name)}">i</button>` : ""}
+      ${t.saved ? `<button type="button" class="editbtn" data-editview="${esc(t.saved_name || t.name)}" title="See and edit the statement behind it">✎ Edit</button>` : ""}</div>`;
   };
   const nestedBlock = (t, svc) => {
     const all = byCatalog[t.name] || [], kids = nestedOf(t);
@@ -1992,7 +2027,7 @@ function drawTables() {
         const use = nestedUsage(n), key = nestedKey(n.table, n.args);
         return `<div class="nitem ${n.saved_as ? "saved" : ""} ${JUST_SAVED.has(key) ? "just" : ""}" title="${esc(n.address || n.usage)}">
           <span class="lbl" data-usage="${esc(n.saved_as ? `SELECT * FROM ${n.saved_as} LIMIT 100` : use)}">${esc(n.label)}</span>
-          ${n.saved_as ? `<span class="savedok" title="Saved as the table ${esc(n.saved_as)}">✓ ${esc(n.saved_as)}</span>
+          ${n.saved_as ? `<span class="savedok" title="Saved as the table ${esc(n.saved_as)}">✓ ${n.address && n.saved_as.toLowerCase() === n.address.toLowerCase() ? "saved" : esc(n.saved_as)}</span>
               <button type="button" class="editbtn" data-editview="${esc(n.saved_as)}" title="See and edit its statement">✎</button>`
             : `${canSave ? `<button class="mini" type="button" data-savetable="${esc(use)}" title="Keep it as a table of its own, with a name">＋ Table</button>` : ""}
               <button class="mini" type="button" data-preview="${esc(use)}" title="Run SELECT * … LIMIT 100">Preview</button>`}</div>`; }).join("")}
@@ -2027,13 +2062,51 @@ function drawTables() {
   on("[data-exprefresh]", b => loadNested(b.dataset.exprefresh, true));
   on("[data-showsaved]", b => { const c = b.dataset.showsaved; if (SHOW_SAVED.has(c)) SHOW_SAVED.delete(c); else SHOW_SAVED.add(c); drawTables(); });
   on("[data-regall]", b => registerAll(b.dataset.regall, b));
+  on("[data-fninfo]", b => showFunctionInfo(b.dataset.fninfo));
 }
+// ⓘ on a table function: what it takes, and the three ways to call it (by address, arg. in the WHERE, the call)
+function showFunctionInfo(name) {
+  const t = TABLES.find(x => x.name === name); if (!t) return;
+  const req = (t.params || []).filter(p => p.required), opt = (t.params || []).filter(p => !p.required);
+  const ph = (p) => p.type === "int" || p.type === "float" ? `<${p.name}>` : `'<${p.name}>'`;
+  const ways = [];
+  if (t.address_pattern) ways.push({t: "By address — like any table", d: "connector.part.part: each part fills an argument, in order.",
+    sql: `SELECT * FROM ${t.address_pattern} LIMIT 10`});
+  if (req.length) ways.push({t: "Arguments in the WHERE", d: "arg. says it's an argument of the table, not a column of the result.",
+    sql: `SELECT * FROM ${t.name}\nWHERE ${req.map(p => `arg.${p.name} = ${ph(p)}`).join("\n  AND ")}\nLIMIT 10`});
+  ways.push({t: "Arguments in the call", d: "",
+    sql: `SELECT * FROM ${t.name}(${req.map(p => `${p.name}=${ph(p)}`).join(", ")}) LIMIT 10`});
+  $("#fntitle").textContent = t.name;
+  $("#fnsub").textContent = t.kind === "raw query" ? "A raw query: it runs the source's own query language."
+    : "A table function: it's a table once its arguments say which one.";
+  $("#fnbody").innerHTML = `${t.doc ? `<div class="doc">${esc(t.doc.split(/\n\s*\n/)[0])}</div>` : ""}
+    <h4>It takes</h4>
+    <table><thead><tr><th>argument</th><th></th><th>type</th><th>default</th></tr></thead><tbody>
+      ${[...req, ...opt].map(p => `<tr><td class="mono">${esc(p.name)}</td><td>${p.required ? "<b>required</b>" : `<span class="muted">optional</span>`}</td>
+        <td class="mono muted">${esc(p.type || "")}</td><td class="mono muted">${esc(p.default ?? "")}</td></tr>`).join("")}</tbody></table>
+    <h4>How to call it</h4>
+    ${ways.map((w, i) => `<div class="way"><div class="t">${esc(w.t)}</div>${w.d ? `<div class="d">${esc(w.d)}</div>` : ""}
+      <div class="row"><pre class="mono">${esc(w.sql)}</pre><button class="mini" type="button" data-fnuse="${i}" title="Put it in the editor">Use</button></div></div>`).join("")}
+    ${t.pushdown ? `<p class="muted small">Filters that reach the source: ${esc(t.pushdown)}.</p>` : ""}
+    ${t.address_pattern && META?.features?.saved_tables ? `<p class="muted small">Want one of its tables as a table of its own? Write it by address and press
+      <b>Save as table</b> — it's kept as ${esc(t.address_pattern)}.</p>` : ""}`;
+  $("#fnbody").querySelectorAll("[data-fnuse]").forEach(b => b.addEventListener("click", () => {
+    const sql = ways[Number(b.dataset.fnuse)].sql, ta = $("#sqltext");
+    $("#fninfo").close(); openTab("sql"); ta.value = sql; ta.focus();
+    const at = sql.search(/'?<[^>]+>'?/);  // the first placeholder selected: type over it
+    if (at >= 0) { const m = sql.slice(at).match(/'?<[^>]+>'?/)[0]; ta.setSelectionRange(at, at + m.length); }
+  }));
+  $("#fninfo").showModal();
+}
+$("#fnclose").addEventListener("click", () => $("#fninfo").close());
+$("#fninfo").addEventListener("click", (e) => { if (e.target === $("#fninfo")) $("#fninfo").close(); });
+
 // "Register all": every table behind a catalog not saved yet becomes a saved table (one write; already-saved ones skipped)
 async function registerAll(catalog, button) {
   const todo = Object.values(NESTED).flatMap(x => x.tables || []).filter(n => n.catalog === catalog && !n.saved_as);
   if (!todo.length) return;
   if (!confirm(`Save ${todo.length} table${todo.length === 1 ? "" : "s"} behind ${catalog} as tables of their own?\n\n` +
-    `Each gets a name like ${todo[0].address ? todo[0].address.replace(/"/g, "").replace(/\./g, "_") : "its arguments"} — kept in duckduck.json (a .bak is kept). ` +
+    `Each is named by its address, like ${todo[0].address || "the connector's tables"} — kept in duckduck.json (a .bak is kept). ` +
     `Ones already saved are skipped. Rename or remove any later with ✎ Edit.`)) return;
   button.disabled = true; button.textContent = "Saving…";
   let r;
