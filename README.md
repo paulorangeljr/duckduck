@@ -506,8 +506,8 @@ adx.ProxyLogs
   **Save as table** keeps the SQL a KQL query translates to.
 
 **The extension, without .NET**: on the repo's **Releases**, the
-*kql-extension* release has it built for Linux x64, macOS (Apple Silicon) and
-Windows x64 — download `kql-<platform>.duckdb_extension`, rename it
+*kql-extension* release has it built for Linux x64 (glibc 2.28+: RHEL/Alma/Rocky
+8+, Ubuntu 20.04+, Debian 10+), macOS (Apple Silicon) and Windows x64 — download `kql-<platform>.duckdb_extension`, rename it
 `kql.duckdb_extension` and put it in `~/.duckduck/extensions/` (on Windows
 `%USERPROFILE%\.duckduck\extensions\`). The *kql extension* workflow
 rebuilds and republishes it whenever the build changes (or *Run workflow*).

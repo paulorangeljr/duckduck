@@ -22,8 +22,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            platform: linux_amd64
           - os: macos-latest
             platform: osx_arm64
           - os: windows-latest
@@ -52,8 +50,44 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+  # Linux is built on AlmaLinux 8 (glibc 2.28): a Native AOT library needs the glibc of the machine it was
+  # built on or newer — built on Ubuntu 24.04 it asked for GLIBC_2.38 and didn't load on older systems.
+  # 2.28 covers RHEL/Alma/Rocky 8+, Ubuntu 20.04+, Debian 10+, Amazon Linux 2023.
+  build-linux:
+    runs-on: ubuntu-latest
+    container: almalinux:8
+    timeout-minutes: 40
+    steps:
+      - name: Tools (git, clang, zlib, python 3.11)
+        run: |
+          dnf install -y git clang zlib-devel python3.11 python3.11-pip binutils findutils tar gzip which libicu
+          ln -sf /usr/bin/python3.11 /usr/local/bin/python3
+          ln -sf /usr/bin/python3.11 /usr/local/bin/python
+          python -m pip install duckdb
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Build
+        shell: bash
+        env:
+          DUCKDUCK_KQL_EXTENSION: out/kql.duckdb_extension
+        run: bash scripts/build_kql_extension.sh
+      - name: The newest glibc it needs (must be 2.28 at most)
+        shell: bash
+        run: |
+          need=$(objdump -T out/kql.duckdb_extension | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -1)
+          echo "needs glibc $need"
+          [ "$(printf '%s\n' "$need" 2.28 | sort -V | tail -1)" = "2.28" ]
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kql-extension-linux_amd64
+          path: out/kql.duckdb_extension
+          if-no-files-found: error
+          retention-days: 90
+
   release:
-    needs: build
+    needs: [build, build-linux]
     # what built is published, even if one platform failed
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
@@ -80,7 +114,7 @@ jobs:
           cat > notes.md <<'NOTES'
           The kql DuckDB extension that duckduck's KQL uses (built from [saoc90/kql-to-sql](https://github.com/saoc90/kql-to-sql), plus `kql_syntax_errors`).
 
-          1. Download the file for your platform: `linux_amd64`, `osx_arm64` (Apple Silicon) or `windows_amd64`.
+          1. Download the file for your platform: `linux_amd64` (glibc 2.28+: RHEL/Alma/Rocky 8+, Ubuntu 20.04+, Debian 10+), `osx_arm64` (Apple Silicon) or `windows_amd64`.
           2. Rename it `kql.duckdb_extension` and put it in `~/.duckduck/extensions/` (Windows: `%USERPROFILE%\.duckduck\extensions\`) — or point `duckduck.json`'s `"kql": {"extension": "..."}` at it.
           3. Restart `serve`: the SQL tab's KQL switch translates and joins every source.
 

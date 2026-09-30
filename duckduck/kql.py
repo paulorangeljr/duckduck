@@ -295,7 +295,11 @@ class KqlTranslator:
             conn.execute(f"LOAD '{path.replace(chr(39), chr(39) * 2)}'")
         except Exception as exc:
             conn.close()
-            raise KqlUnavailable(f"couldn't load the kql extension at {path}: {exc}. {BUILD_HELP}") from exc
+            hint = ""
+            if "GLIBC" in str(exc):  # built on a newer Linux than this one
+                hint = ("That file was built for a newer Linux (glibc) than this one: download kql-linux_amd64 "
+                        "again from the \"kql-extension\" release (built for glibc 2.28+), or build it here. ")
+            raise KqlUnavailable(f"couldn't load the kql extension at {path}: {exc}. {hint}{BUILD_HELP}") from exc
         conn.execute("SET enable_external_access = false")
         self._conn = conn
         return conn
