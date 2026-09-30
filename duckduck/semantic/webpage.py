@@ -2253,9 +2253,12 @@ function drawTables() {
     const all = byCatalog[t.name] || [], kids = nestedOf(t);
     if (!EXPANDED.has(svc) || NESTED[svc]?.loading || !t.expandable) return "";
     if (!all.length) return `<div class="nested"><div class="nhead muted small">No tables listed</div></div>`;
-    const todo = all.filter(n => !n.saved_as), dbCount = new Set(all.map(n => n.database ?? DEFAULT_DB)).size;
+    const todo = all.filter(n => !n.saved_as);
     const at = NESTED[svc]?.read_at ? new Date(NESTED[svc].read_at * 1000) : null;
-    return `<div class="nested"><div class="nhead"><span class="small"><b>${all.length}</b> behind <span class="mono">${esc(short(t))}</span>${dbCount ? ` · in ${dbCount} database${dbCount === 1 ? "" : "s"} below` : ""}${all.length - todo.length ? ` · <span class="okc">${all.length - todo.length} saved</span>` : ""}
+    if (!todo.length && !(f && !kids.length)) return "";  // every one saved: nothing left to say (they're in their databases)
+    return `<div class="nested"><div class="nhead"><span class="small">${todo.length
+        ? `<b>${todo.length.toLocaleString()}</b> of ${all.length.toLocaleString()} in <span class="mono">${esc(short(t))}</span> not saved yet`
+        : `All ${all.length.toLocaleString()} in <span class="mono">${esc(short(t))}</span> saved`}
           ${at ? `<span class="muted" title="Expanding again shows this read — ↻ reads the catalog again">· read ${at.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}</span>` : ""}</span>
         ${canSave && todo.length ? `<button type="button" class="pillbtn accent" data-regall="${esc(t.name)}"
           title="Save each of the ${todo.length} not saved yet as a table of its own (the ones already saved are skipped)">Register all ${todo.length}</button>` : ""}</div>
@@ -2600,7 +2603,7 @@ $("#sqlresult").addEventListener("click", (e) => {
 // one ADX connector's tables (adx.Table), sent to the cluster as it is. Each language keeps its own text.
 let LANG = "sql", KQL = null;
 const EDIT_TEXT = {sql: null, kql: null};
-const KQL_START = "// KQL: tables by address (adx.ProxyLogs, s3_data.db.table) or name\n.show tables";
+const KQL_START = "";
 async function loadKql() {
   try { KQL = await api("/api/sql/kql"); } catch { KQL = {available: false, native: [], reason: "the server didn't answer"}; }
   const btn = $('.seg.lang [data-lang="kql"]'), usable = KQL.available || (KQL.native || []).length;
