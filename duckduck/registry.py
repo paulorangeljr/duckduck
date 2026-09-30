@@ -3,7 +3,7 @@ Central registry of the API wrappers supported by
 ``DuckAPI.auto_register`` (see ``core.py``).
 
 Each entry maps a "type" (``"sharepoint"``, ``"insightvm"``, ``"database"``,
-``"servicenow"``, ``"axonius"``, ``"glue"``, ``"blob_storage"``, ``"adx"``,
+``"servicenow"``, ``"axonius"``, ``"glue"``, ``"athena"``, ``"blob_storage"``, ``"adx"``,
 ``"files"``, ``"python"``, ``"nvd"``, ``"restcountries"``) to:
 
 - ``factory``          : classmethod that builds the instance from a
@@ -19,6 +19,7 @@ becomes available in ``DuckAPI.auto_register()``.
 from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple
 
 from .adx import DataExplorer
+from .athena import Athena
 from .axonius import Axonius
 from .blob_storage import BlobStorage
 from .database import SQLDatabase
@@ -171,6 +172,21 @@ SERVICE_REGISTRY: Dict[str, ServiceSpec] = {
         streaming_tables={
             "table": "iter_table",
         },
+    ),
+    "athena": ServiceSpec(
+        factory=Athena.from_secret,
+        tables={
+            "table": "table",
+            "query": "query",
+            "databases": "databases",
+            "tables": "tables",
+            "columns": "columns",
+        },
+        streaming_tables={
+            "table": "iter_table",
+            "query": "iter_query",
+        },
+        requires_authentication=False,  # the default AWS credential chain, like the CLI
     ),
     "adx": ServiceSpec(
         factory=DataExplorer.from_secret,

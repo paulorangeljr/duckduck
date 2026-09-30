@@ -764,6 +764,45 @@ what you filter most, sort by the column you search within a partition
 exact lookups on ids/IPs, fewer bigger files — or an Iceberg/Delta table,
 whose manifest lists each file's min/max (duckduck reads both).
 
+**Or let Athena run it** (`connector: "athena"`). The `glue` connector reads
+the files here, with DuckDB; the `athena` connector sends the SQL to Athena,
+which scans S3 on its own machines and returns only the answer — the better
+choice when the tables are big and the WHERE keeps a small part:
+
+```json
+"athena": {
+  "connector": "athena",
+  "workgroup": "primary",
+  "reuse_minutes": 60,
+  "authentication": {"type": "local", "region_name": "us-east-1", "profile_name": "prod-account"}
+}
+```
+
+```sql
+SELECT host, count(*) FROM athena.security.proxy_logs
+WHERE day >= DATE '2026-09-01' AND host LIKE '%corp%'
+GROUP BY host
+-- athena: SELECT * FROM "security"."proxy_logs" WHERE "day" >= DATE '2026-09-01' AND "host" LIKE '%corp%'
+```
+
+- The WHERE (`=`, LIKE, ILIKE, comparisons, a join's keys) and a safe LIMIT
+  become Athena SQL, values typed by the table's columns; anything Athena
+  can't take exactly stays with DuckDB.
+- Big answers come back as `UNLOAD` to Parquet in the workgroup's output
+  location, read by DuckDB straight from S3 and deleted afterwards; small
+  ones (a LIMIT up to `api_rows`, 1000) through the API. `results: "api"` or
+  `"unload"` forces one.
+- `reuse_minutes`: Athena reuses the result of the same query within that
+  time, without scanning (or billing) again.
+- Cancelling (✕ in the page, a SQL client's cancel) stops the Athena query.
+- `athena_query(sql=…)` runs any Athena SQL; `athena_databases`,
+  `athena_tables`, `athena_columns` list the catalog, and
+  `athena.<database>.<table>` addresses any table.
+- Needs `athena:StartQueryExecution/GetQueryExecution/GetQueryResults/
+  StopQueryExecution/GetTableMetadata/ListTableMetadata/ListDatabases/
+  GetWorkGroup`, Glue read access, and S3 read/write/delete on the results
+  location.
+
 Catalogs of table functions: `glue_tables` / `glue_databases`, `adx_tables`,
 `<db>_tables` (SQL databases), and `servicenow_tables` — the instance's
 tables from `sys_db_object` (`table_name`, `label`, `extends`, `scope`;

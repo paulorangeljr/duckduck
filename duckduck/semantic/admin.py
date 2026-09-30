@@ -475,7 +475,7 @@ class _captured_log:
 #: A registered function's module → the kind of source it is (the page draws an icon per kind).
 SOURCE_KINDS = {
     "duckduck.sharepoint": "sharepoint", "duckduck.rapid7": "insightvm", "duckduck.servicenow": "servicenow",
-    "duckduck.axonius": "axonius", "duckduck.database": "database", "duckduck.glue": "glue",
+    "duckduck.axonius": "axonius", "duckduck.database": "database", "duckduck.glue": "glue", "duckduck.athena": "athena",
     "duckduck.blob_storage": "blob_storage", "duckduck.adx": "adx", "duckduck.local_files": "files",
     "duckduck.python_source": "python", "duckduck.semantic.takeover": "dataset", "duckduck.views": "dataset",
 }

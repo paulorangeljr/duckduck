@@ -95,6 +95,16 @@
         "api_secret": "..."
       }
     },
+    "athena": {
+      "connector": "athena",
+      "workgroup": "primary",
+      "reuse_minutes": 60,
+      "authentication": {
+        "type": "local",
+        "region_name": "us-east-1",
+        "profile_name": "prod-account"
+      }
+    },
     "s3_data": {
       "connector": "glue",
       "authentication": {

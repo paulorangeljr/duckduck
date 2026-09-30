@@ -2069,6 +2069,7 @@ const ICONS = {
   insightvm: '<path d="M8 1.5l5 2v4c0 3.2-2.2 5.6-5 7-2.8-1.4-5-3.8-5-7v-4z"/><path d="M5.8 8l1.6 1.6L10.4 6.5"/>',
   axonius: '<rect x="1.5" y="3" width="10" height="7" rx="1"/><path d="M4.5 13h4M6.5 10v3"/><rect x="11.5" y="6" width="3" height="7" rx=".8"/>',
   glue: '<path d="M2.5 4.2h11l-1.3 9a1 1 0 0 1-1 .8H4.8a1 1 0 0 1-1-.8z"/><ellipse cx="8" cy="4.2" rx="5.5" ry="1.7"/>',
+  athena: '<path d="M2.5 4.2h11l-1.3 9a1 1 0 0 1-1 .8H4.8a1 1 0 0 1-1-.8z"/><ellipse cx="8" cy="4.2" rx="5.5" ry="1.7"/><path d="M6 9.5l1.5 1.5L10.5 8"/>',
   blob_storage: '<path d="M4.5 12.5h7a3 3 0 0 0 .4-6A4 4 0 0 0 4.3 7a2.8 2.8 0 0 0 .2 5.5z"/>',
   adx: '<path d="M2 13.5h12"/><path d="M4 11V8M7 11V4.5M10 11V6.5M13 11V9"/>',
   files: '<path d="M4 1.5h5l3.5 3.5v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-11.5a1 1 0 0 1 1-1z"/><path d="M9 1.5V5h3.5"/>',
@@ -2077,7 +2078,7 @@ const ICONS = {
   api: '<path d="M6 1.5v3M10 1.5v3M4 4.5h8v3a4 4 0 0 1-8 0zM8 11.5v3"/>',
 };
 const ICON_NAMES = {database: "SQL database", sharepoint: "SharePoint", servicenow: "ServiceNow", insightvm: "InsightVM",
-  axonius: "Axonius", glue: "S3 / Glue", blob_storage: "Azure Blob Storage", adx: "Azure Data Explorer",
+  axonius: "Axonius", glue: "S3 / Glue", athena: "Amazon Athena", blob_storage: "Azure Blob Storage", adx: "Azure Data Explorer",
   files: "local files", python: "Python module", duckdb: "DuckDB", dataset: "taken-over answer", api: "API"};
 function icon(kind) {
   if (!kind) return "";
@@ -3413,6 +3414,7 @@ const CONNECTOR_INFO = {
   nvd: ["NVD (CVE database)", "Public CVEs from NIST — an API key is optional"],
   restcountries: ["REST Countries", "Countries of the world (needs an API key)"],
   glue: ["AWS Glue / S3", "Parquet, Delta and Iceberg tables from the Glue Data Catalog"],
+  athena: ["Amazon Athena", "SQL run on Athena over S3 — the WHERE and LIMIT go into Athena's query"],
   adx: ["Azure Data Explorer", "Kusto tables and KQL queries"],
   files: ["Local files", "Every CSV, Parquet or JSON file in a folder"],
   python: ["Python module", "Tables made by your own Python functions"],
