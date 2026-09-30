@@ -1094,6 +1094,15 @@ picks up; **✕ Cancel** stops it — DuckDB's own step included. **Debug
 log** shows the DEBUG lines too (request bodies, bound parameters, every
 page); secrets stay masked.
 
+**Query tabs.** The editor has tabs: **＋** opens a new one, a double-click
+renames it, **×** closes it. Each tab keeps its own query, language (SQL or
+KQL) and last result, so running one doesn't wipe another. A query keeps
+running when you switch away: its tab shows a spinner, then a dot when a
+new result is waiting. Tabs are kept in the browser. *Open in the SQL tab*
+(from Ask, History or a saved table) opens a new tab unless the current
+one is empty. The server still runs one query at a time, so two tabs
+running together wait on each other.
+
 **The SQL tab's table list.** On top, which connectors in `duckduck.json`
 started — and, for each one that didn't, the error (a missing
 `authentication` block, `boto3` not installed, a secret it couldn't read…)

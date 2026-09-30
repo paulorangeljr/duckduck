@@ -308,3 +308,12 @@ def test_the_sql_editor_has_an_autocomplete():
     assert 'id="sqlac"' in PAGE and "function acContext(" in PAGE and "function tableItems(" in PAGE
     assert 'if (LANG !== "sql") { acClose(); return; }' in PAGE  # SQL mode only, for now
     assert "rememberColumns(" in PAGE and "duckduck-columns" in PAGE and "arg.${p.name}" in PAGE
+
+
+def test_the_sql_tab_has_query_tabs():
+    """Each tab keeps its own query, language and result; a run keeps going while another tab is open."""
+    from duckduck.semantic.webpage import PAGE
+
+    assert 'id="qtabs"' in PAGE and "function newTab(" in PAGE and "function switchTab(" in PAGE
+    assert "function sqlIntoTab(" in PAGE and "duckduck-sqltabs" in PAGE and "pollSqlJob(tab)" in PAGE
+    assert "SQLJOB" not in PAGE  # jobs live on their tab, not in one global

@@ -331,6 +331,20 @@ button.linkish[aria-pressed="true"] { color: var(--ink-2); }
 .seg button { font: inherit; font-size: 13px; border: 0; background: none; color: var(--ink-2); padding: 5px 12px; cursor: pointer; }
 .seg button[aria-pressed="true"] { background: var(--surface-2); color: var(--ink); font-weight: 600; }
 .seg button:disabled { opacity: .45; cursor: not-allowed; }
+.qtabs { display: flex; align-items: flex-end; gap: 2px; margin: -4px 0 8px; border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: thin; }
+.qtab { display: flex; align-items: center; gap: 5px; padding: 5px 6px 5px 10px; border: 1px solid transparent; border-bottom: 0;
+  border-radius: 8px 8px 0 0; font-size: 13px; color: var(--ink-2); cursor: pointer; white-space: nowrap; margin-bottom: -1px; background: none; }
+.qtab:hover { background: var(--surface-2); }
+.qtab.on { background: var(--surface); border-color: var(--border); color: var(--ink); font-weight: 600; }
+.qtab .qname { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+.qtab input.qrename { font: inherit; font-size: 13px; width: 140px; padding: 1px 4px; }
+.qtab .qlang { font-size: 10px; font-weight: 700; color: var(--muted); letter-spacing: .04em; }
+.qtab .qdot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
+.qtab .spin { width: 10px; height: 10px; }
+.qtab .qclose { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 15px; line-height: 1; padding: 0 3px; border-radius: 4px; }
+.qtab .qclose:hover { background: var(--surface-2); color: var(--ink); }
+.qadd { border: 0; background: none; color: var(--accent); cursor: pointer; font-size: 17px; padding: 3px 9px; border-radius: 6px; margin-bottom: 2px; }
+.qadd:hover { background: var(--surface-2); }
 .edhead { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
 .edhead #kqlnote { flex: 1; min-width: 200px; }
 .translated pre { max-height: 240px; overflow: auto; }
@@ -714,6 +728,7 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
         <div class="tlist" id="tablelist"></div></aside>
       <div>
         <div class="card">
+          <div class="qtabs" id="qtabs" role="tablist" aria-label="Query tabs"></div>
           <div class="edhead"><div class="seg lang" role="group" aria-label="Query language">
               <button type="button" data-lang="sql" aria-pressed="true" title="DuckDB SQL">SQL</button>
               <button type="button" data-lang="kql" aria-pressed="false" title="Kusto Query Language — translated to SQL, or run on ADX as it is">KQL</button></div>
@@ -1318,7 +1333,7 @@ function drawJob(job) {
   </div>`;
   const box = $("#conversation"); box.innerHTML = html;
   box.querySelectorAll("[data-job]").forEach(b => b.addEventListener("click", () => jobAction(b.dataset.job)));
-  box.querySelector("[data-jobsql]")?.addEventListener("click", () => { $("#sqltext").value = job.partial.sql; openTab("sql"); });
+  box.querySelector("[data-jobsql]")?.addEventListener("click", () => { openTab("sql"); sqlIntoTab(job.partial.sql); });
 }
 
 // a question put in the box by a click (a suggested question): its own suggestions, not the last one's
@@ -1366,8 +1381,7 @@ $("#takeoverform").addEventListener("submit", async (e) => {
     $("#takeover").close();
     fbTakenOver(t.feedback);
     toast(`${t.name}: ${t.rows.toLocaleString()} row${t.rows === 1 ? "" : "s"} — ${t.how}${t.feedback ? " · marked as answered 👍" : ""}`);
-    $("#sqltext").value = `SELECT * FROM ${t.name} LIMIT 100`;
-    openTab("sql"); await loadTables(); runSql();
+    openTab("sql"); sqlIntoTab(`SELECT * FROM ${t.name} LIMIT 100`); await loadTables(); runSql();
   } catch (err) {
     $("#toerr").textContent = err.message; $("#toerr").hidden = false;
     $("#togo").disabled = false; $("#togo").textContent = "Create table & open SQL";
@@ -1529,7 +1543,7 @@ $("#vcancel").addEventListener("click", () => $("#viewdlg").close());
 $("#viewdlg").addEventListener("click", (e) => { if (e.target === $("#viewdlg")) $("#viewdlg").close(); });  // backdrop
 $("#vopen").addEventListener("click", () => {
   $("#viewdlg").close(); openTab("sql");
-  $("#sqltext").value = $("#vstmt").value; $("#sqltext").focus();
+  sqlIntoTab($("#vstmt").value); $("#sqltext").focus();
 });
 // the Config tab's copy of the file follows, so a later Save there keeps what was done here
 function draftViews(change) { if (CFG) for (const o of [CFG.config, DRAFT]) { o.views = {...(o.views || {})}; change(o.views); if (!Object.keys(o.views).length) delete o.views; } }
@@ -1578,7 +1592,7 @@ $("#viewform").addEventListener("submit", async (e) => {
   $("#viewdlg").close();
   toast(previous ? `Saved “${name}”` : `Saved “${name}” — it's a table now`);
   afterSavedTables();
-  if (!previous) { openTab("sql"); $("#sqltext").value = `SELECT * FROM ${name} LIMIT 100`; $("#sqltext").focus(); }
+  if (!previous) { openTab("sql"); sqlIntoTab(`SELECT * FROM ${name} LIMIT 100`); $("#sqltext").focus(); }
 });
 $("#sqlsave").addEventListener("click", async () => {
   const text = $("#sqltext").value;
@@ -1667,7 +1681,7 @@ function render(c) {
   if (c.done && r.search_id) html += feedbackForm(r);
   box.innerHTML = html;
   box.querySelectorAll("button.option").forEach(b => b.addEventListener("click", () => reply(c.conversation_id, b.dataset.reply)));
-  box.querySelector("[data-runsql]")?.addEventListener("click", () => { $("#sqltext").value = r.sql; openTab("sql"); });
+  box.querySelector("[data-runsql]")?.addEventListener("click", () => { openTab("sql"); sqlIntoTab(r.sql); });
   box.querySelector("[data-takeover]")?.addEventListener("click", () => takeOver(c.conversation_id));
   box.querySelector("[data-expandrows]")?.addEventListener("click", () => openViewer(rowsSource(c.result.results || []), c.result.question));
   wireColumns(c);
@@ -1914,7 +1928,7 @@ async function loadHistory() {
       const i = +b.closest("tr").dataset.i; open(i, $(`#history tr.hdetail[data-i="${i}"]`).hidden);
     }));
     document.querySelectorAll("#history [data-opensql]").forEach(b => b.addEventListener("click", () => {
-      $("#sqltext").value = rows[+b.dataset.opensql].sql; openTab("sql");
+      openTab("sql"); sqlIntoTab(rows[+b.dataset.opensql].sql);
     }));
   } catch (err) { $("#history").innerHTML = `<p class="error">${esc(err.message)}</p>`; }
 }
@@ -2515,41 +2529,47 @@ function drawRegDone(r) {
 $("#tablefilter").addEventListener("input", drawTables);
 $("#groupsopen").addEventListener("click", () => { COLLAPSED.clear(); keepCollapsed(); drawTables(); });
 $("#groupsclose").addEventListener("click", () => { groupsOf().forEach(g => COLLAPSED.add(g)); keepCollapsed(); drawTables(); });
-// a query runs as a job: its steps and log live, ⏸ Pause (between API calls and pages), ✕ Cancel (DuckDB too)
-let SQLJOB = null;  // {id, timer, debug}
+// a query runs as a job: its steps and log live, ⏸ Pause (between API calls and pages), ✕ Cancel (DuckDB too).
+// Each query tab has its own job; one keeps running while another tab is shown.
 try { $("#sqldebug").checked = store.get("duckduck-sqldebug") === "1"; } catch {}
 $("#sqldebug").addEventListener("change", () => store.set("duckduck-sqldebug", $("#sqldebug").checked ? "1" : "0"));
 async function runSql() {
-  const sql = $("#sqltext").value.trim(); if (!sql) return;
-  if (SQLJOB) await sqlJobAction("cancel");  // a new run replaces the one still running
+  const tab = curTab(), sql = $("#sqltext").value.trim(); if (!sql || !tab) return;
+  acClose();
+  if (tab.job) await sqlJobAction("cancel", tab);  // a new run replaces the one still running in this tab
   const debug = $("#sqldebug").checked;
+  tab.result = null; tab.error = null;
   $("#sqlresult").innerHTML = `<div class="card muted">Starting…</div>`;
   let r;
   try { r = await api("/api/sql", {sql, debug, background: true, language: LANG}); }
-  catch (err) { $("#sqlresult").innerHTML = `<div class="card error">${esc(err.message)}</div>`; return; }
-  if (!r.job_id) { drawSqlResult(r); return; }
-  SQLJOB = {id: r.job_id, debug};
-  pollSqlJob();
+  catch (err) { tab.error = err.message; if (QACTIVE === tab.id) drawTabResult(tab); return; }
+  if (!r.job_id) { tab.result = r; if (QACTIVE === tab.id) drawSqlResult(r); return; }
+  tab.job = {id: r.job_id, debug};
+  drawQTabs();
+  pollSqlJob(tab);
 }
-async function pollSqlJob() {
-  const job = SQLJOB; if (!job) return;
+async function pollSqlJob(tab) {
+  const job = tab?.job; if (!job) return;
   let v;
   try { v = await api(`/api/jobs/${job.id}`); }
-  catch (err) { SQLJOB = null; $("#sqlresult").innerHTML = `<div class="card error">${esc(err.message)}</div>`; return; }
-  if (SQLJOB !== job) return;  // replaced meanwhile
-  if (v.state === "done" || v.state === "failed" || v.state === "cancelled") SQLJOB = null;
-  if (v.state === "done") drawSqlResult(v.result);
-  else if (v.state === "failed") $("#sqlresult").innerHTML = `<div class="card error">${esc(v.error?.message || "failed")}</div>`;
-  else drawSqlJob(v, job.debug);
-  if (SQLJOB === job) job.timer = setTimeout(pollSqlJob, v.state === "paused" ? 1000 : 350);
+  catch (err) { if (tab.job === job) { tab.job = null; tab.error = err.message; if (QACTIVE === tab.id) drawTabResult(tab); drawQTabs(); } return; }
+  if (tab.job !== job) return;  // replaced meanwhile
+  const shown = QACTIVE === tab.id;
+  if (v.state === "done" || v.state === "failed" || v.state === "cancelled") tab.job = null;
+  if (v.state === "done") { tab.result = v.result; if (shown) drawSqlResult(v.result); else tab.unseen = true; }
+  else if (v.state === "failed") { tab.error = v.error?.message || "failed"; if (shown) drawTabResult(tab); else tab.unseen = true; }
+  else if (shown) drawSqlJob(v, job.debug);
+  if (tab.job === job) job.timer = setTimeout(() => pollSqlJob(tab), v.state === "paused" ? 1000 : 350);
+  else drawQTabs();
 }
-async function sqlJobAction(action) {
-  const job = SQLJOB; if (!job) return;
-  if (action === "cancel") { clearTimeout(job.timer); SQLJOB = null; }
+async function sqlJobAction(action, tab = curTab()) {
+  const job = tab?.job; if (!job) return;
+  if (action === "cancel") { clearTimeout(job.timer); tab.job = null; drawQTabs(); }
   let v;
   try { v = await api(`/api/jobs/${job.id}/${action}`, {}); } catch (err) { toast(err.message); return; }
+  if (QACTIVE !== tab.id) return;
   if (action === "cancel") drawSqlJob({...v, state: "cancelled"}, job.debug);
-  else if (SQLJOB === job) drawSqlJob(v, job.debug);
+  else if (tab.job === job) drawSqlJob(v, job.debug);
 }
 const SQL_STATE = {running: "Running", pausing: "Pausing…", paused: "Paused", cancelled: "Cancelled"};
 function drawSqlJob(v, debug) {
@@ -2602,16 +2622,14 @@ $("#sqlresult").addEventListener("click", (e) => {
 // ---- SQL | KQL: the editor's language. KQL is translated to SQL (the kql extension) — or, when it reads only
 // one ADX connector's tables (adx.Table), sent to the cluster as it is. Each language keeps its own text.
 let LANG = "sql", KQL = null;
-const EDIT_TEXT = {sql: null, kql: null};
 const KQL_START = "";
+const START_TEXT = (lang) => lang === "kql" ? KQL_START : "SHOW TABLES";
 async function loadKql() {
   try { KQL = await api("/api/sql/kql"); } catch { KQL = {available: false, native: [], reason: "the server didn't answer"}; }
   const btn = $('.seg.lang [data-lang="kql"]'), usable = KQL.available || (KQL.native || []).length;
   btn.disabled = !usable;
   btn.title = usable ? "Kusto Query Language — translated to SQL, or run on ADX as it is" : `KQL is off: ${KQL.reason || ""}`;
   if (!usable && LANG === "kql") setLang("sql");
-  let saved = null; try { saved = store.get("duckduck-sqllang"); } catch {}
-  if (saved === "kql" && usable && LANG !== "kql") setLang("kql");
   kqlNote();
 }
 // KQL is beta: say so, and only what it can't do
@@ -2626,20 +2644,120 @@ function kqlNote() {
   if (KQL.available && KQL.checks_syntax === false) limits.push("this build doesn't check syntax — rebuild it");
   note.innerHTML = `<span class="betapill">Beta</span> Limits: ${limits.map(esc).join(" · ")}`;
 }
+// each tab keeps a text per language: switching back finds it
 function setLang(lang, text) {
   if (lang === LANG && text === undefined) return;
-  EDIT_TEXT[LANG] = $("#sqltext").value;
+  const tab = curTab();
+  if (tab) { tab.texts[LANG] = $("#sqltext").value; tab.lang = lang; }
   LANG = lang;
+  $("#sqltext").value = text !== undefined ? text : (tab?.texts[lang] ?? START_TEXT(lang));
+  applyLang();
+  drawQTabs(); saveTabs();
+}
+function applyLang() {
+  const lang = LANG;
   document.querySelectorAll(".seg.lang [data-lang]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.lang === lang)));
-  $("#sqltext").value = text !== undefined ? text : (EDIT_TEXT[lang] ?? (lang === "kql" ? KQL_START : "SHOW TABLES"));
   $("#sqltext").setAttribute("aria-label", lang === "kql" ? "KQL" : "SQL");
   $("#sqlhint").textContent = lang === "kql"
     ? "Ctrl+Enter · queries only (no .commands but .show tables) · where ==, contains, has, ago(1d)… · take N"
     : "Ctrl+Enter · read queries only (SELECT, WITH, SHOW, DESCRIBE…) · no file or network access";
   $("#sqlsave").title = lang === "kql" ? "Keep this query as a table: saved as the SQL it translates to" : "Keep this query as a table with a name — in duckduck.json, for SQL and Ask";
-  try { store.set("duckduck-sqllang", lang); } catch {}
   kqlNote();
 }
+// ---- query tabs: each keeps its query (a text per language), its language and its last result; a query running
+// in one keeps running while another is shown (its tab spins, then shows a dot). The tabs' names, texts and
+// languages are kept in the browser; results only while the page is open.
+let QTABS = [], QACTIVE = null;
+const curTab = () => QTABS.find(t => t.id === QACTIVE);
+function newTab(text, lang = "sql", name = null) {
+  const used = new Set(QTABS.map(t => t.name)); let n = QTABS.length + 1;
+  while (used.has(`Query ${n}`)) n++;
+  const t = {id: "q" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: name || `Query ${n}`,
+             lang, texts: {sql: null, kql: null}, result: null, error: null, job: null, unseen: false};
+  t.texts[lang] = text ?? START_TEXT(lang);
+  QTABS.push(t);
+  return t;
+}
+function switchTab(id) {
+  const cur = curTab(), next = QTABS.find(t => t.id === id);
+  if (!next) return;
+  if (cur) cur.texts[LANG] = $("#sqltext").value;
+  try { acClose(); } catch {}  // the autocomplete isn't set up yet while the tabs load
+  QACTIVE = id; LANG = next.lang; next.unseen = false;
+  $("#sqltext").value = next.texts[next.lang] ?? START_TEXT(next.lang);
+  applyLang(); drawTabResult(next); drawQTabs(); saveTabs();
+}
+function drawTabResult(tab) {
+  if (tab.job) $("#sqlresult").innerHTML = `<div class="card muted"><span class="spin" aria-hidden="true"></span> Running…</div>`;  // the next poll draws its steps
+  else if (tab.result) drawSqlResult(tab.result);
+  else if (tab.error) { LAST_SQL = null; $("#sqlresult").innerHTML = `<div class="card error">${esc(tab.error)}</div>`; }
+  else { LAST_SQL = null; $("#sqlresult").innerHTML = ""; }
+}
+function closeTab(id) {
+  const t = QTABS.find(x => x.id === id); if (!t) return;
+  if (t.job && !confirm(`“${t.name}” is still running — stop it and close the tab?`)) return;
+  if (t.job) sqlJobAction("cancel", t);
+  const i = QTABS.indexOf(t);
+  QTABS.splice(i, 1);
+  if (!QTABS.length) newTab();
+  if (QACTIVE === id) { QACTIVE = null; switchTab(QTABS[Math.min(i, QTABS.length - 1)].id); }
+  else { drawQTabs(); saveTabs(); }
+}
+function drawQTabs() {
+  const bar = $("#qtabs"); if (!bar) return;
+  bar.innerHTML = QTABS.map(t => `<div class="qtab ${t.id === QACTIVE ? "on" : ""}" role="tab" tabindex="0" aria-selected="${t.id === QACTIVE}" data-qtab="${esc(t.id)}"
+      title="${esc(t.name)} — double-click to rename">${t.job ? `<span class="spin" aria-label="running"></span>` : t.unseen ? `<span class="qdot" aria-label="new result"></span>` : ""}
+      <span class="qname">${esc(t.name)}</span>${t.lang === "kql" ? `<span class="qlang">KQL</span>` : ""}
+      ${QTABS.length > 1 ? `<button type="button" class="qclose" data-qclose="${esc(t.id)}" aria-label="Close ${esc(t.name)}" title="Close">×</button>` : ""}</div>`).join("")
+    + `<button type="button" class="qadd" id="qadd" title="New query tab" aria-label="New query tab">＋</button>`;
+}
+$("#qtabs").addEventListener("click", (e) => {
+  const close = e.target.closest("[data-qclose]"); if (close) { e.stopPropagation(); closeTab(close.dataset.qclose); return; }
+  if (e.target.closest("#qadd")) { const cur = curTab(); if (cur) cur.texts[LANG] = $("#sqltext").value;
+    const t = newTab(null, LANG); switchTab(t.id); $("#sqltext").focus(); $("#sqltext").select(); return; }
+  const tab = e.target.closest("[data-qtab]");  // the shown tab isn't redrawn: a double-click on it renames it
+  if (tab && !e.target.closest("input") && tab.dataset.qtab !== QACTIVE) switchTab(tab.dataset.qtab);
+});
+$("#qtabs").addEventListener("keydown", (e) => { const tab = e.target.closest("[data-qtab]"); if (tab && e.key === "Enter" && !e.target.closest("input")) switchTab(tab.dataset.qtab); });
+$("#qtabs").addEventListener("dblclick", (e) => {  // rename in place
+  const el = e.target.closest("[data-qtab]"); if (!el) return;
+  const t = QTABS.find(x => x.id === el.dataset.qtab), span = el.querySelector(".qname"); if (!t || !span) return;
+  const input = document.createElement("input"); input.className = "qrename"; input.value = t.name; input.setAttribute("aria-label", "Tab name");
+  span.replaceWith(input); input.focus(); input.select();
+  const done = (keep) => { if (keep && input.value.trim()) t.name = input.value.trim().slice(0, 60); drawQTabs(); saveTabs(); };
+  input.addEventListener("keydown", (k) => { if (k.key === "Enter") done(true); else if (k.key === "Escape") done(false); });
+  input.addEventListener("blur", () => done(true));
+});
+function saveTabs() {
+  try {
+    const cur = curTab(); if (cur) cur.texts[LANG] = $("#sqltext").value;
+    store.set("duckduck-sqltabs", JSON.stringify({active: QACTIVE, tabs: QTABS.map(t => ({id: t.id, name: t.name, lang: t.lang, texts: t.texts}))}));
+  } catch {}
+}
+let SAVE_TABS_TIMER = null;
+$("#sqltext").addEventListener("input", () => { clearTimeout(SAVE_TABS_TIMER); SAVE_TABS_TIMER = setTimeout(saveTabs, 500); });
+// SQL coming from elsewhere (an answer, History, a saved table…) opens in a new tab unless this one is empty —
+// the query you were writing stays where it was
+function sqlIntoTab(text, lang = "sql") {
+  const cur = curTab(), now = $("#sqltext").value.trim();
+  if (!now || now === START_TEXT(LANG).trim() || now === text.trim()) {
+    if (LANG !== lang) setLang(lang, text); else { $("#sqltext").value = text; saveTabs(); }
+    return;
+  }
+  if (cur) cur.texts[LANG] = $("#sqltext").value;
+  switchTab(newTab(text, lang).id);
+}
+(function initTabs() {
+  let saved = null;
+  try { saved = JSON.parse(store.get("duckduck-sqltabs") || "null"); } catch {}
+  if (saved?.tabs?.length) {
+    saved.tabs.forEach(x => { const t = newTab(null, x.lang === "kql" ? "kql" : "sql", x.name); t.id = x.id || t.id; t.texts = {sql: x.texts?.sql ?? null, kql: x.texts?.kql ?? null}; });
+  } else {
+    newTab($("#sqltext").value);
+  }
+  const first = QTABS.find(t => t.id === saved?.active) || QTABS[0];
+  QACTIVE = null; switchTab(first.id);
+})();
 document.querySelectorAll(".seg.lang [data-lang]").forEach(b => b.addEventListener("click", () => { if (!b.disabled) setLang(b.dataset.lang); }));
 // the page's own SQL (a table's usage, the ⓘ's ways, Preview) written as KQL when the editor is in KQL
 function inLang(sql) {
