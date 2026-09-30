@@ -52,10 +52,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 EXTENSION_ENV = "DUCKDUCK_KQL_EXTENSION"
 DEFAULT_EXTENSION = os.path.join("~", ".duckduck", "extensions", "kql.duckdb_extension")
 BUILD_HELP = (
-    "KQL needs the kql DuckDB extension (github.com/saoc90/kql-to-sql). Build it once with "
-    "scripts/build_kql_extension.sh (needs the .NET 10 SDK) — it lands in "
-    f"{DEFAULT_EXTENSION} — or point the config's \"kql\": {{\"extension\": \"…\"}} "
-    f"or {EXTENSION_ENV} at a kql.duckdb_extension."
+    "KQL needs the kql DuckDB extension: download it from the duckduck repo's Releases → \"kql-extension\" "
+    "(kql-<platform>.duckdb_extension), rename it kql.duckdb_extension and put it in "
+    f"{DEFAULT_EXTENSION} — or point the config's \"kql\": {{\"extension\": \"…\"}} or {EXTENSION_ENV} at it. "
+    "Or build it with scripts/build_kql_extension.sh (needs the .NET 10 SDK)."
 )
 _PLACEHOLDER = "__duckref_"
 

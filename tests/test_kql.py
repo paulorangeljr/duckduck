@@ -118,7 +118,7 @@ def test_only_adx_tables_run_on_adx_as_kql():
     assert duck.sql(t.sql).df()["ran"].tolist() == [
         "['ProxyLogs'] | where Timestamp > datetime(2026-09-30T11:00:00.000000Z) | summarize count() by Host"]
     # another source in it → it has to be translated, and there's no translator
-    with pytest.raises(KqlUnavailable, match="build_kql_extension"):
+    with pytest.raises(KqlUnavailable, match="Releases"):
         translator.to_sql("adx.ProxyLogs | join (sn.incident) on $left.Host == $right.cmdb_ci", duck)
     assert translator.status()["available"] is False
 

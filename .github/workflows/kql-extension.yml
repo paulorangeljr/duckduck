@@ -1,6 +1,8 @@
-# Builds the kql DuckDB extension (KQL in the SQL tab) for each platform, so nobody needs the .NET SDK:
-# Actions → "kql extension" → Run workflow, then download "kql-extension-<platform>" from the run and put
-# kql.duckdb_extension in ~/.duckduck/extensions/ (or point duckduck.json's "kql": {"extension": …} at it).
+# Builds the kql DuckDB extension (KQL in the SQL tab) for each platform, so nobody needs the .NET SDK,
+# and publishes them on the "kql-extension" release (Releases, on the repo's page):
+#   kql-linux_amd64.duckdb_extension, kql-osx_arm64.duckdb_extension, kql-windows_amd64.duckdb_extension
+# Download the one for your platform, rename it kql.duckdb_extension and put it in ~/.duckduck/extensions/
+# (or point duckduck.json's "kql": {"extension": ...} at it). Run it again: Actions -> "kql extension" -> Run workflow.
 name: kql extension
 
 on:
@@ -49,3 +51,41 @@ jobs:
           path: out/kql.duckdb_extension
           if-no-files-found: error
           retention-days: 90
+
+  release:
+    needs: build
+    # what built is published, even if one platform failed
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: One file per platform
+        run: |
+          mkdir -p assets
+          for d in dist/kql-extension-*; do
+            platform="${d#dist/kql-extension-}"
+            cp "$d/kql.duckdb_extension" "assets/kql-${platform}.duckdb_extension"
+          done
+          ls -l assets
+          test -n "$(ls assets)"
+      - name: Publish the "kql-extension" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cat > notes.md <<'NOTES'
+          The kql DuckDB extension that duckduck's KQL uses (built from [saoc90/kql-to-sql](https://github.com/saoc90/kql-to-sql), plus `kql_syntax_errors`).
+
+          1. Download the file for your platform: `linux_amd64`, `osx_arm64` (Apple Silicon) or `windows_amd64`.
+          2. Rename it `kql.duckdb_extension` and put it in `~/.duckduck/extensions/` (Windows: `%USERPROFILE%\.duckduck\extensions\`) — or point `duckduck.json`'s `"kql": {"extension": "..."}` at it.
+          3. Restart `serve`: the SQL tab's KQL switch translates and joins every source.
+
+          Rebuilt on every change to the build (Actions → *kql extension*).
+          NOTES
+          gh release delete kql-extension --cleanup-tag --yes || true
+          gh release create kql-extension assets/* --target "$GITHUB_SHA" --latest=false \
+            --title "KQL extension (kql.duckdb_extension)" --notes-file notes.md

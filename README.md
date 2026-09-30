@@ -493,11 +493,12 @@ adx.ProxyLogs
 - Queries only: management commands are refused, except `.show tables`.
   **Save as table** keeps the SQL a KQL query translates to.
 
-**The extension, without .NET**: the repo's GitHub Actions workflow
-*kql extension* builds it for Linux x64, macOS (Apple Silicon) and Windows
-x64 — Actions → *kql extension* → the latest run (or *Run workflow*) →
-download `kql-extension-<platform>`, unzip, and put `kql.duckdb_extension` in
-`~/.duckduck/extensions/` (on Windows `%USERPROFILE%\.duckduck\extensions\`).
+**The extension, without .NET**: on the repo's **Releases**, the
+*kql-extension* release has it built for Linux x64, macOS (Apple Silicon) and
+Windows x64 — download `kql-<platform>.duckdb_extension`, rename it
+`kql.duckdb_extension` and put it in `~/.duckduck/extensions/` (on Windows
+`%USERPROFILE%\.duckduck\extensions\`). The *kql extension* workflow
+rebuilds and republishes it whenever the build changes (or *Run workflow*).
 
 **Or build it** from source (needs the .NET 10 SDK — on Ubuntu
 `apt-get install dotnet-sdk-10.0`):
