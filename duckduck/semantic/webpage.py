@@ -167,7 +167,55 @@ textarea { width: 100%; min-height: 60px; }
 .srcrow > span:first-of-type .ico { margin-right: 4px; }
 /* SQL and Config tabs */
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
-.sqlgrid { display: grid; grid-template-columns: 270px minmax(0, 1fr); gap: 14px; align-items: start; }
+.sqlgrid { display: grid; grid-template-columns: minmax(300px, 340px) minmax(0, 1fr); gap: 14px; align-items: start; }
+aside.tables { position: sticky; top: 76px; display: flex; flex-direction: column; max-height: calc(100vh - 96px); padding: 14px; }
+aside.tables .thead { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
+aside.tables .thead h3 { margin: 0; }
+aside.tables .tlist { flex: 1; min-height: 120px; max-height: none; }
+.tgroup { margin-top: 8px; }
+.ghead { display: flex; align-items: center; gap: 6px; padding: 4px 2px; border-bottom: 1px solid var(--grid); position: sticky; top: 0;
+         background: var(--surface); z-index: 1; }
+.ghead .gname { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-2); }
+.gacts { margin-left: auto; display: inline-flex; gap: 4px; align-items: center; }
+.gacts .spin { width: 11px; height: 11px; }
+.pillbtn { font: inherit; font-size: 11.5px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--border);
+           background: var(--surface); color: var(--ink-2); cursor: pointer; white-space: nowrap; }
+.pillbtn:hover { border-color: var(--accent); color: var(--accent); }
+.pillbtn.on { background: var(--surface-2); color: var(--ink); }
+.pillbtn.accent { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.pillbtn.accent:hover { background: var(--accent); color: #fff; }
+.pillbtn:disabled { opacity: .6; cursor: default; }
+.iconbtn { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 13px; padding: 2px 5px; border-radius: 6px; }
+.iconbtn:hover { color: var(--accent); background: var(--surface-2); }
+.trow { display: flex; align-items: center; gap: 4px; border-radius: 8px; }
+.trow:hover { background: var(--surface-2); }
+.trow .titem { flex: 1; min-width: 0; }
+.trow .titem:hover { background: none; }
+.trow.saved { box-shadow: inset 3px 0 0 var(--accent); }
+.titem .tname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.titem .ktag, .titem .kcount { flex: none; font-size: 10.5px; padding: 0 6px; border-radius: 999px; background: var(--surface-2);
+                               color: var(--muted); margin-left: 4px; }
+.trow:hover .titem .ktag, .trow:hover .titem .kcount { background: var(--surface); }
+.titem .kcount { margin-left: auto; }
+.editbtn { flex: none; font: inherit; font-size: 12px; font-weight: 600; padding: 2px 9px; margin-right: 4px; border-radius: 999px;
+           border: 1px solid var(--accent); background: var(--surface); color: var(--accent); cursor: pointer; white-space: nowrap; }
+.editbtn:hover { background: var(--accent); color: #fff; }
+.nested .nhead { display: flex; align-items: center; gap: 8px; justify-content: space-between; padding: 4px 4px 6px; }
+.nested .okc { color: var(--good-ink); }
+.nested .nnote { padding: 4px; }
+.nitem.saved .lbl { color: var(--ink-2); }
+.nitem.just { background: rgba(46,160,67,.10); animation: justsaved 1.6s ease-out 1; }
+@keyframes justsaved { from { background: rgba(46,160,67,.32); } }
+@media (prefers-reduced-motion: reduce) { .nitem.just { animation: none; } }
+.savedok { flex: none; margin-left: auto; font-size: 11.5px; color: var(--good-ink); font-weight: 600; white-space: nowrap; overflow: hidden;
+           text-overflow: ellipsis; max-width: 55%; }
+button.mini { flex: none; font: inherit; font-size: 11.5px; padding: 1px 8px; border-radius: 6px; border: 1px solid var(--border);
+              background: var(--surface); color: var(--ink-2); cursor: pointer; }
+button.mini:hover { border-color: var(--accent); color: var(--accent); }
+.nitem button.mini:first-of-type { margin-left: auto; }
+.connbox .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+.connbox .dot.ok { background: var(--good-ink); } .connbox .dot.bad { background: var(--bad); }
+.connbox details { margin-top: 4px; } .connbox summary { cursor: pointer; color: var(--bad); }
 textarea.editor { width: 100%; min-height: 180px; resize: vertical; tab-size: 2; line-height: 1.45; }
 #cfgtext { min-height: 520px; }
 .tlist { max-height: 70vh; overflow: auto; margin-top: 8px; }
@@ -189,8 +237,7 @@ textarea.editor { width: 100%; min-height: 180px; resize: vertical; tab-size: 2;
 .nitem .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .tlisttools { display: flex; gap: 10px; align-items: center; margin-top: 6px; }
 .tlisttools .grow { flex: 1; }
-.tlist h4.tgroup { display: flex; align-items: center; gap: 6px; }
-.tlist h4.tgroup .expsvc { float: none; margin-left: auto; }
+
 .gtoggle { display: inline-flex; align-items: center; gap: 5px; background: none; border: 0; padding: 2px 4px 2px 0; cursor: pointer;
            font: inherit; color: inherit; text-transform: inherit; letter-spacing: inherit; }
 .gtoggle:hover { color: var(--ink); }
@@ -207,7 +254,7 @@ button.linkish { background: none; border: 0; padding: 0; font: inherit; font-si
 button.linkish:hover { text-decoration: underline; }
 button.linkish[aria-pressed="true"] { color: var(--ink-2); }
 .jcell { font-size: 12px; color: var(--ink-2); white-space: pre-wrap; word-break: break-word; }
-.nitem button { margin-left: auto; flex: none; padding: 1px 8px; font-size: 12px; }
+
 .connbox { font-size: 12.5px; margin: 0 0 8px; padding: 8px 10px; border-radius: 8px; background: var(--surface-2); }
 .connbox.bad { background: rgba(208,59,59,.08); }
 .connbox ul { margin: 6px 0 0; padding-left: 16px; } .connbox li { margin: 2px 0; }
@@ -222,7 +269,7 @@ button.linkish[aria-pressed="true"] { color: var(--ink-2); }
 .optref details > summary { font-weight: 600; color: var(--ink); padding: 4px 0; }
 .optref details details { margin-left: 12px; }
 .badge { font-size: 11px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--ink-2); margin-left: 4px; }
-@media (max-width: 860px) { .sqlgrid { grid-template-columns: 1fr; } }
+@media (max-width: 860px) { .sqlgrid { grid-template-columns: 1fr; } aside.tables { position: static; max-height: none; } }
 /* Config form */
 .catcard { margin-bottom: 14px; }
 .catbar { gap: 10px; align-items: center; }
@@ -590,10 +637,10 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
         (<span class="mono">serve(allow_sql=False)</span>). Restart it without that flag to query the registered
         tables here — read queries only, with no file or network access.</p></div>
     <div class="sqlgrid" id="sqlon">
-      <aside class="card"><h3>Tables</h3>
+      <aside class="card tables"><div class="thead"><h3>Tables</h3><span class="muted small" id="tablecount"></span></div>
         <div id="connstatus"></div>
-        <input id="tablefilter" placeholder="filter tables" style="width:100%">
-        <div class="tlisttools"><span class="muted small" id="tablecount"></span><span class="grow"></span>
+        <input id="tablefilter" type="search" placeholder="Filter tables…" style="width:100%" aria-label="Filter tables">
+        <div class="tlisttools"><span class="muted small">Connectors</span><span class="grow"></span>
           <button type="button" class="linkish" id="groupsopen" title="Show every connector's tables">Expand all</button>
           <button type="button" class="linkish" id="groupsclose" title="Show only the connectors' names">Collapse all</button></div>
         <div class="tlist" id="tablelist"></div></aside>
@@ -1361,6 +1408,7 @@ $("#viewform").addEventListener("submit", async (e) => {
   const def = saved.kind === "bound" ? {table: saved.table, args: saved.args} : {sql: saved.sql};
   if (saved.description) def.description = saved.description;
   draftViews(v => { if (previous && previous !== name) delete v[previous]; v[name] = def; });
+  if (saved.kind === "bound") JUST_SAVED.add(nestedKey(saved.table, saved.args));  // its catalog row shows ✓ name
   $("#viewdlg").close();
   toast(previous ? `Saved “${name}”` : `Saved “${name}” — it's a table now`);
   afterSavedTables();
@@ -1875,12 +1923,13 @@ async function loadConnections() {
       <span class="mono">services</span> in duckduck.json${META?.features?.config ? " (Config tab)" : ""}.${where}</div>`;
     return;
   }
+  // one line when all is well; what failed folds under it
   $("#connstatus").innerHTML = `<div class="connbox ${failed.length ? "bad" : ""}">
-    <b>${ok} of ${svcs.length} connector${svcs.length === 1 ? "" : "s"} started</b> · ${c.tables} table${c.tables === 1 ? "" : "s"}
-    ${failed.length ? `<ul>${failed.map(x => `<li><b>${esc(x.name)}</b> <span class="muted">(${esc(x.connector)})</span>
-      didn't start: <span class="err">${esc(x.error || "unknown error")}</span></li>`).join("")}</ul>` : ""}
+    <span class="dot ${failed.length ? "bad" : "ok"}" aria-hidden="true"></span><b>${ok} of ${svcs.length}</b> connector${svcs.length === 1 ? "" : "s"} started
+    ${failed.length ? `<details><summary>${failed.length} didn't start — why</summary><ul>${failed.map(x => `<li><b>${esc(x.name)}</b>
+      <span class="muted">(${esc(x.connector)})</span>: <span class="err">${esc(x.error || "unknown error")}</span></li>`).join("")}</ul>${where}</details>` : ""}
     ${svcs.some(x => x.started && !x.tables) ? `<div class="muted">Started with no tables: ${esc(svcs.filter(x => x.started && !x.tables).map(x => x.name).join(", "))}</div>` : ""}
-    ${failed.length || !c.tables ? where : ""}</div>`;
+    ${!failed.length && !c.tables ? where : ""}</div>`;
 }
 // one connector's catalogs: the tables behind them (Glue, ADX, a database…), under each catalog
 async function loadNested(svc, refresh) {
@@ -1894,67 +1943,107 @@ async function loadNested(svc, refresh) {
 }
 function collapseNested(svc) { EXPANDED.delete(svc); drawTables(); }
 function previewSql(sql) { $("#sqltext").value = sql; runSql(); }
+// nested rows saved in this session stay listed, marked; ones saved before are skipped (they're tables above)
+const JUST_SAVED = new Set(), SHOW_SAVED = new Set();
+const nestedKey = (table, args) => table + "|" + JSON.stringify(Object.keys(args || {}).sort().map(k => [k, String(args[k])]));
+const nestedUsage = (n) => n.address ? `SELECT * FROM ${n.address} LIMIT 100` : n.usage;
+const KIND_TAGS = {"table function": "fn", catalog: "catalog", "raw query": "raw"};
 function drawTables() {
   const f = $("#tablefilter").value.trim().toLowerCase();
   const byCatalog = {};
   EXPANDED.forEach(svc => (NESTED[svc]?.tables || []).forEach(n => (byCatalog[n.catalog] ||= []).push(n)));
-  const nestedOf = t => (byCatalog[t.name] || []).filter(n => !f || (n.label + " " + n.table).toLowerCase().includes(f));
-  const rows = TABLES.filter(t => !f || (t.name + " " + (t.description || "") + " " + (t.service || "")).toLowerCase().includes(f)
+  const matches = (n) => !f || `${n.label} ${n.table} ${n.address || ""} ${n.saved_as || ""}`.toLowerCase().includes(f);
+  const nestedOf = t => (byCatalog[t.name] || []).filter(matches);
+  const rows = TABLES.filter(t => !f || `${t.name} ${t.address || ""} ${t.description || ""} ${t.service || ""}`.toLowerCase().includes(f)
                                  || nestedOf(t).length);
   const groups = {};
   rows.forEach(t => (groups[t.service || "other"] ||= []).push(t));
-  const MAXN = 200;
+  const MAXN = 200, canSave = !!META?.features?.saved_tables;
   // a connector with a catalog gets its own toggle: expand just its catalog
   const toggle = (svc, ts) => {
     if (!ts.some(t => t.expandable)) return "";
     const st = NESTED[svc], on = EXPANDED.has(svc);
-    if (on && st?.loading) return `<span class="expsvc muted"><span class="spin" aria-hidden="true"></span> reading…</span>`;
-    const n = on && st ? st.tables.length : null;
-    return `<span class="expsvc">${n !== null ? `<span class="muted">${n} nested</span>
-      <button type="button" class="linkish" data-exprefresh="${esc(svc)}" title="Read ${esc(svc)}'s catalog again">↻</button>` : ""}
-      <button type="button" class="linkish" data-expand="${esc(svc)}" aria-pressed="${on}"
-        title="${on ? "Hide the tables behind this connector's catalog" : "List the tables behind this connector's catalog (reads it now)"}">${on ? "Collapse" : "Expand catalog"}</button></span>`;
+    if (on && st?.loading) return `<span class="gacts muted small"><span class="spin" aria-hidden="true"></span> reading…</span>`;
+    return `<span class="gacts">${on && st ? `<button type="button" class="iconbtn" data-exprefresh="${esc(svc)}" title="Read ${esc(svc)}'s catalog again">↻</button>` : ""}
+      <button type="button" class="pillbtn ${on ? "on" : ""}" data-expand="${esc(svc)}" aria-pressed="${on}"
+        title="${on ? "Hide the tables behind this connector's catalog" : "List the tables behind this connector's catalog (reads it now)"}">${on ? "Hide catalog" : "Expand catalog"}</button></span>`;
+  };
+  const short = (t) => t.address ? t.address.split(".").slice(1).join(".").replace(/"/g, "") : t.name;
+  const tableRow = (t, kids) => {
+    const tip = [t.name + (t.address && t.address !== t.name ? `  ·  ${t.address}` : ""), t.description,
+                 t.pushdown ? "push-down: " + t.pushdown : ""].filter(Boolean).join("\n");
+    const tag = t.saved ? `<span class="savedtag" title="${t.saved === "bound" ? "A saved table over a table function" : "A saved query"} — kept in duckduck.json">saved</span>`
+      : KIND_TAGS[t.kind] ? `<span class="ktag" title="${esc(t.kind)}">${KIND_TAGS[t.kind]}</span>` : "";
+    return `<div class="trow ${t.saved ? "saved" : ""}"><button class="titem" type="button" data-usage="${esc(t.usage || ("SELECT * FROM " + t.name + " LIMIT 100"))}" title="${esc(tip)}">
+      ${icon(t.icon)}<span class="tname">${esc(short(t))}</span>${tag}${kids ? `<span class="kcount">${kids}</span>` : ""}</button>
+      ${t.saved ? `<button type="button" class="editbtn" data-editview="${esc(t.name)}" title="See and edit the statement behind it">✎ Edit</button>` : ""}</div>`;
+  };
+  const nestedBlock = (t, svc) => {
+    const all = byCatalog[t.name] || [], kids = nestedOf(t);
+    if (!EXPANDED.has(svc) || NESTED[svc]?.loading || !t.expandable) return "";
+    if (!all.length) return `<div class="nested"><div class="nhead muted small">No tables listed</div></div>`;
+    const savedBefore = kids.filter(n => n.saved_as && !JUST_SAVED.has(nestedKey(n.table, n.args)));
+    const shown = SHOW_SAVED.has(t.name) ? kids : kids.filter(n => !savedBefore.includes(n));
+    const todo = all.filter(n => !n.saved_as);
+    return `<div class="nested"><div class="nhead"><span class="small"><b>${all.length}</b> behind it${all.length - todo.length ? ` · <span class="okc">${all.length - todo.length} saved</span>` : ""}</span>
+        ${canSave && todo.length ? `<button type="button" class="pillbtn accent" data-regall="${esc(t.name)}"
+          title="Save each of the ${todo.length} not saved yet as a table of its own (the ones already saved are skipped)">Register all ${todo.length}</button>` : ""}</div>
+      ${shown.slice(0, MAXN).map(n => {
+        const use = nestedUsage(n), key = nestedKey(n.table, n.args);
+        return `<div class="nitem ${n.saved_as ? "saved" : ""} ${JUST_SAVED.has(key) ? "just" : ""}" title="${esc(n.address || n.usage)}">
+          <span class="lbl" data-usage="${esc(n.saved_as ? `SELECT * FROM ${n.saved_as} LIMIT 100` : use)}">${esc(n.label)}</span>
+          ${n.saved_as ? `<span class="savedok" title="Saved as the table ${esc(n.saved_as)}">✓ ${esc(n.saved_as)}</span>
+              <button type="button" class="editbtn" data-editview="${esc(n.saved_as)}" title="See and edit its statement">✎</button>`
+            : `${canSave ? `<button class="mini" type="button" data-savetable="${esc(use)}" title="Keep it as a table of its own, with a name">＋ Table</button>` : ""}
+              <button class="mini" type="button" data-preview="${esc(use)}" title="Run SELECT * … LIMIT 100">Preview</button>`}</div>`; }).join("")}
+      ${shown.length > MAXN ? `<div class="muted small">+${shown.length - MAXN} more — filter to find them</div>` : ""}
+      ${savedBefore.length ? `<div class="muted small nnote">${savedBefore.length} already saved ${SHOW_SAVED.has(t.name) ? "" : "(listed above as tables) — skipped"}
+        <button type="button" class="linkish" data-showsaved="${esc(t.name)}">${SHOW_SAVED.has(t.name) ? "hide them" : "show them"}</button></div>` : ""}</div>`;
   };
   $("#tablecount").textContent = `${TABLES.length} table${TABLES.length === 1 ? "" : "s"}`;
   $("#tablelist").innerHTML = Object.entries(groups).map(([svc, ts]) => {
     const shut = COLLAPSED.has(svc) && !f;  // a filter shows what it matched, collapsed or not
-    return `<h4 class="tgroup"><button type="button" class="gtoggle" data-group="${esc(svc)}" aria-expanded="${!shut}"
-      title="${shut ? "Show" : "Hide"} ${esc(svc)}'s tables"><span class="chev" aria-hidden="true">▸</span>${esc(svc)}
-      <span class="gcount">${ts.length}</span></button>${shut ? "" : toggle(svc, ts)}</h4>` + (shut ? "" : ts.map(t => {
-    const kids = nestedOf(t);
-    const item = `<button class="titem" type="button" data-usage="${esc(t.usage || ("SELECT * FROM " + t.name + " LIMIT 100"))}"
-      title="${esc([t.description, t.pushdown ? "push-down: " + t.pushdown : ""].filter(Boolean).join("\n"))}">
-      ${icon(t.icon)}<span>${esc(t.name)}</span>${t.saved ? `<span class="savedtag" title="${t.saved === "bound" ? "A saved table over a table function" : "A saved query"} — in duckduck.json">saved</span>` : ""}<span class="kind">${esc(t.kind || "")}${kids.length ? ` · ${kids.length}` : ""}</span></button>`;
-    return (t.saved ? `<div class="trow">${item}<button type="button" class="tedit" data-editview="${esc(t.name)}"
-      title="See and edit the statement behind it">✎</button></div>` : item) +
-      (kids.length ? `<div class="nested">${kids.slice(0, MAXN).map(n => `<div class="nitem" title="${esc(n.usage)}">
-        <span class="lbl" data-usage="${esc(n.usage)}">${esc(n.label)}</span>
-        <button class="secondary" type="button" data-savetable="${esc(n.usage)}" title="Keep it as a table of its own, with a name">＋ Table</button>
-        <button class="secondary" type="button" data-preview="${esc(n.usage)}">Preview</button></div>`).join("")}
-        ${kids.length > MAXN ? `<div class="muted small">+${kids.length - MAXN} more — filter to find them</div>` : ""}</div>` : "") +
-      (EXPANDED.has(svc) && !NESTED[svc]?.loading && t.expandable && !(byCatalog[t.name] || []).length
-        ? `<div class="nested muted small">no tables listed</div>` : "");
-  }).join("") + (EXPANDED.has(svc) && NESTED[svc]?.notes?.length
-    ? `<div class="muted small nested">${NESTED[svc].notes.map(esc).join("<br>")}</div>` : ""));
+    return `<div class="tgroup"><div class="ghead"><button type="button" class="gtoggle" data-group="${esc(svc)}" aria-expanded="${!shut}"
+      title="${shut ? "Show" : "Hide"} ${esc(svc)}'s tables"><span class="chev" aria-hidden="true">▸</span><span class="gname">${esc(svc)}</span>
+      <span class="gcount">${ts.length}</span></button>${shut ? "" : toggle(svc, ts)}</div>` + (shut ? "" : ts.map(t => {
+      const kids = (byCatalog[t.name] || []).length;
+      return tableRow(t, kids) + nestedBlock(t, svc);
+    }).join("") + (EXPANDED.has(svc) && NESTED[svc]?.notes?.length
+      ? `<div class="muted small nested">${NESTED[svc].notes.map(esc).join("<br>")}</div>` : "")) + `</div>`;
   }).join("")
     || (TABLES.length ? `<p class="muted small">Nothing matches.</p>` : `<p class="muted small">No tables registered — see above for why.</p>`);
-  $("#tablelist").querySelectorAll("[data-usage]").forEach(b => b.addEventListener("click", () => {
+  const on = (sel, fn) => $("#tablelist").querySelectorAll(sel).forEach(b => b.addEventListener("click", (e) => { e.stopPropagation(); fn(b); }));
+  on("[data-usage]", b => {
     let u = b.dataset.usage;
     if (!/^\s*(select|with|from|show|describe)/i.test(u)) u = `SELECT * FROM ${u}`;
     if (!/\blimit\b/i.test(u)) u += " LIMIT 100";
     $("#sqltext").value = u; $("#sqltext").focus();
-  }));
-  $("#tablelist").querySelectorAll("[data-preview]").forEach(b => b.addEventListener("click", () => previewSql(b.dataset.preview)));
-  $("#tablelist").querySelectorAll("[data-editview]").forEach(b => b.addEventListener("click", () => editSavedTable(b.dataset.editview)));
-  $("#tablelist").querySelectorAll("[data-group]").forEach(b => b.addEventListener("click", () => {
-    const g = b.dataset.group; if (COLLAPSED.has(g)) COLLAPSED.delete(g); else COLLAPSED.add(g);
-    keepCollapsed(); drawTables();
-  }));
-  $("#tablelist").querySelectorAll("[data-savetable]").forEach(b => b.addEventListener("click", () =>
-    saveAsTable(b.dataset.savetable.replace(/\s+limit\s+\d+\s*$/i, ""))));
-  $("#tablelist").querySelectorAll("[data-expand]").forEach(b => b.addEventListener("click", () =>
-    EXPANDED.has(b.dataset.expand) ? collapseNested(b.dataset.expand) : loadNested(b.dataset.expand, false)));
-  $("#tablelist").querySelectorAll("[data-exprefresh]").forEach(b => b.addEventListener("click", () => loadNested(b.dataset.exprefresh, true)));
+  });
+  on("[data-preview]", b => previewSql(b.dataset.preview));
+  on("[data-editview]", b => editSavedTable(b.dataset.editview));
+  on("[data-group]", b => { const g = b.dataset.group; if (COLLAPSED.has(g)) COLLAPSED.delete(g); else COLLAPSED.add(g); keepCollapsed(); drawTables(); });
+  on("[data-savetable]", b => saveAsTable(b.dataset.savetable.replace(/\s+limit\s+\d+\s*$/i, "")));
+  on("[data-expand]", b => EXPANDED.has(b.dataset.expand) ? collapseNested(b.dataset.expand) : loadNested(b.dataset.expand, false));
+  on("[data-exprefresh]", b => loadNested(b.dataset.exprefresh, true));
+  on("[data-showsaved]", b => { const c = b.dataset.showsaved; if (SHOW_SAVED.has(c)) SHOW_SAVED.delete(c); else SHOW_SAVED.add(c); drawTables(); });
+  on("[data-regall]", b => registerAll(b.dataset.regall, b));
+}
+// "Register all": every table behind a catalog not saved yet becomes a saved table (one write; already-saved ones skipped)
+async function registerAll(catalog, button) {
+  const todo = Object.values(NESTED).flatMap(x => x.tables || []).filter(n => n.catalog === catalog && !n.saved_as);
+  if (!todo.length) return;
+  if (!confirm(`Save ${todo.length} table${todo.length === 1 ? "" : "s"} behind ${catalog} as tables of their own?\n\n` +
+    `Each gets a name like ${todo[0].address ? todo[0].address.replace(/"/g, "").replace(/\./g, "_") : "its arguments"} — kept in duckduck.json (a .bak is kept). ` +
+    `Ones already saved are skipped. Rename or remove any later with ✎ Edit.`)) return;
+  button.disabled = true; button.textContent = "Saving…";
+  let r;
+  try { r = await api("/api/views/many", {items: todo.map(n => ({table: n.table, args: n.args}))}); }
+  catch (err) { toast(err.message); button.disabled = false; button.textContent = `Register all ${todo.length}`; return; }
+  (r.created || []).forEach(v => { JUST_SAVED.add(nestedKey(v.table, v.args)); draftViews(views => { views[v.name] = {table: v.table, args: v.args}; }); });
+  const skipped = (r.skipped || []).length;
+  toast(`Saved ${(r.created || []).length} table${(r.created || []).length === 1 ? "" : "s"}` + (skipped ? ` · ${skipped} skipped` : ""));
+  if (skipped) console.info("skipped:", r.skipped);
+  afterSavedTables();
 }
 $("#tablefilter").addEventListener("input", drawTables);
 $("#groupsopen").addEventListener("click", () => { COLLAPSED.clear(); keepCollapsed(); drawTables(); });

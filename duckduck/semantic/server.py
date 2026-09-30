@@ -28,7 +28,7 @@ HTML page (``webpage.PAGE``) over a JSON API:
 ``POST /api/sql {sql, debug, background}`` · ``GET /api/tables``  the SQL console (``allow_sql``, on by default; read-only, no files/network; ``background`` → a job)
 ``POST /api/takeover {conversation_id, name, full, user}``  "take over from here": the answer's rows as a table (an unrated answer → answered)
 ``POST /api/takeover/proposal {conversation_id}``  what that would give: suggested name, rows, columns, capped
-``GET /api/views`` · ``POST /api/views/check {sql}`` · ``POST /api/views`` · ``DELETE /api/views/{name}``  saved tables (a query kept as a table in duckduck.json)
+``GET /api/views`` · ``POST /api/views/check {sql}`` · ``POST /api/views`` · ``POST /api/views/many`` · ``DELETE /api/views/{name}``  saved tables (a query kept as a table in duckduck.json)
 ``GET  /api/config``                         duckduck.json, secrets masked, + every option documented
 ``POST /api/config/validate {config}``       check an edited config without saving
 ``PUT  /api/config {config}``                save it (``allow_config_edit``; ``.bak`` kept) and reload
@@ -553,9 +553,13 @@ def create_app(
         reason = read_only_reason(sql)
         if reason:
             return dump({"error": reason})
-        definition = source.view_from_sql(sql)
-        return dump({"kind": kind_of(definition), **definition, "name": suggested_name(source, definition),
-                     "off": saved_tables_off()})
+        try:
+            definition = source.view_from_sql(sql)
+        except ValueError as exc:  # an address whose service didn't start, a table it doesn't have
+            return dump({"error": str(exc)})
+        address = source.address_of(definition["table"], definition["args"]) if definition.get("table") else None
+        return dump({"kind": kind_of(definition), **definition, "address": address,
+                     "name": suggested_name(source, definition), "off": saved_tables_off()})
 
     @app.post("/api/views")
     def create_view(body: Dict[str, Any] = Body(...)):
@@ -569,7 +573,10 @@ def create_app(
             raise HTTPException(403, off)
         raw = {k: body[k] for k in ("table", "args", "sql", "description") if body.get(k) not in (None, "", {})}
         if raw.get("sql") and not raw.get("table"):
-            found = source.view_from_sql(raw["sql"])  # a plain table-function call is kept bound: push-down stays
+            try:
+                found = source.view_from_sql(raw["sql"])  # a plain table-function call is kept bound: push-down stays
+            except ValueError as exc:
+                raise HTTPException(400, str(exc))
             raw = {**found, **({"description": raw["description"]} if raw.get("description") else {})}
         name = str(body.get("name") or "").strip().lower()
         # editing: ``previous`` is the name it had — the same name replaces it, a new one renames it
@@ -596,6 +603,45 @@ def create_app(
         if renamed_from:
             saved.unregister(source, renamed_from)
         return dump(saved.describe(source, name))
+
+    @app.post("/api/views/many")
+    def create_views(body: Dict[str, Any] = Body(...)):
+        """``{items: [{table, args, name?, description?}]}`` — "Register all": each gets a name (the suggested one
+        unless given); one already saved (same table and arguments) is skipped; one write to duckduck.json."""
+        from .. import views as saved
+
+        source = the_console().source
+        off = saved_tables_off()
+        if off:
+            raise HTTPException(403, off)
+        items = body.get("items")
+        if not isinstance(items, list) or not items:
+            raise HTTPException(400, "items: a list of {table, args}")
+        created: Dict[str, Dict[str, Any]] = {}
+        skipped = []
+        for item in items[:500]:
+            if not isinstance(item, dict) or not item.get("table"):
+                skipped.append({"item": item, "why": "not {table, args}"})
+                continue
+            args = item.get("args") or {}
+            already = saved.saved_as(source, str(item["table"]).lower(), args)
+            if already:
+                skipped.append({"table": item["table"], "args": args, "why": f"already saved as {already}"})
+                continue
+            raw = {"table": item["table"], "args": args, **({"description": item["description"]} if item.get("description") else {})}
+            name = str(item.get("name") or saved.suggested_name(source, saved.clean_definition(raw))).lower()
+            try:
+                created[name] = source.register_view(name, raw)
+            except (ValueError, LookupError) as exc:
+                skipped.append({"table": item["table"], "args": args, "why": str(exc).strip("'\"")})
+        if created:
+            try:
+                saved.save_many(config_path, created)
+            except Exception as exc:
+                for name in created:
+                    saved.unregister(source, name)
+                raise HTTPException(500, f"couldn't write {config_path}: {exc}")
+        return dump({"created": [saved.describe(source, n) for n in created], "skipped": skipped})
 
     @app.delete("/api/views/{name}")
     def delete_view(name: str):
@@ -629,7 +675,13 @@ def create_app(
     @app.get("/api/tables/nested")
     def nested_tables(refresh: int = 0, service: Optional[str] = None):
         """The tables behind catalogs (glue_tables → glue_table(...), …) — the SQL tab's expanded catalog, of every connector or one."""
-        return dump(the_console().nested(refresh=bool(refresh), service=service or None))
+        from ..views import saved_as
+
+        console = the_console()
+        found = console.nested(refresh=bool(refresh), service=service or None)
+        # which of them are already saved tables — the page marks them and "Register all" skips them
+        tables = [{**t, "saved_as": saved_as(console.source, t["table"], t["args"])} for t in found["tables"]]
+        return dump({**found, "tables": tables})
 
     @app.post("/api/takeover/proposal")
     def takeover_proposal(body: Dict[str, Any] = Body(...)):

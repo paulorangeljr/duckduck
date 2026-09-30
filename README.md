@@ -417,6 +417,34 @@ print(ask("Which machines communicated with 203.0.113.9?",
           config_path="examples/semantic/duckduck.local.json").report())
 ```
 
+## Tables by address: `connector.table`, `connector.database.table`
+
+Every table a connector gives can be written as `<service>.<table>`, and
+the tables *behind* a connector — the ones its table function reads by
+name — as `<service>.<part>[.<part>]`, the parts filling that function's
+arguments in order:
+
+```sql
+SELECT * FROM nvd.cves                                   -- nvd_cves
+SELECT * FROM s3_data.accountable_cyber.sharepoint_lists -- s3_data_table(database='accountable_cyber', table_name='sharepoint_lists')
+SELECT * FROM sn.incident WHERE priority = '1'           -- sn_table(table_name='incident'), priority pushed down
+SELECT * FROM sqlserver.dbo.Customers                    -- sqlserver_table(table_name='dbo.Customers')
+SELECT * FROM adls.raw."events 2026"                     -- a part that isn't a plain name goes in double quotes
+```
+
+It's the same call underneath, so push-down, LIMIT and page-by-page
+reading are exactly the call's. The table function behind a service is the
+one its catalog lists (Glue, ADX, a database), else `<service>_table`
+(ServiceNow). A reference without an alias gets its last part as one
+(`… FROM nvd.cves WHERE cves.id = …`). Only names whose first part is a
+connector are read this way — `information_schema.tables` stays DuckDB's —
+and a wrong one says how to write it (`a table of s3_data is written
+s3_data.<database>.<table_name>`), or that its connector didn't start.
+The SQL tab lists and previews tables by address, and a saved table can be
+made from one (`SELECT * FROM s3_data.x.y` → a table over that call). In
+Python: `duck.address_of("nvd_cves")` → `"nvd.cves"`,
+`duck.resolve_addresses(sql)`.
+
 ## Discovering what's registered
 
 ```python
@@ -977,13 +1005,19 @@ started — and, for each one that didn't, the error (a missing
 `authentication` block, `boto3` not installed, a secret it couldn't read…)
 — with the config file it read. That's the usual reason for a short or
 empty list: with `"on_error": "warn"` a connector that fails to start is
-skipped. A connector with a catalog (Glue, ADX, a database…) gets
-**Expand catalog** on its heading: it lists the tables *behind* that
-catalog, under it, each with a **Preview** that runs `SELECT * FROM
-glue_table(database='…', table_name='…') LIMIT 100` and **＋ Table** to
-keep it as a saved table (below); ↻ reads the catalog again. In Python:
-`duck.nested_tables(service="lake")` (or every connector's with
-`duck.nested_tables()`).
+skipped (the box says how many started; *why* unfolds the errors). A
+connector with a catalog (Glue, ADX, a database…) gets **Expand catalog**
+on its heading: it lists the tables *behind* that catalog, under it, each
+with a **Preview** (`SELECT * FROM s3_data.security.proxy_logs LIMIT
+100`) and **＋ Table** to keep it as a saved table (below). One saved this
+way is marked **✓ its name** with an edit button; **Register all N** saves
+every one not saved yet in one go (each named after its address,
+`s3_data_security_proxy_logs`; rename later with ✎ Edit). Tables already
+saved before you expanded aren't listed again — they're in the list as
+tables; *show them* brings them back. ↻ reads the catalog again. In
+Python: `duck.nested_tables(service="lake")` (or every connector's with
+`duck.nested_tables()`). Saved tables are marked *saved* in the list,
+with a **✎ Edit** button on each.
 
 **The list** groups tables by connector; click a connector's name to
 fold its tables away (*Expand all* / *Collapse all* above; remembered in

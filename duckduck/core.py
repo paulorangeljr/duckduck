@@ -340,6 +340,8 @@ class DuckAPI:
         self.functions: Dict[str, Any] = {}
         #: Registered table name (lowercase) → the auto_register service that registered it.
         self.service_of: Dict[str, str] = {}
+        #: ``auto_register`` service → the prefix of its tables ("" = bare names): ``service.table`` addresses.
+        self.service_prefix: Dict[str, str] = {}
         #: ``auto_register(on_error="warn")`` services that failed: name → {error, prefix, connector}.
         self.failed_services: Dict[str, Dict[str, str]] = {}
         self._streaming_functions: Dict[str, Any] = {}
@@ -403,6 +405,18 @@ class DuckAPI:
         from . import views
 
         views.unregister(self, name)
+
+    def resolve_addresses(self, query: str) -> str:
+        """``FROM service.table`` / ``service.database.table`` rewritten into the table or call it names (``duckduck.addresses``)."""
+        from . import addresses
+
+        return addresses.resolve_addresses(self, query)
+
+    def address_of(self, table: str, args: Optional[Dict[str, Any]] = None) -> Optional[str]:
+        """``nvd_cves`` → ``nvd.cves``; ``s3_data_table`` + {database, table_name} → ``s3_data.security.proxy_logs``."""
+        from . import addresses
+
+        return addresses.address_of(self, table, args)
 
     def view_from_sql(self, sql: str) -> Dict[str, Any]:
         """The saved-table definition a query stands for (bound when it's just a table function's arguments)."""
@@ -681,6 +695,7 @@ class DuckAPI:
                         f"'{name}': table name(s) already registered by this auto_register() call: "
                         f"{', '.join(clashes)} — give one of the services a table_prefix"
                     )
+                self.service_prefix[name] = prefix
                 for t, fn in tables.items():
                     self.register_api_function(full(t), fn)
                     self.service_of[full(t).lower()] = name
@@ -1623,6 +1638,7 @@ class DuckAPI:
                     "label": ".".join(str(v) for v in args.values()),
                     "usage": f"SELECT * FROM {target}({call}) LIMIT 100",
                     "service": self.service_of.get(catalog_name),
+                    "address": self.address_of(target, args),  # s3_data.security.proxy_logs
                 })
         return tables, notes
 
@@ -1671,6 +1687,10 @@ class DuckAPI:
         if self._LIST_TABLES_RE.match(query):
             self.conn.register("_duckduck_tables", self.list_tables())
             return self.conn.sql("SELECT * FROM _duckduck_tables")
+
+        written, query = query, self.resolve_addresses(query)
+        if query != written:
+            logger.debug("  addresses → %s", " ".join(query.split()))
 
         pushdown = self._extract_pushdown(query)
         rewritten = query
@@ -1779,6 +1799,7 @@ class DuckAPI:
         pd.DataFrame
             Query result applied on top of each page from the API.
         """
+        query = self.resolve_addresses(query)
         pushdown = self._extract_pushdown(query)
 
         for fn_name, iter_fn in self._streaming_functions.items():

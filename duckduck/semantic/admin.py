@@ -35,6 +35,7 @@ import uuid
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..addresses import address_pattern
 from ..views import read_only_reason, statements as _statements  # noqa: F401 — the SQL guard, shared with saved tables
 
 MASK = "***"
@@ -61,6 +62,7 @@ class SQLConsole:
         console.service_of = duck.service_of
         console.failed_services = getattr(duck, "failed_services", {})  # why a configured connector has no tables
         console.views = getattr(duck, "views", {})
+        console.service_prefix = getattr(duck, "service_prefix", {})  # service.table addresses read the same here
         console.failed_views = getattr(duck, "failed_views", {})
         self._config_path = getattr(duck, "_config_path", None)
         self._nested: Dict[Optional[str], Tuple[float, List[Dict[str, Any]], List[str]]] = {}
@@ -252,6 +254,14 @@ class SQLConsole:
             r["expandable"] = self._expandable(r["name"])
             saved = self.duck.views.get(r["name"])
             r["saved"] = None if saved is None else ("bound" if saved.get("table") else "query")
+            # how it's written by address (nvd.cves); a service's table function by its pattern (s3_data.<database>.<table_name>)
+            r["address"] = self.duck.address_of(r["name"]) if r["kind"] == "table" else None
+            pattern = None if r["address"] else address_pattern(self.duck, r["name"])
+            if r["address"]:
+                r["usage"] = f"SELECT * FROM {r['address']} LIMIT 100"
+            elif pattern:
+                r["usage"] = f"SELECT * FROM {pattern} LIMIT 100"
+                r["address_pattern"] = pattern
         return records
 
 

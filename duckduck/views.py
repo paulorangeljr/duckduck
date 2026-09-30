@@ -125,7 +125,7 @@ def kind_of(definition: Dict[str, Any]) -> str:
 
 
 _SIMPLE = re.compile(
-    r"^\s*select\s+\*\s+from\s+([a-z_][a-z0-9_]*)\s*(?:\((.*)\))?\s*(?:where\s+(.*?))?\s*;?\s*$",
+    r"^\s*select\s+\*\s+from\s+([a-z_][a-z0-9_]*)\s*(?:\((.*)\))?(?:\s+as\s+[a-z_][a-z0-9_]*)?\s*(?:where\s+(.*?))?\s*;?\s*$",
     re.I | re.S,
 )
 
@@ -138,14 +138,14 @@ def view_from_sql(duck: Any, sql: str) -> Dict[str, Any]:
     else in the WHERE), else a query.
     """
     sql = (sql or "").strip().rstrip(";").strip()
-    m = _SIMPLE.match(sql)
+    m = _SIMPLE.match(duck.resolve_addresses(sql) if hasattr(duck, "resolve_addresses") else sql)
     if m and m.group(1).lower() in duck.functions:
         name = m.group(1).lower()
         fn = duck.functions[name]
         try:
             args = duck._parse_kwargs(m.group(2) or "")
             if m.group(3):
-                pushdown = duck._extract_pushdown(sql)
+                pushdown = duck._extract_pushdown(m.group(0))
                 if not pushdown.complete or any(c.op != "eq" or c.table not in (None, name) for c in pushdown.conditions):
                     raise ValueError
                 for c in pushdown.conditions:
@@ -365,6 +365,7 @@ def run_query(duck: Any, sql: str, limit: Optional[int] = None) -> Any:
     runner.service_of = duck.service_of
     runner.failed_services = duck.failed_services
     runner.views, runner.failed_views = duck.views, duck.failed_views
+    runner.service_prefix = getattr(duck, "service_prefix", {})
     try:
         runner.conn.execute("SET enable_external_access = false")
         runner.conn.execute("SET lock_configuration = true")
@@ -404,6 +405,23 @@ def save(path: str, name: str, definition: Dict[str, Any]) -> None:
     _write(path, data)
 
 
+def save_many(path: str, definitions: Dict[str, Dict[str, Any]]) -> None:
+    """Writes several saved tables at once (one ``.bak``, one write)."""
+    data = _read(path)
+    views = data.get("views") if isinstance(data.get("views"), dict) else {}
+    data["views"] = {**views, **definitions}
+    _write(path, data)
+
+
+def saved_as(duck: Any, table: str, args: Optional[Dict[str, Any]]) -> Optional[str]:
+    """The saved table that is exactly this table with these arguments, if one is."""
+    want = {k: str(v) for k, v in (args or {}).items()}
+    for name, d in duck.views.items():
+        if d.get("table") == table and {k: str(v) for k, v in (d.get("args") or {}).items()} == want:
+            return name
+    return None
+
+
 def remove(path: str, name: str) -> bool:
     """Removes one from the config file; False when it wasn't there."""
     data = _read(path)
@@ -417,9 +435,13 @@ def remove(path: str, name: str) -> bool:
     return True
 
 
-def statement(definition: Dict[str, Any]) -> str:
-    """The query a saved table stands for — what the page shows and edits (``sn_table(table_name='incident')`` …)."""
+def statement(definition: Dict[str, Any], duck: Any = None) -> str:
+    """The query a saved table stands for — what the page shows and edits: by address when it has one
+    (``SELECT * FROM sn.incident``), else the call (``sn_table(table_name='incident')``) or the saved query."""
     if definition.get("table"):
+        address = duck.address_of(definition["table"], definition.get("args")) if duck is not None else None
+        if address:
+            return f"SELECT * FROM {address}"
         call = ", ".join(f"{k}={_literal(v)}" for k, v in (definition.get("args") or {}).items())
         return f"SELECT * FROM {definition['table']}({call})"
     return definition.get("sql") or ""
@@ -439,4 +461,4 @@ def describe(duck: Any, name: str) -> Dict[str, Any]:
     """One saved table for the page: name, kind, definition, its statement, service."""
     d = duck.views.get(name) or {}
     return {"name": name, "kind": kind_of(d), "table": d.get("table"), "args": d.get("args"), "sql": d.get("sql"),
-            "description": d.get("description"), "service": duck.service_of.get(name), "statement": statement(d)}
+            "description": d.get("description"), "service": duck.service_of.get(name), "statement": statement(d, duck)}
