@@ -1091,9 +1091,11 @@ every one not saved yet in one go (each named after its address,
 background with a progress bar over the list (*Cancel* saves nothing of that
 run), then says how many were saved and, for any skipped, why.
 
-Each connector is one tree: its tools first (table functions, catalogs,
-raw queries), then its **databases** — tables with no database of their
-own (`nvd.cves`, `adx.ProxyLogs`, `sn.incident`) are in **default** —
+Each connector is one tree of **databases**: everything with no database of
+its own — its tools (table functions, catalogs, raw queries, listed first)
+and tables like `nvd.cves`, `adx.ProxyLogs`, `sn.incident` — is in
+**default**, so every connector has one; the catalog's summary (how many
+are behind it, *Register all*) sits right under the connector's name —
 each closed until you open it (*Open all* / *Close all*), holding the saved
 tables named `connector.database.table` together with (catalog expanded)
 the ones behind the catalog not saved yet, with their own **Register N**.

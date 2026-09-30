@@ -2162,8 +2162,8 @@ function drawTables() {
     const p = addrParts(t.saved_name);
     return p.length >= 3 && p[0].toLowerCase() === svc ? {db: p.slice(1, -1).join("."), leaf: p[p.length - 1]} : null;
   };
-  // Tables with no database of their own go in "default"; the connector's tools (table functions,
-  // catalogs, raw queries) stay on top.
+  // Everything with no database of their own goes in "default" — the connector's tools (table
+  // functions, catalogs, raw queries, listed first) and its plain tables — so every connector has one.
   const TOOL_KINDS = new Set(["table function", "catalog", "raw query"]);
   const leafOf = (t) => short(t);
   const treeOf = (svc, tables, nested) => {
@@ -2173,14 +2173,13 @@ function drawTables() {
     tables.forEach(t => {
       const pl = placeOf(t, svc);
       if (pl) dbOf(pl.db).saved.push({t, leaf: pl.leaf});
-      else if (!t.saved && TOOL_KINDS.has(t.kind)) top.push(t);
-      else dbOf(DEFAULT_DB).saved.push({t, leaf: leafOf(t)});
+      else dbOf(DEFAULT_DB).saved.push({t, leaf: leafOf(t), tool: !t.saved && TOOL_KINDS.has(t.kind)});
     });
     nested.forEach(n => {
       if (n.saved_as && placed.has(n.saved_as.toLowerCase())) return;  // listed as the saved table
       dbOf(n.database ?? DEFAULT_DB).nested.push(n);
     });
-    return {top, dbs};
+    return {top, dbs, catalogs: tables.filter(t => t.expandable)};  // their headers go right under the connector
   };
   const nestedOfSvc = (svc) => EXPANDED.has(svc) && !NESTED[svc]?.loading ? (NESTED[svc]?.tables || []) : [];
   const dbSection = (svc, part, full) => {
@@ -2194,12 +2193,14 @@ function drawTables() {
       const open = OPEN_DBS.has(key) || (autoOpen && !CLOSED_DBS.has(key));
       const total = all.saved.length + all.nested.length, shown = mine.saved.length + mine.nested.length;
       const todo = all.nested.filter(n => !n.saved_as), catalog = todo[0]?.catalog;
-      const items = [...mine.saved.map(x => ({name: x.leaf, html: () => tableRow(x.t, 0, x.leaf)})),
+      const savedN = all.saved.filter(x => x.t.saved).length;  // the rows here are the connector's own tables too
+      const tools = mine.saved.filter(x => x.tool).map(x => ({html: () => tableRow(x.t, (byCatalog[x.t.name] || []).length, x.leaf)}));
+      const items = [...tools, ...[...mine.saved.filter(x => !x.tool).map(x => ({name: x.leaf, html: () => tableRow(x.t, 0, x.leaf)})),
                      ...mine.nested.map(n => ({name: n.name || n.label, html: () => nestedItem(n, true)}))]
-        .sort((x, y) => String(x.name).localeCompare(String(y.name)));
+        .sort((x, y) => String(x.name).localeCompare(String(y.name)))];  // tools first, then the tables by name
       return `<div class="dbgroup"><div class="dbhead"><button type="button" class="dbtoggle" data-db="${esc(key)}" aria-expanded="${open}"
           title="${open ? "Hide" : "Show"} the tables of ${esc(db)}${db === DEFAULT_DB ? " — the ones with no database of their own" : ""}"><span class="chev" aria-hidden="true">▸</span>${icon("database")}<span class="dbname">${esc(db)}</span>
-          <span class="gcount">${f ? `${shown} of ${total}` : total}</span>${all.saved.length ? `<span class="okc small">${all.saved.length} saved</span>` : ""}</button>
+          <span class="gcount">${f ? `${shown} of ${total}` : total}</span>${savedN ? `<span class="okc small">${savedN} saved</span>` : ""}</button>
         ${canSave && todo.length && catalog ? `<button type="button" class="mini" data-regall="${esc(catalog)}" data-regdb="${esc(db)}"
             title="Save the ${todo.length} table${todo.length === 1 ? "" : "s"} of ${esc(db)} not saved yet">Register ${todo.length}</button>` : ""}</div>
         ${open ? `<div class="dbitems">${pageOf(items, key, x => x.html())}</div>` : ""}</div>`;
@@ -2216,7 +2217,7 @@ function drawTables() {
     if (!all.length) return `<div class="nested"><div class="nhead muted small">No tables listed</div></div>`;
     const todo = all.filter(n => !n.saved_as), dbCount = new Set(all.map(n => n.database ?? DEFAULT_DB)).size;
     const at = NESTED[svc]?.read_at ? new Date(NESTED[svc].read_at * 1000) : null;
-    return `<div class="nested"><div class="nhead"><span class="small"><b>${all.length}</b> behind it${dbCount ? ` · in ${dbCount} database${dbCount === 1 ? "" : "s"} below` : ""}${all.length - todo.length ? ` · <span class="okc">${all.length - todo.length} saved</span>` : ""}
+    return `<div class="nested"><div class="nhead"><span class="small"><b>${all.length}</b> behind <span class="mono">${esc(short(t))}</span>${dbCount ? ` · in ${dbCount} database${dbCount === 1 ? "" : "s"} below` : ""}${all.length - todo.length ? ` · <span class="okc">${all.length - todo.length} saved</span>` : ""}
           ${at ? `<span class="muted" title="Expanding again shows this read — ↻ reads the catalog again">· read ${at.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}</span>` : ""}</span>
         ${canSave && todo.length ? `<button type="button" class="pillbtn accent" data-regall="${esc(t.name)}"
           title="Save each of the ${todo.length} not saved yet as a table of its own (the ones already saved are skipped)">Register all ${todo.length}</button>` : ""}</div>
@@ -2229,10 +2230,7 @@ function drawTables() {
     const part = f ? treeOf(svc, ts, nestedOfSvc(svc).filter(matches)) : full;
     return `<div class="tgroup"><div class="ghead"><button type="button" class="gtoggle" data-group="${esc(svc)}" aria-expanded="${!shut}"
       title="${shut ? "Show" : "Hide"} ${esc(svc)}'s tables"><span class="chev" aria-hidden="true">▸</span><span class="gname">${esc(svc)}</span>
-      <span class="gcount">${ts.length}</span></button>${shut ? "" : toggle(svc, ts)}</div>` + (shut ? "" : part.top.map(t => {
-      const kids = (byCatalog[t.name] || []).length;
-      return tableRow(t, kids) + nestedBlock(t, svc);
-    }).join("") + dbSection(svc, part, full) + (EXPANDED.has(svc) && NESTED[svc]?.notes?.length
+      <span class="gcount">${ts.length}</span></button>${shut ? "" : toggle(svc, ts)}</div>` + (shut ? "" : part.top.map(t => tableRow(t, 0)).join("") + part.catalogs.map(t => nestedBlock(t, svc)).join("") + dbSection(svc, part, full) + (EXPANDED.has(svc) && NESTED[svc]?.notes?.length
       ? `<div class="muted small nested">${NESTED[svc].notes.map(esc).join("<br>")}</div>` : "")) + `</div>`;
   }).join("")
     || (TABLES.length ? `<p class="muted small">Nothing matches.</p>` : `<p class="muted small">No tables registered — see above for why.</p>`);

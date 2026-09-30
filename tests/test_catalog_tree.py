@@ -191,4 +191,6 @@ def test_the_page_shows_register_all_and_the_default_database():
     from duckduck.semantic.webpage import PAGE
 
     assert 'id="regstatus"' in PAGE and "function pollRegJob(" in PAGE and "background: true}" in PAGE
-    assert 'const DEFAULT_DB = "default"' in PAGE and "TOOL_KINDS" in PAGE and "CLOSED_DBS" in PAGE  # a click closes even a lone one
+    assert 'const DEFAULT_DB = "default"' in PAGE and "CLOSED_DBS" in PAGE  # a click closes even a lone one
+    # every connector has a default: its tools (listed first) and its tables with no database; the catalog's header on top
+    assert "tool: !t.saved && TOOL_KINDS.has(t.kind)" in PAGE and "part.catalogs.map(t => nestedBlock(t, svc))" in PAGE
