@@ -206,6 +206,19 @@ aside.tables .tlist { flex: 1; min-height: 120px; max-height: none; }
 .nested .nhead { display: flex; align-items: center; gap: 8px; justify-content: space-between; padding: 4px 4px 6px; }
 .nested .okc { color: var(--good-ink); }
 .nested .nnote { padding: 4px; }
+.dbhead { display: flex; align-items: center; gap: 6px; padding: 1px 2px; border-radius: 6px; }
+.dbhead:hover { background: var(--surface-2); }
+.dbtoggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; background: none; border: 0; padding: 3px 2px;
+  cursor: pointer; color: var(--ink); font: inherit; font-size: 13px; text-align: left; }
+.dbtoggle .chev { display: inline-block; font-size: 9px; color: var(--muted); transition: transform .12s; }
+.dbtoggle[aria-expanded="true"] .chev { transform: rotate(90deg); }
+.dbtoggle .ico { width: 13px; height: 13px; flex: none; color: var(--muted); }
+.dbtoggle .dbname { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dbtoggle .gcount { color: var(--muted); font-size: 12px; flex: none; }
+.dbtoggle .okc { flex: none; }
+.dbitems { margin: 0 0 4px 12px; border-left: 1px dashed var(--grid); padding-left: 4px; }
+.dbacts { display: flex; gap: 10px; padding: 0 4px 4px; }
+.nmore { padding: 3px 4px; }
 .nitem.saved .lbl { color: var(--ink-2); }
 .nitem.just { background: rgba(46,160,67,.10); animation: justsaved 1.6s ease-out 1; }
 @keyframes justsaved { from { background: rgba(46,160,67,.32); } }
@@ -1975,6 +1988,8 @@ function collapseNested(svc) { EXPANDED.delete(svc); drawTables(); }
 function previewSql(sql) { $("#sqltext").value = sql; runSql(); }
 // nested rows saved in this session stay listed, marked; ones saved before are skipped (they're tables above)
 const JUST_SAVED = new Set(), SHOW_SAVED = new Set();
+// databases of an expanded catalog: closed until opened ("catalog|database"); how many rows each list shows
+const OPEN_DBS = new Set(), DB_SHOWN = {};
 const nestedKey = (table, args) => table + "|" + JSON.stringify(Object.keys(args || {}).sort().map(k => [k, String(args[k])]));
 const nestedUsage = (n) => n.address ? `SELECT * FROM ${n.address} LIMIT 100` : n.usage;
 const KIND_TAGS = {"table function": "fn", catalog: "catalog", "raw query": "raw"};
@@ -1982,7 +1997,7 @@ function drawTables() {
   const f = $("#tablefilter").value.trim().toLowerCase();
   const byCatalog = {};
   EXPANDED.forEach(svc => (NESTED[svc]?.tables || []).forEach(n => (byCatalog[n.catalog] ||= []).push(n)));
-  const matches = (n) => !f || `${n.label} ${n.table} ${n.address || ""} ${n.saved_as || ""}`.toLowerCase().includes(f);
+  const matches = (n) => !f || `${n.label} ${n.database || ""} ${n.table} ${n.address || ""} ${n.saved_as || ""}`.toLowerCase().includes(f);
   const nestedOf = t => (byCatalog[t.name] || []).filter(matches);
   const rows = TABLES.filter(t => !f || `${t.name} ${t.address || ""} ${t.description || ""} ${t.service || ""}`.toLowerCase().includes(f)
                                  || nestedOf(t).length);
@@ -2013,6 +2028,23 @@ function drawTables() {
       <button type="button" class="infobtn" data-fninfo="${esc(t.name)}" title="What this table is, what it takes and how to query it" aria-label="How to use ${esc(t.name)}">i</button>
       ${t.saved ? `<button type="button" class="editbtn" data-editview="${esc(t.saved_name || t.name)}" title="See and edit the statement behind it">✎ Edit</button>` : ""}</div>`;
   };
+  // one table behind a catalog: preview / ＋ Table, or ✓ saved + edit
+  const nestedItem = (n, short) => {
+    const use = nestedUsage(n), key = nestedKey(n.table, n.args);
+    return `<div class="nitem ${n.saved_as ? "saved" : ""} ${JUST_SAVED.has(key) ? "just" : ""}" title="${esc(n.address || n.usage)}">
+      <span class="lbl" data-usage="${esc(n.saved_as ? `SELECT * FROM ${n.saved_as} LIMIT 100` : use)}">${esc(short && n.name ? n.name : n.label)}</span>
+      ${n.saved_as ? `<span class="savedok" title="Saved as the table ${esc(n.saved_as)}">✓ ${n.address && n.saved_as.toLowerCase() === n.address.toLowerCase() ? "saved" : esc(n.saved_as)}</span>
+          <button type="button" class="editbtn" data-editview="${esc(n.saved_as)}" title="See and edit its statement">✎</button>`
+        : `${canSave ? `<button class="mini" type="button" data-savetable="${esc(use)}" title="Keep it as a table of its own, with a name">＋ Table</button>` : ""}
+          <button class="mini" type="button" data-preview="${esc(use)}" title="Run SELECT * … LIMIT 100">Preview</button>`}</div>`;
+  };
+  // a page of items, then "show more" (thousands of tables stay light)
+  const pageOf = (items, key, short) => {
+    const n = DB_SHOWN[key] || MAXN;
+    return items.slice(0, n).map(x => nestedItem(x, short)).join("")
+      + (items.length > n ? `<div class="muted small nmore">${n} of ${items.length}
+          <button type="button" class="linkish" data-showmore="${esc(key)}">show ${Math.min(MAXN, items.length - n)} more</button></div>` : "");
+  };
   const nestedBlock = (t, svc) => {
     const all = byCatalog[t.name] || [], kids = nestedOf(t);
     if (!EXPANDED.has(svc) || NESTED[svc]?.loading || !t.expandable) return "";
@@ -2020,18 +2052,30 @@ function drawTables() {
     const savedBefore = kids.filter(n => n.saved_as && !JUST_SAVED.has(nestedKey(n.table, n.args)));
     const shown = SHOW_SAVED.has(t.name) ? kids : kids.filter(n => !savedBefore.includes(n));
     const todo = all.filter(n => !n.saved_as);
-    return `<div class="nested"><div class="nhead"><span class="small"><b>${all.length}</b> behind it${all.length - todo.length ? ` · <span class="okc">${all.length - todo.length} saved</span>` : ""}</span>
+    // grouped by database whenever the catalog has one (s3_data.<database>.<table>): collapsed until opened
+    const dbs = new Map();
+    shown.forEach(n => { if (n.database != null) { if (!dbs.has(n.database)) dbs.set(n.database, []); dbs.get(n.database).push(n); } });
+    const loose = shown.filter(n => n.database == null);
+    const allDbs = new Set(all.filter(n => n.database != null).map(n => n.database));
+    const autoOpen = f && shown.length <= 300;  // a search opens what it found (when it's not everything)
+    const dbHead = (db, items) => {
+      const key = t.name + "|" + db, open = OPEN_DBS.has(key) || autoOpen;
+      const inDb = all.filter(n => n.database === db), saved = inDb.filter(n => n.saved_as).length, left = inDb.length - saved;
+      return `<div class="dbgroup"><div class="dbhead"><button type="button" class="dbtoggle" data-db="${esc(key)}" aria-expanded="${open}"
+          title="${open ? "Hide" : "Show"} the tables of ${esc(db)}"><span class="chev" aria-hidden="true">▸</span>${icon("database")}<span class="dbname">${esc(db)}</span>
+          <span class="gcount">${f ? `${items.length} of ${inDb.length}` : inDb.length}</span>${saved ? `<span class="okc small">${saved} saved</span>` : ""}</button>
+        ${canSave && left ? `<button type="button" class="mini" data-regall="${esc(t.name)}" data-regdb="${esc(db)}"
+            title="Save the ${left} table${left === 1 ? "" : "s"} of ${esc(db)} not saved yet">Register ${left}</button>` : ""}</div>
+        ${open ? `<div class="dbitems">${pageOf(items, key, true)}</div>` : ""}</div>`;
+    };
+    return `<div class="nested"><div class="nhead"><span class="small"><b>${all.length}</b> behind it${allDbs.size ? ` · ${allDbs.size} database${allDbs.size === 1 ? "" : "s"}` : ""}${all.length - todo.length ? ` · <span class="okc">${all.length - todo.length} saved</span>` : ""}</span>
         ${canSave && todo.length ? `<button type="button" class="pillbtn accent" data-regall="${esc(t.name)}"
           title="Save each of the ${todo.length} not saved yet as a table of its own (the ones already saved are skipped)">Register all ${todo.length}</button>` : ""}</div>
-      ${shown.slice(0, MAXN).map(n => {
-        const use = nestedUsage(n), key = nestedKey(n.table, n.args);
-        return `<div class="nitem ${n.saved_as ? "saved" : ""} ${JUST_SAVED.has(key) ? "just" : ""}" title="${esc(n.address || n.usage)}">
-          <span class="lbl" data-usage="${esc(n.saved_as ? `SELECT * FROM ${n.saved_as} LIMIT 100` : use)}">${esc(n.label)}</span>
-          ${n.saved_as ? `<span class="savedok" title="Saved as the table ${esc(n.saved_as)}">✓ ${n.address && n.saved_as.toLowerCase() === n.address.toLowerCase() ? "saved" : esc(n.saved_as)}</span>
-              <button type="button" class="editbtn" data-editview="${esc(n.saved_as)}" title="See and edit its statement">✎</button>`
-            : `${canSave ? `<button class="mini" type="button" data-savetable="${esc(use)}" title="Keep it as a table of its own, with a name">＋ Table</button>` : ""}
-              <button class="mini" type="button" data-preview="${esc(use)}" title="Run SELECT * … LIMIT 100">Preview</button>`}</div>`; }).join("")}
-      ${shown.length > MAXN ? `<div class="muted small">+${shown.length - MAXN} more — filter to find them</div>` : ""}
+      ${dbs.size > 1 ? `<div class="dbacts small"><button type="button" class="linkish" data-dbsall="${esc(t.name)}" data-open="1">Open all databases</button>
+          <button type="button" class="linkish" data-dbsall="${esc(t.name)}" data-open="0">Close all</button></div>` : ""}
+      ${[...dbs.entries()].sort((x, y) => x[0].localeCompare(y[0])).map(([db, items]) => dbHead(db, items)).join("")}
+      ${pageOf(loose, t.name + "|", false)}
+      ${f && !shown.length && all.length ? `<div class="muted small">Nothing behind it matches “${esc(f)}”.</div>` : ""}
       ${savedBefore.length ? `<div class="muted small nnote">${savedBefore.length} already saved ${SHOW_SAVED.has(t.name) ? "" : "(listed above as tables) — skipped"}
         <button type="button" class="linkish" data-showsaved="${esc(t.name)}">${SHOW_SAVED.has(t.name) ? "hide them" : "show them"}</button></div>` : ""}</div>`;
   };
@@ -2061,7 +2105,14 @@ function drawTables() {
   on("[data-expand]", b => EXPANDED.has(b.dataset.expand) ? collapseNested(b.dataset.expand) : loadNested(b.dataset.expand, false));
   on("[data-exprefresh]", b => loadNested(b.dataset.exprefresh, true));
   on("[data-showsaved]", b => { const c = b.dataset.showsaved; if (SHOW_SAVED.has(c)) SHOW_SAVED.delete(c); else SHOW_SAVED.add(c); drawTables(); });
-  on("[data-regall]", b => registerAll(b.dataset.regall, b));
+  on("[data-regall]", b => registerAll(b.dataset.regall, b, b.dataset.regdb));
+  on("[data-db]", b => { const k = b.dataset.db; if (OPEN_DBS.has(k)) OPEN_DBS.delete(k); else OPEN_DBS.add(k); drawTables(); });
+  on("[data-showmore]", b => { const k = b.dataset.showmore; DB_SHOWN[k] = (DB_SHOWN[k] || MAXN) + MAXN; drawTables(); });
+  on("[data-dbsall]", b => {
+    const c = b.dataset.dbsall, open = b.dataset.open === "1";
+    new Set((byCatalog[c] || []).filter(n => n.database != null).map(n => n.database)).forEach(db => open ? OPEN_DBS.add(c + "|" + db) : OPEN_DBS.delete(c + "|" + db));
+    drawTables();
+  });
   on("[data-fninfo]", b => showFunctionInfo(b.dataset.fninfo));
 }
 // ⓘ on every table: what it is, what it takes (required and optional arguments) and the ways to query it
@@ -2129,16 +2180,18 @@ $("#fnclose").addEventListener("click", () => $("#fninfo").close());
 $("#fninfo").addEventListener("click", (e) => { if (e.target === $("#fninfo")) $("#fninfo").close(); });
 
 // "Register all": every table behind a catalog not saved yet becomes a saved table (one write; already-saved ones skipped)
-async function registerAll(catalog, button) {
-  const todo = Object.values(NESTED).flatMap(x => x.tables || []).filter(n => n.catalog === catalog && !n.saved_as);
+async function registerAll(catalog, button, database) {
+  const todo = Object.values(NESTED).flatMap(x => x.tables || [])
+    .filter(n => n.catalog === catalog && !n.saved_as && (database == null || n.database === database));
   if (!todo.length) return;
-  if (!confirm(`Save ${todo.length} table${todo.length === 1 ? "" : "s"} behind ${catalog} as tables of their own?\n\n` +
+  const label = button.textContent;
+  if (!confirm(`Save ${todo.length} table${todo.length === 1 ? "" : "s"} ${database != null ? `of ${database}` : `behind ${catalog}`} as tables of their own?\n\n` +
     `Each is named by its address, like ${todo[0].address || "the connector's tables"} — kept in duckduck.json (a .bak is kept). ` +
     `Ones already saved are skipped. Rename or remove any later with ✎ Edit.`)) return;
   button.disabled = true; button.textContent = "Saving…";
   let r;
   try { r = await api("/api/views/many", {items: todo.map(n => ({table: n.table, args: n.args}))}); }
-  catch (err) { toast(err.message); button.disabled = false; button.textContent = `Register all ${todo.length}`; return; }
+  catch (err) { toast(err.message); button.disabled = false; button.textContent = label; return; }
   (r.created || []).forEach(v => { JUST_SAVED.add(nestedKey(v.table, v.args)); draftViews(views => { views[v.name] = {table: v.table, args: v.args}; }); });
   const skipped = (r.skipped || []).length;
   toast(`Saved ${(r.created || []).length} table${(r.created || []).length === 1 ? "" : "s"}` + (skipped ? ` · ${skipped} skipped` : ""));

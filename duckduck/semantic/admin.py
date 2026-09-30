@@ -271,6 +271,24 @@ class SQLConsole:
         return records
 
 
+def nested_group(duck: Any, table: str, args: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    """
+    (database, name) of a table behind a catalog, for the SQL tab's grouping:
+    every required argument but the last is its database (``s3_data_table(database=, table_name=)``
+    → ``security``, ``proxy_logs``); a function with one argument has no database.
+    """
+    from ..kinds import required_params
+
+    fn = duck.functions.get(table)
+    required = [p.name for p in required_params(fn)] if fn is not None else []
+    if not required or not all(r in (args or {}) for r in required):
+        return None, None
+    name = str(args[required[-1]])
+    if len(required) < 2:
+        return None, name
+    return ".".join(str(args[r]) for r in required[:-1]), name
+
+
 def _params_of(fn: Any) -> List[Dict[str, Any]]:
     """A table function's parameters for the page: name, required, type, default (``where``/``limit`` left out)."""
     out: List[Dict[str, Any]] = []

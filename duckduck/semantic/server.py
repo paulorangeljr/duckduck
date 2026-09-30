@@ -681,11 +681,17 @@ def create_app(
     def nested_tables(refresh: int = 0, service: Optional[str] = None):
         """The tables behind catalogs (glue_tables → glue_table(...), …) — the SQL tab's expanded catalog, of every connector or one."""
         from ..views import saved_as
+        from .admin import nested_group
 
         console = the_console()
         found = console.nested(refresh=bool(refresh), service=service or None)
-        # which of them are already saved tables — the page marks them and "Register all" skips them
-        tables = [{**t, "saved_as": saved_as(console.source, t["table"], t["args"])} for t in found["tables"]]
+        # which of them are already saved tables — the page marks them and "Register all" skips them;
+        # database / name: the page groups a catalog's tables by database (thousands of tables stay browsable)
+        tables = []
+        for t in found["tables"]:
+            database, name = nested_group(console.source, t["table"], t["args"])
+            tables.append({**t, "saved_as": saved_as(console.source, t["table"], t["args"]),
+                           "database": database, "name": name})
         return dump({**found, "tables": tables})
 
     @app.post("/api/takeover/proposal")

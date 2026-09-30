@@ -1029,7 +1029,13 @@ way is marked **✓ its name** with an edit button; **Register all N** saves
 every one not saved yet in one go (each named after its address,
 `s3_data.security.proxy_logs`; rename later with ✎ Edit). Tables already
 saved before you expanded aren't listed again — they're in the list as
-tables; *show them* brings them back. ↻ reads the catalog again. In
+tables; *show them* brings them back. ↻ reads the catalog again. When
+its tables have a database (`s3_data.<database>.<table>`), they're grouped
+by database, each closed until you open it (*Open all databases* / *Close
+all*), with its own **Register N**; a long list shows 200 at a time
+(*show more*). Typing in the filter searches every table's name and
+database and opens the databases with a match — a catalog with thousands
+of tables stays easy to browse. In
 Python: `duck.nested_tables(service="lake")` (or every connector's with
 `duck.nested_tables()`). Saved tables are marked *saved* in the list,
 with a **✎ Edit** button on each. Every table has an **ⓘ** on the right:

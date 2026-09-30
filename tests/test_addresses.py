@@ -138,6 +138,8 @@ def test_register_all_skips_the_saved_ones_and_writes_once(tmp_path):
     client = TestClient(serve(config_path=str(path), run=False, allow_config_edit=True))
     nested = client.get("/api/tables/nested", params={"service": "wh"}).json()["tables"]
     assert [(n["address"], n["saved_as"]) for n in nested] == [("wh.a", "mine"), ("wh.b", None), ("wh.c", None)]
+    # one argument: no database to group by, the name is that argument
+    assert [(n["database"], n["name"]) for n in nested] == [(None, "a"), (None, "b"), (None, "c")]
     items = [{"table": n["table"], "args": n["args"]} for n in nested]
     got = client.post("/api/views/many", json={"items": items}).json()
     assert [v["name"] for v in got["created"]] == ["wh.b", "wh.c"]
@@ -154,3 +156,36 @@ def test_the_page():
 
     assert "data-regall=" in PAGE and "function registerAll(" in PAGE and "JUST_SAVED" in PAGE
     assert 'class="editbtn"' in PAGE and "data-showsaved" in PAGE
+
+
+def test_the_tables_behind_a_catalog_are_grouped_by_database(tmp_path):
+    """Thousands of tables behind a catalog: the SQL tab groups them by database (every argument but the last)."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from duckduck.semantic.admin import nested_group
+    from duckduck.semantic.commands import serve
+
+    (tmp_path / "lake.py").write_text(
+        "import pandas as pd\n"
+        "from duckduck.kinds import catalog\n"
+        "class Lake:\n"
+        "    @catalog(lists='table')\n"
+        "    def tables(self, limit=None):\n"
+        "        return pd.DataFrame([{'database': d, 'table_name': f't{i}'} for d in ['sec', 'fin'] for i in range(3)])\n"
+        "    def table(self, database: str, table_name: str, limit=None):\n"
+        "        return pd.DataFrame({'t': [table_name]})\n"
+        "lake = Lake()\n"
+        "TABLES = {'tables': lake.tables, 'table': lake.table}\n")
+    path = tmp_path / "duckduck.json"
+    path.write_text(json.dumps({"services": {"s3": {"connector": "python", "module": "lake.py"}}}))
+    client = TestClient(serve(config_path=str(path), run=False))
+    nested = client.get("/api/tables/nested", params={"service": "s3"}).json()["tables"]
+    assert {(n["database"], n["name"], n["address"]) for n in nested} >= {("sec", "t0", "s3.sec.t0"), ("fin", "t2", "s3.fin.t2")}
+    assert nested_group(DuckAPI(), "nothing", {}) == (None, None)
+
+
+def test_the_page_groups_by_database():
+    from duckduck.semantic.webpage import PAGE
+
+    assert "OPEN_DBS" in PAGE and "data-db=" in PAGE and "data-showmore=" in PAGE and "data-regdb=" in PAGE
