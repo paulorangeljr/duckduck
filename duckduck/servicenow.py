@@ -734,62 +734,73 @@ class ServiceNow:
         for page in self._iter_pages(table_name, query=query, where=where):
             yield pd.json_normalize(page, sep="_")
 
+    def _iter_query(self, table_name: str, where: Optional[List[Condition]], **filters: Any) -> Iterator[pd.DataFrame]:
+        """One DataFrame per page of ``table_name``, with the same encoded query its table method sends."""
+        for page in self._iter_pages(table_name, query=self._build_query(**filters), where=where):
+            yield pd.json_normalize(page, sep="_")
+
     def iter_incidents(
         self,
+        number: Optional[str] = None,
         state: Optional[str] = None,
         priority: Optional[str] = None,
         assigned_to: Optional[str] = None,
+        number_ilike: Optional[str] = None,
         short_description_ilike: Optional[str] = None,
         where: Optional[List[Condition]] = None,
     ) -> Iterator[pd.DataFrame]:
-        """Yields one page of incidents at a time."""
-        query = self._build_query(
-            state=state, priority=priority, assigned_to=assigned_to,
-            short_description_ilike=short_description_ilike,
-        )
-        for page in self._iter_pages("incident", query=query, where=where):
-            yield pd.json_normalize(page, sep="_")
+        """Yields one page of incidents at a time (the filters of ``incidents``)."""
+        return self._iter_query("incident", where, number=number, state=state, priority=priority,
+                                assigned_to=assigned_to, number_ilike=number_ilike,
+                                short_description_ilike=short_description_ilike)
 
     def iter_problems(
         self,
+        number: Optional[str] = None,
         state: Optional[str] = None,
+        priority: Optional[str] = None,
+        number_ilike: Optional[str] = None,
         short_description_ilike: Optional[str] = None,
         where: Optional[List[Condition]] = None,
     ) -> Iterator[pd.DataFrame]:
-        """Yields one page of problems at a time."""
-        query = self._build_query(state=state, short_description_ilike=short_description_ilike)
-        for page in self._iter_pages("problem", query=query, where=where):
-            yield pd.json_normalize(page, sep="_")
+        """Yields one page of problems at a time (the filters of ``problems``)."""
+        return self._iter_query("problem", where, number=number, state=state, priority=priority,
+                                number_ilike=number_ilike, short_description_ilike=short_description_ilike)
 
     def iter_change_requests(
         self,
+        number: Optional[str] = None,
         state: Optional[str] = None,
         type: Optional[str] = None,
+        number_ilike: Optional[str] = None,
+        short_description_ilike: Optional[str] = None,
         where: Optional[List[Condition]] = None,
     ) -> Iterator[pd.DataFrame]:
-        """Yields one page of change requests at a time."""
-        query = self._build_query(state=state, type=type)
-        for page in self._iter_pages("change_request", query=query, where=where):
-            yield pd.json_normalize(page, sep="_")
+        """Yields one page of change requests at a time (the filters of ``change_requests``)."""
+        return self._iter_query("change_request", where, number=number, state=state, type=type,
+                                number_ilike=number_ilike, short_description_ilike=short_description_ilike)
 
     def iter_users(
         self,
+        user_name: Optional[str] = None,
         active: Optional[str] = None,
+        user_name_ilike: Optional[str] = None,
         name_ilike: Optional[str] = None,
+        email_ilike: Optional[str] = None,
         where: Optional[List[Condition]] = None,
     ) -> Iterator[pd.DataFrame]:
-        """Yields one page of users at a time."""
-        query = self._build_query(active=active, name_ilike=name_ilike)
-        for page in self._iter_pages("sys_user", query=query, where=where):
-            yield pd.json_normalize(page, sep="_")
+        """Yields one page of users at a time (the filters of ``users``)."""
+        return self._iter_query("sys_user", where, user_name=user_name, active=active,
+                                user_name_ilike=user_name_ilike, name_ilike=name_ilike, email_ilike=email_ilike)
 
     def iter_cmdb_ci(
         self,
+        name: Optional[str] = None,
         sys_class_name: Optional[str] = None,
+        operational_status: Optional[str] = None,
         name_ilike: Optional[str] = None,
         where: Optional[List[Condition]] = None,
     ) -> Iterator[pd.DataFrame]:
-        """Yields one page of configuration items at a time."""
-        query = self._build_query(sys_class_name=sys_class_name, name_ilike=name_ilike)
-        for page in self._iter_pages("cmdb_ci", query=query, where=where):
-            yield pd.json_normalize(page, sep="_")
+        """Yields one page of configuration items at a time (the filters of ``cmdb_ci``)."""
+        return self._iter_query("cmdb_ci", where, name=name, sys_class_name=sys_class_name,
+                                operational_status=operational_status, name_ilike=name_ilike)

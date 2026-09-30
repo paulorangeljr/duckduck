@@ -929,6 +929,52 @@ class SharePoint:
         for page in self._iter_pages(url):
             yield self._normalize_list_items(page, column_map=column_map)
 
+    def iter_list_columns(
+        self,
+        site_id: Optional[str] = None,
+        list_id: Optional[str] = None,
+        site_name: Optional[str] = None,
+        list_name: Optional[str] = None,
+    ) -> Iterator[pd.DataFrame]:
+        """Yields one page of a list's columns at a time."""
+        sid = self._resolve_site(site_id, site_name)
+        lid = self._resolve_list(sid, list_id, list_name)
+        for page in self._iter_pages(f"{GRAPH_BASE}/sites/{sid}/lists/{lid}/columns"):
+            yield pd.json_normalize(page, sep="_")
+
+    def iter_drives(self, site_id: Optional[str] = None, site_name: Optional[str] = None) -> Iterator[pd.DataFrame]:
+        """Yields one page of a site's document libraries at a time."""
+        sid = self._resolve_site(site_id, site_name)
+        for page in self._iter_pages(f"{GRAPH_BASE}/sites/{sid}/drives"):
+            yield pd.json_normalize(page, sep="_")
+
+    def iter_search_files(
+        self,
+        site_id: Optional[str] = None,
+        query: Optional[str] = None,
+        site_name: Optional[str] = None,
+    ) -> Iterator[pd.DataFrame]:
+        """Yields one page of search hits at a time."""
+        if not query:
+            raise ValueError("query is required.")
+        sid = self._resolve_site(site_id, site_name)
+        for page in self._iter_pages(f"{GRAPH_BASE}/sites/{sid}/drive/search(q='{query}')"):
+            yield pd.json_normalize(page, sep="_")
+
+    def iter_file_versions(
+        self,
+        site_id: Optional[str] = None,
+        drive_id: Optional[str] = None,
+        item_id: Optional[str] = None,
+        site_name: Optional[str] = None,
+    ) -> Iterator[pd.DataFrame]:
+        """Yields one page of a file's versions at a time."""
+        if not drive_id or not item_id:
+            raise ValueError("drive_id and item_id are required.")
+        sid = self._resolve_site(site_id, site_name)
+        for page in self._iter_pages(f"{GRAPH_BASE}/sites/{sid}/drives/{drive_id}/items/{item_id}/versions"):
+            yield pd.json_normalize(page, sep="_")
+
     def iter_drive_items(
         self,
         site_id: Optional[str] = None,

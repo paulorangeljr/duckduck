@@ -220,6 +220,7 @@ class MyAPI:
 | Client-side filter | When the API has no filter param; filter the DataFrame, never slice with `head(limit)` — `_fetch` already capped the rows |
 | Spark | **Every table method declares `@spark_plan(...)`** (`duckduck.sparkplan`) — decide it with "Spark: choosing the strategy" below; `tests/test_spark.py` fails without it |
 | Page loop | Page-numbered or offset APIs that report a total page through `duckduck.slicing.pages(fetch_page, page_size)`, never a hand-written `while` — that's what makes them splittable for Spark |
+| Streaming | **Every table whose API pages has an `iter_<table>`** in `streaming_tables`, with the table's filter params (minus `limit`) and the same client-side filters (one shared helper) — `sql()` then filters a non-pushable WHERE page by page and stops early on a LIMIT. `tests/test_streaming_contract.py` checks every bundled connector; one-request tables go in its `ONE_READ` with the reason; catalogs / raw queries / `native` tables are exempt |
 
 ### Spark: choosing the strategy (`@spark_plan`)
 

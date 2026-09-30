@@ -62,8 +62,12 @@ SERVICE_REGISTRY: Dict[str, ServiceSpec] = {
         streaming_tables={
             "sites": "iter_sites",
             "lists": "iter_lists",
+            "list_columns": "iter_list_columns",
             "list_items": "iter_list_items",
+            "drives": "iter_drives",
             "drive_items": "iter_drive_items",
+            "search_files": "iter_search_files",
+            "file_versions": "iter_file_versions",
         },
     ),
     "insightvm": ServiceSpec(
@@ -89,8 +93,15 @@ SERVICE_REGISTRY: Dict[str, ServiceSpec] = {
             "vulnerabilities": "iter_vulnerabilities",
             "asset_vulnerabilities": "iter_asset_vulnerabilities",
             "sites": "iter_sites",
+            "scan_engines": "iter_scan_engines",
             "scans": "iter_scans",
+            "reports": "iter_reports",
+            "tags": "iter_tags",
+            "asset_groups": "iter_asset_groups",
+            "users": "iter_users",
+            "policies": "iter_policies",
             "policy_rules": "iter_policy_rules",
+            "remediation_projects": "iter_remediation_projects",
         },
     ),
     "database": ServiceSpec(

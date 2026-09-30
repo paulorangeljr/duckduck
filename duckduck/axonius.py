@@ -286,12 +286,14 @@ class Axonius:
 
     def iter_devices(
         self,
+        filter: Optional[str] = None,
         hostname: Optional[str] = None,
         os_type: Optional[str] = None,
         hostname_ilike: Optional[str] = None,
     ) -> Iterator[pd.DataFrame]:
-        """Yields one page of device assets at a time."""
+        """Yields one page of device assets at a time (the filters of ``devices``)."""
         aql = self._build_aql(
+            filter=filter,
             hostname=self._aql_eq("specific_data.data.hostname", hostname),
             os_type=self._aql_eq("specific_data.data.os.type", os_type),
             hostname_ilike=self._aql_like("specific_data.data.hostname", hostname_ilike, "hostname_ilike"),
@@ -300,10 +302,11 @@ class Axonius:
             yield self._normalize_assets(page)
 
     def iter_users(
-        self, username: Optional[str] = None, username_ilike: Optional[str] = None
+        self, filter: Optional[str] = None, username: Optional[str] = None, username_ilike: Optional[str] = None
     ) -> Iterator[pd.DataFrame]:
-        """Yields one page of user assets at a time."""
+        """Yields one page of user assets at a time (the filters of ``users``)."""
         aql = self._build_aql(
+            filter=filter,
             username=self._aql_eq("specific_data.data.username", username),
             username_ilike=self._aql_like("specific_data.data.username", username_ilike, "username_ilike"),
         )

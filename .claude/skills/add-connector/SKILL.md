@@ -41,7 +41,13 @@ the shapes you couldn't verify in one place.
   such a catalog** whenever the source can list its tables: without it SQL clients (the PostgreSQL endpoint)
   only see the function (arguments in the WHERE), the SQL tab can't show them, and catalog generation can't discover them. `drafts=False` when the listing
   is mostly the platform's own tables (ServiceNow's `sys_db_object`), so they aren't all drafted.
-- `iter_<table>` streaming methods yielding one DataFrame per page when the API pages.
+- **`iter_<table>` for every table whose API pages** (any pagination: page=N, offset, cursor), registered in
+  `streaming_tables`, taking **the same filter parameters** as the table (minus `limit`) and yielding one DataFrame
+  per page with the same client-side filters — share one helper between both so they can't drift (ServiceNow's
+  `_iter_query`, InsightVM's `_keep`). That's what lets `sql()` filter a WHERE the API can't take page by page
+  (and stop early on a LIMIT) instead of holding the whole API result. `tests/test_streaming_contract.py` fails
+  otherwise; a table that really reads in one request goes in its `ONE_READ` with the reason. Catalogs, raw
+  queries and `native` tables are exempt.
 
 ## 3. Decide how Spark reads each table — `@spark_plan`
 

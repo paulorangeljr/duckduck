@@ -288,22 +288,8 @@ class InsightVM:
         limit : int, optional
             Maximum number of records returned.
         """
-        resources = self._fetch("/vulnerabilities", limit=limit)
-
-        df = pd.json_normalize(resources, sep="_")
-
-        if severity and not df.empty and "severity" in df.columns:
-            df = df[df["severity"].str.lower() == severity.lower()]
-
-        if cvss_score is not None and not df.empty:
-            score_col = next(
-                (c for c in df.columns if "cvss" in c.lower() and "score" in c.lower()),
-                None,
-            )
-            if score_col:
-                df = df[pd.to_numeric(df[score_col], errors="coerce") >= cvss_score]
-
-        return df
+        return _vulnerabilities_kept(pd.json_normalize(self._fetch("/vulnerabilities", limit=limit), sep="_"),
+                                     severity, cvss_score)
 
     # ------------------------------------------------------------------
     # Vulnerabilities of a specific asset
@@ -471,17 +457,8 @@ class InsightVM:
         limit : int, optional
             Maximum number of records.
         """
-        resources = self._fetch("/tags", limit=limit)
-
-        df = pd.json_normalize(resources, sep="_")
-
-        if name and not df.empty and "name" in df.columns:
-            df = df[df["name"].str.contains(name, case=False, na=False)]
-
-        if tag_type and not df.empty and "type" in df.columns:
-            df = df[df["type"].str.lower() == tag_type.lower()]
-
-        return df
+        return _keep(pd.json_normalize(self._fetch("/tags", limit=limit), sep="_"),
+                     contains={"name": name}, equals={"type": tag_type})
 
     # ------------------------------------------------------------------
     # Asset Groups
@@ -506,17 +483,8 @@ class InsightVM:
         limit : int, optional
             Maximum number of records.
         """
-        resources = self._fetch("/asset_groups", limit=limit)
-
-        df = pd.json_normalize(resources, sep="_")
-
-        if name and not df.empty and "name" in df.columns:
-            df = df[df["name"].str.contains(name, case=False, na=False)]
-
-        if group_type and not df.empty and "type" in df.columns:
-            df = df[df["type"].str.lower() == group_type.lower()]
-
-        return df
+        return _keep(pd.json_normalize(self._fetch("/asset_groups", limit=limit), sep="_"),
+                     contains={"name": name}, equals={"type": group_type})
 
     # ------------------------------------------------------------------
     # Users
@@ -538,14 +506,7 @@ class InsightVM:
         limit : int, optional
             Maximum number of records.
         """
-        resources = self._fetch("/users", limit=limit)
-
-        df = pd.json_normalize(resources, sep="_")
-
-        if login and not df.empty and "login" in df.columns:
-            df = df[df["login"].str.lower() == login.lower()]
-
-        return df
+        return _keep(pd.json_normalize(self._fetch("/users", limit=limit), sep="_"), equals={"login": login})
 
     # ------------------------------------------------------------------
     # Policies (compliance)
@@ -567,14 +528,7 @@ class InsightVM:
         limit : int, optional
             Maximum number of records.
         """
-        resources = self._fetch("/policies", limit=limit)
-
-        df = pd.json_normalize(resources, sep="_")
-
-        if name and not df.empty and "title" in df.columns:
-            df = df[df["title"].str.contains(name, case=False, na=False)]
-
-        return df
+        return _keep(pd.json_normalize(self._fetch("/policies", limit=limit), sep="_"), contains={"title": name})
 
     # ------------------------------------------------------------------
     # Policy Rules
@@ -628,14 +582,8 @@ class InsightVM:
         limit : int, optional
             Maximum number of records.
         """
-        resources = self._fetch("/remediation/projects", limit=limit)
-
-        df = pd.json_normalize(resources, sep="_")
-
-        if status and not df.empty and "status" in df.columns:
-            df = df[df["status"].str.lower() == status.lower()]
-
-        return df
+        return _keep(pd.json_normalize(self._fetch("/remediation/projects", limit=limit), sep="_"),
+                     equals={"status": status})
 
     # ------------------------------------------------------------------
     # Streaming (iter_*) — for use with DuckAPI.stream()
@@ -649,6 +597,41 @@ class InsightVM:
     #   duck.register_api_function("assets", r7.assets)
     #   duck.register_streaming_function("assets", r7.iter_assets)
     # ------------------------------------------------------------------
+
+    def _pages_kept(self, path: str, contains=None, equals=None) -> Iterator[pd.DataFrame]:
+        """One DataFrame per page of ``path``, with the same client-side filters as the table method."""
+        for page in self._iter_pages(path):
+            df = _keep(pd.json_normalize(page, sep="_"), contains=contains, equals=equals)
+            if not df.empty:
+                yield df
+
+    def iter_scan_engines(self) -> Iterator[pd.DataFrame]:
+        """Yields one page of scan engines at a time."""
+        return self._pages_kept("/scan_engines")
+
+    def iter_reports(self) -> Iterator[pd.DataFrame]:
+        """Yields one page of reports at a time."""
+        return self._pages_kept("/reports")
+
+    def iter_tags(self, name: Optional[str] = None, tag_type: Optional[str] = None) -> Iterator[pd.DataFrame]:
+        """Yields one page of tags at a time."""
+        return self._pages_kept("/tags", contains={"name": name}, equals={"type": tag_type})
+
+    def iter_asset_groups(self, name: Optional[str] = None, group_type: Optional[str] = None) -> Iterator[pd.DataFrame]:
+        """Yields one page of asset groups at a time."""
+        return self._pages_kept("/asset_groups", contains={"name": name}, equals={"type": group_type})
+
+    def iter_users(self, login: Optional[str] = None) -> Iterator[pd.DataFrame]:
+        """Yields one page of console users at a time."""
+        return self._pages_kept("/users", equals={"login": login})
+
+    def iter_policies(self, name: Optional[str] = None) -> Iterator[pd.DataFrame]:
+        """Yields one page of compliance policies at a time."""
+        return self._pages_kept("/policies", contains={"title": name})
+
+    def iter_remediation_projects(self, status: Optional[str] = None) -> Iterator[pd.DataFrame]:
+        """Yields one page of remediation projects at a time."""
+        return self._pages_kept("/remediation/projects", equals={"status": status})
 
     def iter_assets(
         self,
@@ -667,12 +650,11 @@ class InsightVM:
     def iter_vulnerabilities(
         self,
         severity: Optional[str] = None,
+        cvss_score: Optional[float] = None,
     ) -> Iterator[pd.DataFrame]:
-        """Yields one page of vulnerabilities at a time."""
+        """Yields one page of vulnerabilities at a time (the filters of ``vulnerabilities``)."""
         for page in self._iter_pages("/vulnerabilities"):
-            df = pd.json_normalize(page, sep="_")
-            if severity and "severity" in df.columns:
-                df = df[df["severity"].str.lower() == severity.lower()]
+            df = _vulnerabilities_kept(pd.json_normalize(page, sep="_"), severity, cvss_score)
             if not df.empty:
                 yield df
 
@@ -730,3 +712,27 @@ class InsightVM:
                 df = df[df["status"].str.lower() == status.lower()]
             if not df.empty:
                 yield df
+
+
+def _keep(df: pd.DataFrame, contains: Optional[Dict[str, Optional[str]]] = None,
+          equals: Optional[Dict[str, Optional[str]]] = None) -> pd.DataFrame:
+    """The client-side filters the small tables share: ``column`` contains / equals (case-insensitive) a value;
+    an unset value or a column the page doesn't have filters nothing."""
+    for column, text in (contains or {}).items():
+        if text and not df.empty and column in df.columns:
+            df = df[df[column].str.contains(text, case=False, na=False, regex=False)]
+    for column, text in (equals or {}).items():
+        if text and not df.empty and column in df.columns:
+            df = df[df[column].str.lower() == text.lower()]
+    return df
+
+
+def _vulnerabilities_kept(df: pd.DataFrame, severity: Optional[str], cvss_score: Optional[float]) -> pd.DataFrame:
+    """``vulnerabilities``' client-side filters: the exact severity, a CVSS score of at least ``cvss_score``."""
+    if severity and not df.empty and "severity" in df.columns:
+        df = df[df["severity"].str.lower() == severity.lower()]
+    if cvss_score is not None and not df.empty:
+        score_col = next((c for c in df.columns if "cvss" in c.lower() and "score" in c.lower()), None)
+        if score_col:
+            df = df[pd.to_numeric(df[score_col], errors="coerce") >= cvss_score]
+    return df
