@@ -56,7 +56,7 @@ def check_unique(engine: Any, view: str, key: List[str]) -> None:
     if len(dup):
         examples = "; ".join(", ".join(f"{k}={r[k]}" for k in key) + f" ({r['_n']} rows)" for _, r in dup.iterrows())
         raise PipelineError(f"merge: {view} has more than one row for some keys ({examples}) — deduplicate it "
-                            "(QUALIFY row_number() OVER (PARTITION BY … ORDER BY …) = 1), or set \"unique\": false")
+                            "(a _loaded_at column picks the newest by itself), or set \"unique\": false")
 
 
 class DuckEngine:

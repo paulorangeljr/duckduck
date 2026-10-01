@@ -3,13 +3,8 @@
   "description": "Silver: one row per host, merged from what raw loaded since the last silver run. Runs on its own schedule.",
   "layer": "silver",
   "primary_key": "hostname",
-  "sql": "SELECT * EXCLUDE (_load_date, _run_id) FROM raw_assets QUALIFY row_number() OVER (PARTITION BY hostname ORDER BY _loaded_at DESC) = 1",
-  "load": {
-    "type": "incremental",
-    "columns": [
-      "_loaded_at"
-    ]
-  },
+  "sql": "SELECT * FROM raw_assets",
+  "load": "incremental",
   "target": {
     "database": "inventory",
     "table_name": "assets",
@@ -25,8 +20,7 @@
       "ip",
       "os",
       "risk",
-      "last_seen",
-      "_loaded_at"
+      "last_seen"
     ]
   }
 }

@@ -2489,8 +2489,8 @@ silver reads the bronze table. Each job says how much it reads with `load`:
 
 ```json
 {"pipeline": "incidents_silver", "layer": "silver", "primary_key": ["sys_id"],
- "sql": "SELECT * FROM lake.servicenow.incident QUALIFY row_number() OVER (PARTITION BY sys_id ORDER BY _loaded_at DESC) = 1",
- "load": {"type": "incremental", "columns": ["_loaded_at"]},
+ "sql": "SELECT * FROM lake.servicenow.incident",
+ "load": "incremental",
  "target": {"database": "servicenow", "table_name": "incident", "format": "delta", "mode": "merge"}}
 ```
 
@@ -2508,6 +2508,14 @@ the raw job writes `s3://raw-layer/servicenow/incident`, silver
   unless `"initial"` says where to start (`"2026-01-01"`, or per column).
   `"lookback": "10m"` re-reads a little before the mark, for late rows (a merge
   dedups them). After a successful run, each column's new max is kept.
+- **`"load": "incremental"`** with no columns reads on `_loaded_at` — the
+  column the layer below stamped on every row (below). That's the usual
+  silver: `SELECT * FROM <raw table>`, nothing else.
+- **A merge keeps one row per key by itself**: when the rows read hold the
+  same key more than once (raw appended the same incident twice), the newest
+  by `_loaded_at` wins. No `QUALIFY`, no `EXCLUDE` in the SQL — the internal
+  columns (`_loaded_at`, `_load_date`, `_run_id`) are replaced on write
+  anyway.
 - **`state`** (usually set once, in `duckduck.json`'s `lake`): a folder where each job keeps one small JSON —
   `{state}/{pipeline}.json` — with its last successful run and watermarks. A
   failed or dry run never moves them. `params={"watermark": "…"}`

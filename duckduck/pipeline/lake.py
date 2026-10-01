@@ -36,6 +36,20 @@ def with_audit(engine: Any, view: str, audit: Dict[str, str]) -> str:
     return out
 
 
+def latest_per_key(engine: Any, view: str, key: List[str]) -> str:
+    """A merge source holding several rows for one key (raw appended the same host twice) keeps the newest,
+    by the ``_loaded_at`` the layer below wrote — done here, never in the job's SQL. Without that column
+    nothing is picked: the merge's uniqueness check then names the keys."""
+    cols = {c.lower(): c for c in engine.columns(view)}
+    if "_loaded_at" not in cols or not key or any(k.lower() not in cols for k in key):
+        return view
+    parts = ", ".join(ident(cols[k.lower()]) for k in key)
+    out = f"__duckduck_latest_{view}"
+    engine.define(out, f"SELECT * FROM {ident(view)} QUALIFY row_number() OVER (PARTITION BY {parts} "
+                       f"ORDER BY {ident(cols['_loaded_at'])} DESC NULLS LAST) = 1", keep=False)
+    return out
+
+
 def write_target(engine: Any, target: Target, key: List[str], run_id: str,
                  catalog_of: Callable[[str], Any], audit: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     if target.mode != "overwrite" and _empty(engine, target.view):
@@ -43,6 +57,8 @@ def write_target(engine: Any, target: Target, key: List[str], run_id: str,
         # empty result may have lost its column types, which must never reach a table's schema
         logger.info("  %s: no rows — nothing written to %s", target.view, target.where)
         return {"rows": 0, "skipped": True}
+    if target.mode == "merge" and target.unique:
+        target = replace(target, view=latest_per_key(engine, target.view, key))
     target = replace(target, view=with_audit(engine, target.view, audit or {}))
     if not target.catalog:
         return {k: v for k, v in engine.write(target, key, run_id).items() if not k.startswith("_")}

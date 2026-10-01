@@ -279,6 +279,7 @@ def load_spec(source: Union[str, os.PathLike, Dict[str, Any]], base_dir: Optiona
 
 LOAD_KEYS = {"type", "columns", "initial", "lookback", "step"}
 #: written into every row of every target: when it was loaded (UTC), the run's date (its timezone), which run
+DEFAULT_LOAD_COLUMN = "_loaded_at"  # an incremental load with no columns reads on it
 AUDIT_COLUMNS = ("_loaded_at", "_load_date", "_run_id")
 DURATION_RE = re.compile(r"^\s*(\d+)\s*([dhmw])\s*$")
 
@@ -287,14 +288,15 @@ def _load(raw: Any) -> Load:
     if raw is None or raw == "full":
         return Load()
     if raw == "incremental":
-        raise PipelineError("an incremental load says which column(s) show what changed: "
-                            "\"load\": {\"type\": \"incremental\", \"columns\": [\"updated_at\"]}")
+        raw = {"type": "incremental"}
     if not isinstance(raw, dict):
         raise PipelineError("'load' is \"full\", or {\"type\": \"incremental\", \"columns\": [\"updated_at\"]}")
     unknown = sorted(set(raw) - LOAD_KEYS)
     if unknown:
         raise PipelineError(f"unknown load key(s) {unknown} — it takes {sorted(LOAD_KEYS)}")
     kind = raw.get("type", "incremental" if raw.get("columns") else "full")
+    if kind == "incremental" and not raw.get("columns"):
+        raw = {**raw, "columns": [DEFAULT_LOAD_COLUMN]}  # what the layer below stamped on every row
     if kind not in ("full", "incremental"):
         raise PipelineError(f"load.type is full or incremental (got {kind!r})")
     load = Load(type=kind)
@@ -302,8 +304,6 @@ def _load(raw: Any) -> Load:
         if raw.get("columns"):
             raise PipelineError("a full load reads everything: 'columns' goes with \"type\": \"incremental\"")
         return load
-    if not raw.get("columns"):
-        raise PipelineError("an incremental load says which column(s) show what changed: \"columns\": [\"updated_at\"]")
     load.columns = _names(raw["columns"], "load.columns")
     initial = raw.get("initial")
     if isinstance(initial, dict):
