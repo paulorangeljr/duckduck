@@ -42,10 +42,12 @@ duck.sql("SELECT a.hostname, o.owner FROM assets a JOIN owners o ON a.ip = o.ip 
 | `assets_silver.json` | bronze (the API as it came, a partition per `{{ run_date }}`) and silver (one row per host, merged) — SQL inline |
 | `gold_risk.json` + `gold_risk.ipynb` | gold: silver joined to the owners file, risky hosts per department; the SQL is the notebook's `%%sql` cells |
 | `run.py` | runs both, then prints `web-0001`'s way through the four steps of the two pipelines |
+| `python_api.py` | the command line's `plan` / `run` / `sip` as Python calls (`plan_pipeline`, `run_pipeline` with params and a dry run, `read_sip`) |
 
 ```bash
 python examples/pipeline/run.py
 python -m duckduck.pipeline plan examples/pipeline/gold_risk.json
+python examples/pipeline/python_api.py        # the same, from Python
 ```
 
 Everything is written under `examples/pipeline/lake/` (git-ignored), the sip

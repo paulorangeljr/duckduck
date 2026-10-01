@@ -498,6 +498,8 @@ def test_the_example_runs_bronze_to_gold_and_the_sip_spans_both_pipelines(tmp_pa
     assert way["event"].iloc[-1] == "grouped"
     plan = plan_pipeline(str(tmp_path / "examples" / "pipeline" / "gold_risk.json"))
     assert plan.needed == ["exposed", "risk_by_department"] and len(plan.queries) == 1
+    runpy.run_path(str(tmp_path / "examples" / "pipeline" / "python_api.py"), run_name="__main__")
+    assert "dry run (nothing written)" in capsys.readouterr().out
 
 
 def test_a_write_reports_no_internal_details(duck, tmp_path):
