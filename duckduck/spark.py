@@ -443,9 +443,10 @@ class _SparkConnection:
         self.reader.spark.catalog.dropTempView(name)
 
     def sql(self, query: str):
-        spark_sql = to_spark_sql(query)
+        spark_sql, helpers = spark_query(query)
         logger.debug("  Spark SQL: %s", " ".join(spark_sql.split()))
-        return self.reader.spark.sql(spark_sql)
+        df = self.reader.spark.sql(spark_sql)
+        return df.drop(*helpers) if helpers else df
 
     def execute(self, query: str, *args: Any) -> Any:  # DuckAPI calls it only for things Spark has no say in
         raise NotImplementedError(query)
@@ -456,10 +457,44 @@ class _SparkConnection:
 
 @functools.lru_cache(maxsize=256)
 def to_spark_sql(query: str) -> str:
-    """DuckDB SQL → Spark SQL (sqlglot)."""
-    import sqlglot
+    """DuckDB SQL → Spark SQL (sqlglot). A QUALIFY leaves ``_qualify_N`` helper columns (``spark_query`` names
+    them so they can be dropped)."""
+    return spark_query(query)[0]
 
-    return sqlglot.transpile(query, read="duckdb", write="spark")[0]
+
+@functools.lru_cache(maxsize=256)
+def spark_query(query: str) -> Tuple[str, Tuple[str, ...]]:
+    """DuckDB SQL → (Spark SQL, helper columns to drop from its result).
+
+    Spark has no QUALIFY, and sqlglot's own rewrite of one loses a qualified star (``SELECT i.*, a.x … QUALIFY``
+    became ``SELECT *, x FROM (…)``: x twice, the window column kept). So each QUALIFY is rewritten here first:
+    its window functions become ``_qualify_N`` columns of the query, which is wrapped in
+    ``SELECT * FROM (…) WHERE <the condition on them>``; the caller drops those columns.
+    """
+    import sqlglot
+    from sqlglot import exp
+
+    try:
+        tree = sqlglot.parse_one(query, read="duckdb")
+    except sqlglot.errors.ParseError:
+        return sqlglot.transpile(query, read="duckdb", write="spark")[0], ()
+    helpers: List[str] = []
+
+    def unqualify(node: exp.Expression) -> exp.Expression:
+        if not isinstance(node, exp.Select) or node.args.get("qualify") is None:
+            return node
+        inner = node.copy()
+        condition = inner.args["qualify"].this
+        inner.set("qualify", None)
+        for window in list(condition.find_all(exp.Window)):
+            name = f"_qualify_{len(helpers)}"
+            helpers.append(name)
+            inner.select(exp.alias_(window.copy(), name), copy=False)
+            window.replace(exp.column(name))
+        return exp.select("*").from_(inner.subquery("_qualified")).where(condition)
+
+    tree = tree.transform(unqualify)
+    return tree.sql(dialect="spark"), tuple(helpers)
 
 
 class _SparkDuck(DuckAPI):

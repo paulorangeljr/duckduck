@@ -5,6 +5,7 @@
 | [`local/`](local/) | Virtualization only: a synthetic "API" + local CSV/JSONL files, joined with SQL | nothing — offline |
 | [`semantic/`](semantic/) with `duckduck.local.json` | Natural-language questions over 5 synthetic security sources | nothing — offline |
 | [`semantic/`](semantic/) with `duckduck.online.json` | The same, with an LLM (catalog drafting + value extraction) and Jev (decisions) | `ANTHROPIC_API_KEY`, `JEV_API_KEY` |
+| [`pipeline/`](pipeline/) | Declarative pipelines: bronze → silver (inline SQL) and gold (a notebook), with the sip following hosts through both | nothing — offline |
 | [`../duckduck.example.json`](../duckduck.example.json) | Reference for every real connector and every `semantic` option | your own credentials — copy it to `duckduck.json` and edit |
 
 Every config here uses relative paths, resolved against the config file's
@@ -32,6 +33,23 @@ duck.auto_register(config_path="examples/local/duckduck.local.json")
 duck.sql("SHOW TABLES")
 duck.sql("SELECT a.hostname, o.owner FROM assets a JOIN owners o ON a.ip = o.ip WHERE a.os = 'linux'").df()
 ```
+
+## `pipeline/` — bronze → silver → gold, offline
+
+| File | |
+|---|---|
+| `duckduck.pipeline.json` | the connectors: `local/`'s synthetic API and files, plus `lake` — a `files` connector over what the pipelines write (`lake_silver_assets`…) |
+| `assets_silver.json` | bronze (the API as it came, a partition per `{{ run_date }}`) and silver (one row per host, merged) — SQL inline |
+| `gold_risk.json` + `gold_risk.ipynb` | gold: silver joined to the owners file, risky hosts per department; the SQL is the notebook's `%%sql` cells |
+| `run.py` | runs both, then prints `web-0001`'s way through the four steps of the two pipelines |
+
+```bash
+python examples/pipeline/run.py
+python -m duckduck.pipeline plan examples/pipeline/gold_risk.json
+```
+
+Everything is written under `examples/pipeline/lake/` (git-ignored), the sip
+in `lake/_sip/`.
 
 ## `semantic/` — natural-language search
 

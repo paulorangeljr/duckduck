@@ -22,3 +22,7 @@ feedback_evaluation.json
 feedback_export.md
 *.yaml.bak
 *.json.bak
+
+# what the pipeline example writes, and Spark's local warehouse
+examples/pipeline/lake/
+spark-warehouse/

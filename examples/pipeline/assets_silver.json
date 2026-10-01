@@ -1,0 +1,21 @@
+{
+  "pipeline": "assets_silver",
+  "description": "Bronze: the assets API as it came, one partition per day. Silver: one row per host, merged.",
+  "engine": "duckdb",
+  "primary_key": "hostname",
+  "sql": [
+    "CREATE VIEW bronze AS SELECT *, '{{ run_date }}' AS load_date FROM assets",
+    "CREATE VIEW silver AS SELECT hostname, ip, os, risk, CAST(last_seen AS TIMESTAMP) AS last_seen FROM bronze QUALIFY row_number() OVER (PARTITION BY hostname ORDER BY last_seen DESC) = 1"
+  ],
+  "targets": {
+    "bronze": {"path": "lake/bronze_assets", "mode": "overwrite_partitions", "partition_by": "load_date"},
+    "silver": {"path": "lake/silver_assets", "mode": "merge"}
+  },
+  "sip": {
+    "rate": 0.02,
+    "max_rows": 50,
+    "watch": ["web-0001"],
+    "columns": ["ip", "os", "risk", "last_seen"],
+    "store": "lake/_sip"
+  }
+}

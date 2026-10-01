@@ -2423,6 +2423,120 @@ Every connector's table methods declare their strategy with
 `@spark_plan(...)` (`duckduck.sparkplan`), and a test fails when one doesn't
 — see CLAUDE.md "Spark: choosing the strategy" when adding a connector.
 
+## Pipelines: bronze → silver → gold, declared in JSON (`duckduck.pipeline`)
+
+A pipeline is a JSON file: where the SQL is, which engine runs it, the key,
+where the results go, and the **sip** — a few rows followed through every
+step and written to the lake next to the data.
+
+```bash
+pip install "duckduck[pipeline]"   # pyarrow; "duckduck[delta]" adds deltalake for Delta targets
+```
+
+```json
+{
+  "pipeline": "risk_by_region",
+  "notebook": "gold/risk_by_region.ipynb",
+  "engine": "duckdb",
+  "primary_key": ["sys_id"],
+  "parameters": {"since": "{{ run_date - 1d }}"},
+  "target": {"path": "s3://lake/gold/risk_by_region/", "mode": "overwrite"},
+  "sip": {"rate": 0.001, "max_rows": 200, "watch": ["INC0001234"],
+          "columns": ["priority", "region", "n"], "mask": ["caller_email"], "store": "s3://lake/_sip/"}
+}
+```
+
+**The SQL** comes from exactly one of `notebook` (its `%%sql` cells), `sql_file`
+(a `.sql` file) or `sql` (the query, or a list of statements). The steps are
+views — the SQL names them, the JSON never repeats them:
+
+```sql
+CREATE VIEW enriched AS
+SELECT i.*, a.region FROM servicenow.incident i LEFT JOIN glue.silver.assets a ON i.cmdb_ci = a.sys_id
+WHERE i.sys_updated_on >= '{{ since }}';
+
+SELECT * FROM enriched LIMIT 10;      -- exploration: no view, never run by the pipeline
+
+CREATE VIEW risk_by_region AS
+SELECT region, count(*) AS n FROM enriched GROUP BY region;
+```
+
+Only the views a target needs run (followed back through what they read);
+the output is the last view unless `"output"` names another, or `"targets":
+{"bronze": {...}, "silver": {...}}` writes several. A SQL without any view
+is one step: its last query. `{{ name }}` is a parameter (`run_date`,
+`run_at`, `run_id`, `pipeline` built in; `{{ run_date - 1d }}`, `- 2h`, `+ 1w`
+shift dates). Anything that writes (`INSERT`, `COPY`…) is refused: writes come
+from the targets only.
+
+**Targets**: a `path` (a folder in the lake: `s3://…`, `abfs://…`, a local
+folder — relative to the pipeline file) or, with Spark, a catalog `table`;
+`format` `parquet` (default), `delta` or `iceberg` (Spark); `mode` `append`,
+`overwrite`, `overwrite_partitions` (with `partition_by`) or `merge` (on the
+key — a source with two rows for one key is refused unless `"unique": false`).
+On Parquet a merge rewrites the table; use Delta for real upserts.
+
+**Engines**: `duckdb` runs each view through `duck.sql()` (connectors,
+addresses, push-down, join narrowing) and writes with pyarrow / deltalake;
+`spark` runs them through `SparkReader` and writes with `df.write` /
+`saveAsTable` / `MERGE INTO`. The same file runs on either.
+
+```bash
+python -m duckduck.pipeline plan gold/risk_by_region.json              # what a run would do
+python -m duckduck.pipeline run gold/risk_by_region.json --param since=2026-09-01 -v
+python -m duckduck.pipeline sip s3://lake/_sip/ --key INC0001234       # one row's whole way
+```
+
+| CLI | Python |
+|---|---|
+| `python -m duckduck.pipeline plan FILE` | `plan_pipeline(FILE).report()` |
+| `python -m duckduck.pipeline run FILE [--config] [--param k=v] [--dry-run]` | `run_pipeline(FILE, duck=, spark=, params=, dry_run=).report()` |
+| `python -m duckduck.pipeline sip STORE [--pipeline] [--key] [--run-id]` | `read_sip(STORE, pipeline=, key=, run_id=)` |
+
+### The sip: following rows without slowing the pipeline
+
+A key is followed when the first 8 hex digits of `md5(key)` fall under
+`rate` — a SQL filter every engine runs, so **every step, every run, every
+pipeline and every engine picks the same keys**: the silver file and the gold
+file follow the same rows without talking to each other (give them the same
+`rate`). `watch` keys are always followed; `max_rows` caps a run by keeping
+the smallest hashes. The cost is one filtered read of each followed view
+(kept in the engine meanwhile) and, with `null_keys`, a count of keyless rows.
+
+The key is followed **by name** through the views: `SELECT *`, `t.*` and
+renames (`sys_id AS id`) keep it; a `GROUP BY` (or a `SELECT DISTINCT`
+without the key) folds each followed row into its group — one small query over
+the view's input learns which. The first table of a view's FROM is the one
+followed. A view on the way to a target that loses the key fails the plan,
+saying what to write (`"keys": {"view": ["column"]}`).
+
+Each event: `key` (the key the row started with), `stage`, `position`,
+`stage_key` (the key there — the group after a GROUP BY), `event` (`seen`,
+`duplicated`, `changed` + `changed` columns, `dropped` + where, `new`,
+`grouped`, `null_keys`, `lineage_break`, `sip_error`, `failed`), `n`, `row`
+(JSON of the key + the `columns` allow-list, `mask`ed ones hashed — nothing
+else leaves the pipeline). Written per run to
+`{store}/{pipeline}/run_date=…/run-{run_id}.parquet`, so a `files` / `glue`
+connector over the store queries it like any table. The sip never fails a
+run: a problem is an event and a warning; a failed run still writes what it
+saw, ending with `failed`.
+
+### In Jupyter
+
+```python
+from duckduck.pipeline import notebook
+nb = notebook("gold/risk_by_region.json")       # key, sip, parameters, engine from the pipeline file
+```
+
+Then each `%%sql` cell runs; one that makes a view prints its rows and what
+happened to the followed keys there (`%%duckduck` is the same magic, for when
+another library owns `%%sql`). Running a cell again replaces its view;
+nothing is written. `nb.sip` holds every event so far, `nb.view("x")` a view's
+rows. The pipeline run reads the same cells.
+
+See `examples/pipeline/` for bronze → silver (inline SQL) and gold (a
+notebook), offline.
+
 ## Adding your own API wrapper
 
 Any Python object works as long as its methods follow the convention:
