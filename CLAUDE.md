@@ -11,6 +11,9 @@ pip install -e ".[dev]"
 # Run all tests
 python -m pytest tests/
 
+# Also the tests that start a local Spark (slow; off by default)
+DUCKDUCK_SPARK_TESTS=1 python -m pytest tests/
+
 # Run a single test
 python -m pytest tests/test_core.py::test_limit_pushdown
 ```

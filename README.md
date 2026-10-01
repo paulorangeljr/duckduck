@@ -2713,6 +2713,9 @@ into `auto_register()`.
 ```bash
 pip install -e ".[dev]"
 python -m pytest tests/
+
+# Also the tests that start a local Spark (slow; off by default)
+DUCKDUCK_SPARK_TESTS=1 python -m pytest tests/
 ```
 
 `CLAUDE.md` documents the internal architecture (push-down flow, SQL
