@@ -498,3 +498,8 @@ def test_the_example_runs_bronze_to_gold_and_the_sip_spans_both_pipelines(tmp_pa
     assert way["event"].iloc[-1] == "grouped"
     plan = plan_pipeline(str(tmp_path / "examples" / "pipeline" / "gold_risk.json"))
     assert plan.needed == ["exposed", "risk_by_department"] and len(plan.queries) == 1
+
+
+def test_a_write_reports_no_internal_details(duck, tmp_path):
+    run = run_pipeline({"pipeline": "r", "sql": "SELECT 1 AS id", "target": str(tmp_path / "out")}, duck=duck)
+    assert not any(k.startswith("_") for k in run.writes[0]) and "files:" not in run.report()

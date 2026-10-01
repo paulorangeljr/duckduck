@@ -80,11 +80,19 @@
     },
     "nvd": {
       "connector": "nvd",
-      "authentication": {"type": "aws", "secret_id": "prod/nvd", "api_key": "$secret.api_key"}
+      "authentication": {
+        "type": "aws",
+        "secret_id": "prod/nvd",
+        "api_key": "$secret.api_key"
+      }
     },
     "world": {
       "connector": "restcountries",
-      "authentication": {"type": "aws", "secret_id": "prod/restcountries", "api_key": "$secret.api_key"}
+      "authentication": {
+        "type": "aws",
+        "secret_id": "prod/restcountries",
+        "api_key": "$secret.api_key"
+      }
     },
     "axonius": {
       "connector": "axonius",
@@ -144,12 +152,43 @@
   "views": {
     "servicenow_incident": {
       "table": "servicenow_table",
-      "args": {"table_name": "incident"},
+      "args": {
+        "table_name": "incident"
+      },
       "description": "ServiceNow incidents (the incident table, through the generic table function)"
     },
     "open_critical_incidents": {
       "sql": "SELECT number, short_description, assigned_to FROM servicenow_incident WHERE priority = '1' AND active = 'true'",
       "description": "Open P1 incidents"
+    }
+  },
+  "catalogs": {
+    "lake": {
+      "type": "glue",
+      "region": "us-east-1",
+      "warehouse": "s3://my-lake/warehouse/"
+    },
+    "azure_lake": {
+      "type": "unity",
+      "host": "https://adb-1234567890123456.7.azuredatabricks.net",
+      "catalog_name": "main",
+      "warehouse": "abfss://lake@mystorage.dfs.core.windows.net/warehouse",
+      "authentication": {
+        "type": "azure",
+        "vault_url": "https://my-vault.vault.azure.net/",
+        "secret_id": "databricks-token"
+      }
+    },
+    "polaris": {
+      "type": "iceberg",
+      "uri": "https://polaris.example.com/api/catalog",
+      "warehouse": "my_catalog",
+      "authentication": {
+        "type": "aws",
+        "region_name": "us-east-1",
+        "secret_id": "prod/polaris",
+        "credential": "$secret.client_credential"
+      }
     }
   },
   "ai_providers": {
@@ -204,18 +243,41 @@
     "host": "127.0.0.1",
     "port": 5433,
     "database": "duckduck",
-    "authentication": {"type": "aws", "region_name": "us-east-1", "secret_id": "prod/duckduck/pg-users"},
-    "tls": {"cert": "certs/server.crt", "key": "certs/server.key"},
+    "authentication": {
+      "type": "aws",
+      "region_name": "us-east-1",
+      "secret_id": "prod/duckduck/pg-users"
+    },
+    "tls": {
+      "cert": "certs/server.crt",
+      "key": "certs/server.key"
+    },
     "catalog_tables": true,
     "catalog_refresh": 3600
   },
   "semantic": {
     "catalog_path": "semantic_catalog.yaml",
     "default_limit": 1000,
-    "feedback": {"enabled": true, "path": "feedback.duckdb", "memory": true, "max_cases": 3, "min_similarity": 0.6, "min_support": 2},
+    "feedback": {
+      "enabled": true,
+      "path": "feedback.duckdb",
+      "memory": true,
+      "max_cases": 3,
+      "min_similarity": 0.6,
+      "min_support": 2
+    },
     "answer_shapes": {
-      "lookup": {"wording": ["o que rola com", "ficha do"]},
-      "count_by": {"maybe_wording": ["segundo"]}
+      "lookup": {
+        "wording": [
+          "o que rola com",
+          "ficha do"
+        ]
+      },
+      "count_by": {
+        "maybe_wording": [
+          "segundo"
+        ]
+      }
     },
     "allowed_sources": null,
     "thresholds": {
@@ -239,11 +301,29 @@
       "sample_rows": 5,
       "api_docs": {
         "insightvm": "docs/insightvm-openapi.json",
-        "servicenow:incidents": {"location": "docs/servicenow-incident.md"},
-        "axonius": {"content": {"tables": {"devices": {
-          "description": "Devices correlated from every adapter.",
-          "fields": {"os_type": {"description": "Operating system family", "values": {"Windows": ["win"], "Linux": []}}}
-        }}}}
+        "servicenow:incidents": {
+          "location": "docs/servicenow-incident.md"
+        },
+        "axonius": {
+          "content": {
+            "tables": {
+              "devices": {
+                "description": "Devices correlated from every adapter.",
+                "fields": {
+                  "os_type": {
+                    "description": "Operating system family",
+                    "values": {
+                      "Windows": [
+                        "win"
+                      ],
+                      "Linux": []
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       },
       "tables": [
         {

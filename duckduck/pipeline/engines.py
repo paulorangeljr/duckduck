@@ -96,6 +96,21 @@ class DuckEngine:
     def rows(self, name: str) -> Optional[int]:
         return int(self.conn.execute(f"SELECT count(*) FROM {ident(name)}").fetchone()[0])
 
+    def arrow(self, name: str):
+        result = self.conn.execute(f"SELECT * FROM {ident(name)}")
+        return (getattr(result, "to_arrow_table", None) or result.fetch_arrow_table)()
+
+    def schema(self, name: str):
+        """The view's columns as Hive/Glue types (an all-NULL column marked so it can become anything)."""
+        import pyarrow as pa
+
+        from .catalogs import Column, arrow_to_hive, null_column
+
+        result = self.conn.execute(f"SELECT * FROM {ident(name)} LIMIT 0")
+        table = (getattr(result, "to_arrow_table", None) or result.fetch_arrow_table)()
+        return [null_column(f.name) if pa.types.is_null(f.type) else Column(f.name, arrow_to_hive(f.type))
+                for f in table.schema]
+
     def frame(self, sql: str):
         """A query of the user's (a notebook cell), through DuckAPI."""
         return self.duck.sql(sql).df()
@@ -150,8 +165,9 @@ class DuckEngine:
             fs.delete_file(f)
         if target.mode == "merge" and old:  # the whole table was rewritten: say both
             merged = self.conn.execute(f"SELECT count(*) FROM {ident(target.view)}").fetchone()[0]
-            return {"rows": int(merged), "table_rows": counter[0], "files": len(written), "removed": len(removed)}
-        return {"rows": counter[0], "files": len(written), "removed": len(removed)}
+            return {"rows": int(merged), "table_rows": counter[0], "files": len(written), "removed": len(removed),
+                    "_files": written}
+        return {"rows": counter[0], "files": len(written), "removed": len(removed), "_files": written}
 
     def _write_delta(self, target: Target, key: List[str]) -> Dict[str, Any]:
         try:
@@ -162,6 +178,7 @@ class DuckEngine:
                                 "pip install deltalake") from None
         uri = target.path if "://" in target.path else _filesystem(target.path)[1]
         opts = target.storage_options or None
+        schema_mode = {"evolve": "merge", "overwrite": "overwrite"}.get(target.schema)  # strict: as it is
         counter = [0]
         reader = self._reader(f"SELECT * FROM {ident(target.view)}", counter)
         if target.mode == "merge":
@@ -172,7 +189,8 @@ class DuckEngine:
                                 storage_options=opts)
                 return {"rows": counter[0], "created": True}
             same = " AND ".join(f't."{k}" = s."{k}"' for k in key)
-            stats = (table.merge(reader, predicate=same, source_alias="s", target_alias="t")
+            stats = (table.merge(reader, predicate=same, source_alias="s", target_alias="t",
+                                 merge_schema=target.schema == "evolve")
                      .when_matched_update_all().when_not_matched_insert_all().execute())
             return {"rows": counter[0], **{k: v for k, v in (stats or {}).items()
                                            if k in ("num_target_rows_inserted", "num_target_rows_updated")}}
@@ -187,10 +205,13 @@ class DuckEngine:
                 "(" + " AND ".join(f'"{c}" = {v if isinstance(v, (int, float)) else literal(v)}'
                                    for c, v in zip(target.partition_by, p)) + ")" for p in parts)
             write_deltalake(uri, reader, mode="overwrite", predicate=predicate,
-                            partition_by=target.partition_by, storage_options=opts)
+                            partition_by=target.partition_by, storage_options=opts,
+                            schema_mode="merge" if schema_mode else None)
             return {"rows": counter[0], "partitions": len(parts)}
+        if schema_mode == "overwrite" and target.mode != "overwrite":
+            schema_mode = "merge"
         write_deltalake(uri, reader, mode=target.mode, partition_by=target.partition_by or None,
-                        storage_options=opts)
+                        storage_options=opts, schema_mode=schema_mode)
         return {"rows": counter[0]}
 
     def close(self) -> None:
@@ -242,6 +263,23 @@ class SparkEngine:
     def frame(self, sql: str):
         return self.reader.sql(sql).toPandas()
 
+    def arrow(self, name: str):
+        df = self.spark.table(name)
+        if hasattr(df, "toArrow"):  # Spark 4: Arrow batches straight to the driver
+            return df.toArrow()
+        import pyarrow as pa
+
+        return pa.Table.from_pandas(df.toPandas(), preserve_index=False)
+
+    def schema(self, name: str):
+        from .catalogs import Column, null_column
+
+        out = []
+        for f in self.spark.table(name).schema.fields:
+            t = f.dataType.simpleString()
+            out.append(null_column(f.name) if t in ("void", "null") else Column(f.name, t))
+        return out
+
     def _exists(self, target: Target) -> bool:
         if target.table:
             return bool(self.spark.catalog.tableExists(target.table))
@@ -262,8 +300,15 @@ class SparkEngine:
             if self._exists(target):
                 where = f"delta.`{target.path}`" if target.path else target.table
                 same = " AND ".join(f"t.`{k}` = s.`{k}`" for k in key)
-                self.spark.sql(f"MERGE INTO {where} t USING `{target.view}` s ON {same} "
-                               "WHEN MATCHED THEN UPDATE SET * WHEN NOT MATCHED THEN INSERT *")
+                auto = "spark.databricks.delta.schema.autoMerge.enabled"
+                before = self.spark.conf.get(auto, "false")
+                if target.schema == "evolve":
+                    self.spark.conf.set(auto, "true")  # new columns of the view join the Delta table
+                try:
+                    self.spark.sql(f"MERGE INTO {where} t USING `{target.view}` s ON {same} "
+                                   "WHEN MATCHED THEN UPDATE SET * WHEN NOT MATCHED THEN INSERT *")
+                finally:
+                    self.spark.conf.set(auto, before)
                 return {"merged": True}
             mode = "append"  # nothing to merge into yet: the first run creates it
         else:
@@ -271,6 +316,10 @@ class SparkEngine:
         writer = df.write.options(**target.storage_options)
         if fmt:
             writer = writer.format(fmt)
+        if fmt == "delta" and target.schema == "evolve":
+            writer = writer.option("mergeSchema", "true")
+        if fmt == "delta" and target.schema == "overwrite":
+            writer = writer.option("overwriteSchema", "true")
         if target.partition_by:
             writer = writer.partitionBy(*target.partition_by)
         if mode == "overwrite_partitions":

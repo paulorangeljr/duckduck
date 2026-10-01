@@ -257,8 +257,11 @@ def test_auto_register_aws_without_override_builds_secrets_manager(monkeypatch):
     duck.close()
 
 
-def test_auto_register_aws_without_boto3_or_override_raises_import_error():
+def test_auto_register_aws_without_boto3_or_override_raises_import_error(monkeypatch):
     """No override and boto3 not installed: a clear ImportError, not a confusing one."""
+    import duckduck.secrets as secrets_module
+
+    monkeypatch.setattr(secrets_module, "boto3", None)  # not installed, whatever this machine has
     duck = DuckAPI()
     with pytest.raises(ImportError, match="boto3"):
         duck.auto_register({

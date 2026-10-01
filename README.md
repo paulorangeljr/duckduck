@@ -2470,7 +2470,9 @@ shift dates). Anything that writes (`INSERT`, `COPY`…) is refused: writes come
 from the targets only.
 
 **Targets**: a `path` (a folder in the lake: `s3://…`, `abfs://…`, a local
-folder — relative to the pipeline file) or, with Spark, a catalog `table`;
+folder — relative to the pipeline file), a table in one of the pipeline's
+`catalogs` (below — any engine), or, with Spark, a table of the Spark
+session's own catalog;
 `format` `parquet` (default), `delta` or `iceberg` (Spark); `mode` `append`,
 `overwrite`, `overwrite_partitions` (with `partition_by`) or `merge` (on the
 key — a source with two rows for one key is refused unless `"unique": false`).
@@ -2493,13 +2495,69 @@ python -m duckduck.pipeline sip s3://lake/_sip/ --key INC0001234       # one row
 | `python -m duckduck.pipeline run FILE [--config] [--param k=v] [--dry-run]` | `run_pipeline(FILE, duck=, spark=, params=, dry_run=).report()` |
 | `python -m duckduck.pipeline sip STORE [--pipeline] [--key] [--run-id]` | `read_sip(STORE, pipeline=, key=, run_id=)` |
 
+### Catalog apart from storage: Glue, Unity Catalog (Azure), Iceberg catalogs
+
+The files are the **storage** — written by the engine (DuckDB through pyarrow /
+deltalake / pyiceberg, Spark through `df.write`). The **catalog** says the table
+exists, where its files are, its columns and partitions — and duckduck keeps it
+through the catalog's own API, never the engine's, so a table written by Spark
+today and by DuckDB tomorrow stays one table.
+
+```json
+{
+  "catalogs": {
+    "lake":   {"type": "glue", "region": "us-east-1", "warehouse": "s3://lake/"},
+    "azure":  {"type": "unity", "host": "https://adb-….azuredatabricks.net", "catalog_name": "main",
+               "warehouse": "abfss://lake@acct.dfs.core.windows.net/", "authentication": {…}},
+    "ice":    {"type": "iceberg", "uri": "https://polaris…/api/catalog", "warehouse": "prod", "authentication": {…}}
+  },
+  "targets": {
+    "bronze": {"catalog": "lake", "table": "bronze.incidents", "mode": "append", "partition_by": "load_date"},
+    "silver": {"catalog": "lake", "table": "silver.incidents", "format": "delta", "mode": "merge"},
+    "gold":   {"catalog": "ice",  "table": "gold.risk", "format": "iceberg", "mode": "overwrite"}
+  }
+}
+```
+
+`catalogs` can live in the pipeline file or in `duckduck.json` (shared by every
+pipeline; credentials through the same `authentication` blocks as the
+connectors); `"catalog": "lake"` at the top makes it every target's default.
+
+| | AWS Glue (`glue`) | Unity Catalog (`unity`, Azure Databricks or the open-source server) | Iceberg REST / Glue / Hive / SQL (`iceberg`, via pyiceberg) |
+|---|---|---|---|
+| **Parquet** | table + columns + partitions (`BatchCreatePartition`; an overwrite drops the gone ones; projection tables need none) | external table; new columns need `"recreate_on_schema_change": true` (drop + create: the files stay, the grants don't); no partition API — prefer Delta | — |
+| **Delta** | registered for Athena (`table_type=DELTA`) and Spark (`spark.sql.sources.provider` + `path`); the log holds the schema, Glue's columns follow | external Delta table; the log holds the schema | — |
+| **Iceberg** | through pyiceberg's Glue catalog | point an `iceberg` catalog at Unity's Iceberg REST endpoint | create, `union_by_name` schema evolution, append / overwrite / dynamic partition overwrite / merge |
+
+A table the catalog doesn't have is **created** at the target's `path`, else
+`{warehouse}/{database}/{table}` (and its database/schema/namespace too).
+**Schema evolution** is on by default; `"schema_evolution": false` turns it off
+for the whole file, or on one target (a target's own setting wins). Finer
+control with `"schema"` on the target:
+
+- `evolve` (default) — the view's new columns join the table (Glue
+  `UpdateTable`, Delta's schema merge, Iceberg `union_by_name`); a column the
+  view lacks is written as NULL; a value is cast to the table's type when that
+  loses nothing (int → bigint, float → double, a wider decimal, an all-NULL
+  column to anything). Any other type change fails **before anything is
+  written**, naming the column.
+- `fixed` (= `"schema_evolution": false`) — the same, but the table never
+  changes: a new column in the view fails the run before writing.
+- `strict` — any difference fails.
+- `overwrite` — with `"mode": "overwrite"`, the table takes the view's schema.
+
+A merge replaces the whole row of each key (columns the view lacks become
+NULL). Iceberg on the Spark engine goes through the driver (Arrow → pyiceberg).
+
 ### The sip: following rows without slowing the pipeline
 
 A key is followed when the first 8 hex digits of `md5(key)` fall under
 `rate` — a SQL filter every engine runs, so **every step, every run, every
 pipeline and every engine picks the same keys**: the silver file and the gold
 file follow the same rows without talking to each other (give them the same
-`rate`). `watch` keys are always followed; `max_rows` caps a run by keeping
+`rate`). `watch` keys are always followed — a composite key as a list in the key's
+order (`["A-1", 3]`) or by column (`{"order_id": "A-1", "line": 3}`), the same
+as the text the sip compares, `A-1|3`; `max_rows` caps a run by keeping
 the smallest hashes. The cost is one filtered read of each followed view
 (kept in the engine meanwhile) and, with `null_keys`, a count of keyless rows.
 

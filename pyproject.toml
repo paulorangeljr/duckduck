@@ -61,6 +61,10 @@ delta = [
     "pyarrow>=14",
     "deltalake>=0.18",
 ]
+iceberg = [
+    "pyarrow>=14",
+    "pyiceberg[pyarrow]>=0.9",
+]
 spark = [
     "pyspark>=3.5",
     "pyarrow>=14",

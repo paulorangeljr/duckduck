@@ -37,9 +37,11 @@ MODES = ("append", "overwrite", "overwrite_partitions", "merge")
 FORMATS = ("parquet", "delta", "iceberg")
 SOURCES = ("notebook", "sql_file", "sql")
 KEYS = {"pipeline", "description", "engine", "primary_key", "keys", "sip", "target", "targets", "output",
-        "parameters", *SOURCES}
+        "parameters", "catalogs", "catalog", "schema_evolution", *SOURCES}
 SIP_KEYS = {"enabled", "rate", "max_rows", "watch", "columns", "mask", "store", "stages", "null_keys"}
-TARGET_KEYS = {"path", "table", "format", "mode", "partition_by", "key", "unique", "storage_options"}
+TARGET_KEYS = {"path", "table", "format", "mode", "partition_by", "key", "unique", "storage_options", "catalog",
+               "schema", "schema_evolution"}
+SCHEMA_POLICIES = ("evolve", "fixed", "strict", "overwrite")
 BUILTIN_PARAMETERS = ("run_date", "run_at", "run_id", "pipeline")
 
 
@@ -71,9 +73,14 @@ class Target:
     key: Optional[List[str]] = None  # merge key; default: the view's key
     unique: bool = True  # merge: refuse a source with two rows for one key
     storage_options: Dict[str, str] = field(default_factory=dict)
+    catalog: Optional[str] = None  # a catalog of the pipeline's "catalogs" (or duckduck.json's): table = database.table
+    schema: Optional[str] = None  # evolve / fixed / strict / overwrite (catalogs.plan_schema); None → the file's
+    # schema_evolution (true → evolve, false → fixed)
 
     @property
     def where(self) -> str:
+        if self.catalog and self.table:
+            return f"{self.catalog}:{self.table}"
         return self.path or self.table or ""
 
     def describe(self) -> str:
@@ -111,6 +118,7 @@ class PipelineSpec:
     sip: SipSpec = field(default_factory=SipSpec)
     targets: List[Target] = field(default_factory=list)
     output: Optional[str] = None  # the view "target" writes (default: the last view)
+    catalogs: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # name → {type: glue|unity|iceberg, …}
     parameters: Dict[str, Any] = field(default_factory=dict)
     description: str = ""
     path: Optional[str] = None  # the JSON file, when read from one
@@ -171,8 +179,26 @@ def load_spec(source: Union[str, os.PathLike, Dict[str, Any]], base_dir: Optiona
     if not isinstance(keys, dict):
         raise PipelineError("'keys' maps a view to its key column(s): {\"enriched\": [\"id\"]}")
     spec.keys = {str(v).lower(): _names(k, f"keys.{v}") for v, k in keys.items()}
-    spec.sip = _sip(data.get("sip"))
+    spec.sip = _sip(data.get("sip"), spec.primary_key)
+    spec.catalogs = _catalogs(data.get("catalogs"))
     spec.targets, spec.output = _targets(data)
+    evolution = data.get("schema_evolution", True)
+    if not isinstance(evolution, bool):
+        raise PipelineError("'schema_evolution' is true (default: new columns join the table) or false")
+    for t in spec.targets:
+        if t.schema is None:
+            t.schema = "evolve" if evolution else "fixed"
+    default_catalog = data.get("catalog")
+    if default_catalog is not None and not isinstance(default_catalog, str):
+        raise PipelineError("'catalog' is the name of the catalog the targets' tables are in")
+    for t in spec.targets:
+        if t.catalog is None and default_catalog and t.table:
+            t.catalog = default_catalog
+        if t.catalog and not t.table:
+            raise PipelineError(f"the target of {t.view or 'the output'} names catalog {t.catalog}: give it the "
+                                "'table' (database.table) too")
+        if t.catalog and len(t.table.split(".")) not in (2, 3):
+            raise PipelineError(f"table {t.table!r}: write it as database.table (or catalog.schema.table in Unity)")
     for t in spec.targets:  # a local folder is relative to the pipeline file, like the SQL's
         if t.path and "://" not in t.path:
             t.path = spec.resolve(t.path)
@@ -193,7 +219,38 @@ def load_spec(source: Union[str, os.PathLike, Dict[str, Any]], base_dir: Optiona
     return spec
 
 
-def _sip(raw: Any) -> SipSpec:
+def _listed(v: Any) -> list:
+    if v is None:
+        return []
+    return v if isinstance(v, list) else [v]
+
+
+def _key_text(v: Any) -> str:
+    """A key part as the engines write it in text (CAST(x AS VARCHAR)): true/false lowercase."""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (str, int, float)):
+        return str(v)
+    raise PipelineError(f"sip.watch: {v!r} isn't a key value (text or a number)")
+
+
+def watch_key(w: Any, primary_key: Optional[List[str]]) -> str:
+    """A watched key as the sip compares it: ``"A-1"``; a composite one as a list in the key's order
+    (``["A-1", 3]``) or an object by column (``{"order_id": "A-1", "line": 3}``) — both become ``A-1|3``."""
+    if isinstance(w, list):
+        if len(w) < 2:
+            raise PipelineError("sip.watch: a list is a composite key — its parts in the key's order")
+        return "|".join(_key_text(x) for x in w)
+    if isinstance(w, dict):
+        if not primary_key or {k.lower() for k in w} != {k.lower() for k in primary_key}:
+            raise PipelineError(f"sip.watch: {w} names columns; they must be the primary_key's "
+                                f"({', '.join(primary_key or []) or 'none set'})")
+        by = {k.lower(): v for k, v in w.items()}
+        return "|".join(_key_text(by[k.lower()]) for k in primary_key)
+    return _key_text(w)
+
+
+def _sip(raw: Any, primary_key: Optional[List[str]] = None) -> SipSpec:
     if raw in (None, False):
         return SipSpec(enabled=False)
     if raw is True:
@@ -215,12 +272,11 @@ def _sip(raw: Any) -> SipSpec:
         if not isinstance(raw["max_rows"], int) or isinstance(raw["max_rows"], bool) or raw["max_rows"] < 1:
             raise PipelineError("sip.max_rows is a positive whole number")
         sip.max_rows = raw["max_rows"]
-    for k in ("watch", "columns", "mask"):
-        v = raw.get(k) or []
-        if isinstance(v, str):
-            v = [v]
-        if not isinstance(v, list) or not all(isinstance(x, (str, int)) and not isinstance(x, bool) for x in v):
-            raise PipelineError(f"sip.{k} is a list of {'keys' if k == 'watch' else 'column names'}")
+    sip.watch = [watch_key(w, primary_key) for w in _listed(raw.get("watch"))]
+    for k in ("columns", "mask"):
+        v = _listed(raw.get(k))
+        if not all(isinstance(x, str) for x in v):
+            raise PipelineError(f"sip.{k} is a list of column names")
         setattr(sip, k, [str(x) for x in v])
     if raw.get("store") is not None:
         if not isinstance(raw["store"], str) or not raw["store"].strip():
@@ -243,7 +299,9 @@ def _target(view: str, raw: Any) -> Target:
     if unknown:
         raise PipelineError(f"unknown target key(s) {unknown} — a target takes {sorted(TARGET_KEYS)}")
     path, table = raw.get("path"), raw.get("table")
-    if bool(path) == bool(table):
+    if raw.get("catalog") and table:
+        pass  # in a catalog: the table, and optionally where a new one goes (path)
+    elif bool(path) == bool(table):
         raise PipelineError(f"the target of {view} has a 'path' (a folder in the lake) or a 'table' (a catalog "
                             "table), not both")
     t = Target(view=view, path=path, table=table)
@@ -253,6 +311,22 @@ def _target(view: str, raw: Any) -> Target:
     t.format = raw.get("format") or ("parquet" if path else None)
     if t.format is not None and t.format not in FORMATS:
         raise PipelineError(f"target format is one of {list(FORMATS)} (got {t.format!r})")
+    t.catalog = raw.get("catalog")
+    if t.catalog is not None and (not isinstance(t.catalog, str) or not t.catalog):
+        raise PipelineError("a target's 'catalog' is the name of a catalog")
+    t.schema = raw.get("schema")
+    if t.schema is not None and t.schema not in SCHEMA_POLICIES:
+        raise PipelineError(f"target 'schema' is one of {list(SCHEMA_POLICIES)} (got {t.schema!r})")
+    if "schema_evolution" in raw:
+        on = raw["schema_evolution"]
+        if not isinstance(on, bool):
+            raise PipelineError("'schema_evolution' is true or false")
+        if t.schema is not None and (t.schema in ("evolve", "overwrite")) != on:
+            raise PipelineError(f"the target of {view or 'the output'} says \"schema_evolution\": "
+                                f"{str(on).lower()} and \"schema\": \"{t.schema}\" — keep one")
+        t.schema = t.schema or ("evolve" if on else "fixed")
+    if t.schema == "overwrite" and t.mode != "overwrite":
+        raise PipelineError("\"schema\": \"overwrite\" replaces a table's columns: only with \"mode\": \"overwrite\"")
     if raw.get("partition_by"):
         t.partition_by = _names(raw["partition_by"], "partition_by")
     if raw.get("key"):
@@ -263,6 +337,17 @@ def _target(view: str, raw: Any) -> Target:
         raise PipelineError("storage_options is an object of text values")
     t.storage_options = {str(k): str(v) for k, v in opts.items()}
     return t
+
+
+def _catalogs(raw: Any) -> Dict[str, Dict[str, Any]]:
+    if raw in (None, {}):
+        return {}
+    if not isinstance(raw, dict) or not all(isinstance(v, dict) for v in raw.values()):
+        raise PipelineError("'catalogs' maps a name to a catalog: {\"lake\": {\"type\": \"glue\", \"region\": …}}")
+    for name, block in raw.items():
+        if block.get("type") not in ("glue", "unity", "iceberg"):
+            raise PipelineError(f"catalog {name}: 'type' is glue, unity or iceberg")
+    return {str(k): dict(v) for k, v in raw.items()}
 
 
 def _targets(data: Dict[str, Any]):

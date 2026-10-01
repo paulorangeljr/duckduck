@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 import os
 import time
@@ -13,6 +14,7 @@ import pandas as pd
 
 from .analysis import Plan, build_plan
 from .engines import make_engine
+from .lake import write_target
 from .sip import Sip
 from .sources import Statement, statements_of
 from .spec import PipelineError, PipelineSpec, load_spec, run_parameters, substitute
@@ -54,8 +56,8 @@ class PipelineRun:
             rows = f", {s['rows']:,} rows" if s.get("rows") is not None else ""
             lines.append(f"  {s['view']}: {s['seconds']:.2f}s{rows}{' (kept)' if s['kept'] else ''}")
         for w in self.writes:
-            extra = ", ".join(f"{k} {v:,}" if isinstance(v, int) and not isinstance(v, bool) else k
-                              for k, v in w.items() if k not in ("view", "target", "mode", "seconds") and v)
+            extra = ", ".join(_fact(k, v) for k, v in w.items()
+                              if k not in ("view", "target", "mode", "seconds", "table") and v)
             lines.append(f"  wrote {w['view']} → {w['target']} ({w['mode']}{', ' + extra if extra else ''}) "
                          f"in {w['seconds']:.2f}s")
         if len(self.sip):
@@ -66,6 +68,16 @@ class PipelineRun:
         for w in self.warnings:
             lines.append(f"  ⚠ {w}")
         return "\n".join(lines)
+
+
+def _fact(k: str, v: Any) -> str:
+    if isinstance(v, bool):
+        return k.replace("_", " ")
+    if isinstance(v, int):
+        return f"{k.replace('_', ' ')} {v:,}"
+    if isinstance(v, (list, tuple)):
+        return f"{k.replace('_', ' ')}: {', '.join(map(str, v))}"
+    return f"{k.replace('_', ' ')} {v}"
 
 
 def _duck(duck: Any, config_path: Optional[str]) -> Any:
@@ -79,10 +91,34 @@ def _duck(duck: Any, config_path: Optional[str]) -> Any:
     return duck
 
 
+def catalog_lookup(spec: PipelineSpec, duck: Any, given: Optional[Dict[str, Any]] = None):
+    """``name → catalog``: ones passed in code, then the pipeline file's ``catalogs``, then duckduck.json's — built
+    once, on first use."""
+    built: Dict[str, Any] = dict(given or {})
+
+    def of(name: str) -> Any:
+        if name in built:
+            return built[name]
+        blocks = dict(spec.catalogs)
+        config = getattr(duck, "_config_path", None)
+        if name not in blocks and config and os.path.isfile(config):
+            with open(config, encoding="utf-8") as f:
+                blocks = {**(json.load(f).get("catalogs") or {}), **blocks}
+        if name not in blocks:
+            known = sorted(set(built) | set(blocks))
+            raise PipelineError(f"no catalog {name!r} — define it under \"catalogs\" in the pipeline file or in "
+                                f"duckduck.json (known: {', '.join(known) or 'none'})")
+        from .catalogs import make_catalog
+
+        built[name] = make_catalog(name, blocks[name], duck=duck)
+        return built[name]
+    return of
+
+
 def run_pipeline(source: Union[str, os.PathLike, Dict[str, Any], PipelineSpec], duck: Any = None, spark: Any = None,
                  config_path: Optional[str] = None, params: Optional[Dict[str, Any]] = None,
                  run_id: Optional[str] = None, dry_run: bool = False, now: Optional[dt.datetime] = None,
-                 engine: Any = None) -> PipelineRun:
+                 engine: Any = None, catalogs: Optional[Dict[str, Any]] = None) -> PipelineRun:
     """
     Runs a pipeline file. ``duck``: the DuckAPI its SQL reads through (default:
     one ``auto_register``ed from ``config_path`` / ``DUCKDUCK_CONFIG`` /
@@ -95,8 +131,11 @@ def run_pipeline(source: Union[str, os.PathLike, Dict[str, Any], PipelineSpec], 
     now = now or dt.datetime.now(dt.timezone.utc)
     values = run_parameters(spec, params, now=now, run_id=run_id)
     plan = build_plan(spec, [Statement(substitute(s.sql, values), s.origin) for s in statements_of(spec)])
+    if engine is None or (duck is None and any(t.catalog for t in plan.targets)):
+        duck = _duck(duck, config_path)
     if engine is None:
-        engine = make_engine(spec.engine, duck=_duck(duck, config_path), spark=spark)
+        engine = make_engine(spec.engine, duck=duck, spark=spark)
+    catalog_of = catalog_lookup(spec, duck, catalogs)
     run = PipelineRun(pipeline=spec.name, run_id=values["run_id"], run_at=values["run_at"], engine=engine.name,
                       plan=plan, dry_run=dry_run)
     # the sip's run_at keeps the microseconds: two runs in the same second still sort in the order they ran
@@ -123,7 +162,7 @@ def run_pipeline(source: Union[str, os.PathLike, Dict[str, Any], PipelineSpec], 
                 if target.view != name or dry_run:
                     continue
                 t1 = time.perf_counter()
-                result = engine.write(target, plan.key_of(target), run.run_id)
+                result = write_target(engine, target, plan.key_of(target), run.run_id, catalog_of)
                 run.writes.append({"view": name, "target": target.where, "mode": target.mode, **result,
                                    "seconds": round(time.perf_counter() - t1, 2)})
                 logger.info("  wrote %s → %s (%s)", name, target.where, target.mode)
