@@ -152,3 +152,155 @@ def statements_of(spec: PipelineSpec) -> List[Statement]:
     if not found:
         raise PipelineError("the pipeline's SQL is empty")
     return found
+
+
+# ---------------------------------------------------------------------------
+# A query's top-level WITH, as steps
+# ---------------------------------------------------------------------------
+
+
+def _skip(text: str, i: int) -> int:
+    """Past spaces and comments."""
+    n = len(text)
+    while i < n:
+        if text[i].isspace():
+            i += 1
+        elif text.startswith("--", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j + 1
+        elif text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+        else:
+            break
+    return i
+
+
+def _word(text: str, i: int):
+    """An identifier (plain or "quoted") at ``i``: (name, end) or (None, i)."""
+    if i < len(text) and text[i] == '"':
+        j = i + 1
+        while j < len(text):
+            if text[j] == '"':
+                if text.startswith('""', j):
+                    j += 2
+                    continue
+                return text[i + 1:j].replace('""', '"'), j + 1
+            j += 1
+        return None, i
+    j = i
+    while j < len(text) and (text[j].isalnum() or text[j] == "_"):
+        j += 1
+    return (text[i:j], j) if j > i else (None, i)
+
+
+def _closing(text: str, i: int) -> int:
+    """The index just past the ``)`` matching the ``(`` at ``i`` (strings and comments skipped); -1 if none."""
+    depth, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch in ("'", '"'):
+            j = i + 1
+            while j < n and not (text[j] == ch and not text.startswith(ch * 2, j)):
+                j += 2 if text.startswith(ch * 2, j) else 1
+            i = j + 1
+            continue
+        if text.startswith("--", i) or text.startswith("/*", i):
+            i = _skip(text, i)
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return -1
+
+
+def split_ctes(sql: str):
+    """``WITH a AS (…), b AS (…) SELECT …`` → ``([(a, …), (b, …)], "SELECT …")``, the text as written; None when
+    the query has no top-level WITH, or one that can't be steps (RECURSIVE, a column list)."""
+    i = _skip(sql, 0)
+    word, j = _word(sql, i)
+    if not word or word.lower() != "with":
+        return None
+    i = _skip(sql, j)
+    ctes = []
+    while True:
+        name, j = _word(sql, i)
+        if not name or name.lower() == "recursive":
+            return None
+        i = _skip(sql, j)
+        if i < len(sql) and sql[i] == "(":
+            return None  # WITH x(a, b) AS …: column names the step would need
+        kw, j = _word(sql, i)
+        if not kw or kw.lower() != "as":
+            return None
+        i = _skip(sql, j)
+        for modifier in (("not", "materialized"), ("materialized",)):
+            k, w = i, True
+            for m in modifier:
+                found, e = _word(sql, _skip(sql, k))
+                if not found or found.lower() != m:
+                    w = False
+                    break
+                k = e
+            if w:
+                i = _skip(sql, k)
+                break
+        if i >= len(sql) or sql[i] != "(":
+            return None
+        end = _closing(sql, i)
+        if end < 0:
+            return None
+        ctes.append((name, sql[i + 1:end - 1].strip()))
+        i = _skip(sql, end)
+        if i < len(sql) and sql[i] == ",":
+            i = _skip(sql, i + 1)
+            continue
+        break
+    rest = sql[i:].strip()
+    return (ctes, rest) if ctes and rest else None
+
+
+_CLAUSES = ("group", "having", "qualify", "window", "order", "limit", "offset", "union", "except", "intersect")
+
+
+def _top_level_words(sql: str):
+    """(word lowercased, start, end) for each bare word outside strings, comments and parentheses."""
+    i, n = 0, len(sql)
+    while i < n:
+        ch = sql[i]
+        if ch in ("'", '"'):
+            j = i + 1
+            while j < n and not (sql[j] == ch and not sql.startswith(ch * 2, j)):
+                j += 2 if sql.startswith(ch * 2, j) else 1
+            i = j + 1
+        elif sql.startswith("--", i) or sql.startswith("/*", i):
+            i = _skip(sql, i)
+        elif ch == "(":
+            end = _closing(sql, i)
+            i = n if end < 0 else end
+        elif ch.isalpha() or ch == "_":
+            j = i
+            while j < n and (sql[j].isalnum() or sql[j] == "_"):
+                j += 1
+            yield sql[i:j].lower(), i, j
+            i = j
+        else:
+            i += 1
+
+
+def inject_where(sql: str, condition: str) -> str:
+    """The query with ``condition`` ANDed into its (first) SELECT's WHERE — the text otherwise as written."""
+    body = sql.rstrip().rstrip(";").rstrip()
+    words = list(_top_level_words(body))
+    where = next(((s, e) for w, s, e in words if w == "where"), None)
+    if where is not None:
+        end = next((s for w, s, _ in words if s > where[1] and w in _CLAUSES), len(body))
+        existing = body[where[1]:end].strip()
+        # new lines around what was written: a trailing -- comment can't swallow what follows
+        return f"{body[:where[1]]} {condition} AND (\n{existing}\n)\n{body[end:]}".rstrip()
+    at = next((s for w, s, _ in words if w in _CLAUSES), len(body))
+    return f"{body[:at].rstrip()}\nWHERE {condition}\n{body[at:]}".rstrip()

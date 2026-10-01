@@ -1,0 +1,29 @@
+{
+  "pipeline": "assets_bronze",
+  "description": "Bronze: the assets API as it came, every run appended with the time it was loaded. Runs as often as the source changes.",
+  "engine": "duckdb",
+  "primary_key": "hostname",
+  "sql": "SELECT *, TIMESTAMP '{{ run_at }}' AS _loaded_at, '{{ run_date }}' AS load_date FROM assets",
+  "load": "full",
+  "target": {
+    "path": "lake/bronze_assets",
+    "mode": "append",
+    "partition_by": "load_date"
+  },
+  "state": "lake/_state",
+  "sip": {
+    "rate": 0.02,
+    "max_rows": 50,
+    "watch": [
+      "web-0001"
+    ],
+    "columns": [
+      "ip",
+      "os",
+      "risk",
+      "last_seen",
+      "_loaded_at"
+    ],
+    "store": "lake/_sip"
+  }
+}

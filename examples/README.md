@@ -39,9 +39,10 @@ duck.sql("SELECT a.hostname, o.owner FROM assets a JOIN owners o ON a.ip = o.ip 
 | File | |
 |---|---|
 | `duckduck.pipeline.json` | the connectors: `local/`'s synthetic API and files, plus `lake` — a `files` connector over what the pipelines write (`lake_silver_assets`…) |
-| `assets_silver.json` | bronze (the API as it came, a partition per `{{ run_date }}`) and silver (one row per host, merged) — SQL inline |
-| `gold_risk.json` + `gold_risk.ipynb` | gold: silver joined to the owners file, risky hosts per department; the SQL is the notebook's `%%sql` cells |
-| `run.py` | runs both, then prints `web-0001`'s way through the four steps of the two pipelines |
+| `assets_bronze.json` | bronze: the API as it came (`"load": "full"`), appended with `_loaded_at`, a partition per `{{ run_date }}` — its own job |
+| `assets_silver.json` | silver: one row per host, merged from what bronze loaded since its last run (`"load": {"type": "incremental", "columns": ["_loaded_at"]}`, the mark kept in `lake/_state`) — its own job |
+| `gold_risk.json` + `gold_risk.ipynb` | gold: silver joined to the owners file, risky hosts per department — the notebook's last `%%sql` query, its `WITH` a step the sip follows |
+| `run.py` | bronze twice, silver twice (the second has nothing new), gold, then `web-0001`'s way through all three jobs |
 | `python_api.py` | the command line's `plan` / `run` / `sip` as Python calls (`plan_pipeline`, `run_pipeline` with params and a dry run, `read_sip`) |
 
 ```bash

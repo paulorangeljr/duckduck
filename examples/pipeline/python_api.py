@@ -17,6 +17,7 @@ from duckduck.logs import set_verbose
 from duckduck.pipeline import PipelineError, plan_pipeline, read_sip, run_pipeline
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+BRONZE = os.path.join(HERE, "assets_bronze.json")
 SILVER = os.path.join(HERE, "assets_silver.json")
 GOLD = os.path.join(HERE, "gold_risk.json")
 CONFIG = os.path.join(HERE, "duckduck.pipeline.json")  # the connectors the SQL reads (your duckduck.json)
@@ -35,18 +36,20 @@ def main() -> None:
 
     # 1. plan: what a run would do — views, what each reads, the key's way, the targets. Nothing runs.
     plan = plan_pipeline(GOLD, params={"min_risk": 70})
-    print(plan.report())
+    print(plan.report())  # the gold notebook's WITH steps show up as the job's steps
     print("views run:", plan.needed, "| followed by the sip:", plan.sampled)
 
     # 2. run. params = --param, run_id = --run-id, dry_run = --dry-run; duck = the connectors
     #    (without duck=, it auto_registers from config_path / DUCKDUCK_CONFIG / duckduck.json)
     try:
-        silver = run_pipeline(SILVER, duck=connect(), params={"run_date": "2026-10-01"})
+        bronze = run_pipeline(BRONZE, duck=connect(), params={"run_date": "2026-10-01"})  # its own schedule
+        silver = run_pipeline(SILVER, duck=connect())  # reads bronze past its watermark
         gold = run_pipeline(GOLD, duck=connect(), params={"min_risk": 70})
     except PipelineError as exc:  # a problem in the file or the SQL, said in a sentence
         print("pipeline error:", exc)
         raise
-    print(silver.report())
+    print(bronze.report())
+    print(silver.report())  # "watermark: … → …" says how far it read
     print(gold.report())
 
     # the run's results, as data

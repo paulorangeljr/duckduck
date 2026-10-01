@@ -37,12 +37,13 @@ MODES = ("append", "overwrite", "overwrite_partitions", "merge")
 FORMATS = ("parquet", "delta", "iceberg")
 SOURCES = ("notebook", "sql_file", "sql")
 KEYS = {"pipeline", "description", "engine", "primary_key", "keys", "sip", "target", "targets", "output",
-        "parameters", "catalogs", "catalog", "schema_evolution", *SOURCES}
+        "parameters", "catalogs", "catalog", "schema_evolution", "state", "load", *SOURCES}
 SIP_KEYS = {"enabled", "rate", "max_rows", "watch", "columns", "mask", "store", "stages", "null_keys"}
 TARGET_KEYS = {"path", "table", "format", "mode", "partition_by", "key", "unique", "storage_options", "catalog",
                "schema", "schema_evolution"}
 SCHEMA_POLICIES = ("evolve", "fixed", "strict", "overwrite")
-BUILTIN_PARAMETERS = ("run_date", "run_at", "run_id", "pipeline")
+BUILTIN_PARAMETERS = ("run_date", "run_at", "run_id", "pipeline", "watermark", "last_success_at", "last_run_id")
+EPOCH = "1970-01-01 00:00:00"
 
 
 def _names(value: Any, what: str) -> List[str]:
@@ -107,6 +108,23 @@ class SipSpec:
 
 
 @dataclass
+class Load:
+    """``full``: every run reads everything. ``incremental``: every run reads only what changed since the last
+    successful one — ``WHERE col > <its max last time>`` is added to the step that reads the source, and the new
+    max of each column is kept in the pipeline's ``state`` for the next run."""
+
+    type: str = "full"
+    columns: List[str] = field(default_factory=list)
+    initial: Dict[str, str] = field(default_factory=dict)  # column → the value to start from (none: a full read)
+    lookback: Optional[str] = None  # "10m": re-read a little before the watermark (late rows; a merge dedups)
+    step: Optional[str] = None  # the step to filter (default: the first one reading from outside the job)
+
+    @property
+    def incremental(self) -> bool:
+        return self.type == "incremental"
+
+
+@dataclass
 class PipelineSpec:
     name: str
     source: str  # notebook / sql_file / sql
@@ -119,6 +137,8 @@ class PipelineSpec:
     targets: List[Target] = field(default_factory=list)
     output: Optional[str] = None  # the view "target" writes (default: the last view)
     catalogs: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # name → {type: glue|unity|iceberg, …}
+    state: Optional[str] = None  # where each run's record (last success, watermarks) is kept: a folder in the lake
+    load: Load = field(default_factory=Load)
     parameters: Dict[str, Any] = field(default_factory=dict)
     description: str = ""
     path: Optional[str] = None  # the JSON file, when read from one
@@ -181,6 +201,14 @@ def load_spec(source: Union[str, os.PathLike, Dict[str, Any]], base_dir: Optiona
     spec.keys = {str(v).lower(): _names(k, f"keys.{v}") for v, k in keys.items()}
     spec.sip = _sip(data.get("sip"), spec.primary_key)
     spec.catalogs = _catalogs(data.get("catalogs"))
+    if data.get("state") is not None:
+        if not isinstance(data["state"], str) or not data["state"].strip():
+            raise PipelineError("'state' is a folder in the lake (s3://lake/_state/) or a local folder")
+        spec.state = data["state"].strip()
+    spec.load = _load(data.get("load"))
+    if spec.load.incremental and not spec.state:
+        raise PipelineError("an incremental load remembers where the last run stopped: set 'state' (a folder in "
+                            "the lake, s3://lake/_state/)")
     spec.targets, spec.output = _targets(data)
     evolution = data.get("schema_evolution", True)
     if not isinstance(evolution, bool):
@@ -217,6 +245,49 @@ def load_spec(source: Union[str, os.PathLike, Dict[str, Any]], base_dir: Optiona
         if t.mode == "merge" and not (t.key or spec.primary_key or spec.keys.get(t.view)):
             raise PipelineError(f"merge into {t.where} needs a key: 'primary_key', or 'key' on the target")
     return spec
+
+
+LOAD_KEYS = {"type", "columns", "initial", "lookback", "step"}
+DURATION_RE = re.compile(r"^\s*(\d+)\s*([dhmw])\s*$")
+
+
+def _load(raw: Any) -> Load:
+    if raw is None or raw == "full":
+        return Load()
+    if raw == "incremental":
+        raise PipelineError("an incremental load says which column(s) show what changed: "
+                            "\"load\": {\"type\": \"incremental\", \"columns\": [\"updated_at\"]}")
+    if not isinstance(raw, dict):
+        raise PipelineError("'load' is \"full\", or {\"type\": \"incremental\", \"columns\": [\"updated_at\"]}")
+    unknown = sorted(set(raw) - LOAD_KEYS)
+    if unknown:
+        raise PipelineError(f"unknown load key(s) {unknown} — it takes {sorted(LOAD_KEYS)}")
+    kind = raw.get("type", "incremental" if raw.get("columns") else "full")
+    if kind not in ("full", "incremental"):
+        raise PipelineError(f"load.type is full or incremental (got {kind!r})")
+    load = Load(type=kind)
+    if kind == "full":
+        if raw.get("columns"):
+            raise PipelineError("a full load reads everything: 'columns' goes with \"type\": \"incremental\"")
+        return load
+    if not raw.get("columns"):
+        raise PipelineError("an incremental load says which column(s) show what changed: \"columns\": [\"updated_at\"]")
+    load.columns = _names(raw["columns"], "load.columns")
+    initial = raw.get("initial")
+    if isinstance(initial, dict):
+        load.initial = {str(k): str(v) for k, v in initial.items()}
+        stray = sorted(set(load.initial) - set(load.columns))
+        if stray:
+            raise PipelineError(f"load.initial names {stray}, which aren't in load.columns")
+    elif initial is not None:
+        load.initial = {c: str(initial) for c in load.columns}
+    if raw.get("lookback") is not None:
+        if not isinstance(raw["lookback"], str) or not DURATION_RE.match(raw["lookback"]):
+            raise PipelineError("load.lookback is a duration: \"10m\", \"2h\", \"1d\", \"1w\"")
+        load.lookback = raw["lookback"].strip()
+    if raw.get("step") is not None:
+        load.step = str(raw["step"]).lower()
+    return load
 
 
 def _listed(v: Any) -> list:
@@ -407,8 +478,17 @@ def substitute(text: str, values: Dict[str, Any]) -> str:
     return PARAM_RE.sub(one, text)
 
 
+def _first_watermark(spec: PipelineSpec, state: Dict[str, Any]) -> str:
+    marks = state.get("watermarks") or {}
+    if spec.load.columns:
+        col = spec.load.columns[0]
+        return str(marks.get(col) or spec.load.initial.get(col) or EPOCH)
+    return str(next(iter(marks.values()), None) or EPOCH)
+
+
 def run_parameters(spec: PipelineSpec, overrides: Optional[Dict[str, Any]] = None,
-                   now: Optional[dt.datetime] = None, run_id: Optional[str] = None) -> Dict[str, Any]:
+                   now: Optional[dt.datetime] = None, run_id: Optional[str] = None,
+                   state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The values ``{{ … }}`` reads: built-ins, then the file's parameters (which may use the built-ins), then
     the overrides given for this run (CLI ``--param``, ``run_pipeline(params=)``)."""
     overrides = dict(overrides or {})
@@ -418,6 +498,10 @@ def run_parameters(spec: PipelineSpec, overrides: Optional[Dict[str, Any]] = Non
         "run_date": str(overrides.pop("run_date", None) or now.date().isoformat()),
         "run_id": run_id or now.strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:6],
         "pipeline": spec.name,
+        # from the last successful run (state): where it stopped reading (the first load column's), when it ran
+        "watermark": _first_watermark(spec, state or {}),
+        "last_success_at": (state or {}).get("last_success_at") or EPOCH,
+        "last_run_id": (state or {}).get("last_run_id") or "",
     }
     unknown = sorted(set(overrides) - set(spec.parameters) - set(BUILTIN_PARAMETERS))
     if unknown:

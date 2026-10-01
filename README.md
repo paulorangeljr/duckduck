@@ -2446,28 +2446,76 @@ pip install "duckduck[pipeline]"   # pyarrow; "duckduck[delta]" adds deltalake f
 }
 ```
 
-**The SQL** comes from exactly one of `notebook` (its `%%sql` cells), `sql_file`
-(a `.sql` file) or `sql` (the query, or a list of statements). The steps are
-views — the SQL names them, the JSON never repeats them:
+**The SQL is plain SQL** — one `SELECT` per job, from exactly one of
+`notebook` (its `%%sql` cells), `sql_file` (a `.sql` file) or `sql` (the query
+in the JSON). The job is the **last** query; earlier ones (a notebook's
+exploration cells) never run in the pipeline. Steps inside a job are written
+the usual way, as `WITH`, and each one becomes a step the sip follows:
 
 ```sql
-CREATE VIEW enriched AS
-SELECT i.*, a.region FROM servicenow.incident i LEFT JOIN glue.silver.assets a ON i.cmdb_ci = a.sys_id
-WHERE i.sys_updated_on >= '{{ since }}';
+SELECT * FROM servicenow.incident LIMIT 10;      -- exploration: not the job
 
-SELECT * FROM enriched LIMIT 10;      -- exploration: no view, never run by the pipeline
-
-CREATE VIEW risk_by_region AS
-SELECT region, count(*) AS n FROM enriched GROUP BY region;
+WITH enriched AS (
+  SELECT i.*, a.region FROM lake.silver.incidents i LEFT JOIN lake.silver.assets a ON i.cmdb_ci = a.sys_id
+  WHERE i.priority < 3
+)
+SELECT region, count(*) AS n FROM enriched GROUP BY region
 ```
 
-Only the views a target needs run (followed back through what they read);
-the output is the last view unless `"output"` names another, or `"targets":
-{"bronze": {...}, "silver": {...}}` writes several. A SQL without any view
-is one step: its last query. `{{ name }}` is a parameter (`run_date`,
-`run_at`, `run_id`, `pipeline` built in; `{{ run_date - 1d }}`, `- 2h`, `+ 1w`
-shift dates). Anything that writes (`INSERT`, `COPY`…) is refused: writes come
-from the targets only.
+A `WITH` that can't be a step (`RECURSIVE`, a column list, a name taken by a
+registered table) simply stays inside the query. `CREATE VIEW x AS …` is still
+accepted when you want named steps (and then `"output"` / `"targets":
+{"x": …}` pick which ones are written). `{{ name }}` is a parameter
+(`run_date`, `run_at`, `run_id`, `pipeline`, `watermark`, `last_success_at`
+built in; `{{ run_date - 1d }}`, `- 2h`, `+ 1w` shift dates). Anything that
+writes (`INSERT`, `COPY`…) is refused: writes come from the target only.
+
+**`primary_key`** is a column or a list of them (`["order_id", "line"]`): a
+composite key is merged on all its columns and followed by the sip as one
+(`A-1|3`).
+
+### One job per layer, each on its own schedule — full or incremental
+
+Bronze, silver and gold are separate files, run separately — bronze can load
+every 15 minutes while silver merges every hour. What links them is the lake:
+silver reads the bronze table. Each job says how much it reads with `load`:
+
+```json
+{"pipeline": "incidents_bronze", "primary_key": "sys_id",
+ "sql": "SELECT *, TIMESTAMP '{{ run_at }}' AS _loaded_at FROM servicenow.incident",
+ "load": {"type": "incremental", "columns": ["sys_updated_on"]},
+ "target": {"catalog": "lake", "table": "bronze.incidents", "mode": "append"},
+ "state": "s3://lake/_state/"}
+```
+
+```json
+{"pipeline": "incidents_silver", "primary_key": ["sys_id"],
+ "sql": "SELECT * FROM lake.bronze.incidents QUALIFY row_number() OVER (PARTITION BY sys_id ORDER BY _loaded_at DESC) = 1",
+ "load": {"type": "incremental", "columns": ["_loaded_at"]},
+ "target": {"catalog": "lake", "table": "silver.incidents", "format": "delta", "mode": "merge"},
+ "state": "s3://lake/_state/"}
+```
+
+- **`"load": "full"`** (the default): every run reads everything.
+- **`"load": {"type": "incremental", "columns": [...]}`**: the SQL stays as
+  written; the runner adds `WHERE <column> > <its max at the last successful
+  run>` to the step that reads the source (the first one; `"step"` picks
+  another), so it reaches the connector as push-down. Several columns → any of
+  them moved (`a > … OR b > …`). The first run (no state yet) reads everything,
+  unless `"initial"` says where to start (`"2026-01-01"`, or per column).
+  `"lookback": "10m"` re-reads a little before the mark, for late rows (a merge
+  dedups them). After a successful run, each column's new max is kept.
+- **`state`**: a folder where each job keeps one small JSON —
+  `{state}/{pipeline}.json` — with its last successful run and watermarks. A
+  failed or dry run never moves them. `params={"watermark": "…"}`
+  (`--param watermark=…`) reads from that point instead (a backfill, or a
+  re-read); `{{ watermark }}`, `{{ last_success_at }}` and `{{ last_run_id }}`
+  are there for SQL that wants them.
+- An append / merge / partition overwrite with no rows (nothing new) writes
+  nothing — and never touches the table's schema.
+
+The `plan` shows the WHERE a run would add; the run's report says what it read
+and where each column's mark moved.
 
 **Targets**: a `path` (a folder in the lake: `s3://…`, `abfs://…`, a local
 folder — relative to the pipeline file), a table in one of the pipeline's

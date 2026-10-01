@@ -1,21 +1,33 @@
 {
   "pipeline": "assets_silver",
-  "description": "Bronze: the assets API as it came, one partition per day. Silver: one row per host, merged.",
+  "description": "Silver: one row per host, merged from what bronze loaded since the last silver run (an incremental load on _loaded_at). Runs on its own schedule.",
   "engine": "duckdb",
   "primary_key": "hostname",
-  "sql": [
-    "CREATE VIEW bronze AS SELECT *, '{{ run_date }}' AS load_date FROM assets",
-    "CREATE VIEW silver AS SELECT hostname, ip, os, risk, CAST(last_seen AS TIMESTAMP) AS last_seen FROM bronze QUALIFY row_number() OVER (PARTITION BY hostname ORDER BY last_seen DESC) = 1"
-  ],
-  "targets": {
-    "bronze": {"path": "lake/bronze_assets", "mode": "overwrite_partitions", "partition_by": "load_date"},
-    "silver": {"path": "lake/silver_assets", "mode": "merge"}
+  "sql": "SELECT hostname, ip, os, risk, CAST(last_seen AS TIMESTAMP) AS last_seen, _loaded_at FROM lake_bronze_assets QUALIFY row_number() OVER (PARTITION BY hostname ORDER BY _loaded_at DESC) = 1",
+  "load": {
+    "type": "incremental",
+    "columns": [
+      "_loaded_at"
+    ]
   },
+  "target": {
+    "path": "lake/silver_assets",
+    "mode": "merge"
+  },
+  "state": "lake/_state",
   "sip": {
     "rate": 0.02,
     "max_rows": 50,
-    "watch": ["web-0001"],
-    "columns": ["ip", "os", "risk", "last_seen"],
+    "watch": [
+      "web-0001"
+    ],
+    "columns": [
+      "ip",
+      "os",
+      "risk",
+      "last_seen",
+      "_loaded_at"
+    ],
     "store": "lake/_sip"
   }
 }

@@ -1,10 +1,11 @@
 """
-Bronze → silver → gold, fully offline, with the sip following a few hosts all
-the way (python -m duckduck.pipeline does the same from the command line):
+Bronze, silver and gold as three independent jobs, fully offline — bronze can
+run more often than silver; silver reads only what bronze loaded since its
+own last run (its watermark, kept in lake/_state):
 
     python examples/pipeline/run.py
 
-Writes to examples/pipeline/lake/ (git-ignored): the tables and lake/_sip.
+Writes to examples/pipeline/lake/ (git-ignored): the tables, lake/_state and lake/_sip.
 """
 
 import os
@@ -22,15 +23,22 @@ def connect() -> DuckAPI:
     return duck
 
 
+def job(name: str):
+    run = run_pipeline(os.path.join(HERE, f"{name}.json"), duck=connect())
+    print(run.report())
+    return run
+
+
 def main() -> None:
     os.makedirs(os.path.join(HERE, "lake"), exist_ok=True)
-    silver = run_pipeline(os.path.join(HERE, "assets_silver.json"), duck=connect())
-    print(silver.report())
-    gold = run_pipeline(os.path.join(HERE, "gold_risk.json"), duck=connect())  # reads lake_silver_assets
-    print(gold.report())
+    job("assets_bronze")   # bronze, every 15 minutes say…
+    job("assets_bronze")
+    job("assets_silver")   # …silver every hour: both bronze loads, deduplicated by host
+    job("assets_silver")   # nothing new in bronze since: the watermark doesn't move
+    job("gold_risk")
 
     way = read_sip(os.path.join(HERE, "lake", "_sip"), key="web-0001")
-    print(way[["pipeline", "run_id", "stage", "event", "stage_key", "row"]].to_string(index=False))
+    print(way[["pipeline", "stage", "event", "stage_key", "row"]].to_string(index=False))
 
 
 if __name__ == "__main__":

@@ -24,7 +24,7 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
-from .analysis import Analyzer
+from .analysis import Analyzer, query_steps
 from .engines import make_engine
 from .runner import _duck
 from .sip import Sip
@@ -66,6 +66,13 @@ class PipelineSession:
             kind, what = self.analyzer.add(Statement(sql, f"cell {self.cells}"))
             if kind == "view":
                 result = self._define(what)
+            elif kind == "query" and self._sip is not None:  # the job's query: its WITH steps followed by the sip
+                final = (self.spec.name if self.spec else "query").lower()
+                steps = query_steps(self.analyzer, sql, f"cell {self.cells}", final,
+                                    reserved=getattr(getattr(self.engine, "duck", None), "functions", ()))
+                for view in steps:
+                    self._define(view)
+                result = self.engine.query(f'SELECT * FROM "{final}"')
             elif kind == "query":
                 result = self.engine.frame(sql)
             else:

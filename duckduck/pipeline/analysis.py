@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import sqlglot
 from sqlglot import exp
@@ -309,9 +309,10 @@ class Analyzer:
         return view
 
     def query_view(self, name: str, sql: str, origin: str) -> View:
-        """The pipeline's lone query (no CREATE VIEW anywhere) as its output view."""
+        """The pipeline's query (plain SQL, no CREATE VIEW) as its output view."""
         view = self.describe(name, sql, origin, parse(sql, origin))
         view.synthetic = True
+        self.views.pop(name, None)
         self.views[name] = view
         return view
 
@@ -385,6 +386,8 @@ class Plan:
     keep: Set[str]  # views materialized (the sip reads them more than once)
     queries: List[Tuple[str, str]]
     ignored: List[Tuple[str, str]]
+    parameters: Dict[str, Any] = field(default_factory=dict)  # the {{ … }} values the plan was made with
+    load: Dict[str, Any] = field(default_factory=dict)  # full / incremental (step, columns, the WHERE added)
 
     def key_of(self, target: Target) -> List[str]:
         view = self.views[target.view]
@@ -416,8 +419,13 @@ class Plan:
                     lines.append(f"      writes: {t.describe()}{key}")
         if self.unused:
             lines.append(f"  not run (no target needs them): {', '.join(self.unused)}")
-        if self.queries and not any(self.views[n].synthetic for n in self.needed):
-            lines.append(f"  {len(self.queries)} exploration query(ies) not run")
+        exploring = len(self.queries) - (1 if any(v.synthetic for v in self.views.values()) else 0)
+        if exploring:
+            lines.append(f"  {exploring} exploration query(ies) not run")
+        if self.load.get("type") == "incremental":
+            what = f"adds WHERE {self.load['where']}" if self.load.get("where") else \
+                "no watermark yet: the first run reads everything"
+            lines.append(f"  load: incremental on {', '.join(self.load['columns'])} — {self.load['step']} {what}")
         if self.spec.sip.enabled:
             store = self.spec.sip.store or "kept in memory (no sip.store)"
             lines.append(f"  sip: {self.spec.sip.rate:.4%} of keys, at most {self.spec.sip.max_rows} per view"
@@ -425,16 +433,39 @@ class Plan:
         return "\n".join(lines)
 
 
-def build_plan(spec: PipelineSpec, statements: List[Statement]) -> Plan:
+def query_steps(analyzer: "Analyzer", sql: str, origin: str, final: str, reserved=()) -> List[View]:
+    """A plain query as the job's steps: each top-level ``WITH name AS (…)`` a step named ``name`` (so the sip
+    sees it), then the query itself as ``final``. A WITH that can't be steps (RECURSIVE, column lists, names
+    taken by registered tables or not plain) stays inside one step."""
+    from .sources import split_ctes
+
+    split = split_ctes(sql)
+    ctes, rest = split if split else ([], sql)
+    taken = {r.lower() for r in reserved} | {final.lower()}
+    names = [n.lower() for n, _ in ctes]
+    if ctes and len(set(names)) == len(names) and all(NAME_RE.match(n) and n not in taken for n in names):
+        made = []
+        for name, body in ctes:
+            view = analyzer.describe(name.lower(), body, f"{origin}, WITH {name}", parse(body, origin))
+            analyzer.views.pop(view.name, None)
+            analyzer.views[view.name] = view
+            made.append(view)
+        made.append(analyzer.query_view(final.lower(), rest, origin))
+        return made
+    return [analyzer.query_view(final.lower(), sql, origin)]
+
+
+def build_plan(spec: PipelineSpec, statements: List[Statement], reserved=()) -> Plan:
+    """``reserved``: names of registered tables (a WITH named like one stays inside its query)."""
     analyzer = Analyzer(spec.primary_key, spec.keys)
     for s in statements:
         analyzer.add(s)
     views = analyzer.views
-    if not views:
+    if not views:  # plain SQL: the job is its last query (earlier ones are exploration)
         if not analyzer.queries:
-            raise PipelineError("the pipeline's SQL has no view (CREATE VIEW name AS SELECT …) and no query")
+            raise PipelineError("the pipeline's SQL has no query")
         sql, origin = analyzer.queries[-1]
-        analyzer.query_view(spec.name.lower(), sql, origin)
+        query_steps(analyzer, sql, origin, spec.name, reserved)
     names = list(views)
 
     targets: List[Target] = []

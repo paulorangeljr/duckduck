@@ -19,8 +19,17 @@ from .spec import PipelineError, Target
 logger = logging.getLogger("duckduck.pipeline")
 
 
+def _empty(engine: Any, view: str) -> bool:
+    return len(engine.query(f"SELECT 1 AS x FROM {ident(view)} LIMIT 1")) == 0
+
+
 def write_target(engine: Any, target: Target, key: List[str], run_id: str,
                  catalog_of: Callable[[str], Any]) -> Dict[str, Any]:
+    if target.mode != "overwrite" and _empty(engine, target.view):
+        # nothing new (a watermark past everything): append / merge / partitions have nothing to do — and an
+        # empty result may have lost its column types, which must never reach a table's schema
+        logger.info("  %s: no rows — nothing written to %s", target.view, target.where)
+        return {"rows": 0, "skipped": True}
     if not target.catalog:
         return {k: v for k, v in engine.write(target, key, run_id).items() if not k.startswith("_")}
     return write_table(engine, catalog_of(target.catalog), target, key, run_id)

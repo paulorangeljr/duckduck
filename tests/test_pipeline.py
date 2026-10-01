@@ -404,7 +404,7 @@ def test_a_notebook_session_shows_the_sip_under_each_view(duck, tmp_path, capsys
     assert len(nb.sip[nb.sip["stage"] == "enriched"]) == len(out)
     lookup = nb.run_cell("CREATE VIEW people AS SELECT region FROM cmdb")
     assert "not followed" in capsys.readouterr().out and list(lookup.columns) == ["region"]
-    assert nb.views == ["bronze", "enriched", "people"]
+    assert nb.views == ["bronze", "risk", "enriched", "people"]  # a query cell is a candidate job: "risk"
 
 
 def test_the_magic_is_registered_in_ipython(duck):
@@ -482,7 +482,7 @@ def test_spark_runs_the_same_pipeline_and_follows_the_same_keys(duck, tmp_path, 
 # -- the example -------------------------------------------------------------------------------------------------------
 
 
-def test_the_example_runs_bronze_to_gold_and_the_sip_spans_both_pipelines(tmp_path, capsys):
+def test_the_example_runs_bronze_silver_gold_as_independent_jobs(tmp_path, capsys):
     import runpy
     import shutil
 
@@ -492,12 +492,14 @@ def test_the_example_runs_bronze_to_gold_and_the_sip_spans_both_pipelines(tmp_pa
                         ignore=shutil.ignore_patterns("lake", "__pycache__"))
     runpy.run_path(str(tmp_path / "examples" / "pipeline" / "run.py"), run_name="__main__")
     out = capsys.readouterr().out
-    assert "pipeline assets_silver" in out and "pipeline gold_risk" in out
+    assert out.count("pipeline assets_bronze") == 2 and "pipeline gold_risk" in out
+    assert "incremental on _loaded_at: first run: read everything" in out and "(merge, skipped)" in out
+    assert "read where \"_loaded_at\" > TIMESTAMP" in out and "nothing newer" in out
     way = read_sip(str(tmp_path / "examples" / "pipeline" / "lake" / "_sip"), key="web-0001")
-    assert list(way["stage"]) == ["bronze", "silver", "exposed", "risk_by_department"]
+    assert list(dict.fromkeys(way["stage"])) == ["assets_bronze", "assets_silver", "exposed", "gold_risk"]
     assert way["event"].iloc[-1] == "grouped"
     plan = plan_pipeline(str(tmp_path / "examples" / "pipeline" / "gold_risk.json"))
-    assert plan.needed == ["exposed", "risk_by_department"] and len(plan.queries) == 1
+    assert plan.needed == ["exposed", "gold_risk"] and len(plan.queries) == 2  # one exploration, one job
     runpy.run_path(str(tmp_path / "examples" / "pipeline" / "python_api.py"), run_name="__main__")
     assert "dry run (nothing written)" in capsys.readouterr().out
 
@@ -505,3 +507,150 @@ def test_the_example_runs_bronze_to_gold_and_the_sip_spans_both_pipelines(tmp_pa
 def test_a_write_reports_no_internal_details(duck, tmp_path):
     run = run_pipeline({"pipeline": "r", "sql": "SELECT 1 AS id", "target": str(tmp_path / "out")}, duck=duck)
     assert not any(k.startswith("_") for k in run.writes[0]) and "files:" not in run.report()
+
+
+# -- plain SQL: no CREATE VIEW, its WITH steps followed ----------------------------------------------------------------
+
+PLAIN = """
+SELECT * FROM incidents LIMIT 5;  -- exploration
+WITH bronze AS (SELECT * FROM incidents),
+enriched AS (
+  SELECT i.*, a.region FROM bronze i LEFT JOIN cmdb a ON i.cmdb_ci = a.sys_id
+  WHERE i.priority < 3
+  QUALIFY row_number() OVER (PARTITION BY i.sys_id ORDER BY i.priority) = 1),
+renamed AS (SELECT sys_id AS id, region, priority, upper(short_description) AS short_description, caller_email
+            FROM enriched)
+SELECT region, priority, count(*) AS n FROM renamed GROUP BY ALL
+"""
+
+
+def test_plain_sql_is_the_job_and_its_with_steps_are_followed(duck, tmp_path):
+    views = spec_dict(tmp_path)
+    views["targets"] = {"gold": {"path": str(tmp_path / "views"), "mode": "overwrite"}}
+    plain = {**spec_dict(tmp_path), "pipeline": "gold", "sql": PLAIN,
+             "target": {"path": str(tmp_path / "plain"), "mode": "overwrite"}}
+    plain.pop("targets")
+    plan = plan_pipeline(plain)
+    assert plan.needed == ["bronze", "enriched", "renamed", "gold"] and plan.sampled == plan.needed
+    assert "1 exploration query(ies) not run" in plan.report() and "WITH enriched" in plan.report()
+    a = run_pipeline(views, duck=duck, run_id="v").sip
+    b = run_pipeline(plain, duck=duck, run_id="p").sip
+    cols = ["stage", "key", "stage_key", "event", "n", "changed"]
+    pd.testing.assert_frame_equal(a[cols].reset_index(drop=True), b[cols].reset_index(drop=True))
+    assert duckdb.sql(f"SELECT sum(n) FROM '{tmp_path}/plain/*.parquet'").fetchone()[0] == 1500
+
+
+def test_a_with_that_cant_be_steps_stays_inside_one(duck):
+    for sql in ("WITH cmdb AS (SELECT 1 AS sys_id) SELECT * FROM cmdb",  # named like a registered table
+                "WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t WHERE n < 3) SELECT n AS sys_id FROM t"):
+        plan = plan_pipeline({"pipeline": "x", "primary_key": "sys_id", "sql": sql, "target": "/lake/x"}, duck=duck)
+        assert plan.needed == ["x"]
+    run = run_pipeline({"pipeline": "x", "sql": "WITH cmdb AS (SELECT 1 AS a) SELECT * FROM cmdb"}, duck=duck,
+                       dry_run=True)
+    assert [s["view"] for s in run.steps] == ["x"]
+
+
+def test_composite_keys_through_plain_sql(duck, tmp_path):
+    duck.test_data["rows"] = pd.DataFrame({"order_id": ["A", "A", "B", "C"], "line": [1, 2, 1, 1],
+                                           "qty": [1, 2, 3, 4], "sys_id": "x", "cmdb_ci": "x", "priority": 0,
+                                           "short_description": "", "caller_email": ""})
+    spec = {"pipeline": "lines", "primary_key": ["order_id", "line"],
+            "sql": "WITH clean AS (SELECT order_id, line, qty * 10 AS qty FROM incidents) SELECT * FROM clean",
+            "target": {"path": str(tmp_path / "lines"), "mode": "merge"},
+            "sip": {"rate": 1.0, "watch": [["A", 2]], "columns": ["qty"]}}
+    run = run_pipeline(spec, duck=duck)
+    keys = set(run.sip.loc[run.sip["stage"] == "clean", "key"])
+    assert keys == {"A|1", "A|2", "B|1", "C|1"}
+    changed = run.sip[(run.sip["stage"] == "lines") & (run.sip["key"] == "A|2")]
+    assert changed["event"].iloc[0] == "seen" and json.loads(changed["row"].iloc[0])["qty"] == 20
+    duck.test_data["rows"].loc[0, "qty"] = 9  # A|1 changes; merged on both columns
+    run_pipeline(spec, duck=duck)
+    got = dict(duckdb.sql(f"SELECT order_id || '|' || line, qty FROM '{tmp_path}/lines/*.parquet'").fetchall())
+    assert got == {"A|1": 90, "A|2": 20, "B|1": 30, "C|1": 40}
+
+
+def test_a_notebook_query_cell_shows_its_with_steps(duck, tmp_path, capsys):
+    p = tmp_path / "p.json"
+    p.write_text(json.dumps({**spec_dict(tmp_path), "sql": None, "notebook": "p.ipynb"}))
+    nb = notebook(str(p), duck=duck)
+    rows = nb.run_cell(PLAIN.split(";", 1)[1])
+    out = capsys.readouterr().out
+    assert "bronze: 2,003 rows" in out and "renamed:" in out and "grouped" in out
+    assert rows["n"].sum() == 1500 and nb.views == ["bronze", "enriched", "renamed", "risk"]
+
+
+# -- independent jobs: full and incremental loads ---------------------------------------------------------------------
+
+
+def feed_of(duck, tmp_path):
+    feed = tmp_path / "feed"
+    seen = []
+
+    def read(loaded_gt=None, limit=None):  # takes the push-down: the incremental WHERE reaches it
+        seen.append(loaded_gt)
+        if not feed.exists():
+            return pd.DataFrame({"id": pd.Series(dtype="int64"), "loaded": pd.Series(dtype="datetime64[ns]")})
+        df = pd.read_parquet(feed)
+        return df[df["loaded"] > pd.Timestamp(loaded_gt)] if loaded_gt else df
+
+    duck.register_api_function("feed", read)
+
+    def load(rows, at):
+        feed.mkdir(exist_ok=True)
+        pd.DataFrame({"id": rows, "loaded": pd.Timestamp(at)}).to_parquet(
+            feed / f"{at.replace(':', '').replace(' ', '_')}.parquet")
+    return load, seen
+
+
+def test_an_incremental_job_reads_only_what_changed_since_its_last_run(duck, tmp_path):
+    from duckduck.pipeline.state import read_state
+
+    load, seen = feed_of(duck, tmp_path)
+    silver = {"pipeline": "silver", "primary_key": "id", "state": str(tmp_path / "state"),
+              "load": {"type": "incremental", "columns": ["loaded"]},
+              "sql": "SELECT id, loaded FROM feed",
+              "target": {"path": str(tmp_path / "silver"), "mode": "merge"}}
+    assert "no watermark yet: the first run reads everything" in plan_pipeline(silver).report()
+    load([1, 2], "2026-10-01 10:00:00")
+    first = run_pipeline(silver, duck=duck)
+    assert first.writes[0]["rows"] == 2 and first.load["where"] is None and seen[-1] is None
+    load([3], "2026-10-01 10:15:00")
+    load([2, 4], "2026-10-01 10:30:00")  # bronze ran twice meanwhile
+    plan = plan_pipeline(silver)
+    assert "adds WHERE \"loaded\" > TIMESTAMP '2026-10-01 10:00:00'" in plan.report()
+    second = run_pipeline(silver, duck=duck)
+    assert second.writes[0]["rows"] == 3 and seen[-1] == "2026-10-01 10:00:00"  # pushed to the source
+    assert "loaded: 2026-10-01 10:00:00 → 2026-10-01 10:30:00" in second.report()
+    third = run_pipeline(silver, duck=duck)
+    assert third.writes[0]["skipped"] and third.writes[0]["rows"] == 0 and "nothing newer" in third.report()
+    state = read_state(str(tmp_path / "state"), "silver")
+    assert state["watermarks"] == {"loaded": "2026-10-01 10:30:00"} and state["last_run_id"] == third.run_id
+    assert duckdb.sql(f"SELECT count(*), count(DISTINCT id) FROM '{tmp_path}/silver/*.parquet'").fetchone() == (4, 4)
+    # a re-read from a given point, as a dry run: reads as a run would and moves nothing
+    again = run_pipeline(silver, duck=duck, dry_run=True, params={"watermark": "2026-10-01 10:10:00"})
+    assert again.steps[0]["rows"] == 3 and seen[-1] == "2026-10-01 10:10:00"
+    assert read_state(str(tmp_path / "state"), "silver")["last_run_id"] == third.run_id
+
+
+def test_incremental_options(duck, tmp_path):
+    load, seen = feed_of(duck, tmp_path)
+    load([1], "2026-10-01 10:00:00")
+    load([2], "2026-10-02 10:00:00")
+    base = {"pipeline": "s", "primary_key": "id", "state": str(tmp_path / "st"), "target": str(tmp_path / "o")}
+    run = run_pipeline({**base, "sql": "SELECT id, loaded FROM feed WHERE id > 0 OR id < -5",
+                        "load": {"columns": "loaded", "initial": "2026-10-01 12:00:00", "lookback": "1h"}}, duck=duck)
+    assert run.load["where"] == "\"loaded\" > TIMESTAMP '2026-10-01 11:00:00'" and run.steps[0]["rows"] == 1
+    # the step that reads the source gets the WHERE, qualified when it joins; the job's own WHERE is kept whole
+    sql = ("WITH f AS (SELECT x.id, x.loaded FROM feed x JOIN (SELECT 1 AS id UNION ALL SELECT 2) y ON x.id = y.id) "
+           "SELECT id FROM f")
+    plan = plan_pipeline({**base, "pipeline": "t", "sql": sql, "load": {"columns": ["loaded"], "initial": "2026-10-02"}})
+    assert plan.load["step"] == "f" and plan.views["f"].sql.endswith('WHERE "x"."loaded" > DATE \'2026-10-02\'')
+    with pytest.raises(PipelineError, match="set 'state'"):
+        load_spec({"pipeline": "x", "sql": "SELECT 1", "load": {"columns": ["t"]}})
+    with pytest.raises(PipelineError, match="which column\\(s\\) show what changed"):
+        load_spec({"pipeline": "x", "sql": "SELECT 1", "load": "incremental", "state": "/s"})
+    with pytest.raises(PipelineError, match="couldn't read max\\(missing\\) from x"):
+        run_pipeline({**base, "pipeline": "x", "sql": "SELECT id FROM feed", "load": {"columns": ["missing"]}},
+                     duck=duck)
+    full = run_pipeline({**base, "pipeline": "f", "sql": "SELECT id FROM feed", "load": "full"}, duck=duck)
+    assert full.load == {"type": "full"} and full.state_path.endswith("f.json")
