@@ -71,6 +71,56 @@ _TOKEN_LOCK = threading.Lock()
 logger = get_logger("servicenow")
 
 
+def _check_timezone(name: Optional[str]) -> Optional[str]:
+    """An IANA timezone name ("America/Sao_Paulo", "UTC"), checked; None stays None."""
+    if name is None:
+        return None
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    try:
+        ZoneInfo(str(name))
+    except (ZoneInfoNotFoundError, ValueError):
+        raise ValueError(f"timezone {name!r} isn't a timezone name — use one like \"America/Sao_Paulo\", "
+                         "\"Europe/Lisbon\" or \"UTC\"") from None
+    return str(name)
+
+
+_MOMENT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?)?(Z|[+-]\d{2}:?\d{2})?$")
+
+
+def _moment(value: Any) -> Optional[datetime]:
+    """A date / timestamp value as an aware datetime — without an offset, UTC: what the Table API returns
+    (``sysparm_display_value=false``), so a watermark read from the data compares as it was read."""
+    from datetime import date, timezone as tz
+
+    if isinstance(value, datetime):
+        moment = value
+    elif isinstance(value, date):
+        moment = datetime(value.year, value.month, value.day)
+    elif isinstance(value, str) and _MOMENT_RE.match(value.strip()):
+        try:
+            moment = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=tz.utc)
+
+
+def _date_generate(moment: datetime, timezone: str, op: str) -> str:
+    """The moment in the API user's timezone, as ``javascript:gs.dateGenerate('yyyy-MM-dd','HH:mm:ss')`` — the
+    form ServiceNow reads in that user's timezone whatever their date format. Whole seconds, rounded so the
+    comparison keeps every row (a superset: DuckDB re-applies the exact one)."""
+    from datetime import timedelta
+    from zoneinfo import ZoneInfo
+
+    local = moment.astimezone(ZoneInfo(timezone))
+    if local.microsecond and op in ("lt", "lte"):
+        local += timedelta(seconds=1)
+    local = local.replace(microsecond=0)
+    return f"javascript:gs.dateGenerate('{local:%Y-%m-%d}','{local:%H:%M:%S}')"
+
+
 class ServiceNow:
     """
     Client for the ServiceNow Table API.
@@ -106,6 +156,7 @@ class ServiceNow:
         default_page_size: int = 200,
         verify: bool = True,
         host: Optional[str] = None,
+        timezone: Optional[str] = None,
     ):
         if not username or not password:
             raise ValueError("ServiceNow requires 'username' and 'password'.")
@@ -113,7 +164,7 @@ class ServiceNow:
             raise ValueError("Provide either 'instance' or 'host'.")
 
         resolved_host = host or f"{instance}.service-now.com"
-        self._setup(f"https://{resolved_host}/api/now", default_page_size, verify)
+        self._setup(f"https://{resolved_host}/api/now", default_page_size, verify, timezone)
         self.session.auth = (username, password)
         self._auth_mode = "basic"
 
@@ -130,6 +181,7 @@ class ServiceNow:
         scope: Optional[str] = None,
         default_page_size: int = 200,
         verify: bool = True,
+        timezone: Optional[str] = None,
     ) -> "ServiceNow":
         """
         Authentication via OAuth2 client-credentials — for deployments
@@ -173,7 +225,7 @@ class ServiceNow:
             if not instance and not host:
                 raise ValueError("Provide 'instance', 'host', or 'api_base'.")
             base_url = f"https://{host or f'{instance}.service-now.com'}/api/now"
-        obj._setup(base_url, default_page_size, verify)
+        obj._setup(base_url, default_page_size, verify, timezone)
         obj._auth_mode = "oauth2"
         obj._token_url = token_url
         obj._client_id = client_id
@@ -227,7 +279,8 @@ class ServiceNow:
     # Internal setup
     # ------------------------------------------------------------------
 
-    def _setup(self, base_url: str, default_page_size: int, verify: bool) -> None:
+    def _setup(self, base_url: str, default_page_size: int, verify: bool, timezone: Optional[str] = None) -> None:
+        self.timezone = _check_timezone(timezone)
         self.base_url = base_url
         self.default_page_size = default_page_size
         self.session = requests.Session()
@@ -344,10 +397,11 @@ class ServiceNow:
     _COMPARISON_OPERATORS = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
 
     @classmethod
-    def _condition_clause(cls, cond: Condition) -> Tuple[Optional[str], str]:
+    def _condition_clause(cls, cond: Condition, timezone: Optional[str] = None) -> Tuple[Optional[str], str]:
         """
         One DuckAPI push-down condition as an encoded-query clause, or
-        ``(None, reason)`` when it has to stay with DuckDB.
+        ``(None, reason)`` when it has to stay with DuckDB. ``timezone``: the
+        API user's (the connector's ``timezone``) — what lets a date go.
         """
         field = cond.column
         if not re.fullmatch(r"[a-z][a-z0-9_]*", field):
@@ -377,11 +431,19 @@ class ServiceNow:
         if cond.op == "eq":
             return f"{field}={text}", ""
         if cond.op in cls._COMPARISON_OPERATORS:
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                # e.g. dates as text: ServiceNow reads them in the session
-                # user's timezone, so the comparison could drop valid rows.
+            if isinstance(value, bool):
+                return None, "a comparison with true/false"
+            if isinstance(value, (int, float)):
+                return f"{field}{cls._COMPARISON_OPERATORS[cond.op]}{text}", ""
+            moment = _moment(value)
+            if moment is None:
                 return None, "non-numeric comparison"
-            return f"{field}{cls._COMPARISON_OPERATORS[cond.op]}{text}", ""
+            if timezone is None:
+                # ServiceNow reads a date in a query in the API user's timezone, while it returns
+                # values in UTC: unconverted, the comparison could drop valid rows.
+                return None, ("a date: ServiceNow reads it in the API user's timezone — set the connector's "
+                              "\"timezone\" (that user's, e.g. \"America/Sao_Paulo\" or \"UTC\") to send it")
+            return f"{field}{cls._COMPARISON_OPERATORS[cond.op]}{_date_generate(moment, timezone, cond.op)}", ""
         return None, f"operator {cond.op!r}"
 
     def pushdown_blocker(self, cond: Condition) -> Optional[str]:
@@ -390,7 +452,7 @@ class ServiceNow:
         ``cond`` can go into ``sysparm_query``, else why not — so DuckAPI
         keeps it (and the LIMIT decision) on its side and reports it.
         """
-        return self._condition_clause(cond)[1] or None
+        return self._condition_clause(cond, getattr(self, "timezone", None))[1] or None
 
     def _with_where(
         self, table_name: str, query: Optional[str], where: Optional[List[Condition]]
@@ -408,7 +470,7 @@ class ServiceNow:
             return query, False
         clauses, complete = [], True
         for cond in where:
-            clause, reason = self._condition_clause(cond)
+            clause, reason = self._condition_clause(cond, getattr(self, "timezone", None))
             if clause is None:
                 complete = False
                 logger.info("%s: %s %s %r not sent to ServiceNow — %s", table_name, cond.column, cond.op, cond.value, reason)

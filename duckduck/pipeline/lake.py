@@ -23,13 +23,27 @@ def _empty(engine: Any, view: str) -> bool:
     return len(engine.query(f"SELECT 1 AS x FROM {ident(view)} LIMIT 1")) == 0
 
 
+def with_audit(engine: Any, view: str, audit: Dict[str, str]) -> str:
+    """The view plus the audit columns (``name → SQL literal``) — replacing ones of the same name it already has
+    (silver reading bronze's ``_loaded_at``: what's written says when *this* table got the row)."""
+    if not audit:
+        return view
+    names = {n.lower() for n in audit}
+    cols = [ident(c) for c in engine.columns(view) if c.lower() not in names]
+    cols += [f"{expr} AS {ident(name)}" for name, expr in audit.items()]
+    out = f"__duckduck_audit_{view}"
+    engine.define(out, f"SELECT {', '.join(cols)} FROM {ident(view)}", keep=False)
+    return out
+
+
 def write_target(engine: Any, target: Target, key: List[str], run_id: str,
-                 catalog_of: Callable[[str], Any]) -> Dict[str, Any]:
+                 catalog_of: Callable[[str], Any], audit: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     if target.mode != "overwrite" and _empty(engine, target.view):
         # nothing new (a watermark past everything): append / merge / partitions have nothing to do — and an
         # empty result may have lost its column types, which must never reach a table's schema
         logger.info("  %s: no rows — nothing written to %s", target.view, target.where)
         return {"rows": 0, "skipped": True}
+    target = replace(target, view=with_audit(engine, target.view, audit or {}))
     if not target.catalog:
         return {k: v for k, v in engine.write(target, key, run_id).items() if not k.startswith("_")}
     return write_table(engine, catalog_of(target.catalog), target, key, run_id)

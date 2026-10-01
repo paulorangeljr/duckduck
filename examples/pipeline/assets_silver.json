@@ -1,9 +1,9 @@
 {
   "pipeline": "assets_silver",
-  "description": "Silver: one row per host, merged from what bronze loaded since the last silver run (an incremental load on _loaded_at). Runs on its own schedule.",
-  "engine": "duckdb",
+  "description": "Silver: one row per host, merged from what raw loaded since the last silver run. Runs on its own schedule.",
+  "layer": "silver",
   "primary_key": "hostname",
-  "sql": "SELECT hostname, ip, os, risk, CAST(last_seen AS TIMESTAMP) AS last_seen, _loaded_at FROM lake_bronze_assets QUALIFY row_number() OVER (PARTITION BY hostname ORDER BY _loaded_at DESC) = 1",
+  "sql": "SELECT * EXCLUDE (_load_date, _run_id) FROM raw_assets QUALIFY row_number() OVER (PARTITION BY hostname ORDER BY _loaded_at DESC) = 1",
   "load": {
     "type": "incremental",
     "columns": [
@@ -11,10 +11,10 @@
     ]
   },
   "target": {
-    "path": "lake/silver_assets",
+    "database": "inventory",
+    "table_name": "assets",
     "mode": "merge"
   },
-  "state": "lake/_state",
   "sip": {
     "rate": 0.02,
     "max_rows": 50,
@@ -27,7 +27,6 @@
       "risk",
       "last_seen",
       "_loaded_at"
-    ],
-    "store": "lake/_sip"
+    ]
   }
 }

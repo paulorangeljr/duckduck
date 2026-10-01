@@ -3,7 +3,10 @@
     "synthetic": {
       "connector": "python",
       "module": "../local/synthetic.py",
-      "kwargs": {"rows": 1000, "seed": 7},
+      "kwargs": {
+        "rows": 1000,
+        "seed": 7
+      },
       "table_prefix": ""
     },
     "files": {
@@ -11,10 +14,24 @@
       "path": "../local/data",
       "table_prefix": ""
     },
-    "lake": {
+    "raw": {
       "connector": "files",
-      "path": "lake",
-      "table_prefix": "lake"
+      "path": "lake/raw/inventory",
+      "table_prefix": "raw"
+    },
+    "silver": {
+      "connector": "files",
+      "path": "lake/silver/inventory",
+      "table_prefix": "silver"
     }
+  },
+  "lake": {
+    "layers": {
+      "raw": "lake/raw",
+      "silver": "lake/silver",
+      "gold": "lake/gold"
+    },
+    "state": "lake/_state",
+    "sip_store": "lake/_sip"
   }
 }

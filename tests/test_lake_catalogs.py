@@ -33,7 +33,7 @@ def lake(glue, tmp_path):
 
 
 def pipeline(sql, **target):
-    return {"pipeline": "p", "primary_key": "id", "sql": sql,
+    return {"pipeline": "p", "primary_key": "id", "sql": sql, "audit_columns": False,  # exact schemas below
             "target": {"catalog": "lake", "table": "silver.things", **target}}
 
 
@@ -219,7 +219,7 @@ def iceberg_rows(block, name="things"):
 
 def test_iceberg_tables_created_merged_and_evolved(ice):
     duck = DuckAPI()
-    spec = {"pipeline": "i", "primary_key": "id", "catalogs": {"ice": ice},
+    spec = {"pipeline": "i", "primary_key": "id", "catalogs": {"ice": ice}, "audit_columns": False,
             "sql": "SELECT * FROM (VALUES (1, 'a', '2026-10-01'), (2, 'b', '2026-10-02')) t(id, v, day)",
             "target": {"catalog": "ice", "table": "gold.things", "format": "iceberg", "mode": "merge",
                        "partition_by": "day"}}
@@ -314,6 +314,7 @@ def test_unity_catalog_external_tables(tmp_path):
                          warehouse=str(tmp_path / "abfss"), token="dapi-secret", session=api)
     duck = DuckAPI()
     spec = {"pipeline": "u", "primary_key": "id", "sql": "SELECT 1 AS id, [1, 2] AS tags, 'SP' AS region",
+            "audit_columns": False,
             "target": {"catalog": "uc", "table": "silver.things", "mode": "append", "partition_by": "region"}}
     assert run_pipeline(spec, duck=duck, catalogs={"uc": unity}).writes[0]["created"]
     body = api.tables["main.silver.things"]

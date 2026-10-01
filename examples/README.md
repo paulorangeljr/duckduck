@@ -38,16 +38,16 @@ duck.sql("SELECT a.hostname, o.owner FROM assets a JOIN owners o ON a.ip = o.ip 
 
 | File | |
 |---|---|
-| `duckduck.pipeline.json` | the connectors: `local/`'s synthetic API and files, plus `lake` — a `files` connector over what the pipelines write (`lake_silver_assets`…) |
-| `assets_bronze.json` | bronze: the API as it came (`"load": "full"`), appended with `_loaded_at`, a partition per `{{ run_date }}` — its own job |
-| `assets_silver.json` | silver: one row per host, merged from what bronze loaded since its last run (`"load": {"type": "incremental", "columns": ["_loaded_at"]}`, the mark kept in `lake/_state`) — its own job |
+| `duckduck.pipeline.json` | the connectors (`local/`'s synthetic API and files; `raw` / `silver` — `files` connectors over what the jobs write, read as `raw_assets`, `silver_assets`) and the shared `lake` settings: a folder per layer, `state`, `sip_store` |
+| `assets_bronze.json` | raw: the API as it came (`"load": "full"`), appended to `lake/raw/inventory/assets` (`layer` + `database` + `table_name`), a partition per `_load_date` — the audit columns are added by the runner — its own job |
+| `assets_silver.json` | silver: one row per host, merged from what raw loaded since its last run (`"load": {"type": "incremental", "columns": ["_loaded_at"]}`, the mark kept in the `lake.state` folder) — its own job |
 | `gold_risk.json` + `gold_risk.ipynb` | gold: silver joined to the owners file, risky hosts per department — the notebook's last `%%sql` query, its `WITH` a step the sip follows |
 | `run.py` | bronze twice, silver twice (the second has nothing new), gold, then `web-0001`'s way through all three jobs |
 | `python_api.py` | the command line's `plan` / `run` / `sip` as Python calls (`plan_pipeline`, `run_pipeline` with params and a dry run, `read_sip`) |
 
 ```bash
 python examples/pipeline/run.py
-python -m duckduck.pipeline plan examples/pipeline/gold_risk.json
+python -m duckduck.pipeline plan examples/pipeline/gold_risk.json --config examples/pipeline/duckduck.pipeline.json
 python examples/pipeline/python_api.py        # the same, from Python
 ```
 

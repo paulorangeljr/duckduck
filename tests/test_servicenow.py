@@ -395,7 +395,8 @@ def test_condition_clause_translates(cond, clause):
 @pytest.mark.parametrize("cond, reason", [
     (Condition("assigned_to_value", "eq", "abc"), "reference sub-column"),
     (Condition("assigned_to_link", "eq", "x"), "reference sub-column"),
-    (Condition("sys_created_on", "gte", "2026-01-01"), "non-numeric comparison"),
+    (Condition("sys_created_on", "gte", "2026-01-01"), "set the connector's \"timezone\""),
+    (Condition("short_description", "gt", "abc"), "non-numeric comparison"),
     (Condition("name", "like", "srv_1%"), "not translatable"),
     (Condition("name", "eq", "x^ORactive=false"), "'^'"),
     (Condition("Weird Name", "eq", "x"), "not a ServiceNow field name"),
@@ -495,4 +496,51 @@ def test_tables_behind_the_servicenow_catalog_are_its_table_calls():
         ("sn_table", {"table_name": "incident"}, "sn.incident", False),
         ("sn_table", {"table_name": "sys_user"}, "sn.sys_user", False),
     ]
+    duck.close()
+
+
+# -- dates go to ServiceNow converted to the API user's timezone (the connector's "timezone") ---------------------------
+
+
+@pytest.mark.parametrize("value, op, clause", [
+    ("2026-10-01 12:00:00", "gt", "sys_updated_on>javascript:gs.dateGenerate('2026-10-01','09:00:00')"),
+    ("2026-10-01T12:00:00Z", "gt", "sys_updated_on>javascript:gs.dateGenerate('2026-10-01','09:00:00')"),
+    ("2026-10-01 12:00:00-03:00", "gte", "sys_updated_on>=javascript:gs.dateGenerate('2026-10-01','12:00:00')"),
+    ("2026-10-01", "gte", "sys_updated_on>=javascript:gs.dateGenerate('2026-09-30','21:00:00')"),
+    ("2026-10-01 12:00:00.250", "lt", "sys_updated_on<javascript:gs.dateGenerate('2026-10-01','09:00:01')"),
+    ("2026-10-01 12:00:00.250", "gt", "sys_updated_on>javascript:gs.dateGenerate('2026-10-01','09:00:00')"),
+])
+def test_dates_are_converted_to_the_api_users_timezone(value, op, clause):
+    """Values without an offset are UTC — what the Table API returns — and rounding only ever widens."""
+    assert ServiceNow._condition_clause(Condition("sys_updated_on", op, value), "America/Sao_Paulo") == (clause, "")
+
+
+def test_the_timezone_is_a_connector_option(monkeypatch):
+    sn = ServiceNow.from_secret({"instance": "dev1", "username": "u", "password": "p"}, timezone="UTC")
+    assert sn.timezone == "UTC" and sn.pushdown_blocker(Condition("sys_updated_on", "gt", "2026-10-01")) is None
+    oauth = ServiceNow.from_secret({"instance": "dev1", "client_id": "c", "client_secret": "s",
+                                    "token_url": "https://t"}, timezone="Europe/Lisbon")
+    assert oauth.timezone == "Europe/Lisbon"
+    assert "timezone" in _make_sn().pushdown_blocker(Condition("sys_updated_on", "gt", "2026-10-01"))
+    with pytest.raises(ValueError, match="isn't a timezone name"):
+        ServiceNow("dev1", "u", "p", timezone="Brasilia")
+
+
+def test_an_incremental_pipeline_sends_its_watermark_to_servicenow(tmp_path):
+    from duckduck.pipeline import run_pipeline
+
+    sn = ServiceNow("dev12345", "admin", "secret", timezone="America/Sao_Paulo")
+    duck = DuckAPI()
+    duck.register_api_function("incidents", sn.incidents)
+    rows = [{"sys_id": "a", "number": "INC1", "sys_updated_on": "2026-10-01 12:00:00"}]
+    spec = {"pipeline": "inc", "primary_key": "sys_id", "sql": "SELECT * FROM incidents",
+            "load": {"type": "incremental", "columns": ["sys_updated_on"]}, "state": str(tmp_path / "s"),
+            "target": str(tmp_path / "bronze")}
+    with patch.object(sn, "_get", return_value={"result": rows}) as mock_get:
+        run_pipeline(spec, duck=duck)
+        assert "sysparm_query" not in mock_get.call_args.args[1] or \
+            "sys_updated_on" not in (mock_get.call_args.args[1].get("sysparm_query") or "")
+        run_pipeline(spec, duck=duck)
+    sent = mock_get.call_args.args[1]["sysparm_query"]
+    assert "sys_updated_on>javascript:gs.dateGenerate('2026-10-01','09:00:00')" in sent
     duck.close()

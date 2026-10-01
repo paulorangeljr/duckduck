@@ -148,7 +148,7 @@ class LocalFiles:
         """The most common data-file extension anywhere under ``directory``."""
         counts: Dict[str, int] = {}
         for root, dirs, files in os.walk(directory):
-            dirs[:] = [d for d in dirs if self._visible(d)]
+            dirs[:] = [d for d in dirs if self._visible(d) or ("=" in d and not d.startswith("."))]  # _k=v partitions
             for f in files:
                 ext = os.path.splitext(f)[1].lower()
                 if ext in _READERS and self._visible(f):

@@ -31,11 +31,12 @@ def connect() -> DuckAPI:
 
 
 def main() -> None:
-    os.makedirs(os.path.join(HERE, "lake"), exist_ok=True)
+    for layer in ("raw", "silver"):  # the files connectors over the layers need their folders to exist
+        os.makedirs(os.path.join(HERE, "lake", layer, "inventory"), exist_ok=True)
     set_verbose(False)  # True / "info" / "debug" = the CLI's -v / -vv
 
     # 1. plan: what a run would do — views, what each reads, the key's way, the targets. Nothing runs.
-    plan = plan_pipeline(GOLD, params={"min_risk": 70})
+    plan = plan_pipeline(GOLD, params={"min_risk": 70}, config_path=CONFIG)  # the config's "lake": layers, state
     print(plan.report())  # the gold notebook's WITH steps show up as the job's steps
     print("views run:", plan.needed, "| followed by the sip:", plan.sampled)
 

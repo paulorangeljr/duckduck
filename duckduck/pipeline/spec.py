@@ -37,10 +37,10 @@ MODES = ("append", "overwrite", "overwrite_partitions", "merge")
 FORMATS = ("parquet", "delta", "iceberg")
 SOURCES = ("notebook", "sql_file", "sql")
 KEYS = {"pipeline", "description", "engine", "primary_key", "keys", "sip", "target", "targets", "output",
-        "parameters", "catalogs", "catalog", "schema_evolution", "state", "load", *SOURCES}
+        "parameters", "catalogs", "catalog", "schema_evolution", "state", "load", "timezone", "audit_columns", "layer", *SOURCES}
 SIP_KEYS = {"enabled", "rate", "max_rows", "watch", "columns", "mask", "store", "stages", "null_keys"}
 TARGET_KEYS = {"path", "table", "format", "mode", "partition_by", "key", "unique", "storage_options", "catalog",
-               "schema", "schema_evolution"}
+               "schema", "schema_evolution", "layer", "database", "table_name"}
 SCHEMA_POLICIES = ("evolve", "fixed", "strict", "overwrite")
 BUILTIN_PARAMETERS = ("run_date", "run_at", "run_id", "pipeline", "watermark", "last_success_at", "last_run_id")
 EPOCH = "1970-01-01 00:00:00"
@@ -75,6 +75,9 @@ class Target:
     unique: bool = True  # merge: refuse a source with two rows for one key
     storage_options: Dict[str, str] = field(default_factory=dict)
     catalog: Optional[str] = None  # a catalog of the pipeline's "catalogs" (or duckduck.json's): table = database.table
+    layer: Optional[str] = None  # a layer of duckduck.json's "lake": the path is {its prefix}/{database}/{table_name}
+    database: Optional[str] = None
+    table_name: Optional[str] = None
     schema: Optional[str] = None  # evolve / fixed / strict / overwrite (catalogs.plan_schema); None → the file's
     # schema_evolution (true → evolve, false → fixed)
 
@@ -115,7 +118,7 @@ class Load:
 
     type: str = "full"
     columns: List[str] = field(default_factory=list)
-    initial: Dict[str, str] = field(default_factory=dict)  # column → the value to start from (none: a full read)
+    initial: Dict[str, Any] = field(default_factory=dict)  # column → the value to start from (none: a full read)
     lookback: Optional[str] = None  # "10m": re-read a little before the watermark (late rows; a merge dedups)
     step: Optional[str] = None  # the step to filter (default: the first one reading from outside the job)
 
@@ -139,6 +142,8 @@ class PipelineSpec:
     catalogs: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # name → {type: glue|unity|iceberg, …}
     state: Optional[str] = None  # where each run's record (last success, watermarks) is kept: a folder in the lake
     load: Load = field(default_factory=Load)
+    timezone: str = "UTC"  # the job's clock: {{ run_at }} (with its offset) and {{ run_date }} (its local date)
+    audit_columns: List[str] = field(default_factory=lambda: list(AUDIT_COLUMNS))  # added to every row written
     parameters: Dict[str, Any] = field(default_factory=dict)
     description: str = ""
     path: Optional[str] = None  # the JSON file, when read from one
@@ -206,10 +211,35 @@ def load_spec(source: Union[str, os.PathLike, Dict[str, Any]], base_dir: Optiona
             raise PipelineError("'state' is a folder in the lake (s3://lake/_state/) or a local folder")
         spec.state = data["state"].strip()
     spec.load = _load(data.get("load"))
-    if spec.load.incremental and not spec.state:
-        raise PipelineError("an incremental load remembers where the last run stopped: set 'state' (a folder in "
-                            "the lake, s3://lake/_state/)")
+    audit = data.get("audit_columns", True)
+    if audit is True:
+        spec.audit_columns = list(AUDIT_COLUMNS)
+    elif audit is False:
+        spec.audit_columns = []
+    elif isinstance(audit, list) and set(audit) <= set(AUDIT_COLUMNS):
+        spec.audit_columns = [c for c in AUDIT_COLUMNS if c in audit]
+    else:
+        raise PipelineError(f"'audit_columns' is true (default), false, or some of {list(AUDIT_COLUMNS)}")
+    if data.get("timezone") is not None:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        try:
+            ZoneInfo(str(data["timezone"]))
+        except (ZoneInfoNotFoundError, ValueError):
+            raise PipelineError(f"'timezone' {data['timezone']!r} isn't a timezone name — use one like "
+                                "\"America/Sao_Paulo\", \"Europe/Lisbon\" or \"UTC\"") from None
+        spec.timezone = str(data["timezone"])
     spec.targets, spec.output = _targets(data)
+    layer = data.get("layer")
+    if layer is not None:
+        if not isinstance(layer, str) or not layer:
+            raise PipelineError("'layer' is the name of a layer of duckduck.json's \"lake\" (raw, silver…)")
+        for t in spec.targets:
+            if t.layer is None and t.database:
+                t.layer = layer
+                if t.path:
+                    raise PipelineError("with a 'layer', the path is always {the layer's prefix}/{database}/"
+                                        "{table_name} — leave 'path' out")
     evolution = data.get("schema_evolution", True)
     if not isinstance(evolution, bool):
         raise PipelineError("'schema_evolution' is true (default: new columns join the table) or false")
@@ -248,6 +278,8 @@ def load_spec(source: Union[str, os.PathLike, Dict[str, Any]], base_dir: Optiona
 
 
 LOAD_KEYS = {"type", "columns", "initial", "lookback", "step"}
+#: written into every row of every target: when it was loaded (UTC), the run's date (its timezone), which run
+AUDIT_COLUMNS = ("_loaded_at", "_load_date", "_run_id")
 DURATION_RE = re.compile(r"^\s*(\d+)\s*([dhmw])\s*$")
 
 
@@ -275,12 +307,12 @@ def _load(raw: Any) -> Load:
     load.columns = _names(raw["columns"], "load.columns")
     initial = raw.get("initial")
     if isinstance(initial, dict):
-        load.initial = {str(k): str(v) for k, v in initial.items()}
+        load.initial = {str(k): v for k, v in initial.items()}
         stray = sorted(set(load.initial) - set(load.columns))
         if stray:
             raise PipelineError(f"load.initial names {stray}, which aren't in load.columns")
     elif initial is not None:
-        load.initial = {c: str(initial) for c in load.columns}
+        load.initial = {c: initial for c in load.columns}
     if raw.get("lookback") is not None:
         if not isinstance(raw["lookback"], str) or not DURATION_RE.match(raw["lookback"]):
             raise PipelineError("load.lookback is a duration: \"10m\", \"2h\", \"1d\", \"1w\"")
@@ -370,12 +402,30 @@ def _target(view: str, raw: Any) -> Target:
     if unknown:
         raise PipelineError(f"unknown target key(s) {unknown} — a target takes {sorted(TARGET_KEYS)}")
     path, table = raw.get("path"), raw.get("table")
+    database, table_name = raw.get("database"), raw.get("table_name")
+    if (database is None) != (table_name is None):
+        raise PipelineError(f"the target of {view or 'the output'}: give both 'database' and 'table_name'")
+    if database is not None:
+        for what, value in (("database", database), ("table_name", table_name)):
+            if not isinstance(value, str) or not NAME_RE.match(value):
+                raise PipelineError(f"the target's {what} {value!r}: letters, digits and _")
+        if table:
+            raise PipelineError("give the target 'database' + 'table_name', or 'table', not both")
+        table = f"{database}.{table_name}"
+    if raw.get("layer") is not None:
+        if database is None:
+            raise PipelineError(f"the target of {view or 'the output'} is in layer {raw['layer']!r}: give its "
+                                "'database' and 'table_name' (the path is {layer}/{database}/{table_name})")
+        if path:
+            raise PipelineError("with a 'layer', the path is always {the layer's prefix}/{database}/{table_name} — "
+                                "leave 'path' out")
     if raw.get("catalog") and table:
         pass  # in a catalog: the table, and optionally where a new one goes (path)
     elif bool(path) == bool(table):
         raise PipelineError(f"the target of {view} has a 'path' (a folder in the lake) or a 'table' (a catalog "
                             "table), not both")
-    t = Target(view=view, path=path, table=table)
+    t = Target(view=view, path=path, table=table, layer=raw.get("layer"), database=database,
+               table_name=table_name)
     t.mode = raw.get("mode", "append")
     if t.mode not in MODES:
         raise PipelineError(f"target mode is one of {list(MODES)} (got {t.mode!r})")
@@ -491,8 +541,10 @@ def run_parameters(spec: PipelineSpec, overrides: Optional[Dict[str, Any]] = Non
                    state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The values ``{{ … }}`` reads: built-ins, then the file's parameters (which may use the built-ins), then
     the overrides given for this run (CLI ``--param``, ``run_pipeline(params=)``)."""
+    from zoneinfo import ZoneInfo
+
     overrides = dict(overrides or {})
-    now = now or dt.datetime.now(dt.timezone.utc)
+    now = (now or dt.datetime.now(dt.timezone.utc)).astimezone(ZoneInfo(spec.timezone))  # the job's clock
     values: Dict[str, Any] = {
         "run_at": now.replace(microsecond=0).isoformat(sep=" "),
         "run_date": str(overrides.pop("run_date", None) or now.date().isoformat()),

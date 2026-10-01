@@ -90,13 +90,15 @@ def glue_expression(conditions: Sequence[Condition], keys: Dict[str, str]) -> Op
 
 def is_data_file(relative_key: str, size: Optional[int]) -> bool:
     """A listed object that's part of the table: not empty, no path part hidden (``_SUCCESS``, ``.hive-staging``,
-    ``_temporary``), not a folder marker (``x_$folder$``) nor a checksum. Any other name — with or without an
+    ``_temporary`` — a ``_k=v`` partition folder isn't hidden), not a folder marker (``x_$folder$``) nor a checksum. Any other name — with or without an
     extension — is a data file."""
     if not relative_key or relative_key.endswith("/") or size == 0:
         return False
     if relative_key.endswith("$folder$") or relative_key.endswith(".crc"):
         return False
-    return not any(part.startswith(("_", ".")) for part in relative_key.split("/") if part)
+    # hidden as Spark reads it: a part starting with "." — or with "_" unless it's a k=v partition (_load_date=…)
+    return not any(part.startswith(".") or (part.startswith("_") and "=" not in part)
+                   for part in relative_key.split("/") if part)
 
 
 def split_s3(uri: str) -> Tuple[str, str]:

@@ -317,7 +317,8 @@ def test_delta_targets(duck, tmp_path):
     from deltalake import DeltaTable
 
     path = str(tmp_path / "d")
-    spec = {"pipeline": "d", "primary_key": "id", "sql": "SELECT * FROM (VALUES (1, 'a'), (2, 'b')) t(id, v)",
+    spec = {"pipeline": "d", "primary_key": "id", "audit_columns": False,
+            "sql": "SELECT * FROM (VALUES (1, 'a'), (2, 'b')) t(id, v)",
             "target": {"path": path, "format": "delta", "mode": "merge"}}
     assert run_pipeline(spec, duck=duck).writes[0]["created"]
     spec["sql"] = "SELECT * FROM (VALUES (2, 'B'), (3, 'c')) t(id, v)"
@@ -494,11 +495,12 @@ def test_the_example_runs_bronze_silver_gold_as_independent_jobs(tmp_path, capsy
     out = capsys.readouterr().out
     assert out.count("pipeline assets_bronze") == 2 and "pipeline gold_risk" in out
     assert "incremental on _loaded_at: first run: read everything" in out and "(merge, skipped)" in out
-    assert "read where \"_loaded_at\" > TIMESTAMP" in out and "nothing newer" in out
+    assert "read where \"_loaded_at\" > '" in out and "nothing newer" in out
     way = read_sip(str(tmp_path / "examples" / "pipeline" / "lake" / "_sip"), key="web-0001")
     assert list(dict.fromkeys(way["stage"])) == ["assets_bronze", "assets_silver", "exposed", "gold_risk"]
     assert way["event"].iloc[-1] == "grouped"
-    plan = plan_pipeline(str(tmp_path / "examples" / "pipeline" / "gold_risk.json"))
+    example = tmp_path / "examples" / "pipeline"
+    plan = plan_pipeline(str(example / "gold_risk.json"), config_path=str(example / "duckduck.pipeline.json"))
     assert plan.needed == ["exposed", "gold_risk"] and len(plan.queries) == 2  # one exploration, one job
     runpy.run_path(str(tmp_path / "examples" / "pipeline" / "python_api.py"), run_name="__main__")
     assert "dry run (nothing written)" in capsys.readouterr().out
@@ -617,7 +619,7 @@ def test_an_incremental_job_reads_only_what_changed_since_its_last_run(duck, tmp
     load([3], "2026-10-01 10:15:00")
     load([2, 4], "2026-10-01 10:30:00")  # bronze ran twice meanwhile
     plan = plan_pipeline(silver)
-    assert "adds WHERE \"loaded\" > TIMESTAMP '2026-10-01 10:00:00'" in plan.report()
+    assert "adds WHERE \"loaded\" > '2026-10-01 10:00:00'" in plan.report()
     second = run_pipeline(silver, duck=duck)
     assert second.writes[0]["rows"] == 3 and seen[-1] == "2026-10-01 10:00:00"  # pushed to the source
     assert "loaded: 2026-10-01 10:00:00 → 2026-10-01 10:30:00" in second.report()
@@ -639,14 +641,14 @@ def test_incremental_options(duck, tmp_path):
     base = {"pipeline": "s", "primary_key": "id", "state": str(tmp_path / "st"), "target": str(tmp_path / "o")}
     run = run_pipeline({**base, "sql": "SELECT id, loaded FROM feed WHERE id > 0 OR id < -5",
                         "load": {"columns": "loaded", "initial": "2026-10-01 12:00:00", "lookback": "1h"}}, duck=duck)
-    assert run.load["where"] == "\"loaded\" > TIMESTAMP '2026-10-01 11:00:00'" and run.steps[0]["rows"] == 1
+    assert run.load["where"] == "\"loaded\" > '2026-10-01 11:00:00'" and run.steps[0]["rows"] == 1
     # the step that reads the source gets the WHERE, qualified when it joins; the job's own WHERE is kept whole
     sql = ("WITH f AS (SELECT x.id, x.loaded FROM feed x JOIN (SELECT 1 AS id UNION ALL SELECT 2) y ON x.id = y.id) "
            "SELECT id FROM f")
     plan = plan_pipeline({**base, "pipeline": "t", "sql": sql, "load": {"columns": ["loaded"], "initial": "2026-10-02"}})
-    assert plan.load["step"] == "f" and plan.views["f"].sql.endswith('WHERE "x"."loaded" > DATE \'2026-10-02\'')
-    with pytest.raises(PipelineError, match="set 'state'"):
-        load_spec({"pipeline": "x", "sql": "SELECT 1", "load": {"columns": ["t"]}})
+    assert plan.load["step"] == "f" and plan.views["f"].sql.endswith('WHERE "x"."loaded" > \'2026-10-02\'')
+    with pytest.raises(PipelineError, match="set \"state\" in duckduck.json's \"lake\""):
+        plan_pipeline({"pipeline": "x", "sql": "SELECT 1", "load": {"columns": ["t"]}}, config_path="/nowhere.json")
     with pytest.raises(PipelineError, match="which column\\(s\\) show what changed"):
         load_spec({"pipeline": "x", "sql": "SELECT 1", "load": "incremental", "state": "/s"})
     with pytest.raises(PipelineError, match="couldn't read max\\(missing\\) from x"):
@@ -654,3 +656,85 @@ def test_incremental_options(duck, tmp_path):
                      duck=duck)
     full = run_pipeline({**base, "pipeline": "f", "sql": "SELECT id FROM feed", "load": "full"}, duck=duck)
     assert full.load == {"type": "full"} and full.state_path.endswith("f.json")
+
+
+# -- shared settings: layers, the catalog, state; audit columns --------------------------------------------------------
+
+
+def lake_config(tmp_path, **lake):
+    config = tmp_path / "duckduck.json"
+    config.write_text(json.dumps({"services": {}, "lake": {
+        "layers": {"raw": "lake/raw-layer", "silver": "lake/silver-layer"}, "state": "lake/_state",
+        "sip_store": "lake/_sip", **lake}}))
+    return str(config)
+
+
+def test_a_layer_target_goes_to_prefix_database_table_name(duck, tmp_path):
+    config = lake_config(tmp_path)
+    spec = {"pipeline": "bronze_incidents", "primary_key": "sys_id", "layer": "raw", "sip": True,
+            "sql": "SELECT * FROM incidents", "load": {"type": "incremental", "columns": ["priority"]},
+            "target": {"database": "servicenow", "table_name": "incident", "mode": "append"}}
+    plan = plan_pipeline(spec, config_path=config)
+    assert plan.targets[0].path == str(tmp_path / "lake" / "raw-layer" / "servicenow" / "incident")
+    assert plan.targets[0].table is None  # no catalog configured: the files only
+    run = run_pipeline(spec, duck=duck, config_path=config)
+    assert os.listdir(tmp_path / "lake" / "raw-layer" / "servicenow" / "incident")
+    assert run.state_path == str(tmp_path / "lake" / "_state" / "bronze_incidents.json")
+    assert run.sip_path.startswith(str(tmp_path / "lake" / "_sip"))
+    with pytest.raises(PipelineError, match="no layer 'gold'.*layers: raw, silver"):
+        plan_pipeline({**spec, "layer": "gold"}, config_path=config)
+    with pytest.raises(PipelineError, match="leave 'path' out"):
+        load_spec({**spec, "target": {"layer": "raw", "database": "a", "table_name": "b", "path": "/x"}})
+    with pytest.raises(PipelineError, match="give both 'database' and 'table_name'"):
+        load_spec({**spec, "target": {"database": "a"}})
+
+
+def test_a_layer_target_is_registered_in_the_lake_catalog(duck, tmp_path, monkeypatch):
+    pytest.importorskip("moto")
+    import boto3
+    from moto import mock_aws
+
+    from duckduck.pipeline.catalogs import GlueCatalog
+
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "t")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "t")
+    config = lake_config(tmp_path, catalog="glue")
+    with mock_aws():
+        glue = boto3.client("glue", region_name="us-east-1")
+        spec = {"pipeline": "silver_incidents", "primary_key": "sys_id", "layer": "silver",
+                "sql": "SELECT sys_id, priority FROM incidents QUALIFY row_number() OVER (PARTITION BY sys_id "
+                       "ORDER BY priority) = 1",
+                "target": {"database": "servicenow", "table_name": "incident", "mode": "merge"}}
+        run = run_pipeline(spec, duck=duck, config_path=config,
+                           catalogs={"glue": GlueCatalog("glue", region="us-east-1", client=glue)})
+        assert run.writes[0]["created"] and run.writes[0]["target"] == "glue:servicenow.incident"
+        t = glue.get_table(DatabaseName="servicenow", Name="incident")["Table"]
+        assert t["StorageDescriptor"]["Location"] == str(tmp_path / "lake" / "silver-layer" / "servicenow" / "incident")
+        assert [c["Name"] for c in t["StorageDescriptor"]["Columns"]] == ["sys_id", "priority", "_loaded_at",
+                                                                          "_load_date", "_run_id"]
+
+
+def test_every_row_written_says_when_and_by_which_run(duck, tmp_path):
+    now = dt.datetime(2026, 10, 2, 1, 30, tzinfo=dt.timezone.utc)
+    spec = {"pipeline": "a", "sql": "SELECT 1 AS id, TIMESTAMP '2020-01-01' AS _loaded_at",
+            "timezone": "America/Sao_Paulo", "target": {"path": str(tmp_path / "a"), "partition_by": "_load_date"}}
+    run = run_pipeline(spec, duck=duck, now=now, run_id="r1")
+    row = duckdb.sql(f"SELECT * FROM read_parquet('{tmp_path}/a/**/*.parquet', hive_partitioning=true)").df()
+    assert row["_loaded_at"].iloc[0] == pd.Timestamp("2026-10-02 01:30:00")  # UTC; replaces what the source had
+    assert str(row["_load_date"].iloc[0])[:10] == "2026-10-01"  # the run's date in its timezone
+    assert row["_run_id"].iloc[0] == "r1" and run.writes[0]["rows"] == 1
+    assert os.path.isdir(tmp_path / "a" / "_load_date=2026-10-01")
+    off = run_pipeline({**spec, "audit_columns": False, "target": str(tmp_path / "b")}, duck=duck)
+    assert list(duckdb.sql(f"SELECT * FROM '{tmp_path}/b/*.parquet'").df().columns) == ["id", "_loaded_at"]
+    assert off.writes[0]["rows"] == 1
+    some = run_pipeline({**spec, "audit_columns": ["_run_id"], "target": str(tmp_path / "c")}, duck=duck,
+                        run_id="r9")
+    assert list(duckdb.sql(f"SELECT * FROM '{tmp_path}/c/*.parquet'").df().columns) == ["id", "_loaded_at", "_run_id"]
+    assert some.run_id == "r9"
+
+
+def test_a_numeric_watermark_stays_a_number(duck, tmp_path):
+    spec = {"pipeline": "n", "sql": "SELECT * FROM incidents", "state": str(tmp_path / "s"),
+            "load": {"type": "incremental", "columns": ["priority"]}, "target": str(tmp_path / "o")}
+    run_pipeline(spec, duck=duck)
+    assert plan_pipeline(spec).load["where"] == '"priority" > 3'

@@ -2481,20 +2481,23 @@ every 15 minutes while silver merges every hour. What links them is the lake:
 silver reads the bronze table. Each job says how much it reads with `load`:
 
 ```json
-{"pipeline": "incidents_bronze", "primary_key": "sys_id",
- "sql": "SELECT *, TIMESTAMP '{{ run_at }}' AS _loaded_at FROM servicenow.incident",
+{"pipeline": "incidents_raw", "layer": "raw", "primary_key": "sys_id",
+ "sql": "SELECT * FROM servicenow.incident",
  "load": {"type": "incremental", "columns": ["sys_updated_on"]},
- "target": {"catalog": "lake", "table": "bronze.incidents", "mode": "append"},
- "state": "s3://lake/_state/"}
+ "target": {"database": "servicenow", "table_name": "incident", "mode": "append", "partition_by": "_load_date"}}
 ```
 
 ```json
-{"pipeline": "incidents_silver", "primary_key": ["sys_id"],
- "sql": "SELECT * FROM lake.bronze.incidents QUALIFY row_number() OVER (PARTITION BY sys_id ORDER BY _loaded_at DESC) = 1",
+{"pipeline": "incidents_silver", "layer": "silver", "primary_key": ["sys_id"],
+ "sql": "SELECT * FROM lake.servicenow.incident QUALIFY row_number() OVER (PARTITION BY sys_id ORDER BY _loaded_at DESC) = 1",
  "load": {"type": "incremental", "columns": ["_loaded_at"]},
- "target": {"catalog": "lake", "table": "silver.incidents", "format": "delta", "mode": "merge"},
- "state": "s3://lake/_state/"}
+ "target": {"database": "servicenow", "table_name": "incident", "format": "delta", "mode": "merge"}}
 ```
+
+The paths, the catalog and the state folder come from `duckduck.json` (below):
+the raw job writes `s3://raw-layer/servicenow/incident`, silver
+`s3://silver-layer/servicenow/incident`, both registered as
+`servicenow.incident` in their catalog.
 
 - **`"load": "full"`** (the default): every run reads everything.
 - **`"load": {"type": "incremental", "columns": [...]}`**: the SQL stays as
@@ -2505,7 +2508,7 @@ silver reads the bronze table. Each job says how much it reads with `load`:
   unless `"initial"` says where to start (`"2026-01-01"`, or per column).
   `"lookback": "10m"` re-reads a little before the mark, for late rows (a merge
   dedups them). After a successful run, each column's new max is kept.
-- **`state`**: a folder where each job keeps one small JSON —
+- **`state`** (usually set once, in `duckduck.json`'s `lake`): a folder where each job keeps one small JSON —
   `{state}/{pipeline}.json` — with its last successful run and watermarks. A
   failed or dry run never moves them. `params={"watermark": "…"}`
   (`--param watermark=…`) reads from that point instead (a backfill, or a
@@ -2516,6 +2519,51 @@ silver reads the bronze table. Each job says how much it reads with `load`:
 
 The `plan` shows the WHERE a run would add; the run's report says what it read
 and where each column's mark moved.
+
+### Shared settings: layers, catalog, state — and what every row gets
+
+`duckduck.json` holds what every pipeline shares, in a top-level `lake` block:
+
+```json
+"lake": {
+  "catalog": "glue",
+  "layers": {"raw": "s3://raw-layer", "silver": "s3://silver-layer", "gold": "s3://gold-layer"},
+  "state": "s3://raw-layer/_duckduck/state",
+  "sip_store": "s3://raw-layer/_duckduck/sip"
+}
+```
+
+A target then says only where in the lake it belongs — `"layer"` (on the target
+or for the whole file), `"database"` and `"table_name"`: the files always go to
+`{layer prefix}/{database}/{table_name}` (a `path` next to a layer is refused)
+and, with a `catalog`, the table is registered as `database.table_name`
+(created, evolved, its partitions kept — see the catalog section). Without a
+catalog only the files are written. A pipeline file's own `state` / `sip.store`
+/ `catalog` win over the shared ones.
+
+**Every row written gets three columns**, added by the runner (never in the
+SQL): `_loaded_at` (the run's time, UTC), `_load_date` (the run's date in the
+job's `timezone`) and `_run_id`. A source that already has them (silver reading
+raw) gets them replaced — they say when *this* table got the row, so the next
+layer's incremental load reads on them. `"audit_columns": false` (or a list,
+`["_run_id"]`) turns them off. A `_load_date=…` partition folder isn't hidden
+(Spark's rule: `_` hides a folder only when it isn't `k=v`).
+
+**Timezones.** `"timezone": "America/Sao_Paulo"` in a pipeline file is the job's
+clock: `{{ run_at }}` (with its offset) and `{{ run_date }}` / `_load_date` (its
+local date); `_loaded_at` stays UTC. A source's own timezone belongs to its
+connector in `duckduck.json`. ServiceNow reads a date in a filter in the API
+user's own timezone, so a date comparison (an incremental load on
+`sys_updated_on`) is sent only when the connector says which one:
+
+```json
+"servicenow": {"connector": "servicenow", "instance": "acme", "timezone": "America/Sao_Paulo", "authentication": {…}}
+```
+
+The value (`'2026-10-01 12:00:00'`, UTC when it has no offset) is converted to
+that timezone and sent as `gs.dateGenerate('2026-10-01','09:00:00')`, rounded
+so the server returns a superset (DuckDB re-applies the exact comparison).
+Without `timezone` the date stays with DuckDB — correct, but read in full.
 
 **Targets**: a `path` (a folder in the lake: `s3://…`, `abfs://…`, a local
 folder — relative to the pipeline file), a table in one of the pipeline's
@@ -2539,7 +2587,7 @@ python -m duckduck.pipeline sip s3://lake/_sip/ --key INC0001234       # one row
 
 | CLI | Python |
 |---|---|
-| `python -m duckduck.pipeline plan FILE` | `plan_pipeline(FILE).report()` |
+| `python -m duckduck.pipeline plan FILE [--config]` | `plan_pipeline(FILE, config_path=).report()` |
 | `python -m duckduck.pipeline run FILE [--config] [--param k=v] [--dry-run]` | `run_pipeline(FILE, duck=, spark=, params=, dry_run=).report()` |
 | `python -m duckduck.pipeline sip STORE [--pipeline] [--key] [--run-id]` | `read_sip(STORE, pipeline=, key=, run_id=)` |
 

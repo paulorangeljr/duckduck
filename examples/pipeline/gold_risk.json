@@ -2,15 +2,27 @@
   "pipeline": "gold_risk",
   "description": "Risky hosts per department and OS, from the silver assets and the owners file.",
   "notebook": "gold_risk.ipynb",
-  "engine": "duckdb",
+  "layer": "gold",
   "primary_key": "hostname",
-  "parameters": {"min_risk": 50},
-  "target": {"path": "lake/gold_risk", "mode": "overwrite"},
+  "parameters": {
+    "min_risk": 50
+  },
+  "target": {
+    "database": "inventory",
+    "table_name": "risk_by_department",
+    "mode": "overwrite"
+  },
   "sip": {
     "rate": 0.02,
     "max_rows": 50,
-    "watch": ["web-0001"],
-    "columns": ["risk", "department", "hosts", "avg_risk"],
-    "store": "lake/_sip"
+    "watch": [
+      "web-0001"
+    ],
+    "columns": [
+      "risk",
+      "department",
+      "hosts",
+      "avg_risk"
+    ]
   }
 }

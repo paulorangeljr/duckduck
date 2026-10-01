@@ -734,7 +734,7 @@ def validate_config(data: Any, path: str = "") -> Dict[str, List[str]]:
     if not isinstance(data, dict):
         return {"errors": ["the config must be a JSON object"], "warnings": []}
     known = {"services", "on_error", "ai_providers", "semantic", "views", "kql", "default_database", "sql_cache",
-             "pg_server", "catalogs"}
+             "pg_server", "catalogs", "lake"}
     for key in sorted(set(data) - known):
         warnings.append(f"unknown top-level key {key!r} (known: {', '.join(sorted(known))})")
     if data.get("on_error") not in (None, "raise", "warn"):
@@ -778,6 +778,10 @@ def validate_config(data: Any, path: str = "") -> Dict[str, List[str]]:
     default_db = data.get("default_database")
     if default_db is not None and not (isinstance(default_db, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", default_db)):
         errors.append("default_database must be a plain name (letters, digits and _), e.g. \"duckdefault\"")
+    if "lake" in data:
+        from ..pipeline.settings import lake_problems
+
+        errors.extend(lake_problems(data["lake"]))
     catalogs = data.get("catalogs", {})
     if not isinstance(catalogs, dict) or not all(isinstance(v, dict) for v in catalogs.values()):
         errors.append("catalogs must be an object: {name: {type: glue|unity|iceberg, ...}}")

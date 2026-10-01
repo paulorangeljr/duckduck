@@ -32,9 +32,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         p = sub.add_parser(name, help=help_)
         p.add_argument("pipeline", help="the pipeline's JSON file")
         p.add_argument("--param", action="append", metavar="NAME=VALUE", help="a value for {{ NAME }}")
+        p.add_argument("--config", help="duckduck.json with the connectors and the lake settings (default: "
+                                        "DUCKDUCK_CONFIG / duckduck.json)")
         if name == "run":
-            p.add_argument("--config", help="duckduck.json with the connectors (default: DUCKDUCK_CONFIG / "
-                                            "duckduck.json)")
             p.add_argument("--run-id", help="this run's id (default: the time + a random suffix)")
             p.add_argument("--dry-run", action="store_true", help="run the views and the sip, write nothing")
             p.add_argument("-v", "--verbose", action="count", default=0, help="-v progress, -vv debug")
@@ -46,7 +46,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "plan":
-            print(plan_pipeline(args.pipeline, params=_params(args.param)).report())
+            print(plan_pipeline(args.pipeline, params=_params(args.param), config_path=args.config).report())
         elif args.command == "run":
             if args.verbose:
                 set_verbose("debug" if args.verbose > 1 else "info")

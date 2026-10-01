@@ -5,7 +5,8 @@ own last run (its watermark, kept in lake/_state):
 
     python examples/pipeline/run.py
 
-Writes to examples/pipeline/lake/ (git-ignored): the tables, lake/_state and lake/_sip.
+Writes to examples/pipeline/lake/ (git-ignored): lake/<layer>/<database>/<table> (the "lake" block of
+duckduck.pipeline.json), lake/_state and lake/_sip.
 """
 
 import os
@@ -30,7 +31,8 @@ def job(name: str):
 
 
 def main() -> None:
-    os.makedirs(os.path.join(HERE, "lake"), exist_ok=True)
+    for layer in ("raw", "silver"):  # the files connectors over the layers need their folders to exist
+        os.makedirs(os.path.join(HERE, "lake", layer, "inventory"), exist_ok=True)
     job("assets_bronze")   # bronze, every 15 minutes say…
     job("assets_bronze")
     job("assets_silver")   # …silver every hour: both bronze loads, deduplicated by host

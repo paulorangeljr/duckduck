@@ -21,6 +21,7 @@ from .sources import Statement, statements_of
 from .sip import ident
 from .sources import inject_where
 from .spec import DURATION_RE, PipelineError, PipelineSpec, _shifted, load_spec, run_parameters, substitute
+from .settings import lake_settings, with_settings
 from .state import read_state, write_state
 
 logger = logging.getLogger("duckduck.pipeline")
@@ -41,20 +42,13 @@ def _state(spec: PipelineSpec, quiet: bool = False) -> Dict[str, Any]:
         return {}
 
 
-_NUMBER = re.compile(r"^-?\d+(\.\d+)?$")
-_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_MOMENT = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?([+-]\d{2}:?\d{2}|Z)?$")
-
-
-def _literal(value: str) -> str:
-    """A watermark as a SQL literal of its kind: a number bare, a date / timestamp typed, else text."""
-    if _NUMBER.match(value):
-        return value
-    if _DATE.match(value):
-        return f"DATE '{value}'"
-    if _MOMENT.match(value):
-        return f"TIMESTAMP '{value}'"
-    return "'" + value.replace("'", "''") + "'"
+def _literal(value: Any) -> str:
+    """A watermark as a SQL literal: a number (read from a numeric column) bare, anything else quoted text — a
+    TIMESTAMP / DATE column casts it, a text column (an API's dates as text) compares text to text, and a
+    connector gets the text either way."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return repr(value)
+    return "'" + str(value).replace("'", "''") + "'"
 
 
 def apply_load(spec: PipelineSpec, plan: Plan, state: Dict[str, Any]) -> Dict[str, Any]:
@@ -76,15 +70,16 @@ def apply_load(spec: PipelineSpec, plan: Plan, state: Dict[str, Any]) -> Dict[st
     since: Dict[str, str] = {}
     conditions = []
     for col in load.columns:
-        value = marks.get(col) or load.initial.get(col)
+        value = marks.get(col)
+        if value is None:
+            value = load.initial.get(col)
         if value is None:
             continue
-        value = str(value)
         since[col] = value
-        if load.lookback:
+        if load.lookback and isinstance(value, str):
             m = DURATION_RE.match(load.lookback)
             try:
-                value = _shifted(value, "-", m.group(1), m.group(2), col) if not _NUMBER.match(value) else value
+                value = _shifted(value, "-", m.group(1), m.group(2), col)
             except PipelineError:
                 pass  # not a date or a time: no lookback for it
         conditions.append(f"{ident(alias) + '.' if alias else ''}{ident(col)} > {_literal(value)}")
@@ -98,10 +93,11 @@ def apply_load(spec: PipelineSpec, plan: Plan, state: Dict[str, Any]) -> Dict[st
 
 def plan_pipeline(source: Union[str, os.PathLike, Dict[str, Any], PipelineSpec],
                   params: Optional[Dict[str, Any]] = None, now: Optional[dt.datetime] = None,
-                  duck: Any = None) -> Plan:
+                  duck: Any = None, config_path: Optional[str] = None) -> Plan:
     """What a run would do — views in order, what each reads, the key's way, the targets — without running.
-    ``duck``: the connectors (a WITH named like one of their tables stays inside its query)."""
-    spec = _spec(source)
+    ``duck``: the connectors (a WITH named like one of their tables stays inside its query); ``config_path``:
+    the duckduck.json whose ``"lake"`` settings apply (default: duck's, DUCKDUCK_CONFIG, duckduck.json)."""
+    spec = with_settings(_spec(source), lake_settings(duck, config_path))
     values = run_parameters(spec, params, now=now, state=_state(spec, quiet=True))
     plan = build_plan(spec, [Statement(substitute(s.sql, values), s.origin) for s in statements_of(spec)],
                       reserved=getattr(duck, "functions", ()))
@@ -157,8 +153,9 @@ class PipelineRun:
         return "\n".join(lines)
 
 
-def _max_of(engine: Any, view: str, column: str) -> Optional[str]:
-    """``max(column)`` of the view as text (a timestamp without its 'T'), None when it has no rows."""
+def _max_of(engine: Any, view: str, column: str) -> Any:
+    """``max(column)`` of the view — a number stays a number, anything else becomes text (a timestamp without
+    its 'T'); None when it has no rows."""
     try:
         value = engine.query(f"SELECT max({ident(column)}) AS w FROM {ident(view)}").iloc[0, 0]
     except Exception as exc:  # noqa: BLE001
@@ -168,6 +165,8 @@ def _max_of(engine: Any, view: str, column: str) -> Optional[str]:
         return None
     if hasattr(value, "item") and not isinstance(value, pd.Timestamp):
         value = value.item()
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value
     return str(value)
 
 
@@ -228,7 +227,7 @@ def run_pipeline(source: Union[str, os.PathLike, Dict[str, Any], PipelineSpec], 
     and the sip, writes nothing (the sip isn't stored either).
     """
     started = time.perf_counter()
-    spec = _spec(source)
+    spec = with_settings(_spec(source), lake_settings(duck, config_path))
     now = now or dt.datetime.now(dt.timezone.utc)
     state = _state(spec)
     values = run_parameters(spec, params, now=now, run_id=run_id, state=state)
@@ -241,6 +240,11 @@ def run_pipeline(source: Union[str, os.PathLike, Dict[str, Any], PipelineSpec], 
     if params and "watermark" in params and spec.load.columns:  # read from a given point: a backfill / re-read
         state = {**state, "watermarks": {**(state.get("watermarks") or {}), spec.load.columns[0]: str(params["watermark"])}}
     run_load = apply_load(spec, plan, state)
+    utc = now.astimezone(dt.timezone.utc).replace(tzinfo=None, microsecond=0)
+    audit = {name: expr for name, expr in (("_loaded_at", f"TIMESTAMP '{utc.isoformat(sep=' ')}'"),
+                                            ("_load_date", f"DATE '{values['run_date']}'"),
+                                            ("_run_id", "'" + str(values["run_id"]).replace("'", "''") + "'"))
+             if name in spec.audit_columns}
     if engine is None:
         engine = make_engine(spec.engine, duck=duck, spark=spark)
     catalog_of = catalog_lookup(spec, duck, catalogs)
@@ -270,7 +274,7 @@ def run_pipeline(source: Union[str, os.PathLike, Dict[str, Any], PipelineSpec], 
                 if target.view != name or dry_run:
                     continue
                 t1 = time.perf_counter()
-                result = write_target(engine, target, plan.key_of(target), run.run_id, catalog_of)
+                result = write_target(engine, target, plan.key_of(target), run.run_id, catalog_of, audit)
                 run.writes.append({"view": name, "target": target.where, "mode": target.mode, **result,
                                    "seconds": round(time.perf_counter() - t1, 2)})
                 logger.info("  wrote %s → %s (%s)", name, target.where, target.mode)
