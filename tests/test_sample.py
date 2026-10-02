@@ -172,7 +172,7 @@ def test_a_sample_of_a_big_api_is_one_request():
 
 
 def test_a_rate_limit_wait_stops_for_a_cancel():
-    from duckduck.progress import Cancelled, Progress, tracking, wait
+    from duckduck.common.progress import Cancelled, Progress, tracking, wait
 
     slept, progress = [], Progress()
 

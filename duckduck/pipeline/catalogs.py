@@ -583,7 +583,7 @@ class UnityCatalog:
         if self._session is None:
             import requests
 
-            from ..logs import instrument_session
+            from ..common.logs import instrument_session
 
             self._session = requests.Session()
             instrument_session(self._session, "pipeline")  # Authorization is never logged

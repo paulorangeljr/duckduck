@@ -23,8 +23,8 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import pandas as pd
 
-from .kinds import catalog
-from .sparkplan import spark_plan
+from .common.kinds import catalog
+from .common.sparkplan import spark_plan
 
 SERVICE = "duckduck"  # the service name, the table prefix and the address: duckduck.services
 CONFIG_KEY = "system_tables"  # top-level config key: false turns these tables off
@@ -207,7 +207,7 @@ class SystemTables:
     @spark_plan("driver", why=_WHY)
     def settings(self, section: Optional[str] = None, key_ilike: Optional[str] = None) -> pd.DataFrame:
         """The configuration, one row per setting (``services.servicenow.timezone``), secrets as ``***``."""
-        from .pushdown import require_like
+        from .common.pushdown import require_like
 
         config = mask(self._config())
         rows = []

@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 import pandas as pd
 import pytest
 
-import duckduck.lakehouse as lakehouse_module
+import duckduck.connectors.lake.lakehouse as lakehouse_module
 from duckduck import BlobStorage
 
 

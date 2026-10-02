@@ -16,8 +16,9 @@ import time
 import pandas as pd
 import pytest
 
-from duckduck import DuckAPI, progress
-from duckduck.kinds import catalog
+from duckduck import DuckAPI
+from duckduck.common import progress
+from duckduck.common.kinds import catalog
 from duckduck.pgserver import PGServer
 from duckduck.pgserver import catalog as pgcat
 from duckduck.pgserver import protocol as pg
@@ -477,7 +478,7 @@ def test_saved_tables_follow_the_config_file_and_sit_in_their_connector_s_schema
     default database (sharepoint.duckdefault.x) sits in schema sharepoint, like the table itself."""
     from typing import Optional
 
-    from duckduck.kinds import needs_arguments
+    from duckduck.common.kinds import needs_arguments
 
     @needs_arguments(("list_id", "list_name"))
     def list_items(site_name: Optional[str] = None, list_id: Optional[str] = None,

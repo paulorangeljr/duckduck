@@ -31,7 +31,7 @@ class DataExplorer:
         return pd.DataFrame({"ran": [kql]})
 
 
-DataExplorer.table.__module__ = DataExplorer.query.__module__ = "duckduck.adx"
+DataExplorer.table.__module__ = DataExplorer.query.__module__ = "duckduck.connectors.databases.adx"
 
 
 class ServiceNow:

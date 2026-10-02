@@ -38,7 +38,7 @@ logger = logging.getLogger("duckduck.semantic.generation")
 def _apply_verbose(verbose: Any) -> None:
     """Same values as ``DuckAPI(verbose=...)`` — also when the caller passes its own ``duck``."""
     if verbose is not None:
-        from duckduck.logs import set_verbose
+        from duckduck.common.logs import set_verbose
 
         set_verbose(verbose)
 

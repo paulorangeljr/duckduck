@@ -9,7 +9,7 @@ import random
 from datetime import datetime, timedelta
 from typing import Optional
 
-from duckduck.pushdown import require_like
+from duckduck.common.pushdown import require_like
 
 
 def tables(rows: int = 1000, seed: int = 7):

@@ -505,7 +505,7 @@ from typing import Optional as _Opt  # noqa: E402
 
 import pandas as _pd  # noqa: E402
 
-from duckduck.kinds import catalog as _catalog  # noqa: E402
+from duckduck.common.kinds import catalog as _catalog  # noqa: E402
 
 
 class FakeLake:
@@ -533,7 +533,7 @@ class FakeLake:
 def _discovery_duck(tmp_path):
     import sqlalchemy as sa
 
-    from duckduck.database import SQLDatabase
+    from duckduck.connectors.databases.sql import SQLDatabase
 
     duck = DuckAPI()
     lake = FakeLake()

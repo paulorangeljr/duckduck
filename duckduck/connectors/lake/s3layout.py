@@ -12,7 +12,7 @@ its extension (Athena's own output files have none).
 
 This module holds the pure parts (no AWS calls): the Glue expression for a
 set of push-down conditions, the projected partitions, the location
-template, which listed keys are data files. ``duckduck.glue.GlueTable`` does
+template, which listed keys are data files. ``duckduck.connectors.lake.glue.GlueTable`` does
 the calls.
 """
 
@@ -24,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 from itertools import product
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from .pushdown import Condition
+from ...common.pushdown import Condition
 
 #: Glue column types → DuckDB types (a partition value is a string in Glue; this is its column's type)
 DUCK_TYPES = {

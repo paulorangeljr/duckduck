@@ -6,10 +6,11 @@ import pandas as pd
 import pytest
 import requests
 
-from duckduck import DuckAPI, progress
+from duckduck import DuckAPI
+from duckduck.common import progress
 from duckduck.pipeline import PipelineError, run_pipeline
-from duckduck.retry import RetryPolicy, policy_problem, send
-from duckduck.servicenow import ServiceNow
+from duckduck.common.retry import RetryPolicy, policy_problem, send
+from duckduck.connectors.api.servicenow import ServiceNow
 
 
 class _Response:

@@ -5,8 +5,9 @@ import time
 
 import pandas as pd
 
-from duckduck import DuckAPI, progress, slicing
-from duckduck.sparkplan import spark_plan
+from duckduck import DuckAPI
+from duckduck.common import progress, slicing
+from duckduck.common.sparkplan import spark_plan
 
 
 class Paged:
@@ -149,7 +150,7 @@ def test_the_service_s_max_parallel_wins_over_the_declared_one():
 def test_auto_register_takes_max_parallel_per_service(tmp_path):
     import pytest
 
-    from duckduck import servicenow
+    from duckduck.connectors.api import servicenow
 
     duck = DuckAPI()
     instances = duck.auto_register({"sn": {"connector": "servicenow", "instance": "x", "max_parallel": 8,

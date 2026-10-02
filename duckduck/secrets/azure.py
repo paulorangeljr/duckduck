@@ -1,7 +1,7 @@
 """
 Credential resolution for ``DuckAPI.auto_register`` via Azure Key Vault.
 
-Counterpart to ``duckduck.secrets.SecretsManager`` (AWS Secrets Manager):
+Counterpart to ``duckduck.secrets.aws.SecretsManager`` (AWS Secrets Manager):
 same ``get_secret(secret_id) -> dict`` contract, so ``auto_register()``
 treats both backends the same way — selected per service via
 ``authentication.type: "azure"`` in the config, never instantiated

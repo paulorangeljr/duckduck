@@ -6,10 +6,10 @@ from unittest.mock import MagicMock
 import pandas as pd
 import pytest
 
-import duckduck.adx as adx_module
+import duckduck.connectors.databases.adx as adx_module
 from duckduck import DataExplorer, DuckAPI
-from duckduck.adx import kql_string, like_to_regex, normalize_cluster
-from duckduck.pushdown import Condition
+from duckduck.connectors.databases.adx import kql_string, like_to_regex, normalize_cluster
+from duckduck.common.pushdown import Condition
 
 SCHEMA = pd.DataFrame({
     "ColumnName": ["Timestamp", "UserName", "Url", "Bytes", "Blocked"],

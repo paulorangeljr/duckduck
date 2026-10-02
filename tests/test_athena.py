@@ -5,10 +5,11 @@ import duckdb
 import pandas as pd
 import pytest
 
-import duckduck.athena as athena_module
-from duckduck import DuckAPI, progress
-from duckduck.athena import Athena, AthenaError
-from duckduck.lakehouse import LakehouseConnection
+import duckduck.connectors.databases.athena as athena_module
+from duckduck import DuckAPI
+from duckduck.common import progress
+from duckduck.connectors.databases.athena import Athena, AthenaError
+from duckduck.connectors.lake.lakehouse import LakehouseConnection
 
 COLUMNS = [{"Name": "host", "Type": "string"}, {"Name": "n", "Type": "int"},
            {"Name": "tags", "Type": "array<string>"}]
@@ -169,7 +170,7 @@ def test_names_are_checked_and_values_escaped():
     a = Athena(client=FakeAthena(), results="api")
     with pytest.raises(ValueError, match="not an Athena"):
         a.table("logs", 'events"; DROP')
-    from duckduck.pushdown import Condition
+    from duckduck.common.pushdown import Condition
     sql, complete = a._select("logs", "events", [Condition("host", "eq", "o'brien")], None)
     assert "\"host\" = 'o''brien'" in sql and complete
 

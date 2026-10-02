@@ -24,20 +24,20 @@ the shapes you couldn't verify in one place.
 
 ## 2. Write the connector
 
-- `duckduck/<name>.py`, a class with `from_secret(cls, secret, **overrides)`.
+- `duckduck/connectors/<kind>/<name>.py` — `api/` (HTTP), `lake/` (files on object storage), `databases/` (query engines), `local/` — a class with `from_secret(cls, secret, **overrides)`; it imports its tools from `duckduck.common` (`from ...common.pushdown import Condition`, `slicing`, `retry`, `logs`, `kinds`, `sparkplan`).
 - Table methods: structural args required and positional; column filters `Optional[X] = None`; `where` when the
   server takes arbitrary conditions (plus `pushdown_blocker` for what it can't; declare `WHERE_OPS` with `"in"` and
   an `IN_MAX` per request when it can take a list of values — that's what narrows it in a JOIN); `limit: Optional[int] = None`
   last. Return a `pd.DataFrame` (`pd.json_normalize(..., sep="_")`).
 - Log HTTP with `instrument_session(self.session)`; report pages with `PageProgress`.
-- **Retries**: an HTTP connector keeps `self.retry = RetryPolicy()` (`duckduck.retry`) and sends every request
+- **Retries**: an HTTP connector keeps `self.retry = RetryPolicy()` (`duckduck.common.retry`) and sends every request
   through `send(self.retry, "<name>", lambda timeout: self.session.get(..., timeout=timeout), <default timeout>,
   what=...)` — then a service's `"retry"` in duckduck.json and a pipeline's `"retry"` reach it with no other code.
   Never hard-code `timeout=` or write its own retry loop (NVD's predates it).
 - **Page loop**: a page-numbered or offset API that reports a total pages through
-  `duckduck.slicing.pages(fetch_page, page_size)` — `fetch_page(n) -> (rows, total_rows or None)` — never its own
+  `duckduck.common.slicing.pages(fetch_page, page_size)` — `fetch_page(n) -> (rows, total_rows or None)` — never its own
   `while` loop. That is what lets Spark split the read. Cursor APIs keep their own loop.
-- `@needs_arguments(...)` (`duckduck.kinds`) on a table whose optional arguments are really needed — one of a
+- `@needs_arguments(...)` (`duckduck.common.kinds`) on a table whose optional arguments are really needed — one of a
   group (`("list_id", "list_name")`) or a single one (`"drive_id"`); leave out what the config can supply. SQL
   clients then see in its comment which arguments to put in the WHERE, and its usage example shows them.
 - `@catalog` on listing methods (with `lists="<table fn>"` when its rows are that function's arguments),
@@ -78,7 +78,7 @@ picklable (it travels to Spark executors for partitioned reads).
 
 ## 4. Register it
 
-- `SERVICE_REGISTRY` in `duckduck/registry.py` (`factory`, `tables`, `streaming_tables`,
+- `SERVICE_REGISTRY` in `duckduck/connectors/registry.py` (`factory`, `tables`, `streaming_tables`,
   `requires_authentication`, `path_options`).
 - `_CONNECTOR_SOURCE_LABELS` in `duckduck/core.py`; `SOURCE_KINDS` in `duckduck/semantic/admin.py` (icon);
   the page's `CONNECTOR_INFO` blurb in `duckduck/semantic/webpage.py`.

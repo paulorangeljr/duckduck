@@ -16,7 +16,7 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from .. import progress
+from ..common import progress
 from .catalog import Catalog
 from .decisions import CRITERIA, Ask, DecisionEngine, DecisionState, ask_all, engine_in_use
 from .extraction import Extraction, RuleBasedExtractor, ValueExtractor

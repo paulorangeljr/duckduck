@@ -8,8 +8,8 @@ import duckdb
 import pytest
 
 from duckduck import DuckAPI
-from duckduck.local_files import LocalFiles, table_name_for
-from duckduck.python_source import PythonSource
+from duckduck.connectors.local.files import LocalFiles, table_name_for
+from duckduck.connectors.local.python_source import PythonSource
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

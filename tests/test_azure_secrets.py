@@ -57,7 +57,7 @@ def test_get_secret_non_json_value_raises():
 
 
 def test_without_client_or_sdk_raises_import_error(monkeypatch):
-    import duckduck.azure_secrets as azure_secrets_module
+    import duckduck.secrets.azure as azure_secrets_module
 
     monkeypatch.setattr(azure_secrets_module, "SecretClient", None)
     with pytest.raises(ImportError, match="azure-keyvault-secrets"):
@@ -68,7 +68,7 @@ def test_client_built_with_vault_url_and_credential():
     fake_credential = MagicMock()
     with_client_mock = MagicMock()
 
-    import duckduck.azure_secrets as azure_secrets_module
+    import duckduck.secrets.azure as azure_secrets_module
 
     class _FakeSecretClient:
         def __init__(self, vault_url, credential):
@@ -96,7 +96,7 @@ def test_client_built_with_vault_url_and_credential():
 
 
 def test_tenant_id_passed_to_default_azure_credential(monkeypatch):
-    import duckduck.azure_secrets as azure_secrets_module
+    import duckduck.secrets.azure as azure_secrets_module
 
     fake_default_credential_cls = MagicMock()
     fake_secret_client_cls = MagicMock()
@@ -116,7 +116,7 @@ def test_tenant_id_passed_to_default_azure_credential(monkeypatch):
 
 
 def test_no_tenant_id_uses_plain_default_credential(monkeypatch):
-    import duckduck.azure_secrets as azure_secrets_module
+    import duckduck.secrets.azure as azure_secrets_module
 
     fake_default_credential_cls = MagicMock()
     fake_secret_client_cls = MagicMock()
@@ -129,7 +129,7 @@ def test_no_tenant_id_uses_plain_default_credential(monkeypatch):
 
 
 def test_explicit_credential_skips_default_azure_credential(monkeypatch):
-    import duckduck.azure_secrets as azure_secrets_module
+    import duckduck.secrets.azure as azure_secrets_module
 
     fake_default_credential_cls = MagicMock()
     fake_secret_client_cls = MagicMock()

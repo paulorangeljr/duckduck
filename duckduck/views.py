@@ -188,7 +188,7 @@ def view_from_sql(duck: Any, sql: str) -> Dict[str, Any]:
         except Exception:
             args = None
         if args is not None:
-            from .kinds import required_params
+            from .common.kinds import required_params
 
             required = {p.name for p in required_params(fn)}
             if args and set(args) == required and not re.search(r"\blimit\b", m.group(3) or "", re.I):

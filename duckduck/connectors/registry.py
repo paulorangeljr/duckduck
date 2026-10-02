@@ -18,20 +18,20 @@ becomes available in ``DuckAPI.auto_register()``.
 
 from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple
 
-from .adx import DataExplorer
-from .airflow import Airflow
-from .athena import Athena
-from .axonius import Axonius
-from .blob_storage import BlobStorage
-from .database import SQLDatabase
-from .glue import GlueTable
-from .local_files import LocalFiles
-from .nvd import NVD
-from .python_source import PythonSource
-from .rapid7 import InsightVM
-from .restcountries import RestCountries
-from .servicenow import ServiceNow
-from .sharepoint import SharePoint
+from .databases.adx import DataExplorer
+from .api.airflow import Airflow
+from .databases.athena import Athena
+from .api.axonius import Axonius
+from .lake.blob_storage import BlobStorage
+from .databases.sql import SQLDatabase
+from .lake.glue import GlueTable
+from .local.files import LocalFiles
+from .api.nvd import NVD
+from .local.python_source import PythonSource
+from .api.insightvm import InsightVM
+from .api.restcountries import RestCountries
+from .api.servicenow import ServiceNow
+from .api.sharepoint import SharePoint
 
 
 class ServiceSpec(NamedTuple):

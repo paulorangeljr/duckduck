@@ -55,10 +55,10 @@ from typing import Any, Dict, Iterator, List, Optional
 import pandas as pd
 import requests
 
-from .logs import PageProgress, instrument_session
-from .retry import RetryPolicy, send
-from .pushdown import require_like
-from .sparkplan import spark_plan
+from ...common.logs import PageProgress, instrument_session
+from ...common.retry import RetryPolicy, send
+from ...common.pushdown import require_like
+from ...common.sparkplan import spark_plan
 
 
 class Axonius:

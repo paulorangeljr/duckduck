@@ -254,7 +254,7 @@ def load_spec(source: Union[str, os.PathLike, Dict[str, Any]], base_dir: Optiona
         setattr(spec, key, value)
     retry = data.get("retry")
     if retry is not None:
-        from ..retry import is_policy, policy_problem
+        from ..common.retry import is_policy, policy_problem
 
         settings = [retry] if is_policy(retry) else list(retry.values())
         problems = [p for p in map(policy_problem, settings) if p]

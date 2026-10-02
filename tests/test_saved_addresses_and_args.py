@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 from duckduck import DuckAPI
-from duckduck.kinds import catalog
+from duckduck.common.kinds import catalog
 from duckduck.views import function_key, suggested_name
 
 
@@ -116,7 +116,7 @@ def test_the_web_app_saves_by_address_and_renames(tmp_path):
 
     (tmp_path / "lake.py").write_text(
         "import pandas as pd\n"
-        "from duckduck.kinds import catalog\n"
+        "from duckduck.common.kinds import catalog\n"
         "class Lake:\n"
         "    @catalog(lists='table')\n"
         "    def tables(self, limit=None):\n"

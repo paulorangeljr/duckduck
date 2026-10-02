@@ -21,7 +21,7 @@ Table: ``cves`` — one row per CVE (withdrawn, *Rejected* ones left out unless
        | cvss4_severity | cvss4_score | cwe | in_kev | kev_added | kev_due | kev_action | kev_name
        | source | references
 
-Push-down (the operator → parameter convention of ``duckduck.pushdown``):
+Push-down (the operator → parameter convention of ``duckduck.common.pushdown``):
 
 ==========================================  =======================================================
 SQL                                          NVD request
@@ -57,9 +57,9 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 import pandas as pd
 import requests
 
-from . import progress
-from .logs import PageProgress, get_logger, instrument_session
-from .sparkplan import spark_plan
+from ...common import progress
+from ...common.logs import PageProgress, get_logger, instrument_session
+from ...common.sparkplan import spark_plan
 
 logger = get_logger("nvd")
 

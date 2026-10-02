@@ -13,7 +13,7 @@ import pytest
 pytest.importorskip("pydantic")
 
 from duckduck import DuckAPI  # noqa: E402
-from duckduck.registry import SERVICE_REGISTRY  # noqa: E402
+from duckduck.connectors.registry import SERVICE_REGISTRY  # noqa: E402
 from duckduck.semantic import SemanticConfig, generate_catalog, jev_check  # noqa: E402
 from duckduck.semantic.generation import GenEntity, GenField, GenSource, GenVocabulary  # noqa: E402
 
@@ -132,7 +132,7 @@ def test_online_jev_check_without_a_key_says_how_to_set_it(monkeypatch):
 
 @pytest.mark.parametrize("script", [os.path.join(EX, "semantic", "demo.py"), os.path.join(EX, "local", "run.py")])
 def test_example_scripts_run(script, monkeypatch, tmp_path):
-    from duckduck.logs import set_verbose
+    from duckduck.common.logs import set_verbose
 
     monkeypatch.chdir(tmp_path)  # from anywhere
     out = io.StringIO()

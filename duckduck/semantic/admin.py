@@ -113,7 +113,7 @@ class SQLConsole:
         """For the page's SQL | KQL switch: the translator, and the ADX connectors KQL runs on natively without one."""
         status = dict(self.kql.status())
         status["native"] = sorted({self.duck.service_of[n] for n, f in self.duck.functions.items()
-                                   if getattr(f, "__name__", "") == "query" and getattr(f, "__module__", "") == "duckduck.adx"
+                                   if getattr(f, "__name__", "") == "query" and getattr(f, "__module__", "") == "duckduck.connectors.databases.adx"
                                    and self.duck.service_of.get(n)})
         return status
 
@@ -131,7 +131,7 @@ class SQLConsole:
         DuckDB step itself.
         """
         from .. import cache as source_cache
-        from .. import progress
+        from ..common import progress
 
         log = [] if log is None else log
         translation = None
@@ -316,7 +316,7 @@ class SQLConsole:
 
     def _expandable(self, name: str) -> bool:
         """A catalog whose rows feed a registered table function: the expanded catalog can list what's behind it."""
-        from ..kinds import CATALOG, kind_of, lists_of
+        from ..common.kinds import CATALOG, kind_of, lists_of
 
         fn = self.duck.functions.get(name)
         method = lists_of(fn) if fn is not None else None
@@ -396,7 +396,7 @@ def nested_group(duck: Any, table: str, args: Dict[str, Any]) -> Tuple[Optional[
     every required argument but the last is its database (``s3_data_table(database=, table_name=)``
     → ``security``, ``proxy_logs``); a function with one argument has no database.
     """
-    from ..kinds import required_params
+    from ..common.kinds import required_params
 
     from ..addresses import native_database
 
@@ -471,11 +471,11 @@ class _captured_log:
 
 #: A registered function's module → the kind of source it is (the page draws an icon per kind).
 SOURCE_KINDS = {
-    "duckduck.sharepoint": "sharepoint", "duckduck.rapid7": "insightvm", "duckduck.servicenow": "servicenow",
-    "duckduck.axonius": "axonius", "duckduck.database": "database", "duckduck.glue": "glue", "duckduck.athena": "athena",
-    "duckduck.airflow": "airflow",
-    "duckduck.blob_storage": "blob_storage", "duckduck.adx": "adx", "duckduck.local_files": "files",
-    "duckduck.python_source": "python", "duckduck.semantic.takeover": "dataset", "duckduck.views": "dataset",
+    "duckduck.connectors.api.sharepoint": "sharepoint", "duckduck.connectors.api.insightvm": "insightvm", "duckduck.connectors.api.servicenow": "servicenow",
+    "duckduck.connectors.api.axonius": "axonius", "duckduck.connectors.databases.sql": "database", "duckduck.connectors.lake.glue": "glue", "duckduck.connectors.databases.athena": "athena",
+    "duckduck.connectors.api.airflow": "airflow",
+    "duckduck.connectors.lake.blob_storage": "blob_storage", "duckduck.connectors.databases.adx": "adx", "duckduck.connectors.local.files": "files",
+    "duckduck.connectors.local.python_source": "python", "duckduck.semantic.takeover": "dataset", "duckduck.views": "dataset",
 }
 
 
@@ -494,7 +494,7 @@ def source_kind(fn: Any) -> str:
 
 def config_reference() -> Dict[str, Any]:
     """Every option of ``duckduck.json``, documented — what the Config tab lists."""
-    from duckduck.registry import SERVICE_REGISTRY
+    from duckduck.connectors.registry import SERVICE_REGISTRY
 
     from .config import AIProviderConfig, SemanticConfig
 
@@ -718,7 +718,7 @@ def unmask(edited: Any, saved: Any, path: str = "") -> Any:
 
 def validate_config(data: Any, path: str = "") -> Dict[str, List[str]]:
     """``{"errors": [...], "warnings": [...]}`` — structure, connectors, authentication, the semantic section."""
-    from duckduck.registry import SERVICE_REGISTRY
+    from duckduck.connectors.registry import SERVICE_REGISTRY
 
     errors: List[str] = []
     warnings: List[str] = []
@@ -769,7 +769,7 @@ def validate_config(data: Any, path: str = "") -> Dict[str, List[str]]:
             if at_once is not None and not (isinstance(at_once, int) and not isinstance(at_once, bool) and at_once >= 1):
                 errors.append(f"services.{name}.max_parallel must be a whole number ≥ 1")
             if "retry" in svc:
-                from ..retry import policy_problem
+                from ..common.retry import policy_problem
 
                 problem = policy_problem(svc["retry"])
                 if problem:

@@ -19,7 +19,7 @@ query itself runs in Spark (translated from DuckDB's SQL by sqlglot):
   conditions become Spark filters. Nothing goes through Python.
 - **partitioned** — an API whose read splits into independent pieces: page
   windows (``by="pages"``: the connector pages through
-  ``duckduck.slicing.pages``, which reports the total and reads a window of
+  ``duckduck.common.slicing.pages``, which reports the total and reads a window of
   pages on request) or a hook returning the call's kwargs per piece. The
   pieces run on the executors (``mapInArrow``), at most ``max_parallel`` at
   a time — the API's rate limit, not the cluster's size, sets it.
@@ -47,9 +47,9 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 import pandas as pd
 
-from . import slicing
+from .common import slicing
 from .core import DuckAPI
-from .sparkplan import SPARK_ATTR, STRATEGIES, SparkPlan, SparkSource, plan_of, requests_at_once, spark_plan  # noqa: F401
+from .common.sparkplan import SPARK_ATTR, STRATEGIES, SparkPlan, SparkSource, plan_of, requests_at_once, spark_plan  # noqa: F401
 
 logger = logging.getLogger("duckduck.spark")
 
@@ -153,7 +153,7 @@ def _run_pieces(fn: Callable, kwargs: Dict[str, Any], mode: str, arrow_schema: A
     """The executor side of a partitioned read: each spec is a page window or a call's kwargs."""
 
     def run(batches: Iterator[Any]) -> Iterator[Any]:
-        from duckduck import slicing as _slicing
+        from duckduck.common import slicing as _slicing
 
         for batch in batches:
             for blob in batch.column(0).to_pylist():
@@ -162,7 +162,7 @@ def _run_pieces(fn: Callable, kwargs: Dict[str, Any], mode: str, arrow_schema: A
                     with _slicing.window(*spec) as w:
                         data = fn(**kwargs)
                     if not w.seen:
-                        raise RuntimeError(f"{name}: the read didn't go through duckduck.slicing.pages — "
+                        raise RuntimeError(f"{name}: the read didn't go through duckduck.common.slicing.pages — "
                                            f"its plan can't be by='pages'")
                 else:
                     data = fn(**spec)
@@ -311,7 +311,7 @@ class SparkReader:
             with slicing.probing() as probe:
                 first = _frame(fn(**kwargs), name)
             if not probe.seen or probe.total_rows is None:
-                why = ("the read didn't go through duckduck.slicing.pages" if not probe.seen
+                why = ("the read didn't go through duckduck.common.slicing.pages" if not probe.seen
                        else "the API didn't say how many rows there are")
                 return self._driver(name, fn, kwargs, fallback_columns, plan, f"can't split: {why}")
             total_pages = max(1, math.ceil(probe.total_rows / max(1, probe.page_size or 1)))

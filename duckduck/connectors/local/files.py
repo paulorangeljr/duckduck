@@ -28,10 +28,10 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-from .kinds import catalog
-from .lakehouse import LakehouseConnection
-from .pushdown import Condition
-from .sparkplan import SparkSource, spark_plan
+from ...common.kinds import catalog
+from ..lake.lakehouse import LakehouseConnection
+from ...common.pushdown import Condition
+from ...common.sparkplan import SparkSource, spark_plan
 
 #: extension → (format label, DuckDB reader call template).
 _READERS = {

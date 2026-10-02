@@ -88,7 +88,7 @@ def services(duck: Any) -> Dict[str, str]:
 
 def generic_function(duck: Any, service: str) -> Optional[str]:
     """The table function a service reads its tables by name with, or None."""
-    from .kinds import CATALOG, TABLE_FUNCTION, kind_of, lists_of
+    from .common.kinds import CATALOG, TABLE_FUNCTION, kind_of, lists_of
 
     saved = getattr(duck, "view_key", {}) or {}
     mine = {n: f for n, f in duck.functions.items() if duck.service_of.get(n) == service and n not in saved}
@@ -107,7 +107,7 @@ def generic_function(duck: Any, service: str) -> Optional[str]:
 
 
 def _required(duck: Any, name: str) -> List[str]:
-    from .kinds import required_params
+    from .common.kinds import required_params
 
     return [p.name for p in required_params(duck.functions[name])]
 

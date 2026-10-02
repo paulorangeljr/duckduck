@@ -4,8 +4,9 @@
 import pandas as pd
 import pytest
 
-from duckduck import DuckAPI, slicing
-from duckduck.airflow import Airflow, AirflowError
+from duckduck import DuckAPI
+from duckduck.common import slicing
+from duckduck.connectors.api.airflow import Airflow, AirflowError
 
 
 class ClientError(Exception):

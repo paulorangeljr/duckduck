@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 from duckduck import NVD, DuckAPI, RestCountries
-from duckduck.nvd import MAX_WINDOW
+from duckduck.connectors.api.nvd import MAX_WINDOW
 
 
 def _response(payload, status=200):
@@ -175,7 +175,7 @@ def test_keyword_is_nvd_s_own_search_and_bad_severities_are_refused():
 # REST Countries (v5 — the keyless v3.1 was retired)
 # ---------------------------------------------------------------------------
 
-from duckduck.restcountries import RestCountriesError  # noqa: E402
+from duckduck.connectors.api.restcountries import RestCountriesError  # noqa: E402
 
 
 def _v5(common, official, a2, a3, n3, region, subregion, capital, population, **more):

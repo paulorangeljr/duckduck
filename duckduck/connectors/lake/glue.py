@@ -19,7 +19,7 @@ records how the table was created:
 - ``table_type == "DELTA"`` (or ``spark.sql.sources.provider ==
   "delta"``) → ``delta_scan()`` against the table's S3 location.
 - Anything else → ``read_parquet()`` of the table's files, found the
-  way Athena finds them (``duckduck.s3layout``): the partitions the
+  way Athena finds them (``duckduck.connectors.lake.s3layout``): the partitions the
   query's WHERE selects — from Glue's ``get_partitions`` with an
   ``Expression``, or computed from the table's partition projection —
   then only those locations listed (in threads, kept ``listing_ttl``
@@ -52,11 +52,11 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 from . import s3layout
-from .kinds import catalog
+from ...common.kinds import catalog
 from .lakehouse import LakehouseConnection
-from .pushdown import Condition, LikePattern, require_like
-from .logs import get_logger
-from .sparkplan import SparkSource, spark_plan
+from ...common.pushdown import Condition, LikePattern, require_like
+from ...common.logs import get_logger
+from ...common.sparkplan import SparkSource, spark_plan
 
 logger = get_logger("glue")
 
@@ -258,7 +258,7 @@ class GlueTable:
         return self._lake.scan(scan_expr, limit=limit, where=where)
 
     # ------------------------------------------------------------------
-    # Finding a Parquet table's files — as Athena does (duckduck.s3layout)
+    # Finding a Parquet table's files — as Athena does (duckduck.connectors.lake.s3layout)
     # ------------------------------------------------------------------
 
     def _parquet_read(self, database: str, table_name: str, table: Dict[str, Any],

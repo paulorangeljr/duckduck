@@ -25,8 +25,8 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from .lakehouse import LakehouseConnection
-from .pushdown import Condition
-from .sparkplan import SparkSource, spark_plan
+from ...common.pushdown import Condition
+from ...common.sparkplan import SparkSource, spark_plan
 
 
 class BlobStorage:

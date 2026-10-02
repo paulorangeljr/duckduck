@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from duckduck import DuckAPI
-from duckduck.kinds import catalog
+from duckduck.common.kinds import catalog
 
 
 class Warehouse:

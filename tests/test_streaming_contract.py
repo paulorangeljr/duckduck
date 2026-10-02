@@ -6,9 +6,9 @@ import inspect
 
 import pytest
 
-from duckduck.kinds import CATALOG, RAW_QUERY, kind_of
-from duckduck.registry import SERVICE_REGISTRY
-from duckduck.sparkplan import plan_of
+from duckduck.common.kinds import CATALOG, RAW_QUERY, kind_of
+from duckduck.connectors.registry import SERVICE_REGISTRY
+from duckduck.common.sparkplan import plan_of
 
 #: tables that don't page — why, in one line each (a new exemption needs one too)
 ONE_READ = {

@@ -42,11 +42,11 @@ import pandas as pd
 import requests
 import urllib3
 
-from . import slicing
-from .logs import PageProgress, instrument_session
-from .retry import RetryPolicy, send
-from .pushdown import require_like
-from .sparkplan import spark_plan
+from ...common import slicing
+from ...common.logs import PageProgress, instrument_session
+from ...common.retry import RetryPolicy, send
+from ...common.pushdown import require_like
+from ...common.sparkplan import spark_plan
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -146,7 +146,7 @@ class InsightVM:
         yield from slicing.pages(self._page_reader(path, params or {}), self.default_page_size)
 
     def _page_reader(self, path: str, params: Dict):
-        """``fetch_page(n)`` for ``duckduck.slicing.pages``: page ``n`` and the total the API reports."""
+        """``fetch_page(n)`` for ``duckduck.common.slicing.pages``: page ``n`` and the total the API reports."""
         progress = PageProgress("insightvm", path)
 
         def fetch_page(page: int):
@@ -181,7 +181,7 @@ class InsightVM:
             payload = self._get(path, {**params, "size": limit, "page": 0})
             return payload.get("resources", [])
 
-        # Full pagination (or the pages a Spark read asked for: ``duckduck.slicing``)
+        # Full pagination (or the pages a Spark read asked for: ``duckduck.common.slicing``)
         all_resources: List[Dict] = []
         for resources in slicing.pages(self._page_reader(path, params), self.default_page_size):
             all_resources.extend(resources)
@@ -211,7 +211,7 @@ class InsightVM:
         - ``ip``       → searches for ``ip-address is <value>``
         - ``hostname LIKE 'p'`` (``hostname_ilike``) → ``host-name``
           ``contains`` / ``starts-with`` / ``ends-with`` / ``is``, by the
-          pattern's shape (see ``duckduck.pushdown``)
+          pattern's shape (see ``duckduck.common.pushdown``)
 
         When hostname or ip are passed, uses the ``/assets/search``
         endpoint, which supports server-side filters.

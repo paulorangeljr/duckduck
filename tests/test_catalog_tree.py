@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 from duckduck import DuckAPI
-from duckduck.kinds import catalog
+from duckduck.common.kinds import catalog
 from duckduck.views import suggested_place
 
 pytest.importorskip("fastapi")
@@ -89,7 +89,7 @@ def test_the_api_gives_each_table_a_stable_id_and_the_place(tmp_path):
 
     (tmp_path / "lake.py").write_text(
         "import pandas as pd\n"
-        "from duckduck.kinds import catalog\n"
+        "from duckduck.common.kinds import catalog\n"
         "class Lake:\n"
         "    @catalog(lists='table')\n"
         "    def tables(self, limit=None):\n"
@@ -125,7 +125,7 @@ def _app(tmp_path, n):
 
     (tmp_path / "lake.py").write_text(
         "import pandas as pd\n"
-        "from duckduck.kinds import catalog\n"
+        "from duckduck.common.kinds import catalog\n"
         "class Lake:\n"
         "    @catalog(lists='table')\n"
         "    def tables(self, limit=None):\n"
@@ -159,7 +159,7 @@ def test_register_all_saves_every_table_however_many(tmp_path):
 
 
 def test_a_cancelled_register_all_saves_nothing(tmp_path):
-    from duckduck import progress
+    from duckduck.common import progress
 
     client, items = _app(tmp_path, 60)
     real = progress.checkpoint
@@ -202,7 +202,7 @@ def test_a_connection_s_own_database_is_in_the_name(tmp_path):
     import sqlite3
 
     from duckduck.addresses import native_database
-    from duckduck.database import SQLDatabase
+    from duckduck.connectors.databases.sql import SQLDatabase
     from duckduck.semantic.admin import nested_group
 
     con = sqlite3.connect(tmp_path / "shop.db")

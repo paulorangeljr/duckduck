@@ -24,8 +24,8 @@ from typing import Any, Dict, List, Optional
 import duckdb
 import pandas as pd
 
-from .logs import get_logger
-from .pushdown import Condition, conditions_to_sql
+from ...common.logs import get_logger
+from ...common.pushdown import Condition, conditions_to_sql
 
 logger = get_logger("lakehouse")
 

@@ -11,7 +11,7 @@ import requests
 from requests.adapters import BaseAdapter
 
 from duckduck import DuckAPI, InsightVM
-from duckduck.logs import PageProgress, redact_url, set_verbose
+from duckduck.common.logs import PageProgress, redact_url, set_verbose
 
 ASSETS = [{"id": i, "hostName": f"{'web' if i % 3 else 'db'}-{i:03d}", "riskScore": i * 10} for i in range(1, 26)]
 
@@ -122,7 +122,7 @@ def test_debug_shows_bodies_but_never_secrets(logs):
 
 
 def test_servicenow_token_request_is_logged_without_its_body(logs, monkeypatch):
-    from duckduck.servicenow import ServiceNow
+    from duckduck.connectors.api.servicenow import ServiceNow
 
     sn = ServiceNow.from_oauth2(token_url="https://login.example/token", client_id="cid",
                                 client_secret="TOPSECRET", instance="dev1")
@@ -132,7 +132,7 @@ def test_servicenow_token_request_is_logged_without_its_body(logs, monkeypatch):
     response.request = requests.Request("POST", "https://login.example/token",
                                         data={"client_secret": "TOPSECRET"}).prepare()
     response.elapsed = timedelta(seconds=0.2)
-    monkeypatch.setattr("duckduck.servicenow.requests.post", lambda *a, **k: response)
+    monkeypatch.setattr("duckduck.connectors.api.servicenow.requests.post", lambda *a, **k: response)
     set_verbose("debug")
     sn._ensure_token()
     text = logs.text()
@@ -193,7 +193,7 @@ def test_redact_url():
 def test_logging_never_breaks_the_request_it_describes(logs):
     from unittest.mock import MagicMock
 
-    from duckduck.logs import log_http
+    from duckduck.common.logs import log_http
 
     set_verbose("info")
     weird = MagicMock()  # elapsed/status/content that can't be formatted

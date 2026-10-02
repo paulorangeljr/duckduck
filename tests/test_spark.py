@@ -13,10 +13,11 @@ import pytest
 import requests
 from requests.adapters import BaseAdapter
 
-from duckduck import DuckAPI, InsightVM, ServiceNow, slicing
-from duckduck.local_files import FileTable, LocalFiles
-from duckduck.registry import SERVICE_REGISTRY
-from duckduck.sparkplan import STRATEGIES, SparkSource, plan_of, spark_plan
+from duckduck import DuckAPI, InsightVM, ServiceNow
+from duckduck.common import slicing
+from duckduck.connectors.local.files import FileTable, LocalFiles
+from duckduck.connectors.registry import SERVICE_REGISTRY
+from duckduck.common.sparkplan import STRATEGIES, SparkSource, plan_of, spark_plan
 
 
 # -- the contract --------------------------------------------------------------------------------------------------
@@ -37,7 +38,7 @@ def _declared():
 def test_every_table_of_every_connector_declares_how_spark_reads_it():
     missing = [f"{name}.{table}" for name, _, table, fn in _declared() if plan_of(fn) is None]
     assert not missing, (
-        f"these tables don't declare a Spark strategy: {missing} — add @spark_plan(...) from duckduck.sparkplan "
+        f"these tables don't declare a Spark strategy: {missing} — add @spark_plan(...) from duckduck.common.sparkplan "
         f"(CLAUDE.md, 'Spark: choosing the strategy')")
 
 
@@ -98,7 +99,7 @@ def _insightvm(total=25):
 
 
 def test_paged_tables_really_go_through_the_shared_pager():
-    """by='pages' is only true when the table's read goes through duckduck.slicing.pages — probed for real."""
+    """by='pages' is only true when the table's read goes through duckduck.common.slicing.pages — probed for real."""
     r7, _ = _insightvm()
     for name, cls, table, fn in _declared():
         if cls is not InsightVM or plan_of(fn).strategy != "partitioned":
@@ -144,9 +145,9 @@ def test_servicenow_pages_by_offset_with_its_total_header():
 
 
 def test_native_sources_say_where_the_data_is(tmp_path):
-    from duckduck.blob_storage import BlobStorage
-    from duckduck.database import SQLDatabase
-    from duckduck.glue import GlueTable
+    from duckduck.connectors.lake.blob_storage import BlobStorage
+    from duckduck.connectors.databases.sql import SQLDatabase
+    from duckduck.connectors.lake.glue import GlueTable
 
     glue = GlueTable.__new__(GlueTable)
     glue._table_cache = {"sec.logs": {"StorageDescriptor": {"Location": "s3://lake/sec/logs/"},

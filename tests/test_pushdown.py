@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 from duckduck import DuckAPI
-from duckduck.pushdown import Condition, conditions_to_sql, map_conditions, parse_like, require_like
+from duckduck.common.pushdown import Condition, conditions_to_sql, map_conditions, parse_like, require_like
 
 HOSTS = [
     {"hostname": "web-prod-1", "ip": "10.0.0.1", "severity": 9},
@@ -211,7 +211,7 @@ def test_stream_pushes_like_to_the_iter_function():
 
 def test_sqldatabase_runs_where_natively(tmp_path):
     sa = pytest.importorskip("sqlalchemy")
-    from duckduck.database import SQLDatabase
+    from duckduck.connectors.databases.sql import SQLDatabase
 
     db = SQLDatabase(f"sqlite:///{tmp_path}/t.db")
     with db.engine.begin() as conn:
@@ -234,7 +234,7 @@ def test_sqldatabase_runs_where_natively(tmp_path):
 
 
 def test_lakehouse_scan_filters_inside_duckdb(tmp_path):
-    from duckduck.lakehouse import LakehouseConnection
+    from duckduck.connectors.lake.lakehouse import LakehouseConnection
 
     path = tmp_path / "hosts.csv"
     pd.DataFrame(HOSTS).to_csv(path, index=False)
@@ -246,7 +246,7 @@ def test_lakehouse_scan_filters_inside_duckdb(tmp_path):
 
 
 def test_servicenow_like_operators():
-    from duckduck.servicenow import ServiceNow
+    from duckduck.connectors.api.servicenow import ServiceNow
 
     q = ServiceNow._build_query(state="2", short_description_ilike="%vpn%", number_ilike="INC00%")
     assert q == "state=2^short_descriptionLIKEvpn^numberSTARTSWITHINC00"
@@ -258,13 +258,13 @@ def test_servicenow_like_operators():
 def test_servicenow_incidents_signature_exposes_like_params():
     import inspect
 
-    from duckduck.servicenow import ServiceNow
+    from duckduck.connectors.api.servicenow import ServiceNow
 
     assert {"short_description_ilike", "number_ilike"} <= set(inspect.signature(ServiceNow.incidents).parameters)
 
 
 def test_insightvm_hostname_like_uses_search_operators():
-    from duckduck.rapid7 import InsightVM
+    from duckduck.connectors.api.insightvm import InsightVM
 
     r7 = InsightVM.__new__(InsightVM)
     r7.default_page_size = 100
@@ -275,7 +275,7 @@ def test_insightvm_hostname_like_uses_search_operators():
 
 
 def test_axonius_like_is_an_escaped_case_insensitive_regex():
-    from duckduck.axonius import Axonius
+    from duckduck.connectors.api.axonius import Axonius
 
     assert Axonius._aql_like("f", "web.prod%", "p") == 'f == regex("^web\\\\.prod", "i")'
     assert Axonius._aql_like("f", "%prod", "p") == 'f == regex("prod$", "i")'
@@ -283,7 +283,7 @@ def test_axonius_like_is_an_escaped_case_insensitive_regex():
 
 
 def test_blocker_hook_keeps_refused_conditions_out_of_where():
-    from duckduck.pushdown import assign_conditions
+    from duckduck.common.pushdown import assign_conditions
 
     conds = [Condition("a", "eq", 1), Condition("b_value", "eq", 2)]
     blocker = lambda c: "nope" if c.column.endswith("_value") else None  # noqa: E731

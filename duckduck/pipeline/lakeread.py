@@ -31,8 +31,8 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import pandas as pd
 
-from ..pushdown import Condition, conditions_to_sql
-from ..sparkplan import SparkSource, spark_plan
+from ..common.pushdown import Condition, conditions_to_sql
+from ..common.sparkplan import SparkSource, spark_plan
 from .spec import PipelineError
 
 logger = logging.getLogger("duckduck.pipeline")
@@ -246,7 +246,7 @@ class LakeTable:
         import pyarrow.dataset as ds
         import pyarrow.fs as pafs
 
-        from ..s3layout import duck_type
+        from ..connectors.lake.s3layout import duck_type
         from . import aws
         from .sip import _filesystem
 
@@ -293,7 +293,7 @@ class LakeTable:
 
 
 def _athena_of(lake: Dict[str, Any], account: Any) -> Any:
-    from ..athena import Athena
+    from ..connectors.databases.athena import Athena
 
     block = dict(lake.get("athena") or {})
     region = block.pop("region", None) or (account.region if account else None)

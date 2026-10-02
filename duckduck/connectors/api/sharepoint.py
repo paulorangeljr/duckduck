@@ -60,10 +60,10 @@ from urllib.parse import quote
 import pandas as pd
 import requests
 
-from .logs import PageProgress, log_http
-from .retry import RetryPolicy, send
-from .kinds import needs_arguments
-from .sparkplan import spark_plan
+from ...common.logs import PageProgress, log_http
+from ...common.retry import RetryPolicy, send
+from ...common.kinds import needs_arguments
+from ...common.sparkplan import spark_plan
 
 try:
     import msal

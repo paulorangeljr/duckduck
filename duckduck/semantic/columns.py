@@ -21,7 +21,7 @@ them.
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 
-from .. import progress
+from ..common import progress
 from .intent import DecisionRecord
 
 

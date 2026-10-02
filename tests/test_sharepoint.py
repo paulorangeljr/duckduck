@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from duckduck import DuckAPI, SharePoint
-from duckduck.sharepoint import _normalize_pem
+from duckduck.connectors.api.sharepoint import _normalize_pem
 
 
 # ---------------------------------------------------------------------------
@@ -36,14 +36,14 @@ def _make_sp(msal_cls):
 # ---------------------------------------------------------------------------
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_token_from_acquire(msal_cls):
     sp = _make_sp(msal_cls)
     token = sp._get_token()
     assert token == "tok123"
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_token_uses_cache(msal_cls):
     mock_app = MagicMock()
     mock_app.acquire_token_silent.return_value = {"access_token": "cached"}
@@ -55,7 +55,7 @@ def test_token_uses_cache(msal_cls):
     mock_app.acquire_token_for_client.assert_not_called()
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_auth_error_raises(msal_cls):
     mock_app = MagicMock()
     mock_app.acquire_token_silent.return_value = None
@@ -70,7 +70,7 @@ def test_auth_error_raises(msal_cls):
         sp._get_token()
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_from_thumbprint(msal_cls):
     mock_app = MagicMock()
     mock_app.acquire_token_silent.return_value = None
@@ -107,7 +107,7 @@ def test_normalize_pem_noop_without_backslash_n():
     assert _normalize_pem(raw) == raw
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_from_thumbprint_fixes_escaped_newlines(msal_cls):
     """
     A PEM coming from a double-escaped AWS Secrets Manager secret arrives
@@ -127,7 +127,7 @@ def test_from_thumbprint_fixes_escaped_newlines(msal_cls):
     assert call_credential["private_key"].count("\n") == 3
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_from_secret_thumbprint_fixes_escaped_newlines(msal_cls):
     """Same fix via from_secret, as it arrives from SecretsManager.get_secret."""
     msal_cls.return_value = MagicMock()
@@ -143,7 +143,7 @@ def test_from_secret_thumbprint_fixes_escaped_newlines(msal_cls):
     assert "\\n" not in call_credential["private_key"]
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_from_thumbprint_accepts_file_path(msal_cls, tmp_path):
     mock_app = MagicMock()
     mock_app.acquire_token_silent.return_value = None
@@ -164,14 +164,14 @@ def test_from_thumbprint_accepts_file_path(msal_cls, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_with_top_no_existing(msal_cls):
     sp = _make_sp(msal_cls)
     url = sp._with_top("https://graph.microsoft.com/v1.0/sites?search=*", 50)
     assert "$top=50" in url
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_with_top_replaces_existing(msal_cls):
     sp = _make_sp(msal_cls)
     url = sp._with_top("https://example.com/items?$top=200", 25)
@@ -184,7 +184,7 @@ def test_with_top_replaces_existing(msal_cls):
 # ---------------------------------------------------------------------------
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_iter_pages_follows_next_link(msal_cls):
     sp = _make_sp(msal_cls)
 
@@ -199,7 +199,7 @@ def test_iter_pages_follows_next_link(msal_cls):
     assert pages[1][0]["id"] == "2"
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_iter_pages_single_page(msal_cls):
     sp = _make_sp(msal_cls)
 
@@ -215,7 +215,7 @@ def test_iter_pages_single_page(msal_cls):
 # ---------------------------------------------------------------------------
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_fetch_with_limit_single_request(msal_cls):
     sp = _make_sp(msal_cls)
 
@@ -227,7 +227,7 @@ def test_fetch_with_limit_single_request(msal_cls):
     assert len(items) == 2
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_fetch_without_limit_paginates(msal_cls):
     sp = _make_sp(msal_cls)
 
@@ -303,7 +303,7 @@ def test_normalize_list_items_keeps_unmapped_fields():
 # ---------------------------------------------------------------------------
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_get_column_display_map_builds_dict(msal_cls):
     sp = _make_sp(msal_cls)
 
@@ -317,7 +317,7 @@ def test_get_column_display_map_builds_dict(msal_cls):
     assert col_map == {"field_1": "Customer Name", "Status": "Situation"}
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_get_column_display_map_is_cached(msal_cls):
     sp = _make_sp(msal_cls)
 
@@ -329,7 +329,7 @@ def test_get_column_display_map_is_cached(msal_cls):
     mock_fetch.assert_called_once()  # second call uses the cache
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_list_items_display_names_by_default(msal_cls):
     """By default, list_items() resolves internal names to displayName."""
     sp = _make_sp(msal_cls)
@@ -345,7 +345,7 @@ def test_list_items_display_names_by_default(msal_cls):
     assert list(df["Customer Name"]) == ["ACME"]
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_list_items_internal_names_skip_columns_fetch(msal_cls):
     """column_names='internal' doesn't make an extra request to /columns."""
     sp = _make_sp(msal_cls)
@@ -359,7 +359,7 @@ def test_list_items_internal_names_skip_columns_fetch(msal_cls):
     assert "field_1" in df.columns
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_list_items_invalid_column_names_raises(msal_cls):
     sp = _make_sp(msal_cls)
 
@@ -372,7 +372,7 @@ def test_list_items_invalid_column_names_raises(msal_cls):
 # ---------------------------------------------------------------------------
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_sites_returns_dataframe(msal_cls):
     sp = _make_sp(msal_cls)
 
@@ -382,7 +382,7 @@ def test_sites_returns_dataframe(msal_cls):
     assert list(df["id"]) == ["s1"]
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_sites_pushes_limit(msal_cls):
     sp = _make_sp(msal_cls)
 
@@ -400,7 +400,7 @@ def test_sites_pushes_limit(msal_cls):
 # ---------------------------------------------------------------------------
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_lists_uses_site_id(msal_cls):
     sp = _make_sp(msal_cls)
 
@@ -411,7 +411,7 @@ def test_lists_uses_site_id(msal_cls):
     assert SITE_ID in url
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_list_items_expands_fields(msal_cls):
     sp = _make_sp(msal_cls)
 
@@ -429,7 +429,7 @@ def test_list_items_expands_fields(msal_cls):
 # ---------------------------------------------------------------------------
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_drive_items_is_file_column(msal_cls):
     sp = _make_sp(msal_cls)
 
@@ -448,7 +448,7 @@ def test_drive_items_is_file_column(msal_cls):
 # ---------------------------------------------------------------------------
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_iter_list_items_yields_dataframes(msal_cls):
     sp = _make_sp(msal_cls)
 
@@ -471,7 +471,7 @@ def test_iter_list_items_yields_dataframes(msal_cls):
 # ---------------------------------------------------------------------------
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_duckapi_stream_list_items(msal_cls):
     sp = _make_sp(msal_cls)
 
@@ -506,7 +506,7 @@ def test_duckapi_stream_list_items(msal_cls):
 # ---------------------------------------------------------------------------
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_resolve_site_by_name(msal_cls):
     sp = _make_sp(msal_cls)
 
@@ -520,7 +520,7 @@ def test_resolve_site_by_name(msal_cls):
     assert resolved == "s2"
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_resolve_site_id_wins_over_name(msal_cls):
     sp = _make_sp(msal_cls)
 
@@ -531,7 +531,7 @@ def test_resolve_site_id_wins_over_name(msal_cls):
     assert resolved == "explicit-id"
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_resolve_site_not_found_raises(msal_cls):
     sp = _make_sp(msal_cls)
 
@@ -540,7 +540,7 @@ def test_resolve_site_not_found_raises(msal_cls):
             sp._resolve_site(None, "Unknown")
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_resolve_list_by_name(msal_cls):
     sp = _make_sp(msal_cls)
 
@@ -554,7 +554,7 @@ def test_resolve_list_by_name(msal_cls):
     assert resolved == "l1"
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_list_items_by_name_end_to_end(msal_cls):
     sp = _make_sp(msal_cls)
 
@@ -575,7 +575,7 @@ def test_list_items_by_name_end_to_end(msal_cls):
 # ---------------------------------------------------------------------------
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_default_site_used_when_no_site_given(msal_cls):
     """Without site_id/site_name, uses the constructor's default site."""
     mock_app = MagicMock()
@@ -604,7 +604,7 @@ def test_default_site_used_when_no_site_given(msal_cls):
     assert list(df["Title"]) == ["Item"]
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_default_site_cached(msal_cls):
     """_get to resolve the default site is only called once."""
     mock_app = MagicMock()
@@ -629,7 +629,7 @@ def test_default_site_cached(msal_cls):
     assert mock_get.call_count == 1  # resolved only on the first call
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_site_name_as_path_uses_hostname(msal_cls):
     """site_name starting with / combines with the constructor's hostname."""
     mock_app = MagicMock()
@@ -647,7 +647,7 @@ def test_site_name_as_path_uses_hostname(msal_cls):
     assert "company.sharepoint.com" in called_url
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_site_name_as_path_without_hostname_raises(msal_cls):
     """site_name with / but no hostname on the constructor must raise ValueError."""
     sp = _make_sp(msal_cls)
@@ -661,7 +661,7 @@ def test_site_name_as_path_without_hostname_raises(msal_cls):
 # ---------------------------------------------------------------------------
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_from_secret_client_secret(msal_cls):
     msal_cls.return_value = MagicMock()
 
@@ -674,7 +674,7 @@ def test_from_secret_client_secret(msal_cls):
     assert call_credential == SECRET
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_from_secret_thumbprint(msal_cls):
     msal_cls.return_value = MagicMock()
 
@@ -688,7 +688,7 @@ def test_from_secret_thumbprint(msal_cls):
     assert call_credential["thumbprint"] == "AABB"
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_from_secret_passes_overrides(msal_cls):
     msal_cls.return_value = MagicMock()
 

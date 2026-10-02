@@ -1005,9 +1005,9 @@ How a question is read — rules find, the decision engine (Jev) decides:
   take it from there — then **▶ Continue**. **✕ Cancel** gives up at once
   and shows the same. A call already in flight (to Jev, an LLM or an API)
   finishes first; pages of a big table are the natural stopping points. In
-  Python: `with duckduck.progress.tracking(p := Progress()): search.search(q)`
+  Python: `with duckduck.common.progress.tracking(p := Progress()): search.search(q)`
   from a thread, and `p.pause()` / `p.resume()` / `p.cancel()` (raises
-  `duckduck.progress.Cancelled` in the search) from another.
+  `duckduck.common.progress.Cancelled` in the search) from another.
 - **A quick sample first, every row on request.** Next to *Ask*, pick how
   many rows an answer shows first (10 · 50 · 100 · 500 · 1,000 · all;
   remembered per browser). The question stops reading as soon as it has
@@ -2563,7 +2563,7 @@ pass `path_schemes={"s3": "s3a"}`. JDBC reads need the database's driver jar
 on Spark's classpath, and file paths must be visible to the executors.
 
 Every connector's table methods declare their strategy with
-`@spark_plan(...)` (`duckduck.sparkplan`), and a test fails when one doesn't
+`@spark_plan(...)` (`duckduck.common.sparkplan`), and a test fails when one doesn't
 — see CLAUDE.md "Spark: choosing the strategy" when adding a connector.
 
 ## Pipelines: bronze → silver → gold, declared in JSON (`duckduck.pipeline`)
@@ -2975,6 +2975,36 @@ python -m pytest tests/
 # Also the tests that start a local Spark (slow; off by default)
 DUCKDUCK_SPARK_TESTS=1 python -m pytest tests/
 ```
+
+Where things are:
+
+```
+duckduck/
+  core.py           DuckAPI: SQL in, push-down, rewrite, DuckDB out
+  addresses.py      connector.table / connector.database.table names
+  views.py          saved tables          cache.py   the source cache
+  kql.py            KQL → SQL             system.py  the duckduck.* tables
+  spark.py          SparkReader
+  connectors/
+    registry.py     connector name (duckduck.json) → class
+    api/            HTTP APIs: servicenow, insightvm, axonius, sharepoint, nvd, restcountries, airflow
+    lake/           files on object storage: glue, blob_storage (+ lakehouse, s3layout: shared plumbing)
+    databases/      query engines: sql (SQLAlchemy), adx, athena
+    local/          this machine: files, python_source
+  common/           what connectors and the engine are built with: pushdown, slicing (pages),
+                    retry, progress, logs, kinds (@catalog…), sparkplan (@spark_plan)
+  secrets/          aws (Secrets Manager), azure (Key Vault)
+  pipeline/         ingestion jobs, the lake, the sip
+  pgserver/         PostgreSQL wire protocol
+  semantic/         questions in words
+```
+
+The flat names from before the folders (`duckduck.servicenow`,
+`duckduck.pushdown`, `duckduck.secrets`…) still import — each is the same
+module at its new place (`duckduck/_moved.py`) — so older scripts and
+notebooks keep working; new code imports the new names
+(`from duckduck.connectors.api.servicenow import ServiceNow`, or simply
+`from duckduck import ServiceNow`).
 
 `CLAUDE.md` documents the internal architecture (push-down flow, SQL
 rewriting, streaming contract) in more depth — read it before making

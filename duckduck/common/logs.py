@@ -2,7 +2,7 @@
 Verbose/diagnostic output for duckduck, on Python's standard ``logging``.
 
 Everything logs under the ``"duckduck"`` logger tree
-(``duckduck.core``, ``duckduck.servicenow``, ...). ``DuckAPI(verbose=...)``
+(``duckduck.core``, ``duckduck.connectors.api.servicenow``, ...). ``DuckAPI(verbose=...)``
 (or ``set_verbose``) attaches a compact console handler; without it
 nothing is printed, and an application can route the same records
 wherever it already sends its logs.
@@ -203,7 +203,7 @@ class PageProgress:
         self.started = time.perf_counter()
         self.pages = 0
         self.rows = 0
-        self._lock = threading.Lock()  # pages may arrive from several threads (duckduck.slicing.parallel)
+        self._lock = threading.Lock()  # pages may arrive from several threads (duckduck.common.slicing.parallel)
 
     def page(self, rows: int, total_pages: Optional[int] = None, total_rows: Optional[int] = None) -> None:
         with self._lock:

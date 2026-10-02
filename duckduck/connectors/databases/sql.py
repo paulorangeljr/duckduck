@@ -55,10 +55,10 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import pandas as pd
 
-from .kinds import catalog, raw_query
-from .logs import get_logger
-from .pushdown import Condition
-from .sparkplan import SparkSource, spark_plan
+from ...common.kinds import catalog, raw_query
+from ...common.logs import get_logger
+from ...common.pushdown import Condition
+from ...common.sparkplan import SparkSource, spark_plan
 
 logger = get_logger("database")
 

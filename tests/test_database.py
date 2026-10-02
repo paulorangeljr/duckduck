@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-import duckduck.database as database_module
+import duckduck.connectors.databases.sql as database_module
 from duckduck import SQLDatabase
 
 

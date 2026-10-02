@@ -119,7 +119,7 @@ def test_ensure_token_fetches_and_caches():
     )
     token_response = _response({"access_token": "tok123", "expires_in": 3600})
 
-    with patch("duckduck.servicenow.requests.post", return_value=token_response) as mock_post:
+    with patch("duckduck.connectors.api.servicenow.requests.post", return_value=token_response) as mock_post:
         sn._ensure_token()
         sn._ensure_token()  # second call should use the cached token
 
@@ -147,7 +147,7 @@ def test_ensure_token_failure_surfaces_response_body():
         "error": "invalid_client",
         "error_description": "AADSTS7000215: Invalid client secret provided.",
     }
-    with patch("duckduck.servicenow.requests.post", return_value=_response(error_body, status=400)):
+    with patch("duckduck.connectors.api.servicenow.requests.post", return_value=_response(error_body, status=400)):
         with pytest.raises(ValueError, match="AADSTS7000215"):
             sn._ensure_token()
 
@@ -158,7 +158,7 @@ def test_ensure_token_refreshes_after_expiry():
         client_id="cid", client_secret="csecret", instance="dev12345",
     )
     with patch(
-        "duckduck.servicenow.requests.post",
+        "duckduck.connectors.api.servicenow.requests.post",
         return_value=_response({"access_token": "tok1", "expires_in": 3600}),
     ):
         sn._ensure_token()
@@ -168,7 +168,7 @@ def test_ensure_token_refreshes_after_expiry():
     sn._token_expires_at = datetime.now() - timedelta(seconds=1)
 
     with patch(
-        "duckduck.servicenow.requests.post",
+        "duckduck.connectors.api.servicenow.requests.post",
         return_value=_response({"access_token": "tok2", "expires_in": 3600}),
     ) as mock_post:
         sn._ensure_token()
@@ -376,7 +376,7 @@ def test_duckapi_sql_pushdown_integration():
 # Generic `where` push-down (any field, any table)
 # ---------------------------------------------------------------------------
 
-from duckduck.pushdown import Condition  # noqa: E402
+from duckduck.common.pushdown import Condition  # noqa: E402
 
 
 @pytest.mark.parametrize("cond, clause", [
@@ -462,7 +462,7 @@ def test_raw_query_with_nq_keeps_where_in_duckdb_and_drops_limit():
 
 
 def test_tables_lists_sys_db_object_as_calls_of_table():
-    from duckduck.kinds import CATALOG, drafts_of, kind_of, lists_of
+    from duckduck.common.kinds import CATALOG, drafts_of, kind_of, lists_of
 
     sn = _make_sn()
     rows = [

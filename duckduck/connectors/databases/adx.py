@@ -4,7 +4,7 @@ Azure Data Explorer (Kusto) wrapper for use with DuckAPI.
 Queries run on the cluster in KQL through Microsoft's official
 ``azure-kusto-data`` SDK, and only the result comes back as a DataFrame.
 DuckAPI's push-down reaches ``table()`` through the ``where`` parameter
-(see ``duckduck.pushdown``), and every simple ``WHERE`` condition is
+(see ``duckduck.common.pushdown``), and every simple ``WHERE`` condition is
 translated into a KQL ``where`` on the cluster:
 
 ==========================  =========================================
@@ -57,10 +57,10 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import pandas as pd
 
-from .kinds import catalog, raw_query
-from .logs import get_logger
-from .pushdown import Condition, parse_like
-from .sparkplan import spark_plan
+from ...common.kinds import catalog, raw_query
+from ...common.logs import get_logger
+from ...common.pushdown import Condition, parse_like
+from ...common.sparkplan import spark_plan
 
 logger = get_logger("adx")
 

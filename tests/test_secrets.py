@@ -57,7 +57,7 @@ def test_get_secret_binary_raises():
 
 
 def test_without_client_or_boto3_raises_import_error(monkeypatch):
-    import duckduck.secrets as secrets_module
+    import duckduck.secrets.aws as secrets_module
 
     monkeypatch.setattr(secrets_module, "boto3", None)
     with pytest.raises(ImportError, match="boto3"):
@@ -70,7 +70,7 @@ def test_without_client_or_boto3_raises_import_error(monkeypatch):
 
 
 def test_profile_name_builds_session_with_profile(monkeypatch):
-    import duckduck.secrets as secrets_module
+    import duckduck.secrets.aws as secrets_module
 
     fake_boto3 = MagicMock()
     monkeypatch.setattr(secrets_module, "boto3", fake_boto3)
@@ -84,7 +84,7 @@ def test_profile_name_builds_session_with_profile(monkeypatch):
 
 
 def test_no_profile_name_uses_default_session(monkeypatch):
-    import duckduck.secrets as secrets_module
+    import duckduck.secrets.aws as secrets_module
 
     fake_boto3 = MagicMock()
     monkeypatch.setattr(secrets_module, "boto3", fake_boto3)

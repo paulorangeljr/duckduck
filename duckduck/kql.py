@@ -500,7 +500,7 @@ class KqlTranslator:
         if any(r.parts[0].lower() != service for r in refs):
             return None
         query_fn = next((n for n, f in duck.functions.items() if duck.service_of.get(n) == service
-                         and getattr(f, "__name__", "") == "query" and getattr(f, "__module__", "") == "duckduck.adx"), None)
+                         and getattr(f, "__name__", "") == "query" and getattr(f, "__module__", "") == "duckduck.connectors.databases.adx"), None)
         if query_fn is None or service not in services(duck):
             return None
         # nothing else read: every table the translation reads is one of these references (or a let)

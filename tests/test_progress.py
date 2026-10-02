@@ -9,7 +9,7 @@ import pytest
 pytest.importorskip("pydantic")
 
 from duckduck import DuckAPI  # noqa: E402
-from duckduck.progress import Cancelled, Progress, tracking  # noqa: E402
+from duckduck.common.progress import Cancelled, Progress, tracking  # noqa: E402
 from duckduck.semantic import Catalog, SemanticSearch  # noqa: E402
 
 from test_answer_shapes import ALERTS, CATALOG, OWNERS  # noqa: E402

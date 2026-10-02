@@ -185,7 +185,7 @@ def create_app(
 
     # -- questions as jobs: live steps, pause, cancel ---------------------------------------------
 
-    from ..progress import Cancelled, Progress, tracking
+    from ..common.progress import Cancelled, Progress, tracking
 
     ask_jobs: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 
@@ -665,9 +665,9 @@ def create_app(
         suggested one unless given); one already saved (same table and arguments) is skipped; one write to
         duckduck.json. Every item, however many. ``background``: as a job (progress per table, cancel → nothing
         saved) → 202."""
-        from .. import progress
+        from ..common import progress
         from .. import views as saved
-        from ..progress import Cancelled
+        from ..common.progress import Cancelled
 
         source = the_console().source
         off = saved_tables_off()

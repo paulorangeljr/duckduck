@@ -53,9 +53,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from .. import progress
-from ..logs import get_logger
-from ..pushdown import Condition, blocker_of, map_conditions
+from ..common import progress
+from ..common.logs import get_logger
+from ..common.pushdown import Condition, blocker_of, map_conditions
 from .catalog import Catalog
 from .compiler import compile_plan, default_order, display_relation, quote_ident, source_conditions
 from .plan import LogicalQueryPlan
@@ -282,7 +282,7 @@ class PlanExecutor:
             if tr.end is not None:
                 conditions.append((tr.field, Condition(column, "lt", tr.end.isoformat(sep=" "))))
 
-        # Same operator→parameter mapping as DuckAPI.sql() (duckduck.pushdown):
+        # Same operator→parameter mapping as DuckAPI.sql() (duckduck.common.pushdown):
         # eq → col, LIKE → col_like/col_ilike, comparisons → col_gt..., or all
         # of them to a `where` param. Structural args always win.
         pushed, consumed = map_conditions(params - set(fetch.kwargs), [c for _, c in conditions], blocker_of(fn))

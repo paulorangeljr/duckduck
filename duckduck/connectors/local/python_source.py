@@ -36,7 +36,7 @@ def load_module(module: str):
         path = os.path.abspath(module)
         if not os.path.isfile(path):
             raise ValueError(f"module file '{module}' not found")
-        # Under duckduck.python_source.* so list_tables() labels its tables
+        # Under duckduck.connectors.local.python_source.* so list_tables() labels its tables
         # "Python module"; never added to sys.modules, so no clash between
         # two files with the same stem.
         stem = re.sub(r"[^0-9a-zA-Z_]", "_", os.path.splitext(os.path.basename(path))[0])

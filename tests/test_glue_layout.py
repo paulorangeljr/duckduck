@@ -1,4 +1,4 @@
-"""Finding a Glue table's files the way Athena does (``duckduck.s3layout`` + ``GlueTable._parquet_read``):
+"""Finding a Glue table's files the way Athena does (``duckduck.connectors.lake.s3layout`` + ``GlueTable._parquet_read``):
 the partitions the WHERE selects — from ``get_partitions`` or a partition projection —, only their locations
 listed, hidden files skipped, extensionless files read. The scans run on a real DuckDB over local files."""
 
@@ -9,10 +9,10 @@ import duckdb
 import pandas as pd
 import pytest
 
-import duckduck.glue as glue_module
+import duckduck.connectors.lake.glue as glue_module
 from duckduck import DuckAPI, GlueTable
-from duckduck import s3layout
-from duckduck.pushdown import Condition as C
+from duckduck.connectors.lake import s3layout
+from duckduck.common.pushdown import Condition as C
 
 
 def _glue(monkeypatch, table, partitions=(), listing=None):

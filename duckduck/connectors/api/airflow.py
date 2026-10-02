@@ -13,7 +13,7 @@ Tables (one per REST collection; ``~`` = every DAG / run):
 
 Pagination is ``limit`` / ``offset`` with ``total_entries`` in every
 response (Airflow 3's cursor mode isn't used: its total is capped), through
-``duckduck.slicing.pages`` — so Spark reads it in parallel. Dates come back
+``duckduck.common.slicing.pages`` — so Spark reads it in parallel. Dates come back
 as timezone-aware timestamps; a date pushed down without an offset is read
 as UTC.
 
@@ -38,10 +38,10 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import pandas as pd
 
-from . import slicing
-from .logs import PageProgress, get_logger
-from .pushdown import require_like
-from .sparkplan import spark_plan
+from ...common import slicing
+from ...common.logs import PageProgress, get_logger
+from ...common.pushdown import require_like
+from ...common.sparkplan import spark_plan
 
 logger = get_logger("airflow")
 

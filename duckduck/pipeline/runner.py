@@ -27,7 +27,7 @@ from .lakeread import LakeReads, check_sources
 from .settings import lake_settings, with_settings
 from .state import read_state, write_state
 
-from ..retry import RetryPolicy, is_policy
+from ..common.retry import RetryPolicy, is_policy
 
 logger = logging.getLogger("duckduck.pipeline")
 
@@ -334,7 +334,7 @@ def _per_run(duck: Any, value: Any, key: str, attribute: str, owns: Any, what: s
 
 
 def _paged_at_once(instance: Any, fn: Any) -> bool:
-    from ..sparkplan import plan_of
+    from ..common.sparkplan import plan_of
 
     plan = plan_of(fn)
     return bool(plan and plan.strategy == "partitioned")

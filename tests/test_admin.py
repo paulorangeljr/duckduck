@@ -24,9 +24,9 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 @pytest.mark.parametrize("module, kind", [
-    ("duckduck.sharepoint", "sharepoint"), ("duckduck.database", "database"), ("duckduck.rapid7", "insightvm"),
-    ("duckduck.servicenow", "servicenow"), ("duckduck.glue", "glue"), ("duckduck.adx", "adx"),
-    ("duckduck.python_source.sample", "python"), ("duckduck.local_files", "files"), ("my_company.api", "api"),
+    ("duckduck.connectors.api.sharepoint", "sharepoint"), ("duckduck.connectors.databases.sql", "database"), ("duckduck.connectors.api.insightvm", "insightvm"),
+    ("duckduck.connectors.api.servicenow", "servicenow"), ("duckduck.connectors.lake.glue", "glue"), ("duckduck.connectors.databases.adx", "adx"),
+    ("duckduck.connectors.local.python_source.sample", "python"), ("duckduck.connectors.local.files", "files"), ("my_company.api", "api"),
 ])
 def test_source_kind(module, kind):
     fn = types.FunctionType((lambda: None).__code__, {})
@@ -104,7 +104,7 @@ def test_read_only_guard(query, ok):
 
 
 def test_the_reference_documents_every_connector_and_option():
-    from duckduck.registry import SERVICE_REGISTRY
+    from duckduck.connectors.registry import SERVICE_REGISTRY
 
     ref = config_reference()
     assert {c["connector"] for c in ref["connectors"]} == set(SERVICE_REGISTRY)

@@ -21,7 +21,7 @@ from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..pushdown import Condition, blocker_of, map_conditions
+from ..common.pushdown import Condition, blocker_of, map_conditions
 from .catalog import Catalog
 
 logger = logging.getLogger("duckduck.semantic")

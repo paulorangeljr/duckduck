@@ -20,7 +20,7 @@ class SparkPlan:
     strategy: str
     #: native: the name of the connector method that says where the data is: ``(**args) -> SparkSource``
     source: Optional[str] = None
-    #: partitioned: ``"pages"`` (the pager is ``duckduck.slicing.pages``) or the name of a connector
+    #: partitioned: ``"pages"`` (the pager is ``duckduck.common.slicing.pages``) or the name of a connector
     #: method ``(**kwargs) -> [kwargs, ...]`` splitting the call into independent pieces
     by: Optional[str] = None
     #: partitioned: how many pieces may run at once — the API's rate limit decides it

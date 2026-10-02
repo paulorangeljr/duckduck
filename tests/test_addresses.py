@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 from duckduck import DuckAPI
-from duckduck.kinds import catalog
+from duckduck.common.kinds import catalog
 
 
 class Glue:
@@ -123,7 +123,7 @@ def test_register_all_skips_the_saved_ones_and_writes_once(tmp_path):
 
     (tmp_path / "src.py").write_text(
         "import pandas as pd\n"
-        "from duckduck.kinds import catalog\n"
+        "from duckduck.common.kinds import catalog\n"
         "class Db:\n"
         "    @catalog(lists='table')\n"
         "    def tables(self, limit=None):\n"
@@ -168,7 +168,7 @@ def test_the_tables_behind_a_catalog_are_grouped_by_database(tmp_path):
 
     (tmp_path / "lake.py").write_text(
         "import pandas as pd\n"
-        "from duckduck.kinds import catalog\n"
+        "from duckduck.common.kinds import catalog\n"
         "class Lake:\n"
         "    @catalog(lists='table')\n"
         "    def tables(self, limit=None):\n"

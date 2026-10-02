@@ -856,7 +856,7 @@ def test_silver_never_declares_loaded_at_even_listing_its_columns(duck, tmp_path
     raw = tmp_path / "raw"
     run_pipeline({"pipeline": "r", "sql": "SELECT 1 AS id, 'a' AS name UNION ALL SELECT 2, 'b'",
                   "target": {"path": str(raw), "mode": "append"}}, duck=duck)
-    from duckduck.local_files import LocalFiles
+    from duckduck.connectors.local.files import LocalFiles
 
     duck.register_api_function("raw_tbl", LocalFiles(str(tmp_path)).table_functions()["raw"])
     for sql in ("SELECT id, name FROM raw_tbl", "SELECT * EXCLUDE (_loaded_at, _run_id) FROM raw_tbl"):
@@ -940,7 +940,7 @@ def test_a_pipeline_reads_with_its_own_page_size_and_puts_it_back(tmp_path):
 
 
 def test_a_pipeline_reads_with_its_own_max_parallel_and_puts_it_back(tmp_path):
-    from duckduck.sparkplan import spark_plan
+    from duckduck.common.sparkplan import spark_plan
 
     class Source:
         seen = []

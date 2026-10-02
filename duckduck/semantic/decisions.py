@@ -34,7 +34,7 @@ import contextvars
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 
-from .. import progress
+from ..common import progress
 from .metering import record_engine, submit_in_context
 from concurrent.futures import TimeoutError as FutureTimeout
 from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Protocol, Union, runtime_checkable

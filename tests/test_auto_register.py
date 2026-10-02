@@ -236,7 +236,7 @@ def test_auto_register_aws_literal_field_override():
 
 def test_auto_register_aws_without_override_builds_secrets_manager(monkeypatch):
     """With no secrets= override, a SecretsManager is auto-built from region_name."""
-    import duckduck.secrets as secrets_module
+    import duckduck.secrets.aws as secrets_module
 
     fake_client = _fake_aws_client({"host": "x.local", "username": "u", "password": "p"})
     fake_boto3 = MagicMock()
@@ -259,7 +259,7 @@ def test_auto_register_aws_without_override_builds_secrets_manager(monkeypatch):
 
 def test_auto_register_aws_without_boto3_or_override_raises_import_error(monkeypatch):
     """No override and boto3 not installed: a clear ImportError, not a confusing one."""
-    import duckduck.secrets as secrets_module
+    import duckduck.secrets.aws as secrets_module
 
     monkeypatch.setattr(secrets_module, "boto3", None)  # not installed, whatever this machine has
     duck = DuckAPI()
@@ -276,7 +276,7 @@ def test_auto_register_aws_without_boto3_or_override_raises_import_error(monkeyp
 
 def test_auto_register_aws_backend_shared_across_same_region(monkeypatch):
     """Two services in the same region reuse a single auto-built SecretsManager."""
-    import duckduck.secrets as secrets_module
+    import duckduck.secrets.aws as secrets_module
 
     fake_client = MagicMock()
     fake_client.get_secret_value.side_effect = [
@@ -309,7 +309,7 @@ def test_auto_register_aws_backend_shared_across_same_region(monkeypatch):
 
 def test_auto_register_aws_backend_separate_per_region(monkeypatch):
     """Two services in different regions get their own SecretsManager/client."""
-    import duckduck.secrets as secrets_module
+    import duckduck.secrets.aws as secrets_module
 
     fake_boto3 = MagicMock()
     fake_boto3.Session.return_value.client.side_effect = [
@@ -340,7 +340,7 @@ def test_auto_register_aws_backend_separate_per_region(monkeypatch):
 
 def test_auto_register_aws_profile_name_passed_through(monkeypatch):
     """authentication.profile_name selects a specific AWS account via boto3.Session."""
-    import duckduck.secrets as secrets_module
+    import duckduck.secrets.aws as secrets_module
 
     fake_boto3 = MagicMock()
     fake_boto3.Session.return_value.client.return_value = _fake_aws_client(
@@ -367,7 +367,7 @@ def test_auto_register_aws_profile_name_passed_through(monkeypatch):
 
 def test_auto_register_aws_backend_separate_per_profile(monkeypatch):
     """Same region, different profile_name: two separate SecretsManager/client instances."""
-    import duckduck.secrets as secrets_module
+    import duckduck.secrets.aws as secrets_module
 
     fake_boto3 = MagicMock()
     fake_boto3.Session.return_value.client.side_effect = [
@@ -439,7 +439,7 @@ def test_auto_register_azure_missing_vault_url_raises():
 
 def test_auto_register_azure_tenant_id_passed_through(monkeypatch):
     """authentication.tenant_id pins DefaultAzureCredential to a specific Azure AD tenant."""
-    import duckduck.azure_secrets as azure_secrets_module
+    import duckduck.secrets.azure as azure_secrets_module
 
     fake_credential_cls = MagicMock()
     fake_client = _fake_azure_client({"host": "x.local", "username": "u", "password": "p"})
@@ -469,7 +469,7 @@ def test_auto_register_azure_tenant_id_passed_through(monkeypatch):
 
 def test_auto_register_azure_backend_separate_per_tenant(monkeypatch):
     """Same vault_url, different tenant_id: two separate AzureKeyVaultSecrets instances."""
-    import duckduck.azure_secrets as azure_secrets_module
+    import duckduck.secrets.azure as azure_secrets_module
 
     fake_credential_cls = MagicMock()
     fake_secret_client_cls = MagicMock()
@@ -549,7 +549,7 @@ def test_auto_register_azure_without_sdk_or_override_raises_import_error():
 # ---------------------------------------------------------------------------
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_auto_register_sharepoint_local(msal_cls):
     msal_cls.return_value = _mock_msal()
 
@@ -575,7 +575,7 @@ def test_auto_register_sharepoint_local(msal_cls):
     duck.close()
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_auto_register_sharepoint_aws_thumbprint(msal_cls):
     msal_cls.return_value = _mock_msal()
 
@@ -602,7 +602,7 @@ def test_auto_register_sharepoint_aws_thumbprint(msal_cls):
     duck.close()
 
 
-@patch("duckduck.sharepoint.msal.ConfidentialClientApplication")
+@patch("duckduck.connectors.api.sharepoint.msal.ConfidentialClientApplication")
 def test_auto_register_two_different_connectors(msal_cls):
     """SharePoint and InsightVM registered together don't collide (prefix by name)."""
     msal_cls.return_value = _mock_msal()
@@ -719,7 +719,7 @@ def test_auto_register_explicit_services_skips_json_lookup(tmp_path, monkeypatch
 
 def test_auto_register_json_file_with_aws_secret(tmp_path, monkeypatch):
     """The example.json shape: a JSON file whose service uses AWS Secrets Manager."""
-    import duckduck.secrets as secrets_module
+    import duckduck.secrets.aws as secrets_module
 
     fake_client = _fake_aws_client({"host": "x.local", "username": "u", "password": "p"})
     fake_boto3 = MagicMock()
@@ -752,7 +752,7 @@ def test_auto_register_json_file_with_aws_secret(tmp_path, monkeypatch):
 
 
 def test_auto_register_database_connector(monkeypatch):
-    import duckduck.database as database_module
+    import duckduck.connectors.databases.sql as database_module
 
     fake_sa = MagicMock()
     monkeypatch.setattr(database_module, "sa", fake_sa)
@@ -863,8 +863,8 @@ def test_auto_register_axonius_connector():
 
 
 def test_auto_register_glue_connector(monkeypatch):
-    import duckduck.glue as glue_module
-    import duckduck.lakehouse as lakehouse_module
+    import duckduck.connectors.lake.glue as glue_module
+    import duckduck.connectors.lake.lakehouse as lakehouse_module
 
     monkeypatch.setattr(lakehouse_module.duckdb, "connect", MagicMock(return_value=MagicMock()))
     fake_boto3 = MagicMock()
@@ -894,7 +894,7 @@ def test_auto_register_glue_connector(monkeypatch):
 
 
 def test_auto_register_blob_storage_connector(monkeypatch):
-    import duckduck.lakehouse as lakehouse_module
+    import duckduck.connectors.lake.lakehouse as lakehouse_module
 
     monkeypatch.setattr(lakehouse_module.duckdb, "connect", MagicMock(return_value=MagicMock()))
 

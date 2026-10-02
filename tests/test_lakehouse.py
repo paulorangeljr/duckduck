@@ -4,8 +4,8 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
-import duckduck.lakehouse as lakehouse_module
-from duckduck.lakehouse import LakehouseConnection
+import duckduck.connectors.lake.lakehouse as lakehouse_module
+from duckduck.connectors.lake.lakehouse import LakehouseConnection
 
 
 def _make_lake(monkeypatch):

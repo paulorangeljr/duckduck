@@ -27,7 +27,7 @@ from .catalog import Catalog
 from .clarify import ClarificationTexts
 from .compiler import display_sql
 from .decisions import DecisionEngine, DecisionState, JEVAdapter, LexicalDecisionEngine, using_engine
-from .. import progress
+from ..common import progress
 from .metering import metered
 from .router import ModeRouter
 from .executor import PlanExecutor, SourceFetch

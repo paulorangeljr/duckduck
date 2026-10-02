@@ -9,7 +9,7 @@ import argparse
 import sys
 from typing import Dict, List, Optional
 
-from ..logs import set_verbose
+from ..common.logs import set_verbose
 from .domains import Pipelines
 from .sip import read_sip
 from .spec import PipelineError

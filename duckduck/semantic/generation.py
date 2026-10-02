@@ -43,9 +43,9 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 
 from pydantic import BaseModel, Field
 
-from ..logs import human_seconds
-from ..kinds import CATALOG, TABLE, TABLE_FUNCTION, kind_of, lists_of, required_params
-from ..local_files import table_name_for
+from ..common.logs import human_seconds
+from ..common.kinds import CATALOG, TABLE, TABLE_FUNCTION, kind_of, lists_of, required_params
+from ..connectors.local.files import table_name_for
 from .catalog import Catalog, FieldType
 from .apidocs import ApiDocs, DocsRef
 from .llm import LLMClient

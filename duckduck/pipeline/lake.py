@@ -11,7 +11,7 @@ import logging
 from dataclasses import replace
 from typing import Any, Callable, Dict, List, Optional
 
-from ..s3layout import duck_type
+from ..connectors.lake.s3layout import duck_type
 from .catalogs import Column, TableInfo, hive_escape, partitions_from_files, plan_schema
 from .sip import ident
 from .spec import PipelineError, Target

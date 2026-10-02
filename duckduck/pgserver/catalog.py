@@ -376,7 +376,7 @@ def table_entries(duck: Any, columns: ColumnMemory, behind: Sequence[Dict[str, A
     address (``servicenow.incident``, ``s3_data.security.proxy_logs``) unless a table of that name is already
     listed; their "function" is that address, which any query resolves to the table function's call."""
     from .. import addresses
-    from ..kinds import kind_of, needed_arguments, required_params
+    from ..common.kinds import kind_of, needed_arguments, required_params
 
     out = []
     known = addresses.services(duck)

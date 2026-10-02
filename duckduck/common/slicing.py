@@ -64,7 +64,7 @@ def window(first_page: int, pages: int) -> Iterator[Window]:
         _WINDOW.reset(token)
 
 
-logger = logging.getLogger("duckduck.slicing")
+logger = logging.getLogger("duckduck.common.slicing")
 
 _PARALLEL: contextvars.ContextVar[int] = contextvars.ContextVar("duckduck_parallel", default=1)
 

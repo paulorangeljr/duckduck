@@ -31,9 +31,9 @@ import pandas as pd
 import sqlglot
 import sqlglot.expressions as exp
 
-from .logs import get_logger, set_verbose, short, verbose_from_env
-from . import slicing
-from .pushdown import (Condition, assign_conditions, blocker_of, conditions_to_sql, map_conditions, parse_like,
+from .common.logs import get_logger, set_verbose, short, verbose_from_env
+from .common import slicing
+from .common.pushdown import (Condition, assign_conditions, blocker_of, conditions_to_sql, map_conditions, parse_like,
                        where_ops_of)
 
 logger = get_logger("core")
@@ -654,7 +654,7 @@ class DuckAPI:
             every HTTP request, pagination progress with elapsed/remaining
             time. ``"debug"`` adds request bodies and query parameters.
             Defaults to the ``DUCKDUCK_VERBOSE`` environment variable; off
-            when neither is set. See ``duckduck.logs``.
+            when neither is set. See ``duckduck.common.logs``.
         cache : SourceCache, bool or dict, optional
             Reuse what a source returned for the same call (function,
             arguments, push-down) for a while instead of calling it again
@@ -813,7 +813,7 @@ class DuckAPI:
     ) -> Dict[str, Any]:
         """
         Instantiates and registers known API wrappers automatically
-        (see ``duckduck.registry.SERVICE_REGISTRY``), without having to
+        (see ``duckduck.connectors.registry.SERVICE_REGISTRY``), without having to
         call ``register_api_function`` by hand for every method.
 
         Can be called as just ``duck.auto_register()``: when ``services``
@@ -985,7 +985,7 @@ class DuckAPI:
             duck = DuckAPI()
             duck.auto_register()
         """
-        from .registry import SERVICE_REGISTRY
+        from .connectors.registry import SERVICE_REGISTRY
 
         file_on_error = None
         base_dir = None  # relative paths in a JSON config resolve against its directory
@@ -1058,7 +1058,7 @@ class DuckAPI:
                 if at_once is not None:
                     instance.max_parallel = at_once  # wins over the tables' declared @spark_plan(max_parallel=)
                 if retry_block is not None:
-                    from .retry import RetryPolicy
+                    from .common.retry import RetryPolicy
 
                     current = getattr(instance, "retry", None)
                     if not isinstance(current, RetryPolicy):
@@ -1243,14 +1243,14 @@ class DuckAPI:
 
         if backend_key not in backend_cache:
             if auth_type == "aws":
-                from .secrets import SecretsManager
+                from .secrets.aws import SecretsManager
 
                 _, region_name, profile_name = backend_key
                 backend_cache[backend_key] = SecretsManager(
                     region_name=region_name, profile_name=profile_name
                 )
             else:
-                from .azure_secrets import AzureKeyVaultSecrets
+                from .secrets.azure import AzureKeyVaultSecrets
 
                 _, vault_url, tenant_id = backend_key
                 backend_cache[backend_key] = AzureKeyVaultSecrets(
@@ -1435,7 +1435,7 @@ class DuckAPI:
 
         Priority (highest → lowest):
         1. Explicit kwargs from the SQL call  ``func(x=1)``
-        2. WHERE/LIMIT push-down from the SQL (see ``duckduck.pushdown``
+        2. WHERE/LIMIT push-down from the SQL (see ``duckduck.common.pushdown``
            for how each operator maps onto parameters)
 
         ``names`` — the function's name and its alias in the query: a
@@ -1519,7 +1519,7 @@ class DuckAPI:
 
     def _check_arguments(self, query: str, pushdown: PushDownContext) -> None:
         """Every ``arg.x`` must be an argument of a table the query reads — else it'd be silently ignored."""
-        from .kinds import required_params
+        from .common.kinds import required_params
 
         for c in self._arg_conditions(pushdown):
             takers = [n for n, fn in self.functions.items()
@@ -1657,7 +1657,7 @@ class DuckAPI:
         -------
         (table_name, df_columns) : (str, list[str])
         """
-        from . import progress
+        from .common import progress
 
         from . import cache as source_cache
 
@@ -1709,7 +1709,7 @@ class DuckAPI:
         listener = self.column_listener
         if listener is None:
             return
-        from .kinds import required_params
+        from .common.kinds import required_params
 
         try:
             key = function_name
@@ -1769,7 +1769,7 @@ class DuckAPI:
                    and tables == 1 else None)
 
         from . import cache as source_cache
-        from . import progress
+        from .common import progress
 
         validated = self._validate_arguments(fn_name, iter_fn, kwargs)
         key = (source_cache.key_of("pages", fn_name, id(iter_fn), validated, conditions,
@@ -2009,20 +2009,20 @@ class DuckAPI:
     #: from outside these modules (a hand-rolled wrapper, a lambda in a
     #: notebook, ...) falls back to its own ``__module__``.
     _CONNECTOR_SOURCE_LABELS = {
-        "duckduck.sharepoint": "SharePoint (HTTP API)",
-        "duckduck.rapid7": "InsightVM (HTTP API)",
-        "duckduck.servicenow": "ServiceNow (HTTP API)",
-        "duckduck.axonius": "Axonius (HTTP API)",
-        "duckduck.nvd": "NVD — National Vulnerability Database (HTTP API)",
-        "duckduck.restcountries": "REST Countries (HTTP API)",
-        "duckduck.database": "SQL database",
-        "duckduck.glue": "S3 / Glue Data Catalog",
-        "duckduck.athena": "Amazon Athena (SQL on S3)",
-        "duckduck.airflow": "Apache Airflow on MWAA (REST API)",
-        "duckduck.blob_storage": "Azure Blob Storage",
-        "duckduck.adx": "Azure Data Explorer (KQL)",
-        "duckduck.local_files": "Local files",
-        "duckduck.python_source": "Python module",
+        "duckduck.connectors.api.sharepoint": "SharePoint (HTTP API)",
+        "duckduck.connectors.api.insightvm": "InsightVM (HTTP API)",
+        "duckduck.connectors.api.servicenow": "ServiceNow (HTTP API)",
+        "duckduck.connectors.api.axonius": "Axonius (HTTP API)",
+        "duckduck.connectors.api.nvd": "NVD — National Vulnerability Database (HTTP API)",
+        "duckduck.connectors.api.restcountries": "REST Countries (HTTP API)",
+        "duckduck.connectors.databases.sql": "SQL database",
+        "duckduck.connectors.lake.glue": "S3 / Glue Data Catalog",
+        "duckduck.connectors.databases.athena": "Amazon Athena (SQL on S3)",
+        "duckduck.connectors.api.airflow": "Apache Airflow on MWAA (REST API)",
+        "duckduck.connectors.lake.blob_storage": "Azure Blob Storage",
+        "duckduck.connectors.databases.adx": "Azure Data Explorer (KQL)",
+        "duckduck.connectors.local.files": "Local files",
+        "duckduck.connectors.local.python_source": "Python module",
         "duckduck.semantic.takeover": "Taken over (answer rows, in memory)",
         "duckduck.views": "Saved query",
     }
@@ -2075,7 +2075,7 @@ class DuckAPI:
         """
         Lists everything registered via ``register_api_function()`` /
         ``auto_register()`` — and, crucially, *what each one is*, since not
-        every name is a plain table (see ``duckduck.kinds``):
+        every name is a plain table (see ``duckduck.common.kinds``):
 
         - ``table``: data you can ``SELECT`` as-is.
         - ``table function``: data behind required arguments —
@@ -2114,7 +2114,7 @@ class DuckAPI:
               (password redacted), file path — when there's one to show.
             - ``description``: first line of the function's docstring.
         """
-        from .kinds import ORDER, describe
+        from .common.kinds import ORDER, describe
 
         wanted = None
         if kind is not None:
@@ -2171,7 +2171,7 @@ class DuckAPI:
         ``service`` — plus a note per catalog that couldn't be read. Every
         catalog read is a call to its source.
         """
-        from .kinds import CATALOG, drafts_of, kind_of, lists_of, required_params
+        from .common.kinds import CATALOG, drafts_of, kind_of, lists_of, required_params
 
         tables: List[Dict[str, Any]] = []
         notes: List[str] = []
@@ -2343,7 +2343,7 @@ class DuckAPI:
         ``max_parallel`` unless it's read on the driver only (a rate limit, a cursor) — then one."""
         if not self.parallel:
             return 1
-        from .sparkplan import requests_at_once
+        from .common.sparkplan import requests_at_once
 
         plan = self._plan_of(fn_name)
         if plan is None or plan.strategy == "driver":
@@ -2361,7 +2361,7 @@ class DuckAPI:
         return fn
 
     def _plan_of(self, fn_name: str) -> Any:
-        from .sparkplan import plan_of
+        from .common.sparkplan import plan_of
 
         fn = self._base_function(fn_name)
         return plan_of(fn) if fn is not None else None
@@ -2370,7 +2370,7 @@ class DuckAPI:
         """How many of this table's pages may be requested at once: its declared ``max_parallel`` when its API
         reads any page on its own (``@spark_plan("partitioned", by="pages")``), else 1 — a saved table's is its
         base table's. The service's ``"max_parallel"`` in duckduck.json (set on the connector) wins."""
-        from .sparkplan import requests_at_once
+        from .common.sparkplan import requests_at_once
 
         if not self.parallel:
             return 1
@@ -2540,7 +2540,7 @@ class DuckAPI:
         (``_calls_at_once``) —, kept as one table. A call per value on a parameter that isn't a result column
         gets it as one, so the join's ON still binds."""
         from . import cache as source_cache
-        from . import progress
+        from .common import progress
 
         def one(kwargs: Dict[str, Any]) -> pd.DataFrame:
             validated = self._validate_arguments(fn_name, fn, kwargs)

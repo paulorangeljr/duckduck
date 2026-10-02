@@ -51,12 +51,13 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import pandas as pd
 
-from . import progress, s3layout
-from .kinds import catalog, raw_query
-from .lakehouse import LakehouseConnection
-from .logs import get_logger
-from .pushdown import Condition, parse_like
-from .sparkplan import SparkSource, spark_plan
+from ...common import progress
+from ..lake import s3layout
+from ...common.kinds import catalog, raw_query
+from ..lake.lakehouse import LakehouseConnection
+from ...common.logs import get_logger
+from ...common.pushdown import Condition, parse_like
+from ...common.sparkplan import SparkSource, spark_plan
 
 logger = get_logger("athena")
 

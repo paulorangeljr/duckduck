@@ -59,12 +59,12 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 import pandas as pd
 import requests
 
-from . import slicing
-from .kinds import catalog
-from .logs import PageProgress, get_logger, instrument_session, log_http
-from .retry import RetryPolicy, send
-from .pushdown import Condition, parse_like, require_like
-from .sparkplan import spark_plan
+from ...common import slicing
+from ...common.kinds import catalog
+from ...common.logs import PageProgress, get_logger, instrument_session, log_http
+from ...common.retry import RetryPolicy, send
+from ...common.pushdown import Condition, parse_like, require_like
+from ...common.sparkplan import spark_plan
 
 #: one token request at a time (a lock kept off the instance: the connector is pickled for Spark)
 _TOKEN_LOCK = threading.Lock()
@@ -367,7 +367,7 @@ class ServiceNow:
     WHERE_OPS = frozenset({"eq", "like", "ilike", "gt", "gte", "lt", "lte", "in"})
     IN_MAX = 100
 
-    #: SQL LIKE pattern kind (``duckduck.pushdown.parse_like``) → encoded-query operator.
+    #: SQL LIKE pattern kind (``duckduck.common.pushdown.parse_like``) → encoded-query operator.
     _LIKE_OPERATORS = {"contains": "LIKE", "startswith": "STARTSWITH", "endswith": "ENDSWITH", "equals": "="}
 
     @staticmethod
@@ -384,7 +384,7 @@ class ServiceNow:
         """
         Builds a ``^``-joined encoded query from non-None kwargs: ``field=value``
         for equality, and for ``<field>_ilike`` kwargs (a SQL LIKE pattern,
-        see ``duckduck.pushdown``) ``fieldLIKEx`` / ``fieldSTARTSWITHx`` /
+        see ``duckduck.common.pushdown``) ``fieldLIKEx`` / ``fieldSTARTSWITHx`` /
         ``fieldENDSWITHx`` — ServiceNow's text operators, case-insensitive
         on standard instances.
         """
@@ -456,7 +456,7 @@ class ServiceNow:
 
     def pushdown_blocker(self, cond: Condition) -> Optional[str]:
         """
-        DuckAPI push-down hook (``duckduck.pushdown.BLOCKER_HOOK``): None if
+        DuckAPI push-down hook (``duckduck.common.pushdown.BLOCKER_HOOK``): None if
         ``cond`` can go into ``sysparm_query``, else why not — so DuckAPI
         keeps it (and the LIMIT decision) on its side and reports it.
         """
@@ -521,7 +521,7 @@ class ServiceNow:
             progress.page(len(results), total_pages=pages, total_rows=total)
             return results, total
 
-        # every page, or the ones a Spark read asked for (``duckduck.slicing``)
+        # every page, or the ones a Spark read asked for (``duckduck.common.slicing``)
         yield from slicing.pages(fetch_page, self.default_page_size)
 
     def _fetch(

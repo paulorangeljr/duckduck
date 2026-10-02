@@ -394,7 +394,7 @@ class Lake:
 
 
 def _two_service_duck():
-    from duckduck.kinds import catalog
+    from duckduck.common.kinds import catalog
 
     duck = DuckAPI()
     lake = Lake({("security", "proxy_logs"): [{"ip": "1"}], ("security", "dns_logs"): [{"q": "a"}],
@@ -485,7 +485,7 @@ def test_cli_only(project, capsys):
 def test_verbose_level_applies_even_with_your_own_duck(project, caplog):
     import logging
 
-    from duckduck.logs import set_verbose
+    from duckduck.common.logs import set_verbose
 
     folder, write, llm = project
     cfg = write()

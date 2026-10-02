@@ -163,13 +163,13 @@ def test_servicenow_sends_the_values_as_an_encoded_in_a_hundred_per_request():
     assert len(queries) == 2 and all(q.startswith("sys_idIN") for q in queries)
     assert sorted(v for q in queries for v in q[len("sys_idIN"):].split(",")) == keys
     assert rows == [("I1",), ("I1",)]  # the fake answers k001 to both requests: DuckDB still joins exactly
-    assert sn._condition_clause(__import__("duckduck").pushdown.Condition("sys_id", "in", ("a,b",)))[0] is None
+    assert sn._condition_clause(__import__("duckduck").common.pushdown.Condition("sys_id", "in", ("a,b",)))[0] is None
 
 
 def test_a_sql_database_gets_a_real_in(tmp_path):
     import sqlalchemy as sa
 
-    from duckduck.database import SQLDatabase
+    from duckduck.connectors.databases.sql import SQLDatabase
 
     db = SQLDatabase(f"sqlite:///{tmp_path}/crm.db")
     with db.engine.begin() as c:

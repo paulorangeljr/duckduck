@@ -33,7 +33,8 @@ import threading
 import time
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
-from .. import addresses, progress
+from .. import addresses
+from ..common import progress
 from ..views import read_only_reason, statements
 from . import catalog as pgcat
 from . import protocol as pg
@@ -451,7 +452,7 @@ class Session:
         names = catalog.unknown_in(sql)
         if not names or len(names) > self.server.learn_at_most:
             return
-        from ..kinds import needed_arguments, required_params
+        from ..common.kinds import needed_arguments, required_params
 
         for name in names:
             fn = self.source_fn(name)
@@ -1011,7 +1012,7 @@ class PGServer:
 
     def catalog_services(self) -> List[str]:
         """The services whose ``@catalog(lists=...)`` catalogs are read for the listing (``catalog_tables``)."""
-        from ..kinds import CATALOG, kind_of, lists_of
+        from ..common.kinds import CATALOG, kind_of, lists_of
 
         wanted = self.catalog_tables
         if not wanted:

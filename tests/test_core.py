@@ -350,7 +350,7 @@ def test_list_tables_source_and_endpoint_for_bound_method_with_base_url():
             """Lists incidents."""
             return [{"number": "INC0001"}]
 
-    FakeConnector.incidents.__module__ = "duckduck.servicenow"
+    FakeConnector.incidents.__module__ = "duckduck.connectors.api.servicenow"
     d = DuckAPI()
     d.register_api_function("incidents", FakeConnector().incidents)
 
@@ -481,7 +481,7 @@ def test_stream_inline_structural_param():
 # list_tables(): what each registered name *is*
 # ---------------------------------------------------------------------------
 
-from duckduck.kinds import catalog, raw_query  # noqa: E402
+from duckduck.common.kinds import catalog, raw_query  # noqa: E402
 
 
 class _Kinds:
@@ -542,11 +542,11 @@ def test_show_tables_has_the_same_columns(kinds_duck):
 
 
 def test_bundled_connectors_mark_catalogs_and_raw_queries():
-    from duckduck.adx import DataExplorer
-    from duckduck.database import SQLDatabase
-    from duckduck.glue import GlueTable
-    from duckduck.kinds import kind_of
-    from duckduck.local_files import LocalFiles
+    from duckduck.connectors.databases.adx import DataExplorer
+    from duckduck.connectors.databases.sql import SQLDatabase
+    from duckduck.connectors.lake.glue import GlueTable
+    from duckduck.common.kinds import kind_of
+    from duckduck.connectors.local.files import LocalFiles
 
     assert kind_of(GlueTable.tables) == kind_of(GlueTable.columns) == kind_of(GlueTable.databases) == "catalog"
     assert kind_of(LocalFiles.tables) == kind_of(DataExplorer.tables) == "catalog"

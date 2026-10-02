@@ -51,10 +51,10 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 import pandas as pd
 import requests
 
-from .logs import PageProgress, get_logger, instrument_session
-from .retry import RetryPolicy, send
-from .pushdown import require_like
-from .sparkplan import spark_plan
+from ...common.logs import PageProgress, get_logger, instrument_session
+from ...common.retry import RetryPolicy, send
+from ...common.pushdown import require_like
+from ...common.sparkplan import spark_plan
 
 logger = get_logger("restcountries")
 

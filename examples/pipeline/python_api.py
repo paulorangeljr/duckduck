@@ -13,7 +13,7 @@ Runs offline over examples/pipeline (writes to examples/pipeline/lake/):
 
 import os
 
-from duckduck.logs import set_verbose
+from duckduck.common.logs import set_verbose
 from duckduck.pipeline import PipelineError, Pipelines
 
 HERE = os.path.dirname(os.path.abspath(__file__))
