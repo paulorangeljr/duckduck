@@ -744,7 +744,7 @@ def test_a_numeric_watermark_stays_a_number(duck, tmp_path):
     assert plan_pipeline(spec).load["where"] == '"priority" > 3'
 
 
-# -- domain files: several jobs grouped, run through the Pipelines class -----------------------------------------------
+# -- domain files: several tables grouped, run through the Pipelines class -----------------------------------------------
 
 
 def _domain_setup(tmp_path):
@@ -760,21 +760,21 @@ def _domain_setup(tmp_path):
         "lake": {"layers": {"raw": "lake/raw", "silver": "lake/silver"}, "state": "lake/_state"}}))
     domain = tmp_path / "raw_corp.json"
     domain.write_text(json.dumps({
-        "domain": "corp", "layer": "raw", "target": {"mode": "append"}, "sip": False,
-        "jobs": {"hosts": {"primary_key": "hostname", "sql": "SELECT * FROM hosts"},
+        "domain": "corp", "layer": "raw", "sip": False,
+        "tables": {"hosts": {"primary_key": "hostname", "sql": "SELECT * FROM hosts", "target": {"mode": "append"}},
                  "people": {"primary_key": "user", "sql": "SELECT * FROM people",
-                            "target": {"table_name": "staff"}}}}))
+                            "target": {"table_name": "staff", "mode": "overwrite"}}}}))
     return Pipelines(config=str(config)), domain
 
 
-def test_a_domain_file_holds_several_jobs_with_shared_defaults(tmp_path):
+def test_a_domain_file_holds_several_tables_each_its_own(tmp_path):
     pipelines, file = _domain_setup(tmp_path)
     raw = pipelines.domain(str(file))
-    assert raw.jobs == ["hosts", "people"] and raw.name == "corp"
+    assert raw.tables == ["hosts", "people"] and raw.name == "corp"
     hosts, people = raw.spec("hosts"), raw.spec("people")
-    assert hosts.name == "raw_corp_hosts" and people.name == "raw_corp_people"  # state / sip names per job
+    assert hosts.name == "raw_corp_hosts" and people.name == "raw_corp_people"  # state / sip names per table
     assert hosts.targets[0].table == "corp.hosts" and people.targets[0].table == "corp.staff"
-    assert people.targets[0].mode == "append"  # the domain's target, merged key by key
+    assert hosts.targets[0].mode == "append" and people.targets[0].mode == "overwrite"  # each table its own
     runs = raw.run()
     assert [r.pipeline for r in runs] == ["raw_corp_hosts", "raw_corp_people"]
     assert (tmp_path / "lake" / "raw" / "corp" / "staff").is_dir()
@@ -783,11 +783,11 @@ def test_a_domain_file_holds_several_jobs_with_shared_defaults(tmp_path):
     assert len(one) == 1 and one[0].writes[0]["rows"] == 2
 
 
-def test_a_job_reads_what_the_one_before_wrote(tmp_path):
+def test_a_table_reads_what_the_one_before_wrote(tmp_path):
     pipelines, file = _domain_setup(tmp_path)
-    silver = pipelines.domain({"domain": "corp", "layer": "silver", "load": "incremental", "target": {"mode": "merge"},
-                               "sip": False, "jobs": {"hosts": {"primary_key": "hostname",
-                                                                "sql": "SELECT * FROM raw_hosts"}}},
+    silver = pipelines.domain({"domain": "corp", "layer": "silver", "sip": False,
+                               "tables": {"hosts": {"primary_key": "hostname", "sql": "SELECT * FROM raw_hosts",
+                                                  "load": "incremental", "target": {"mode": "merge"}}}},
                               base_dir=str(tmp_path))
     pipelines.domain(str(file)).run("hosts")  # lake/raw/corp/hosts exists only now
     run = silver.run()[0]
@@ -797,25 +797,55 @@ def test_a_job_reads_what_the_one_before_wrote(tmp_path):
 def test_domain_files_say_what_is_wrong(tmp_path):
     pipelines, file = _domain_setup(tmp_path)
     with pytest.raises(PipelineError, match="'domain' names the group"):
-        pipelines.domain({"jobs": {"a": {"sql": "SELECT 1"}}})
-    with pytest.raises(PipelineError, match="'jobs' is an object"):
-        pipelines.domain({"domain": "d", "jobs": []})
-    with pytest.raises(PipelineError, match="job 'b' of the domain: unknown key"):
-        pipelines.domain({"domain": "d", "jobs": {"b": {"sql": "SELECT 1", "nope": 1}}})
-    with pytest.raises(PipelineError, match="no job 'x' here \\(jobs: hosts, people\\)"):
+        pipelines.domain({"domain": "a-b", "tables": {"a": {"sql": "SELECT 1"}}})
+    with pytest.raises(PipelineError, match="\\['load', 'target'\\] go inside each table — a domain file shares only"):
+        pipelines.domain({"domain": "d", "load": "full", "target": {"mode": "append"}, "tables": {"a": {"sql": "SELECT 1"}}})
+    with pytest.raises(PipelineError, match="\"domain_description\" — \"description\" belongs to each table"):
+        pipelines.domain({"domain": "d", "description": "x", "tables": {"a": {"sql": "SELECT 1"}}})
+    with pytest.raises(PipelineError, match="'tables' is an object"):
+        pipelines.domain({"domain": "d", "tables": []})
+    with pytest.raises(PipelineError, match="table 'b' of the domain: unknown key"):
+        pipelines.domain({"domain": "d", "tables": {"b": {"sql": "SELECT 1", "nope": 1}}})
+    with pytest.raises(PipelineError, match="no table 'x' here \\(tables: hosts, people\\)"):
         pipelines.domain(str(file)).run("x")
-    with pytest.raises(PipelineError, match="has 2 jobs \\(hosts, people\\) — name one"):
+    with pytest.raises(PipelineError, match="has 2 tables \\(hosts, people\\) — name one"):
         pipelines.run(str(file))
 
 
-def test_the_cli_runs_a_domain_or_one_of_its_jobs(tmp_path, capsys):
+def test_the_cli_runs_a_domain_or_one_of_its_tables(tmp_path, capsys):
     from duckduck.pipeline.__main__ import main
 
     _, file = _domain_setup(tmp_path)
     config = str(tmp_path / "duckduck.json")
-    assert main(["run", str(file), "--config", config, "--job", "people"]) == 0
+    assert main(["run", str(file), "--config", config, "--table", "people"]) == 0
     out = capsys.readouterr().out
     assert "pipeline raw_corp_people" in out and "raw_corp_hosts" not in out
     assert main(["plan", str(file), "--config", config]) == 0
     out = capsys.readouterr().out
     assert "pipeline raw_corp_hosts" in out and "pipeline raw_corp_people" in out
+
+
+def test_a_table_overrides_the_domain_layer_and_sip_of_its_file(tmp_path):
+    pipelines, _ = _domain_setup(tmp_path)
+    d = pipelines.domain({
+        "domain": "corp", "layer": "raw", "sip": {"rate": 0.5, "max_rows": 10},
+        "tables": {"a": {"sql": "SELECT 1 AS id", "primary_key": "id"},
+                 "b": {"sql": "SELECT 1 AS id", "primary_key": "id", "layer": "silver", "domain": "hr",
+                       "sip": {"watch": [1]}},
+                 "c": {"sql": "SELECT 1 AS id", "primary_key": "id", "sip": False},
+                 "d": {"sql": "SELECT 1 AS id", "primary_key": "id", "target": {"path": str(tmp_path / "out")}}}},
+        base_dir=str(tmp_path))
+    a, b, c, dd = (d.spec(j) for j in "abcd")
+    assert (a.name, a.targets[0].table) == ("raw_corp_a", "corp.a") and a.sip.max_rows == 10
+    assert (b.name, b.targets[0].table) == ("silver_hr_b", "hr.b")
+    assert b.sip.max_rows == 10 and b.sip.watch == ["1"]  # its own sip over the file's, key by key
+    assert not c.sip.enabled
+    assert dd.targets[0].path == str(tmp_path / "out")  # a table with its own path keeps it
+
+
+def test_a_domain_is_optional(tmp_path):
+    pipelines, _ = _domain_setup(tmp_path)
+    d = pipelines.domain({"layer": "raw", "tables": {"x": {"sql": "SELECT 1 AS id", "primary_key": "id",
+                                                          "target": {"database": "misc"}}}},
+                         base_dir=str(tmp_path))
+    assert d.spec("x").name == "raw_x" and d.spec("x").targets[0].table == "misc.x"

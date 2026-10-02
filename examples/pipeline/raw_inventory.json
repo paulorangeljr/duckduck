@@ -1,21 +1,21 @@
 {
   "domain": "inventory",
-  "description": "Raw: the inventory sources as they came, appended every run (_loaded_at / _load_date / _run_id are added by the runner). Runs as often as the sources change.",
+  "domain_description": "Raw: the inventory sources as they came, appended every run (_loaded_at / _load_date / _run_id are added by the runner). Runs as often as the sources change.",
   "layer": "raw",
-  "load": "full",
-  "target": {
-    "mode": "append",
-    "partition_by": "_load_date"
-  },
   "sip": {
     "rate": 0.02,
     "max_rows": 50
   },
-  "jobs": {
+  "tables": {
     "assets": {
       "description": "The assets API.",
       "primary_key": "hostname",
       "sql": "SELECT * FROM assets",
+      "load": "full",
+      "target": {
+        "mode": "append",
+        "partition_by": "_load_date"
+      },
       "sip": {
         "watch": ["web-0001"],
         "columns": ["ip", "os", "risk", "last_seen"]
@@ -24,7 +24,12 @@
     "owners": {
       "description": "Who owns each IP — the owners file.",
       "primary_key": "ip",
-      "sql": "SELECT * FROM owners"
+      "sql": "SELECT * FROM owners",
+      "load": "full",
+      "target": {
+        "mode": "append",
+        "partition_by": "_load_date"
+      }
     }
   }
 }

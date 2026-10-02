@@ -7,7 +7,7 @@ See ``spec`` (the file), ``analysis`` (views and the key's way), ``sip``,
 """
 
 from .analysis import Plan
-from .jobs import Domain, Pipelines, Runs
+from .domains import Domain, Pipelines, Runs
 from .notebook import PipelineSession, notebook
 from .runner import PipelineRun, plan_pipeline, run_pipeline
 from .sip import read_sip

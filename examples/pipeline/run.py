@@ -1,5 +1,5 @@
 """
-Raw, silver and gold, fully offline — each a file of jobs grouped by domain:
+Raw, silver and gold, fully offline — each a file of tables grouped by domain:
 
     python examples/pipeline/run.py
 
@@ -16,19 +16,19 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # the connectors the SQL reads and the lake settings: duckduck.pipeline.json
 pipelines = Pipelines(config=os.path.join(HERE, "duckduck.pipeline.json"))
 
-raw = pipelines.domain(os.path.join(HERE, "raw_inventory.json"))        # jobs: assets, owners
-silver = pipelines.domain(os.path.join(HERE, "silver_inventory.json"))  # jobs: assets, owners
-gold = pipelines.domain(os.path.join(HERE, "gold_risk.json"))           # one job: gold_risk
+raw = pipelines.domain(os.path.join(HERE, "raw_inventory.json"))        # tables: assets, owners
+silver = pipelines.domain(os.path.join(HERE, "silver_inventory.json"))  # tables: assets, owners
+gold = pipelines.domain(os.path.join(HERE, "gold_risk.json"))           # one table: gold_risk
 
 
 def main() -> None:
-    print(raw.run().report())            # every raw job — say, every 15 minutes
-    print(raw.run("assets").report())    # just one job: assets again
+    print(raw.run().report())            # every raw table — say, every 15 minutes
+    print(raw.run("assets").report())    # just one table: assets again
     print(silver.run().report())         # every hour: what raw loaded since silver's last run, one row per key
     print(silver.run("assets").report()) # nothing new since: its watermark doesn't move
     print(gold.run().report())
 
-    # one host's way through every job
+    # one host's way through every table
     way = pipelines.sip(key="web-0001")
     print(way[["pipeline", "stage", "event", "stage_key", "row"]].to_string(index=False))
 

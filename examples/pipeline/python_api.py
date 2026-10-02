@@ -2,8 +2,8 @@
 The pipeline from Python — everything the command line does, through the
 Pipelines class:
 
-    python -m duckduck.pipeline plan FILE [--job J]   →  pipelines.domain(FILE).plan(J)
-    python -m duckduck.pipeline run FILE [--job J]    →  pipelines.domain(FILE).run(J)
+    python -m duckduck.pipeline plan FILE [--table T] →  pipelines.domain(FILE).plan(T)
+    python -m duckduck.pipeline run FILE [--table T]  →  pipelines.domain(FILE).run(T)
     python -m duckduck.pipeline sip STORE --key K     →  pipelines.sip(key=K)
 
 Runs offline over examples/pipeline (writes to examples/pipeline/lake/):
@@ -28,16 +28,16 @@ gold = pipelines.domain(os.path.join(HERE, "gold_risk.json"))
 
 def main() -> None:
     set_verbose(False)  # True / "info" / "debug" = the CLI's -v / -vv
-    print(raw.jobs, silver.jobs, gold.jobs)  # ['assets', 'owners'] ['assets', 'owners'] ['gold_risk']
+    print(raw.tables, silver.tables, gold.tables)  # ['assets', 'owners'] ['assets', 'owners'] ['gold_risk']
 
-    # 1. plan: what a job would do — steps, what each reads, the key's way, the targets. Nothing runs.
+    # 1. plan: what a table's run would do — steps, what each reads, the key's way, the targets. Nothing runs.
     plan = gold.plan("gold_risk", params={"min_risk": 70})
-    print(plan.report())  # the gold notebook's WITH steps show up as the job's steps
+    print(plan.report())  # the gold notebook's WITH steps show up as the run's steps
     print("steps run:", plan.needed, "| followed by the sip:", plan.sampled)
 
     # 2. run. params = --param, run_id = --run-id, dry_run = --dry-run
     try:
-        raw.run(params={"run_date": "2026-10-01"})  # every raw job
+        raw.run(params={"run_date": "2026-10-01"})  # every raw table
         silver.run()                                # what raw loaded since silver's last run
         runs = gold.run(params={"min_risk": 70})
     except PipelineError as exc:  # a problem in a file or the SQL, said in a sentence
@@ -54,7 +54,7 @@ def main() -> None:
     # a dry run: steps and sip, nothing written
     print(gold.run(params={"min_risk": 90}, dry_run=True).report())
 
-    # 3. the sip kept in the lake: one key's way through every job
+    # 3. the sip kept in the lake: one key's way through every table
     way = pipelines.sip(key="web-0001")
     print(way[["pipeline", "run_id", "stage", "event", "stage_key", "row"]].to_string(index=False))
 

@@ -2531,46 +2531,53 @@ writes (`INSERT`, `COPY`…) is refused: writes come from the target only.
 composite key is merged on all its columns and followed by the sip as one
 (`A-1|3`).
 
-### Several jobs in one file, grouped by domain — and the class that runs them
+### Several tables in one file, grouped by domain — and the class that runs them
 
-A file can hold every ingestion of a domain. Everything next to `"jobs"` is a
-default each job can override (`target`, `sip`, `load`… merge key by key):
+A file can hold every ingestion of a domain, each table controlling its own
+behaviour — load, target, key, its `description`. Only `domain` (+
+`domain_description`), `layer` and `sip` may sit next to `"tables"`, and a table
+can set any of those itself too (its `sip` goes key by key over the file's;
+`"sip": false` turns it off):
 
 ```json
 {
   "domain": "inventory",
+  "domain_description": "Everything about hosts and who owns them.",
   "layer": "raw",
-  "load": "full",
-  "target": {"mode": "append", "partition_by": "_load_date"},
-  "jobs": {
-    "assets": {"primary_key": "hostname", "sql": "SELECT * FROM assets"},
-    "owners": {"primary_key": "ip", "sql": "SELECT * FROM owners"}
+  "sip": {"rate": 0.02, "max_rows": 50},
+  "tables": {
+    "assets": {"description": "The assets API.", "primary_key": "hostname", "sql": "SELECT * FROM assets",
+               "load": "full", "target": {"mode": "append", "partition_by": "_load_date"},
+               "sip": {"watch": ["web-0001"]}},
+    "owners": {"description": "Who owns each IP.", "primary_key": "ip", "sql": "SELECT * FROM owners",
+               "load": {"type": "incremental", "columns": ["updated_at"]}, "target": {"mode": "merge"}}
   }
 }
 ```
 
-A job in a layer writes to `database` = the domain, `table_name` = the job
-(`lake/raw/inventory/assets`, registered as `inventory.assets`) unless it
-says otherwise; its pipeline name — its state file and sip folder — is
-`{layer}_{domain}_{job}` (`raw_inventory_assets`), so the same domain in raw
+Anything else next to `"tables"` is refused, naming the keys to move into the
+tables. A table in a layer is written to `database` = its domain, `table_name` = its name
+(`lake/raw/inventory/assets`, registered as `inventory.assets`) unless its
+target says otherwise (a table with its own `path` stays out of the layer); its pipeline name — its state file and sip folder — is
+`{layer}_{domain}_{table}` (`raw_inventory_assets`), so the same domain in raw
 and silver never shares a watermark. A plain pipeline file (`"pipeline": …`)
-still works: a domain of one job.
+still works: a domain of one table.
 
 ```python
 from duckduck.pipeline import Pipelines
 
 pipelines = Pipelines(config="duckduck.json")   # the connectors + the "lake" settings
 raw = pipelines.domain("raw_inventory.json")
-raw.jobs                     # ['assets', 'owners']
-raw.run()                    # every job, in order — .report() for all of them
+raw.tables                   # ['assets', 'owners']
+raw.run()                    # every table, in order — .report() for all of them
 raw.run("assets")            # one
 raw.plan("owners").report()  # what it would do, nothing runs
 pipelines.sip(key="web-0001")
 ```
 
-Each job gets the connectors as the lake is now (a job reads what the one
+Each run gets the connectors as the lake is now (a table reads what the one
 before it wrote); `Pipelines(duck=…)` shares one instead, `spark=` gives the
-session for `"engine": "spark"` jobs. From the shell: `run FILE --job assets`.
+session for `"engine": "spark"` tables. From the shell: `run FILE --table assets`.
 
 ### One job per layer, each on its own schedule — full or incremental
 
@@ -2712,8 +2719,8 @@ python -m duckduck.pipeline sip s3://lake/_sip/ --key INC0001234       # one row
 
 | CLI | Python (`pipelines = Pipelines(config=…)`) |
 |---|---|
-| `python -m duckduck.pipeline plan FILE [--job J] [--config]` | `pipelines.domain(FILE).plan(J).report()` |
-| `python -m duckduck.pipeline run FILE [--job J …] [--config] [--param k=v] [--dry-run]` | `pipelines.domain(FILE).run(J, params=, dry_run=).report()` |
+| `python -m duckduck.pipeline plan FILE [--table T] [--config]` | `pipelines.domain(FILE).plan(T).report()` |
+| `python -m duckduck.pipeline run FILE [--table T …] [--config] [--param k=v] [--dry-run]` | `pipelines.domain(FILE).run(T, params=, dry_run=).report()` |
 | `python -m duckduck.pipeline sip STORE [--pipeline] [--key] [--run-id] [--config]` | `pipelines.sip(key=)` / `read_sip(STORE, pipeline=, key=, run_id=, aws=)` |
 
 `run_pipeline(FILE, duck=, spark=, params=, dry_run=)` / `plan_pipeline(…)` still run one pipeline file directly.
