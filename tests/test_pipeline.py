@@ -493,11 +493,14 @@ def test_the_example_runs_bronze_silver_gold_as_independent_jobs(tmp_path, capsy
                         ignore=shutil.ignore_patterns("lake", "__pycache__"))
     runpy.run_path(str(tmp_path / "examples" / "pipeline" / "run.py"), run_name="__main__")
     out = capsys.readouterr().out
-    assert out.count("pipeline assets_bronze") == 2 and "pipeline gold_risk" in out
+    assert out.count("pipeline raw_inventory_assets") == 2 and out.count("pipeline raw_inventory_owners") == 1
+    assert out.count("pipeline silver_inventory_assets") == 2 and "pipeline gold_risk" in out
     assert "incremental on _loaded_at: first run: read everything" in out and "(merge, skipped)" in out
     assert "read where \"_loaded_at\" > '" in out and "nothing newer" in out
+    assert "lake/raw/inventory/owners" in out and "lake/silver/inventory/owners" in out
     way = read_sip(str(tmp_path / "examples" / "pipeline" / "lake" / "_sip"), key="web-0001")
-    assert list(dict.fromkeys(way["stage"])) == ["assets_bronze", "assets_silver", "exposed", "gold_risk"]
+    assert list(dict.fromkeys(way["stage"])) == ["raw_inventory_assets", "silver_inventory_assets", "exposed",
+                                                 "gold_risk"]
     assert way["event"].iloc[-1] == "grouped"
     example = tmp_path / "examples" / "pipeline"
     plan = plan_pipeline(str(example / "gold_risk.json"), config_path=str(example / "duckduck.pipeline.json"))
@@ -739,3 +742,80 @@ def test_a_numeric_watermark_stays_a_number(duck, tmp_path):
             "load": {"type": "incremental", "columns": ["priority"]}, "target": str(tmp_path / "o")}
     run_pipeline(spec, duck=duck)
     assert plan_pipeline(spec).load["where"] == '"priority" > 3'
+
+
+# -- domain files: several jobs grouped, run through the Pipelines class -----------------------------------------------
+
+
+def _domain_setup(tmp_path):
+    from duckduck.pipeline import Pipelines
+
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "hosts.csv").write_text("hostname,risk\nweb-1,70\ndb-1,40\n")
+    (tmp_path / "data" / "people.csv").write_text("user,team\nana,sec\nbo,ops\n")
+    config = tmp_path / "duckduck.json"
+    config.write_text(json.dumps({
+        "services": {"files": {"connector": "files", "path": "data", "table_prefix": ""},
+                     "raw": {"connector": "files", "path": "lake/raw/corp", "table_prefix": "raw"}},
+        "lake": {"layers": {"raw": "lake/raw", "silver": "lake/silver"}, "state": "lake/_state"}}))
+    domain = tmp_path / "raw_corp.json"
+    domain.write_text(json.dumps({
+        "domain": "corp", "layer": "raw", "target": {"mode": "append"}, "sip": False,
+        "jobs": {"hosts": {"primary_key": "hostname", "sql": "SELECT * FROM hosts"},
+                 "people": {"primary_key": "user", "sql": "SELECT * FROM people",
+                            "target": {"table_name": "staff"}}}}))
+    return Pipelines(config=str(config)), domain
+
+
+def test_a_domain_file_holds_several_jobs_with_shared_defaults(tmp_path):
+    pipelines, file = _domain_setup(tmp_path)
+    raw = pipelines.domain(str(file))
+    assert raw.jobs == ["hosts", "people"] and raw.name == "corp"
+    hosts, people = raw.spec("hosts"), raw.spec("people")
+    assert hosts.name == "raw_corp_hosts" and people.name == "raw_corp_people"  # state / sip names per job
+    assert hosts.targets[0].table == "corp.hosts" and people.targets[0].table == "corp.staff"
+    assert people.targets[0].mode == "append"  # the domain's target, merged key by key
+    runs = raw.run()
+    assert [r.pipeline for r in runs] == ["raw_corp_hosts", "raw_corp_people"]
+    assert (tmp_path / "lake" / "raw" / "corp" / "staff").is_dir()
+    assert "pipeline raw_corp_people" in runs.report()
+    one = raw.run("hosts")
+    assert len(one) == 1 and one[0].writes[0]["rows"] == 2
+
+
+def test_a_job_reads_what_the_one_before_wrote(tmp_path):
+    pipelines, file = _domain_setup(tmp_path)
+    silver = pipelines.domain({"domain": "corp", "layer": "silver", "load": "incremental", "target": {"mode": "merge"},
+                               "sip": False, "jobs": {"hosts": {"primary_key": "hostname",
+                                                                "sql": "SELECT * FROM raw_hosts"}}},
+                              base_dir=str(tmp_path))
+    pipelines.domain(str(file)).run("hosts")  # lake/raw/corp/hosts exists only now
+    run = silver.run()[0]
+    assert run.writes[0]["rows"] == 2 and run.load["type"] == "incremental"
+
+
+def test_domain_files_say_what_is_wrong(tmp_path):
+    pipelines, file = _domain_setup(tmp_path)
+    with pytest.raises(PipelineError, match="'domain' names the group"):
+        pipelines.domain({"jobs": {"a": {"sql": "SELECT 1"}}})
+    with pytest.raises(PipelineError, match="'jobs' is an object"):
+        pipelines.domain({"domain": "d", "jobs": []})
+    with pytest.raises(PipelineError, match="job 'b' of the domain: unknown key"):
+        pipelines.domain({"domain": "d", "jobs": {"b": {"sql": "SELECT 1", "nope": 1}}})
+    with pytest.raises(PipelineError, match="no job 'x' here \\(jobs: hosts, people\\)"):
+        pipelines.domain(str(file)).run("x")
+    with pytest.raises(PipelineError, match="has 2 jobs \\(hosts, people\\) — name one"):
+        pipelines.run(str(file))
+
+
+def test_the_cli_runs_a_domain_or_one_of_its_jobs(tmp_path, capsys):
+    from duckduck.pipeline.__main__ import main
+
+    _, file = _domain_setup(tmp_path)
+    config = str(tmp_path / "duckduck.json")
+    assert main(["run", str(file), "--config", config, "--job", "people"]) == 0
+    out = capsys.readouterr().out
+    assert "pipeline raw_corp_people" in out and "raw_corp_hosts" not in out
+    assert main(["plan", str(file), "--config", config]) == 0
+    out = capsys.readouterr().out
+    assert "pipeline raw_corp_hosts" in out and "pipeline raw_corp_people" in out

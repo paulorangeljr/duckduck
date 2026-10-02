@@ -7,10 +7,11 @@ See ``spec`` (the file), ``analysis`` (views and the key's way), ``sip``,
 """
 
 from .analysis import Plan
+from .jobs import Domain, Pipelines, Runs
 from .notebook import PipelineSession, notebook
 from .runner import PipelineRun, plan_pipeline, run_pipeline
 from .sip import read_sip
 from .spec import PipelineError, PipelineSpec, load_spec
 
-__all__ = ["PipelineError", "PipelineRun", "PipelineSession", "PipelineSpec", "Plan", "load_spec", "notebook",
-           "plan_pipeline", "read_sip", "run_pipeline"]
+__all__ = ["Domain", "PipelineError", "PipelineRun", "PipelineSession", "PipelineSpec", "Pipelines", "Plan", "Runs",
+           "load_spec", "notebook", "plan_pipeline", "read_sip", "run_pipeline"]

@@ -10,7 +10,7 @@ import sys
 from typing import Dict, List, Optional
 
 from ..logs import set_verbose
-from .runner import plan_pipeline, run_pipeline
+from .jobs import Pipelines
 from .sip import read_sip
 from .spec import PipelineError
 
@@ -30,7 +30,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     for name, help_ in (("plan", "show what a run would do, without running"), ("run", "run a pipeline file")):
         p = sub.add_parser(name, help=help_)
-        p.add_argument("pipeline", help="the pipeline's JSON file")
+        p.add_argument("pipeline", help="the pipeline's JSON file (a pipeline, or a domain of jobs)")
+        p.add_argument("--job", action="append", metavar="NAME", help="only this job of a domain file "
+                                                                       "(repeatable; default: every job)")
         p.add_argument("--param", action="append", metavar="NAME=VALUE", help="a value for {{ NAME }}")
         p.add_argument("--config", help="duckduck.json with the connectors and the lake settings (default: "
                                         "DUCKDUCK_CONFIG / duckduck.json)")
@@ -48,13 +50,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "plan":
-            print(plan_pipeline(args.pipeline, params=_params(args.param), config_path=args.config).report())
+            domain = Pipelines(config=args.config).domain(args.pipeline)
+            print("\n".join(domain.plan(j, params=_params(args.param)).report() for j in args.job or domain.jobs))
         elif args.command == "run":
             if args.verbose:
                 set_verbose("debug" if args.verbose > 1 else "info")
-            run = run_pipeline(args.pipeline, config_path=args.config, params=_params(args.param),
-                               run_id=args.run_id, dry_run=args.dry_run)
-            print(run.report())
+            domain = Pipelines(config=args.config).domain(args.pipeline)
+            runs = domain.run(*(args.job or ()), params=_params(args.param), run_id=args.run_id,
+                              dry_run=args.dry_run)
+            print(runs.report())
         else:
             from .settings import lake_settings
 

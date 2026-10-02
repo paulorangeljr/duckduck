@@ -1,9 +1,10 @@
 """
-The pipeline from Python — everything the command line does, as calls:
+The pipeline from Python — everything the command line does, through the
+Pipelines class:
 
-    python -m duckduck.pipeline plan FILE      →  plan_pipeline(FILE)
-    python -m duckduck.pipeline run FILE ...   →  run_pipeline(FILE, ...)
-    python -m duckduck.pipeline sip STORE ...  →  read_sip(STORE, ...)
+    python -m duckduck.pipeline plan FILE [--job J]   →  pipelines.domain(FILE).plan(J)
+    python -m duckduck.pipeline run FILE [--job J]    →  pipelines.domain(FILE).run(J)
+    python -m duckduck.pipeline sip STORE --key K     →  pipelines.sip(key=K)
 
 Runs offline over examples/pipeline (writes to examples/pipeline/lake/):
 
@@ -12,67 +13,59 @@ Runs offline over examples/pipeline (writes to examples/pipeline/lake/):
 
 import os
 
-from duckduck import DuckAPI
 from duckduck.logs import set_verbose
-from duckduck.pipeline import PipelineError, plan_pipeline, read_sip, run_pipeline
+from duckduck.pipeline import PipelineError, Pipelines
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-BRONZE = os.path.join(HERE, "assets_bronze.json")
-SILVER = os.path.join(HERE, "assets_silver.json")
-GOLD = os.path.join(HERE, "gold_risk.json")
-CONFIG = os.path.join(HERE, "duckduck.pipeline.json")  # the connectors the SQL reads (your duckduck.json)
-SIP_STORE = os.path.join(HERE, "lake", "_sip")
 
+# the connectors the SQL reads and the "lake" settings (your duckduck.json)
+pipelines = Pipelines(config=os.path.join(HERE, "duckduck.pipeline.json"))
 
-def connect() -> DuckAPI:
-    duck = DuckAPI()
-    duck.auto_register(config_path=CONFIG)
-    return duck
+raw = pipelines.domain(os.path.join(HERE, "raw_inventory.json"))
+silver = pipelines.domain(os.path.join(HERE, "silver_inventory.json"))
+gold = pipelines.domain(os.path.join(HERE, "gold_risk.json"))
 
 
 def main() -> None:
-    for layer in ("raw", "silver"):  # the files connectors over the layers need their folders to exist
-        os.makedirs(os.path.join(HERE, "lake", layer, "inventory"), exist_ok=True)
     set_verbose(False)  # True / "info" / "debug" = the CLI's -v / -vv
+    print(raw.jobs, silver.jobs, gold.jobs)  # ['assets', 'owners'] ['assets', 'owners'] ['gold_risk']
 
-    # 1. plan: what a run would do — views, what each reads, the key's way, the targets. Nothing runs.
-    plan = plan_pipeline(GOLD, params={"min_risk": 70}, config_path=CONFIG)  # the config's "lake": layers, state
+    # 1. plan: what a job would do — steps, what each reads, the key's way, the targets. Nothing runs.
+    plan = gold.plan("gold_risk", params={"min_risk": 70})
     print(plan.report())  # the gold notebook's WITH steps show up as the job's steps
-    print("views run:", plan.needed, "| followed by the sip:", plan.sampled)
+    print("steps run:", plan.needed, "| followed by the sip:", plan.sampled)
 
-    # 2. run. params = --param, run_id = --run-id, dry_run = --dry-run; duck = the connectors
-    #    (without duck=, it auto_registers from config_path / DUCKDUCK_CONFIG / duckduck.json)
+    # 2. run. params = --param, run_id = --run-id, dry_run = --dry-run
     try:
-        bronze = run_pipeline(BRONZE, duck=connect(), params={"run_date": "2026-10-01"})  # its own schedule
-        silver = run_pipeline(SILVER, duck=connect())  # reads bronze past its watermark
-        gold = run_pipeline(GOLD, duck=connect(), params={"min_risk": 70})
-    except PipelineError as exc:  # a problem in the file or the SQL, said in a sentence
+        raw.run(params={"run_date": "2026-10-01"})  # every raw job
+        silver.run()                                # what raw loaded since silver's last run
+        runs = gold.run(params={"min_risk": 70})
+    except PipelineError as exc:  # a problem in a file or the SQL, said in a sentence
         print("pipeline error:", exc)
         raise
-    print(bronze.report())
-    print(silver.report())  # "watermark: … → …" says how far it read
-    print(gold.report())
+    print(runs.report())
 
     # the run's results, as data
-    for w in gold.writes:
+    run = runs[0]
+    for w in run.writes:
         print("wrote", w["view"], "→", w["target"], w.get("rows"), "rows")
-    print(gold.sip[["stage", "key", "stage_key", "event"]].head())  # this run's sip, a DataFrame
+    print(run.sip[["stage", "key", "stage_key", "event"]].head())  # this run's sip, a DataFrame
 
-    # a dry run: views and sip, nothing written
-    trial = run_pipeline(GOLD, duck=connect(), params={"min_risk": 90}, dry_run=True)
-    print(trial.report())
+    # a dry run: steps and sip, nothing written
+    print(gold.run(params={"min_risk": 90}, dry_run=True).report())
 
-    # 3. sip: every event kept in the store; narrow it by pipeline, key or run
-    way = read_sip(SIP_STORE, key="web-0001")
+    # 3. the sip kept in the lake: one key's way through every job
+    way = pipelines.sip(key="web-0001")
     print(way[["pipeline", "run_id", "stage", "event", "stage_key", "row"]].to_string(index=False))
 
-    # Spark instead of DuckDB: the same file with "engine": "spark", and the session passed in
-    #   run_pipeline(GOLD, duck=connect(), spark=spark)
+    # Spark instead of DuckDB: "engine": "spark" in the file, and the session given once
+    #   Pipelines(config=..., spark=spark)
     #
     # A catalog built in code (instead of "catalogs" in the JSON / duckduck.json):
+    #   from duckduck.pipeline import run_pipeline
     #   from duckduck.pipeline.catalogs import GlueCatalog
     #   lake = GlueCatalog("lake", region="us-east-1", warehouse="s3://my-lake/warehouse/")
-    #   run_pipeline(SILVER, duck=connect(), catalogs={"lake": lake})
+    #   run_pipeline(silver.spec("assets"), catalogs={"lake": lake}, config_path=pipelines.config)
 
 
 if __name__ == "__main__":

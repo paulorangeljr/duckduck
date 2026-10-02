@@ -34,20 +34,21 @@ duck.sql("SHOW TABLES")
 duck.sql("SELECT a.hostname, o.owner FROM assets a JOIN owners o ON a.ip = o.ip WHERE a.os = 'linux'").df()
 ```
 
-## `pipeline/` — bronze → silver → gold, offline
+## `pipeline/` — raw → silver → gold, offline
 
 | File | |
 |---|---|
 | `duckduck.pipeline.json` | the connectors (`local/`'s synthetic API and files; `raw` / `silver` — `files` connectors over what the jobs write, read as `raw_assets`, `silver_assets`) and the shared `lake` settings: a folder per layer, `state`, `sip_store` |
-| `assets_bronze.json` | raw: the API as it came (`"load": "full"`), appended to `lake/raw/inventory/assets` (`layer` + `database` + `table_name`), a partition per `_load_date` — the audit columns are added by the runner — its own job |
-| `assets_silver.json` | silver: one row per host, `SELECT * FROM raw_assets` merged from what raw loaded since its last run (`"load": "incremental"` — on `_loaded_at`; duplicates per host and the internal columns handled by the runner) — its own job |
+| `raw_inventory.json` | raw, a domain of two jobs (`assets` from the API, `owners` from the file): the sources as they came (`"load": "full"`), appended to `lake/raw/inventory/<job>` with a partition per `_load_date` — the audit columns are added by the runner |
+| `silver_inventory.json` | silver, the same domain: each job `SELECT * FROM raw_<job>` merged from what raw loaded since its last run (`"load": "incremental"` — on `_loaded_at`; duplicates per key and the internal columns handled by the runner) — its own schedule |
 | `gold_risk.json` + `gold_risk.ipynb` | gold: silver joined to the owners file, risky hosts per department — the notebook's last `%%sql` query, its `WITH` a step the sip follows |
-| `run.py` | bronze twice, silver twice (the second has nothing new), gold, then `web-0001`'s way through all three jobs |
-| `python_api.py` | the command line's `plan` / `run` / `sip` as Python calls (`plan_pipeline`, `run_pipeline` with params and a dry run, `read_sip`) |
+| `run.py` | `Pipelines(config=…)` and a `domain(...)` per file: raw (every job, then `assets` again), silver (every job, then `assets` again — nothing new), gold, then `web-0001`'s way through them all |
+| `python_api.py` | the command line's `plan` / `run` / `sip` through the class: jobs, a plan, params, a dry run, results as data, the sip |
 
 ```bash
 python examples/pipeline/run.py
 python -m duckduck.pipeline plan examples/pipeline/gold_risk.json --config examples/pipeline/duckduck.pipeline.json
+python -m duckduck.pipeline run examples/pipeline/raw_inventory.json --job owners --config examples/pipeline/duckduck.pipeline.json
 python examples/pipeline/python_api.py        # the same, from Python
 ```
 
