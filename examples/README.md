@@ -6,6 +6,7 @@
 | [`semantic/`](semantic/) with `duckduck.local.json` | Natural-language questions over 5 synthetic security sources | nothing — offline |
 | [`semantic/`](semantic/) with `duckduck.online.json` | The same, with an LLM (catalog drafting + value extraction) and Jev (decisions) | `ANTHROPIC_API_KEY`, `JEV_API_KEY` |
 | [`pipeline/`](pipeline/) | Declarative pipelines: bronze → silver (inline SQL) and gold (a notebook), with the sip following hosts through both | nothing — offline |
+| [`aws/`](aws/) | A raw pipeline writing to S3 and registering its tables in Glue, with the AWS account declared once | AWS access + a ServiceNow instance |
 | [`../duckduck.example.json`](../duckduck.example.json) | Reference for every real connector and every `semantic` option | your own credentials — copy it to `duckduck.json` and edit |
 
 Every config here uses relative paths, resolved against the config file's
@@ -54,6 +55,34 @@ python examples/pipeline/python_api.py        # the same, from Python
 
 Everything is written under `examples/pipeline/lake/` (git-ignored), the sip
 in `lake/_sip/`.
+
+## `aws/` — a pipeline that writes to S3 and Glue
+
+| File | |
+|---|---|
+| `duckduck.aws.json` | the connector (ServiceNow, its secret in Secrets Manager), the Glue catalog and the `lake`: a bucket per layer, `state`, `sip_store`, and `aws` — the account it writes with (`profile`, or `role_arn`, or keys from a secret) |
+| `raw_servicenow.json` | the `servicenow` domain in raw: `incident` (incremental on `sys_updated_on`, appended, partitioned by `_load_date`) and `change_request` (full, overwritten, Delta) |
+| `run.py` | the plan of each table, or `--run` to write: `Pipelines(config=…).domain(…).run()` |
+
+A template: copy `duckduck.aws.json` to your own `duckduck.json` and change the
+buckets, the account and the instance. A run writes
+`s3://meu-lake-raw/servicenow/incident/_load_date=…/part-….parquet`,
+registers `servicenow.incident` in Glue (database created if missing, columns
+and partitions kept up to date) and keeps the watermark in
+`s3://meu-lake-raw/_duckduck/state/raw_servicenow_incident.json`.
+
+**Permissions** of the profile / role that writes: on the lake buckets
+`s3:ListBucket`, `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject` (overwrite and
+merge replace files); in Glue `glue:GetDatabase`, `glue:CreateDatabase`,
+`glue:GetTable`, `glue:CreateTable`, `glue:UpdateTable`, `glue:GetPartitions`,
+`glue:BatchCreatePartition`, `glue:BatchDeletePartition`; with `role_arn`,
+`sts:AssumeRole` on that role.
+
+```bash
+pip install "duckduck[pipeline,aws,delta]"
+DUCKDUCK_CONFIG=duckduck.json python examples/aws/run.py          # the plan
+DUCKDUCK_CONFIG=duckduck.json python examples/aws/run.py --run    # every table
+```
 
 ## `semantic/` — natural-language search
 

@@ -1,0 +1,22 @@
+{
+  "domain": "servicenow",
+  "domain_description": "Chamados e mudanças do ServiceNow, como vieram",
+  "layer": "raw",
+  "sip": {"rate": 0.01, "max_rows": 50},
+  "tables": {
+    "incident": {
+      "description": "Incidentes",
+      "primary_key": "sys_id",
+      "sql": "SELECT * FROM servicenow.incident",
+      "load": {"type": "incremental", "columns": ["sys_updated_on"], "lookback": "10m"},
+      "target": {"mode": "append", "partition_by": "_load_date"}
+    },
+    "change_request": {
+      "description": "Mudanças",
+      "primary_key": "sys_id",
+      "sql": "SELECT * FROM servicenow.change_request",
+      "load": "full",
+      "target": {"mode": "overwrite", "format": "delta"}
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "services": {
+    "servicenow": {
+      "connector": "servicenow",
+      "instance": "minhaempresa",
+      "timezone": "America/Sao_Paulo",
+      "authentication": {"type": "aws", "secret_id": "prod/servicenow"}
+    }
+  },
+
+  "catalogs": {
+    "glue": {"type": "glue", "region": "us-east-1"}
+  },
+
+  "lake": {
+    "catalog": "glue",
+    "layers": {
+      "raw": "s3://meu-lake-raw",
+      "silver": "s3://meu-lake-silver",
+      "gold": "s3://meu-lake-gold"
+    },
+    "state": "s3://meu-lake-raw/_duckduck/state",
+    "sip_store": "s3://meu-lake-raw/_duckduck/sip",
+    "aws": {"profile": "data-prod", "region": "us-east-1"}
+  }
+}

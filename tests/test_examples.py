@@ -24,6 +24,7 @@ CONFIGS = {
     "local": os.path.join(EX, "local", "duckduck.local.json"),
     "semantic-local": os.path.join(EX, "semantic", "duckduck.local.json"),
     "semantic-online": os.path.join(EX, "semantic", "duckduck.online.json"),
+    "aws": os.path.join(EX, "aws", "duckduck.aws.json"),
 }
 
 
@@ -186,3 +187,25 @@ def test_every_example_notebook_opens_in_jupyter():
             raw = json.load(f)
         assert all("id" in c for c in raw["cells"]), path
         nbformat.validate(nbformat.from_dict(raw))
+
+
+def test_the_aws_example_says_where_each_table_goes_in_s3_and_glue():
+    """No AWS call: the config validates, and the domain's tables resolve to the lake's buckets and Glue."""
+    from duckduck.pipeline import Pipelines
+    from duckduck.pipeline.settings import lake_settings, with_settings
+    from duckduck.semantic.admin import validate_config
+
+    config = CONFIGS["aws"]
+    problems = validate_config(json.load(open(config)))
+    assert not problems["errors"], problems
+    raw = Pipelines(config=config).domain(os.path.join(EX, "aws", "raw_servicenow.json"))
+    assert raw.tables == ["incident", "change_request"] and raw.description
+    lake = lake_settings(config_path=config)
+    incident = with_settings(raw.spec("incident"), lake)
+    target = incident.targets[0]
+    assert (target.path, target.table, target.catalog) == ("s3://meu-lake-raw/servicenow/incident",
+                                                           "servicenow.incident", "glue")
+    assert incident.name == "raw_servicenow_incident" and incident.load.columns == ["sys_updated_on"]
+    assert incident.state == "s3://meu-lake-raw/_duckduck/state" and incident.aws == lake["aws"]
+    change = with_settings(raw.spec("change_request"), lake)
+    assert change.targets[0].format == "delta" and change.targets[0].mode == "overwrite"
