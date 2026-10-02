@@ -37,7 +37,7 @@ MODES = ("append", "overwrite", "overwrite_partitions", "merge")
 FORMATS = ("parquet", "delta", "iceberg")
 SOURCES = ("notebook", "sql_file", "sql")
 KEYS = {"pipeline", "description", "engine", "primary_key", "keys", "sip", "target", "targets", "output",
-        "parameters", "catalogs", "catalog", "schema_evolution", "state", "load", "timezone", "audit_columns", "layer", "aws", *SOURCES}
+        "parameters", "catalogs", "catalog", "schema_evolution", "state", "load", "timezone", "audit_columns", "layer", "aws", "read_engine", "virtualized_table", *SOURCES}
 SIP_KEYS = {"enabled", "rate", "max_rows", "watch", "columns", "mask", "store", "stages", "null_keys"}
 TARGET_KEYS = {"path", "table", "format", "mode", "partition_by", "key", "unique", "storage_options", "catalog",
                "schema", "schema_evolution", "layer", "database", "table_name"}
@@ -148,6 +148,9 @@ class PipelineSpec:
     parameters: Dict[str, Any] = field(default_factory=dict)
     description: str = ""
     path: Optional[str] = None  # the JSON file, when read from one
+    read_engine: Optional[str] = None  # how a table of the lake is read: duckdb / athena (else lake.read_engine)
+    virtualized: Any = False  # past ingestion, tables that aren't the lake's may be read: True or their names
+    lake: Dict[str, Any] = field(default_factory=dict)  # duckduck.json's "lake", once with_settings applied it
 
     def resolve(self, value: str) -> str:
         """A local path relative to the pipeline file."""
@@ -219,6 +222,20 @@ def load_spec(source: Union[str, os.PathLike, Dict[str, Any]], base_dir: Optiona
             raise PipelineError("'state' is a folder in the lake (s3://lake/_state/) or a local folder")
         spec.state = data["state"].strip()
     spec.load = _load(data.get("load"))
+    from .lakeread import read_engine_problem
+
+    problem = read_engine_problem(data.get("read_engine"), "'read_engine'")
+    if problem:
+        raise PipelineError(problem)
+    spec.read_engine = data.get("read_engine")
+    virtualized = data.get("virtualized_table", False)
+    if isinstance(virtualized, str):
+        virtualized = [virtualized]
+    if not (isinstance(virtualized, bool) or (isinstance(virtualized, list)
+                                               and all(isinstance(v, str) and v for v in virtualized))):
+        raise PipelineError("'virtualized_table' is true (any table that isn't the lake's) or the list of "
+                            "the ones it reads: [\"axonius_devices\"]")
+    spec.virtualized = virtualized
     audit = data.get("audit_columns", True)
     if audit is True:
         spec.audit_columns = list(AUDIT_COLUMNS)

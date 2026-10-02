@@ -2594,15 +2594,55 @@ silver reads the bronze table. Each job says how much it reads with `load`:
 
 ```json
 {"pipeline": "incidents_silver", "layer": "silver", "primary_key": ["sys_id"],
- "sql": "SELECT * FROM lake.servicenow.incident",
+ "sql": "SELECT * FROM raw.servicenow.incident",
  "load": "incremental",
  "target": {"database": "servicenow", "table_name": "incident", "format": "delta", "mode": "merge"}}
 ```
 
 The paths, the catalog and the state folder come from `duckduck.json` (below):
 the raw job writes `s3://raw-layer/servicenow/incident`, silver
-`s3://silver-layer/servicenow/incident`, both registered as
-`servicenow.incident` in their catalog.
+`s3://silver-layer/servicenow/incident`. With one catalog for every layer,
+give each layer's targets their own `"database"` (`raw_servicenow`,
+`silver_servicenow`) — two layers registering the same `database.table`
+would take turns pointing it at their files.
+
+### Reading the lake: tables, not connectors
+
+Past raw, a job reads what's **in the lake** — by the table's name, the way
+Athena or Spark would:
+
+```sql
+SELECT * FROM servicenow.incident          -- a table of the lake's catalog (or, with no catalog, the one layer that has it)
+SELECT * FROM raw.servicenow.incident      -- that layer's table (layer.database.table)
+```
+
+How it's read is `"read_engine"` (in the pipeline file, else `lake.read_engine`):
+
+| `read_engine` | Reads |
+|---|---|
+| `"duckdb"` (default) | the files themselves — Parquet (partitions too), Delta, Iceberg — with the lake's AWS account (`lake.aws`); the WHERE, an incremental load's `_loaded_at > …` included, prunes files and row groups before anything is read, and a big table comes a batch at a time. No DuckDB extension to download |
+| `"athena"` | on Athena: the WHERE written in Athena's SQL, results through UNLOAD. `lake.athena` = `{"workgroup", "output_location", "region", "catalog", "results", "reuse_minutes", "timeout"}`; needs a Glue catalog |
+
+With `"engine": "spark"` it's Spark's own read: by the name when the session's
+catalog has the table (a Glue job with the Data Catalog as metastore), else
+its files. Each table read shows in the log (`-v`): `reads the lake:
+raw.servicenow.incident → s3://… (parquet, duckdb)`. On Azure the same applies to
+a Unity Catalog's Delta tables on ADLS (credentials from the environment /
+managed identity); there's no Athena counterpart built in.
+
+**A layer past ingestion reads only the lake.** Every layer but the first of
+`lake.layers` (or `lake.ingestion_layers`: `["raw", "landing"]`) refuses a
+table that isn't the lake's — a connector's table, a saved table, a file:
+*virtualized*, it never went through raw:
+
+```
+silver reads only the lake: axonius_devices is not a table of the lake (a connector's table, …),
+so it never went through raw. Ingest it there and read <database>.<table> (or raw.<database>.<table>),
+or say it's on purpose: "virtualized_table": true (or ["axonius_devices"])
+```
+
+`"virtualized_table": true` (any) or a list of the ones it may read makes it
+explicit — a lookup file in gold, say.
 
 - **`"load": "full"`** (the default): every run reads everything.
 - **`"load": {"type": "incremental", "columns": [...]}`**: the SQL stays as
@@ -2643,7 +2683,9 @@ and where each column's mark moved.
   "layers": {"raw": "s3://raw-layer", "silver": "s3://silver-layer", "gold": "s3://gold-layer"},
   "state": "s3://raw-layer/_duckduck/state",
   "sip_store": "s3://raw-layer/_duckduck/sip",
-  "aws": {"profile": "data-prod", "region": "us-east-1"}
+  "aws": {"profile": "data-prod", "region": "us-east-1"},
+  "read_engine": "duckdb",
+  "athena": {"workgroup": "primary", "output_location": "s3://athena-results/"}
 }
 ```
 

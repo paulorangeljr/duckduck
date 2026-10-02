@@ -13,16 +13,6 @@
       "connector": "files",
       "path": "../local/data",
       "table_prefix": ""
-    },
-    "raw": {
-      "connector": "files",
-      "path": "lake/raw/inventory",
-      "table_prefix": "raw"
-    },
-    "silver": {
-      "connector": "files",
-      "path": "lake/silver/inventory",
-      "table_prefix": "silver"
     }
   },
   "lake": {

@@ -706,6 +706,7 @@ def test_a_layer_target_is_registered_in_the_lake_catalog(duck, tmp_path, monkey
     with mock_aws():
         glue = boto3.client("glue", region_name="us-east-1")
         spec = {"pipeline": "silver_incidents", "primary_key": "sys_id", "layer": "silver",
+                "virtualized_table": ["incidents"],  # a connector's table, read past raw on purpose
                 "sql": "SELECT sys_id, priority FROM incidents QUALIFY row_number() OVER (PARTITION BY sys_id "
                        "ORDER BY priority) = 1",
                 "target": {"database": "servicenow", "table_name": "incident", "mode": "merge"}}
@@ -755,8 +756,7 @@ def _domain_setup(tmp_path):
     (tmp_path / "data" / "people.csv").write_text("user,team\nana,sec\nbo,ops\n")
     config = tmp_path / "duckduck.json"
     config.write_text(json.dumps({
-        "services": {"files": {"connector": "files", "path": "data", "table_prefix": ""},
-                     "raw": {"connector": "files", "path": "lake/raw/corp", "table_prefix": "raw"}},
+        "services": {"files": {"connector": "files", "path": "data", "table_prefix": ""}},
         "lake": {"layers": {"raw": "lake/raw", "silver": "lake/silver"}, "state": "lake/_state"}}))
     domain = tmp_path / "raw_corp.json"
     domain.write_text(json.dumps({
@@ -786,7 +786,7 @@ def test_a_domain_file_holds_several_tables_each_its_own(tmp_path):
 def test_a_table_reads_what_the_one_before_wrote(tmp_path):
     pipelines, file = _domain_setup(tmp_path)
     silver = pipelines.domain({"domain": "corp", "layer": "silver", "sip": False,
-                               "tables": {"hosts": {"primary_key": "hostname", "sql": "SELECT * FROM raw_hosts",
+                               "tables": {"hosts": {"primary_key": "hostname", "sql": "SELECT * FROM raw.corp.hosts",
                                                   "load": "incremental", "target": {"mode": "merge"}}}},
                               base_dir=str(tmp_path))
     pipelines.domain(str(file)).run("hosts")  # lake/raw/corp/hosts exists only now

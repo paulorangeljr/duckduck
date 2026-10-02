@@ -26,7 +26,9 @@ import pandas as pd
 
 from .analysis import Analyzer, query_steps
 from .engines import make_engine
-from .runner import _duck
+from .lakeread import LakeReads
+from .runner import _duck, catalog_lookup
+from .settings import lake_settings
 from .sip import Sip
 from .sources import Statement, split_sql
 from .spec import PipelineError, PipelineSpec, SipSpec, load_spec, run_parameters, substitute
@@ -46,6 +48,10 @@ class PipelineSession:
         self._sip = Sip(sip_spec, engine, spec.name if spec else "notebook", "notebook",
                         params.get("run_at", ""), params.get("run_date", "")) if sip_spec.enabled else None
         self.cells = 0
+        self.reads: Any = None  # the lake's tables (FROM inventory.assets), when there's a lake
+
+    def _lake(self, sql: str) -> str:
+        return self.reads.rewrite(sql) if self.reads is not None else sql
 
     @property
     def sip(self) -> pd.DataFrame:
@@ -74,12 +80,13 @@ class PipelineSession:
                     self._define(view)
                 result = self.engine.query(f'SELECT * FROM "{final}"')
             elif kind == "query":
-                result = self.engine.frame(sql)
+                result = self.engine.frame(self._lake(sql))
             else:
                 result = self.engine.query(sql)
         return result
 
     def _define(self, view) -> Any:
+        view.sql = self._lake(view.sql)
         self.engine.define(view.name, view.sql, keep=True)
         rows = self.engine.rows(view.name)
         if self._sip is None or view.key.mode == "none":
@@ -119,7 +126,17 @@ def notebook(pipeline: Optional[str] = None, duck: Any = None, spark: Any = None
     values = run_parameters(spec, params, now=dt.datetime.now(dt.timezone.utc), run_id="notebook") if spec else \
         {"run_date": dt.date.today().isoformat(), "run_at": dt.datetime.now().isoformat(sep=" "), **params}
     chosen = engine or (spec.engine if spec else "duckdb")
-    session = PipelineSession(spec, make_engine(chosen, duck=_duck(duck, config_path), spark=spark), values)
+    duck = _duck(duck, config_path)
+    session = PipelineSession(spec, make_engine(chosen, duck=duck, spark=spark), values)
+    lake = lake_settings(duck, config_path)
+    if lake.get("layers") or lake.get("catalog"):
+        from types import SimpleNamespace
+
+        from . import aws
+
+        holder = spec or SimpleNamespace(catalogs={})
+        session.reads = LakeReads(lake, duck, catalog_lookup(holder, duck), aws.account_of(lake.get("aws"), duck),
+                                  spec.read_engine if spec else None)
     try:
         from IPython import get_ipython
     except ImportError:

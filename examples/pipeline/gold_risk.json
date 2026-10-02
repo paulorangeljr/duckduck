@@ -1,6 +1,6 @@
 {
   "pipeline": "gold_risk",
-  "description": "Risky hosts per department and OS, from the silver assets and the owners file.",
+  "description": "Risky hosts per department and OS, from silver's assets and owners.",
   "notebook": "gold_risk.ipynb",
   "layer": "gold",
   "primary_key": "hostname",

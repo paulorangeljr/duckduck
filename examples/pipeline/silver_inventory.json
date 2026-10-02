@@ -9,7 +9,7 @@
   "tables": {
     "assets": {
       "primary_key": "hostname",
-      "sql": "SELECT * FROM raw_assets",
+      "sql": "SELECT * FROM raw.inventory.assets",
       "load": "incremental",
       "target": {
         "mode": "merge"
@@ -21,7 +21,7 @@
     },
     "owners": {
       "primary_key": "ip",
-      "sql": "SELECT * FROM raw_owners",
+      "sql": "SELECT * FROM raw.inventory.owners",
       "load": "incremental",
       "target": {
         "mode": "merge"

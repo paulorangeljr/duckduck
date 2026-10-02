@@ -1781,6 +1781,9 @@ class DuckAPI:
                 progress.checkpoint()  # pause / cancel between pages
                 df = self._to_dataframe(page, fn_name, allow_empty=True)
                 if df.empty:
+                    if len(df.columns) and not last_columns:  # no rows, but the columns: an empty result keeps them
+                        last_columns = list(df.columns) if star else (
+                            [c for c in df.columns if c.lower() in used] or list(df.columns[:1]))
                     continue
                 pages += 1
                 scanned += len(df)

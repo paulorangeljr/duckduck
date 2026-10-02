@@ -23,6 +23,7 @@ from .sip import ident
 from .sources import add_to_select, inject_where
 from .spec import (DEFAULT_LOAD_COLUMN, DURATION_RE, PipelineError, PipelineSpec, _shifted, load_spec, run_parameters,
                    substitute)
+from .lakeread import LakeReads, check_sources
 from .settings import lake_settings, with_settings
 from .state import read_state, write_state
 
@@ -129,6 +130,7 @@ def plan_pipeline(source: Union[str, os.PathLike, Dict[str, Any], PipelineSpec],
     plan = build_plan(spec, [Statement(substitute(s.sql, values), s.origin) for s in statements_of(spec)],
                       reserved=getattr(duck, "functions", ()))
     plan.parameters = values
+    check_sources(spec, plan, duck)
     plan.load = apply_load(spec, plan, state)
     return plan
 
@@ -277,6 +279,20 @@ def _run(spec: PipelineSpec, started: float, duck: Any, spark: Any, config_path:
     if duck is None:
         duck = _duck(None, config_path)
     plan = build_plan(spec, statements, reserved=getattr(duck, "functions", ()))
+    check_sources(spec, plan, duck)
+    catalog_of = catalog_lookup(spec, duck, catalogs)
+    reads = LakeReads(spec.lake, duck, catalog_of, aws.current(), spec.read_engine)
+    try:
+        for name in plan.needed:  # FROM inventory.assets / raw.inventory.assets: the lake's own tables
+            plan.views[name].sql = reads.rewrite(plan.views[name].sql)
+        return _execute(spec, plan, started, duck, spark, params, values, state, dry_run, now, engine, catalog_of)
+    finally:
+        reads.close()
+
+
+def _execute(spec: PipelineSpec, plan: Plan, started: float, duck: Any, spark: Any, params: Optional[Dict[str, Any]],
+             values: Dict[str, Any], state: Dict[str, Any], dry_run: bool, now: dt.datetime, engine: Any,
+             catalog_of: Any) -> PipelineRun:
     if params and "watermark" in params and spec.load.columns:  # read from a given point: a backfill / re-read
         state = {**state, "watermarks": {**(state.get("watermarks") or {}), spec.load.columns[0]: str(params["watermark"])}}
     run_load = apply_load(spec, plan, state)
@@ -287,7 +303,6 @@ def _run(spec: PipelineSpec, started: float, duck: Any, spark: Any, config_path:
              if name in spec.audit_columns}
     if engine is None:
         engine = make_engine(spec.engine, duck=duck, spark=spark)
-    catalog_of = catalog_lookup(spec, duck, catalogs)
     run = PipelineRun(pipeline=spec.name, run_id=values["run_id"], run_at=values["run_at"], engine=engine.name,
                       plan=plan, dry_run=dry_run)
     for w in plan.warnings:  # what the sip can't follow: said, never a reason to stop

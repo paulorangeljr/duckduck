@@ -123,6 +123,7 @@ class Athena:
         poll_interval: float = 0.25,
         timeout: Optional[float] = None,
         list_threads: int = 8,
+        aws_session_token: Optional[str] = None,
         client: Any = None,
         s3_client: Any = None,
     ):
@@ -142,19 +143,21 @@ class Athena:
         if client is None:
             self._session = boto3.Session(profile_name=profile_name, region_name=region_name,
                                           aws_access_key_id=aws_access_key_id,
-                                          aws_secret_access_key=aws_secret_access_key)
+                                          aws_secret_access_key=aws_secret_access_key,
+                                          aws_session_token=aws_session_token)
             client = self._session.client("athena")
         self._athena = client
         self._s3_client = s3_client
         self._metadata: Dict[Tuple[str, str], Dict[str, Any]] = {}
         self._lake: Optional[LakehouseConnection] = None
         self._secret = (aws_access_key_id, aws_secret_access_key, profile_name, region_name)
+        self._token = aws_session_token
         self.base_url = f"athena://{region_name or 'default'}/{workgroup}"  # the endpoint list_tables() shows
 
     @classmethod
     def from_secret(cls, secret: Dict[str, Any], **overrides) -> "Athena":
         """Every key optional: without keys, the default AWS credential chain."""
-        keys = ("region_name", "profile_name", "aws_access_key_id", "aws_secret_access_key")
+        keys = ("region_name", "profile_name", "aws_access_key_id", "aws_secret_access_key", "aws_session_token")
         return cls(**{k: overrides.pop(k, None) or secret.get(k) for k in keys}, **overrides)
 
     def __getstate__(self) -> Dict[str, Any]:  # travels to Spark executors: no clients, no connection
@@ -290,8 +293,10 @@ class Athena:
             key_id, secret, profile, region = self._secret
             region_clause = f", REGION '{region}'" if region else ""
             if key_id and secret:
+                token = getattr(self, "_token", None)
+                token_clause = f", SESSION_TOKEN '{token}'" if token else ""
                 lake.create_secret(f"CREATE OR REPLACE SECRET duckduck_athena_s3 (TYPE s3, KEY_ID '{key_id}', "
-                                   f"SECRET '{secret}'{region_clause})")
+                                   f"SECRET '{secret}'{token_clause}{region_clause})")
             else:
                 profile_clause = f", PROFILE '{profile}'" if profile else ""
                 lake.create_secret("CREATE OR REPLACE SECRET duckduck_athena_s3 (TYPE s3, "
