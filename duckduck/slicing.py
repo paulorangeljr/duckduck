@@ -86,6 +86,19 @@ def probing() -> Iterator[Probe]:
         _PROBE.reset(token)
 
 
+class PageCapError(RuntimeError):
+    """The server returned fewer rows than a page asked for while it says there are more: it caps its pages
+    below ``default_page_size``, and reading on by offsets of that size would skip rows."""
+
+
+def _check_first(rows: List[Any], page_size: int, total: Optional[int]) -> None:
+    if total is not None and rows and len(rows) < page_size and len(rows) < int(total):
+        raise PageCapError(
+            f"the server returned {len(rows)} rows for a page of {page_size} and says there are {int(total):,}: "
+            f"it caps a page at {len(rows)}, and reading on in steps of {page_size} would skip rows — set the "
+            f"service's \"default_page_size\" to {len(rows)} (or less) in duckduck.json")
+
+
 def pages(fetch_page: Callable[[int], Tuple[List[Any], Optional[int]]], page_size: int) -> Iterator[List[Any]]:
     """
     A connector's page loop. ``fetch_page(n)`` requests page ``n`` (0-based;
@@ -97,6 +110,7 @@ def pages(fetch_page: Callable[[int], Tuple[List[Any], Optional[int]]], page_siz
     probe = _PROBE.get()
     if probe is not None:
         rows, total = fetch_page(0)
+        _check_first(rows, page_size, total)
         probe.total_rows, probe.page_size, probe.seen = total, page_size, True
         if rows:
             yield rows
@@ -110,6 +124,8 @@ def pages(fetch_page: Callable[[int], Tuple[List[Any], Optional[int]]], page_siz
         return
     while end is None or page < end:
         rows, total = fetch_page(page)
+        if page == 0:
+            _check_first(rows, page_size, total)
         if rows:
             yield rows
         if not rows or ((page + 1) * page_size >= total if total is not None else len(rows) < page_size):
@@ -122,6 +138,7 @@ def _parallel_pages(fetch_page: Callable[[int], Tuple[List[Any], Optional[int]]]
     """Page 0 first (it tells the total), then the rest ``workers`` at a time, yielded in order. Without a total
     the API can't be read out of order: one page after another, as ``pages`` does."""
     rows, total = fetch_page(0)
+    _check_first(rows, page_size, total)
     if rows:
         yield rows
     if not rows or total is None:

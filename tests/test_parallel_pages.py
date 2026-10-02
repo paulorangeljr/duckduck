@@ -41,6 +41,9 @@ class Paged:
 def test_pages_are_read_up_to_the_declared_number_at_once_and_kept_in_order():
     api, duck = Paged(), DuckAPI(stream_pages=False)
     duck.register_api_function("items", api.items)
+    warm = Paged(delay=0)  # a first sql() pays a one-off warm-up (~0.1 s) that isn't what's timed here
+    duck.register_api_function("warm", warm.items)
+    duck.sql("SELECT id FROM warm").fetchall()
     started = time.perf_counter()
     assert [r[0] for r in duck.sql("SELECT id FROM items").fetchall()] == list(range(10))
     assert api.most == 3 and sorted(api.requested) == [0, 1, 2, 3, 4]  # 5 pages, never more at once than declared
@@ -106,3 +109,26 @@ def test_a_join_s_calls_run_several_at_once():
     duck.register_api_function("vulns", Vulns().of)
     rows = duck.sql("SELECT a.id, v.cve FROM assets a JOIN vulns v ON v.asset_id = a.id ORDER BY 1").fetchall()
     assert len(rows) == 8 and rows[0] == (0, "CVE-0") and most[0] == 4
+
+
+def test_a_server_capping_its_pages_below_the_page_size_fails_instead_of_skipping_rows():
+    import pytest
+
+    class Capped(Paged):
+        def _page(self, n):  # asked for 2 rows a page, the server sends 1 — but says there are 10
+            rows, total = super()._page(n)
+            return rows[:1], total
+
+    api = Capped(delay=0)
+    for read in (lambda: list(slicing.pages(api._page, 2)),
+                 lambda: _parallel(api)):
+        with pytest.raises(slicing.PageCapError, match='caps a page at 1.*"default_page_size" to 1'):
+            read()
+    with slicing.probing(), pytest.raises(slicing.PageCapError):  # Spark's probe says so before splitting
+        list(slicing.pages(api._page, 2))
+    assert list(slicing.pages(Paged(delay=0)._page, 2))  # a full first page is fine
+
+
+def _parallel(api):
+    with slicing.parallel(3):
+        return list(slicing.pages(api._page, 2))

@@ -328,6 +328,22 @@ calls several at once too. APIs read one page after another by nature
 (cursor pagination, a strict rate limit like NVD's) stay sequential.
 `DuckAPI(parallel=False)` turns it off.
 
+**Rows per request** are each service's `default_page_size` in `duckduck.json`
+(ServiceNow and Axonius 200, InsightVM 500, Airflow 100, NVD 2000 — its own
+maximum, SharePoint Graph's `$top`):
+
+```json
+"servicenow": {"connector": "servicenow", "instance": "minhaempresa", "default_page_size": 2000, "authentication": {…}}
+```
+
+Bigger pages mean fewer requests, each one slower and heavier on the
+server. A server that caps its pages below the size asked for (InsightVM's
+own maximum, an instance setting) would make reading on by offsets of that
+size skip rows; when the first page comes back short while the API says
+there are more, the read stops with `PageCapError`, naming the size the
+server allows. An API that reports no total (Axonius) can't be checked:
+there a short page reads as the last one.
+
 ## Bootstrapping everything at once: `auto_register`
 
 Instead of instantiating each wrapper and calling `register_api_function`
