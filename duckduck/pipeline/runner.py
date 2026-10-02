@@ -9,7 +9,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import pandas as pd
 
@@ -282,12 +282,45 @@ def _run(spec: PipelineSpec, started: float, duck: Any, spark: Any, config_path:
     check_sources(spec, plan, duck)
     catalog_of = catalog_lookup(spec, duck, catalogs)
     reads = LakeReads(spec.lake, duck, catalog_of, aws.current(), spec.read_engine)
+    restore = page_sizes(spec, duck)
     try:
         for name in plan.needed:  # FROM inventory.assets / raw.inventory.assets: the lake's own tables
             plan.views[name].sql = reads.rewrite(plan.views[name].sql)
         return _execute(spec, plan, started, duck, spark, params, values, state, dry_run, now, engine, catalog_of)
     finally:
         reads.close()
+        for instance, size in restore:
+            instance.default_page_size = size
+
+
+def page_sizes(spec: PipelineSpec, duck: Any) -> List[Tuple[Any, Any]]:
+    """The file's ``page_size`` set on the connectors for this run — every one it can read, or the services it
+    names; [(connector, its size before)] to put back afterwards."""
+    if spec.page_size is None:
+        return []
+    by_service: Dict[str, List[Any]] = {}
+    for name, fn in getattr(duck, "functions", {}).items():
+        instance = getattr(fn, "__self__", None)
+        if instance is not None and hasattr(instance, "default_page_size"):
+            service = duck.service_of.get(name) or name
+            if all(instance is not i for i in by_service.setdefault(service, [])):
+                by_service[service].append(instance)
+    wanted = spec.page_size if isinstance(spec.page_size, dict) else {s: spec.page_size for s in by_service}
+    unknown = sorted(set(wanted) - set(by_service))
+    if unknown:
+        raise PipelineError(f"page_size: no connector {', '.join(unknown)} that reads in pages (there are: "
+                            f"{', '.join(sorted(by_service)) or 'none'})")
+    restore: List[Tuple[Any, Any]] = []
+    for service, size in wanted.items():
+        for instance in by_service[service]:
+            if any(instance is i for i, _ in restore):
+                continue
+            restore.append((instance, instance.default_page_size))
+            top = getattr(instance, "MAX_PAGE_SIZE", None)  # an API's own maximum (NVD's 2000)
+            instance.default_page_size = min(size, top) if top else size
+            logger.info("  %s: %s rows per request for this run (was %s)", service, instance.default_page_size,
+                        restore[-1][1])
+    return restore
 
 
 def _execute(spec: PipelineSpec, plan: Plan, started: float, duck: Any, spark: Any, params: Optional[Dict[str, Any]],

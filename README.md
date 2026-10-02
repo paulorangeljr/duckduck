@@ -336,6 +336,12 @@ maximum, SharePoint Graph's `$top`):
 "servicenow": {"connector": "servicenow", "instance": "minhaempresa", "default_page_size": 2000, "authentication": {…}}
 ```
 
+A pipeline file can ask for its own size for that run only —
+`"page_size": 2000` (every connector it reads) or
+`"page_size": {"servicenow": 2000}` — and the services go back to their
+size when the run ends, so the web app and other jobs keep theirs (an API's
+own maximum still wins: NVD's 2000).
+
 Bigger pages mean fewer requests, each one slower and heavier on the
 server. A server that caps its pages below the size asked for (InsightVM's
 own maximum, an instance setting) would make reading on by offsets of that

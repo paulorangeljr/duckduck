@@ -97,6 +97,8 @@ class NVD:
         Keep CVEs NVD marked *Rejected* (withdrawn IDs); left out by default.
     """
 
+    MAX_PAGE_SIZE = MAX_PAGE  # the API's own maximum: a pipeline's page_size never goes past it
+
     def __init__(
         self,
         api_key: Optional[str] = None,

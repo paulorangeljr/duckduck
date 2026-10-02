@@ -909,3 +909,31 @@ def test_a_sip_that_cant_follow_the_key_warns_and_the_run_goes_on(tmp_path):
     assert run.writes and run.writes[0]["rows"] == 4
     assert any("can't follow the key through axon" in w and "the sip skips it" in w for w in run.warnings)
     assert run.plan.sampled == [] and "warning: the sip can't follow" in run.plan.report()
+
+
+def test_a_pipeline_reads_with_its_own_page_size_and_puts_it_back(tmp_path):
+    class Source:
+        def __init__(self):
+            self.default_page_size, self.asked = 200, []
+
+        def rows(self, limit=None):
+            self.asked.append(self.default_page_size)
+            return pd.DataFrame({"id": [1, 2]})
+
+    sn, other = Source(), Source()
+    duck = DuckAPI()
+    duck.register_api_function("sn_incident", sn.rows)
+    duck.service_of["sn_incident"] = "servicenow"
+    duck.register_api_function("ax_devices", other.rows)
+    duck.service_of["ax_devices"] = "axonius"
+    spec = {"pipeline": "p", "sql": "SELECT * FROM sn_incident", "target": str(tmp_path / "o"),
+            "page_size": {"servicenow": 2000}}
+    run_pipeline(spec, duck=duck)
+    assert sn.asked == [2000] and sn.default_page_size == 200  # this run only
+    assert other.default_page_size == 200
+    run_pipeline({**spec, "page_size": 1000}, duck=duck)  # a number: every connector
+    assert sn.asked[-1] == 1000 and sn.default_page_size == 200
+    with pytest.raises(PipelineError, match="page_size: no connector jira .*there are: axonius, servicenow"):
+        run_pipeline({**spec, "page_size": {"jira": 10}}, duck=duck)
+    with pytest.raises(PipelineError, match="'page_size' is the rows per API request"):
+        run_pipeline({**spec, "page_size": 0}, duck=duck)
