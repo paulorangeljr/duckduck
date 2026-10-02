@@ -43,6 +43,10 @@ nav button[aria-selected="true"] { background: var(--surface-2); color: var(--in
 .user { margin-left: auto; display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 13px; }
 .user input { width: 140px; }
 main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 60px; }
+/* the SQL tab takes the whole window: a wide editor and results (the other tabs keep a reading width) */
+main.wide, main:has(> #tab-sql:not([hidden])) { max-width: none; padding: 16px 20px 40px; }
+#tab-sql textarea.editor { min-height: max(220px, 36vh); }
+#tab-sql .sqlres .tablewrap { max-height: max(360px, calc(100vh - 260px)); }
 [hidden] { display: none !important; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
         padding: 16px 18px; margin-bottom: 14px; }
@@ -977,6 +981,7 @@ const user = () => $("#user").value.trim() || null;
 document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => {
   document.querySelectorAll("nav button").forEach(x => x.setAttribute("aria-selected", x === b));
   document.querySelectorAll("main > section").forEach(s => s.hidden = s.id !== "tab-" + b.dataset.tab);
+  document.querySelector("main").classList.toggle("wide", b.dataset.tab === "sql");  // browsers without :has()
   if (b.dataset.tab !== "config" && location.hash.startsWith("#config/")) history.replaceState(null, "", location.pathname);
   ({history: loadHistory, dashboard: loadDashboard, suggestions: loadSuggestions,
     sql: () => loadTables(),  // never waits on META: an empty list always says why
