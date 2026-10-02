@@ -974,6 +974,20 @@ def _finite(value: Any) -> Any:
     return value
 
 
+class QuietPolling(logging.Filter):
+    """Drops the access-log lines of the page's own polling — ``GET /api/jobs/<id>`` (and the catalog and
+    register jobs) answered 200, several a second while a query runs — so the log shows the requests that
+    matter. A failed poll (4xx/5xx) still shows."""
+
+    POLLED = ("/api/jobs/", "/api/catalog/jobs/")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args if isinstance(record.args, tuple) else ()
+        if len(args) >= 5 and args[1] == "GET" and str(args[4]) == "200":
+            return not str(args[2]).startswith(self.POLLED)
+        return True
+
+
 def run(app: Any, host: str = "127.0.0.1", port: int = 8765) -> None:  # pragma: no cover - blocks
     try:
         import uvicorn
@@ -982,4 +996,5 @@ def run(app: Any, host: str = "127.0.0.1", port: int = 8765) -> None:  # pragma:
     if host not in ("127.0.0.1", "localhost", "::1") and not os.environ.get("DUCKDUCK_SERVER_TOKEN"):
         logger.warning("serving on %s without a token: anyone who can reach it can query your data "
                        "(set DUCKDUCK_SERVER_TOKEN)", host)
+    logging.getLogger("uvicorn.access").addFilter(QuietPolling())
     uvicorn.run(app, host=host, port=port)

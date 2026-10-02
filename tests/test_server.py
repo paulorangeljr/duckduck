@@ -252,3 +252,18 @@ def test_the_brief_downloads_from_the_web_app(config):
     assert "questions that still fail" in response.text and "“Which alerts are urgent?”" in response.text
     assert "Which alerts are urgent?" not in client.get("/api/export.md?redact=1").text
     client.app.state.duckduck["search"].feedback_store.close()
+
+
+def test_the_access_log_leaves_out_the_page_s_own_polling():
+    import logging
+
+    from duckduck.semantic.server import QuietPolling
+
+    def record(method, path, status):  # uvicorn.access: (client, method, path, http version, status)
+        return logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1, '%s - "%s %s HTTP/%s" %d',
+                                 ("127.0.0.1:5000", method, path, "1.1", status), None)
+    quiet = QuietPolling()
+    assert not quiet.filter(record("GET", "/api/jobs/aaffb0c1?since=12", 200))
+    assert not quiet.filter(record("GET", "/api/catalog/jobs/x1?since=3", 200))
+    assert quiet.filter(record("GET", "/api/jobs/aaffb0c1", 404))  # a failed poll still shows
+    assert quiet.filter(record("POST", "/api/sql", 202)) and quiet.filter(record("GET", "/api/tables", 200))

@@ -122,6 +122,7 @@ class Athena:
         cleanup: bool = True,
         poll_interval: float = 0.25,
         timeout: Optional[float] = None,
+        list_threads: int = 8,
         client: Any = None,
         s3_client: Any = None,
     ):
@@ -134,6 +135,7 @@ class Athena:
         self.results, self.api_rows = results, int(api_rows)
         self.reuse_minutes, self.cleanup = int(reuse_minutes or 0), bool(cleanup)
         self.poll_interval, self.timeout = float(poll_interval), timeout
+        self.list_threads = max(1, int(list_threads))  # databases listed at once by ``tables``
         self._output = output_location
         self._region = region_name
         self._session = None
@@ -405,18 +407,27 @@ class Athena:
     @catalog(lists="table")
     def tables(self, database: Optional[str] = None, table_name_ilike: Optional[str] = None,
                limit: Optional[int] = None) -> pd.DataFrame:
-        """Every table of a database (every database's when not given): each row a ``table(database, table_name)``."""
+        """Every table of a database (every database's when not given): each row a ``table(database, table_name)``.
+
+        Every database is one ``list_table_metadata`` listing (50 tables a page, columns included), so a whole
+        catalog is many calls: ``list_threads`` databases are listed at once, each page is a pause / cancel point,
+        the progress says how many databases are done, and a ``limit`` stops as soon as it has its rows. Narrow it
+        with ``WHERE database = '…'`` (or ``table_name LIKE …``) when only some are needed."""
         names = [database] if database else list(self.databases()["database"])
         pattern = parse_like(table_name_ilike) if table_name_ilike else None
-        rows = []
-        for db in names:
+        columns = ["database", "table_name", "table_type", "format", "location", "partition_keys", "column_count",
+                   "created", "last_access"]
+
+        def list_db(db: str) -> List[Dict[str, Any]]:
             kwargs: Dict[str, Any] = {"CatalogName": self.catalog, "DatabaseName": db}
             if pattern is not None:
                 kwargs["Expression"] = _athena_regex(pattern)
+            out: List[Dict[str, Any]] = []
             for page in self._athena.get_paginator("list_table_metadata").paginate(**kwargs):
+                progress.checkpoint()
                 for t in page.get("TableMetadataList", []) or []:
                     params = t.get("Parameters") or {}
-                    rows.append({
+                    out.append({
                         "database": db, "table_name": t.get("Name"), "table_type": t.get("TableType"),
                         "format": (params.get("table_type") or params.get("classification") or "").lower() or None,
                         "location": params.get("location"),
@@ -424,8 +435,36 @@ class Athena:
                         "column_count": len(t.get("Columns") or []),
                         "created": t.get("CreateTime"), "last_access": t.get("LastAccessTime"),
                     })
-        columns = ["database", "table_name", "table_type", "format", "location", "partition_keys", "column_count",
-                   "created", "last_access"]
+                if limit and len(out) >= limit:
+                    break
+            return out
+
+        rows: List[Dict[str, Any]] = []
+        started = time.perf_counter()
+
+        def done(i: int, found: List[Dict[str, Any]]) -> bool:
+            rows.extend(found)
+            text = f"athena tables: {i}/{len(names)} database(s) · {len(rows):,} table(s)"
+            progress.update(text)
+            logger.info("%s · %.1fs", text, time.perf_counter() - started)
+            return bool(limit) and len(rows) >= limit
+
+        if len(names) <= 1 or self.list_threads == 1:
+            for i, db in enumerate(names, 1):
+                if done(i, list_db(db)):
+                    break
+        else:
+            import contextvars
+            from concurrent.futures import ThreadPoolExecutor
+
+            pool = ThreadPoolExecutor(max_workers=min(self.list_threads, len(names)))
+            try:  # each listing in this context: the job's pause / cancel reach it
+                futures = [pool.submit(contextvars.copy_context().run, list_db, db) for db in names]
+                for i, future in enumerate(futures, 1):  # in the databases' order: the same rows every time
+                    if done(i, future.result()):
+                        break
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
         return pd.DataFrame(rows[:limit] if limit else rows, columns=columns)
 
     @spark_plan("driver", why="catalog: a small listing")

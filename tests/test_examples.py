@@ -170,3 +170,19 @@ def test_reference_saved_tables_are_valid_and_over_registered_tables():
     for name, definition in config["views"].items():
         clean = clean_definition(definition)
         assert clean.get("table", name) in registered, name
+
+
+def test_every_example_notebook_opens_in_jupyter():
+    """nbformat 4.5 needs an id on every cell — without one, editors refuse the file."""
+    import glob
+    import json
+
+    nbformat = pytest.importorskip("nbformat")
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    paths = glob.glob(os.path.join(root, "examples", "**", "*.ipynb"), recursive=True)
+    assert paths
+    for path in paths:
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+        assert all("id" in c for c in raw["cells"]), path
+        nbformat.validate(nbformat.from_dict(raw))

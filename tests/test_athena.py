@@ -172,3 +172,60 @@ def test_names_are_checked_and_values_escaped():
     from duckduck.pushdown import Condition
     sql, complete = a._select("logs", "events", [Condition("host", "eq", "o'brien")], None)
     assert "\"host\" = 'o''brien'" in sql and complete
+
+
+class ManyDatabases(FakeAthena):
+    """A catalog with many databases, each listed in pages of 2 tables — what made `SELECT * FROM athena.tables`
+    look stuck: one listing per database, one after the other, with nothing shown meanwhile."""
+
+    def __init__(self, databases=12, tables=3, on_page=None):
+        super().__init__()
+        self.databases_, self.tables_, self.on_page, self.listed = databases, tables, on_page, []
+
+    def get_paginator(self, name):
+        if name == "list_databases":
+            return Pages(lambda **kw: [{"DatabaseList": [{"Name": f"db{i:02d}"} for i in range(self.databases_)]}])
+        if name == "list_table_metadata":
+            def pages(**kw):
+                db = kw["DatabaseName"]
+                self.listed.append(db)
+                names = [f"t{j}" for j in range(self.tables_)]
+                for k in range(0, len(names), 2):
+                    if self.on_page:
+                        self.on_page(db)
+                    yield {"TableMetadataList": [{"Name": n, "TableType": "EXTERNAL_TABLE", "Columns": COLUMNS,
+                                                  "Parameters": {"classification": "parquet"}}
+                                                 for n in names[k:k + 2]]}
+            return Pages(pages)
+        return super().get_paginator(name)
+
+
+def test_every_database_is_listed_at_once_in_order_and_says_how_far_it_is():
+    fake = ManyDatabases()
+    ath = Athena(client=fake, list_threads=4)
+    p = progress.Progress()
+    with progress.tracking(p):
+        p.step("fetching", "athena_tables")
+        df = ath.tables()
+    assert len(df) == 36 and df["database"].tolist() == [f"db{i:02d}" for i in range(12) for _ in range(3)]
+    assert "athena tables: 12/12 database(s) · 36 table(s)" in [e["text"] for e in p.to_dict()["events"]]
+
+
+def test_a_limit_stops_listing_once_it_has_its_rows():
+    fake = ManyDatabases(databases=40)
+    df = Athena(client=fake, list_threads=1).tables(limit=5)
+    assert len(df) == 5 and fake.listed == ["db00", "db01"]
+
+
+def test_a_cancel_stops_the_listing_between_pages():
+    p = progress.Progress()
+    seen = []
+
+    def on_page(db):
+        seen.append(db)
+        if len(seen) == 3:
+            p.cancel()
+    fake = ManyDatabases(databases=30, on_page=on_page)
+    with progress.tracking(p), pytest.raises(progress.Cancelled):
+        Athena(client=fake, list_threads=1).tables()
+    assert len(fake.listed) <= 3
