@@ -2792,11 +2792,15 @@ the smallest hashes. The cost is one filtered read of each followed view
 (kept in the engine meanwhile) and, with `null_keys`, a count of keyless rows.
 
 The key is followed **by name** through the views: `SELECT *`, `t.*` and
-renames (`sys_id AS id`) keep it; a `GROUP BY` (or a `SELECT DISTINCT`
+renames (`sys_id AS id`) keep it; so does an expression over the key alone
+(`CASE WHEN id = '123' THEN 'other' ELSE id END AS id`) — the sip works out
+what each followed key became, so `watch: ["123"]` still follows that row and
+its `stage_key` reads `other`. A `GROUP BY` (or a `SELECT DISTINCT`
 without the key) folds each followed row into its group — one small query over
 the view's input learns which. The first table of a view's FROM is the one
-followed. A view on the way to a target that loses the key fails the plan,
-saying what to write (`"keys": {"view": ["column"]}`).
+followed. A view on the way to a target that loses the key is left out of the
+sip with a warning saying what to write (`"keys": {"view": ["column"]}`) —
+the run goes on.
 
 Each event: `key` (the key the row started with), `stage`, `position`,
 `stage_key` (the key there — the group after a GROUP BY), `event` (`seen`,

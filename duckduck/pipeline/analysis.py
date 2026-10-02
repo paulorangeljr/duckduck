@@ -56,6 +56,8 @@ class KeyInfo:
     group_exprs: List[exp.Expression] = field(default_factory=list)  # group: the input-side expressions
     declared: bool = False  # keys.<view> in the JSON
     assumed: bool = False  # came through a *: checked against the view's columns once it exists
+    computed: bool = False  # row: some key column is computed from the key (``CASE … END AS id``); group_exprs
+    #                         then hold every key column's input-side expression, traced like a group's
     reason: str = ""  # none: why; a root: what it starts from
 
     @property
@@ -70,8 +72,11 @@ class KeyInfo:
             if self.root:
                 return f"groups ({cols}) — followed on their own{f': {self.reason}' if self.reason else ''}"
             return f"groups ({cols}) — each followed row of {self.upstream} traced into its group"
+        computed = " (computed here from " + ", ".join(self.upstream_columns) + ")" if self.computed else ""
         if self.root:
-            return f"key {cols} — the sip starts here"
+            return f"key {cols}{computed} — the sip starts here"
+        if computed:
+            return f"key {cols}{computed} — from {self.upstream}"
         renamed = "" if [c.lower() for c in self.columns] == [c.lower() for c in self.upstream_columns] \
             else f" (was {', '.join(self.upstream_columns)})"
         return f"key {cols}{renamed} — from {self.upstream}"
@@ -176,9 +181,25 @@ def _same(a: exp.Expression, b: exp.Expression) -> bool:
     return a.sql(dialect="duckdb").lower() == b.sql(dialect="duckdb").lower()
 
 
-def follow_columns(select: exp.Select, upstream: List[str], alias: Optional[str]) -> Tuple[List[str], bool, List[str]]:
-    """Where columns named ``upstream`` end up in this SELECT's output: (names, through a *?, missing)."""
-    out, assumed, missing = [], False, []
+def _computed_from(select: exp.Select, column: str, alias: str) -> Optional[Tuple[str, exp.Expression]]:
+    """A projection computed from ``column`` alone (``CASE WHEN id = '1' THEN 'x' ELSE id END AS id``):
+    (its output name, its expression) — the one named like the column first."""
+    found = []
+    for p in select.expressions:
+        if not isinstance(p, exp.Alias) or _has_aggregate(p) or p.find(exp.Window):
+            continue
+        cols = list(p.this.find_all(exp.Column))
+        if cols and all(c.name.lower() == column.lower() and c.table.lower() in ("", alias) for c in cols):
+            found.append((p.alias, p.this))
+    found.sort(key=lambda f: f[0].lower() != column.lower())
+    return found[0] if found else None
+
+
+def follow_columns(select: exp.Select, upstream: List[str], alias: Optional[str]
+                   ) -> Tuple[List[str], bool, List[str], Dict[str, exp.Expression]]:
+    """Where columns named ``upstream`` end up in this SELECT's output: (names, through a *?, missing,
+    {output name: expression} for the ones computed from the column)."""
+    out, assumed, missing, computed = [], False, [], {}
     alias = (alias or "").lower()
     for u in upstream:
         hits = []
@@ -197,9 +218,13 @@ def follow_columns(select: exp.Select, upstream: List[str], alias: Optional[str]
         elif through_star:
             out.append(u)
             assumed = True
+        elif _computed_from(select, u, alias):
+            name, expression = _computed_from(select, u, alias)
+            out.append(name)
+            computed[name] = expression
         else:
             missing.append(u)
-    return out, assumed, missing
+    return out, assumed, missing, computed
 
 
 def group_columns(select: exp.Select) -> Tuple[Optional[List[exp.Expression]], List[str], str]:
@@ -355,10 +380,15 @@ class Analyzer:
         if not grouped and any(_has_aggregate(p) for p in select.expressions):
             return KeyInfo("none", reason="it aggregates every row into one")
         if not grouped:
-            out, assumed, missing = follow_columns(select, up_cols, alias)
+            out, assumed, missing, computed = follow_columns(select, up_cols, alias)
             if not missing:
-                return KeyInfo("row", columns=out, upstream=upstream, upstream_columns=list(up_cols), alias=alias,
+                info = KeyInfo("row", columns=out, upstream=upstream, upstream_columns=list(up_cols), alias=alias,
                                assumed=assumed)
+                if computed:  # traced: which key of the step before became which key here
+                    info.computed = True
+                    info.group_exprs = [computed[o].copy() if o in computed else exp.column(u)
+                                        for o, u in zip(out, up_cols)]
+                return info
             if not select.args.get("distinct") or select.args["distinct"].args.get("on"):
                 return KeyInfo("none", reason=f"it doesn't keep {', '.join(missing)}"
                                               f"{f' from {upstream}' if upstream else ''}")
@@ -388,6 +418,7 @@ class Plan:
     ignored: List[Tuple[str, str]]
     parameters: Dict[str, Any] = field(default_factory=dict)  # the {{ … }} values the plan was made with
     load: Dict[str, Any] = field(default_factory=dict)  # full / incremental (step, columns, the WHERE added)
+    warnings: List[str] = field(default_factory=list)  # what the sip can't follow (it never stops a run)
 
     def key_of(self, target: Target) -> List[str]:
         view = self.views[target.view]
@@ -426,6 +457,8 @@ class Plan:
             what = f"adds WHERE {self.load['where']}" if self.load.get("where") else \
                 "no watermark yet: the first run reads everything"
             lines.append(f"  load: incremental on {', '.join(self.load['columns'])} — {self.load['step']} {what}")
+        for w in self.warnings:
+            lines.append(f"  warning: {w}")
         if self.spec.sip.enabled:
             store = self.spec.sip.store or "kept in memory (no sip.store)"
             lines.append(f"  sip: {self.spec.sip.rate:.4%} of keys, at most {self.spec.sip.max_rows} per view"
@@ -494,6 +527,7 @@ def build_plan(spec: PipelineSpec, statements: List[Statement], reserved=()) -> 
 
     sampled: List[str] = []
     keep: Set[str] = set()
+    warnings: List[str] = []
     if spec.sip.enabled:
         chosen: Set[str] = set()
         for start in wanted:
@@ -501,13 +535,13 @@ def build_plan(spec: PipelineSpec, statements: List[Statement], reserved=()) -> 
             while n is not None and n not in chosen:
                 chosen.add(n)
                 n = views[n].key.upstream if spec.sip.stages == "all" else None
-        problems = [f"  {n} ({views[n].origin}): {views[n].key.reason}" for n in names
-                    if n in chosen and views[n].key.mode == "none"]
-        if problems:
-            raise PipelineError("the sip can't follow the key through:\n" + "\n".join(problems) +
-                                "\nKeep the key in the SELECT, or say which column(s) are the key: "
-                                "\"keys\": {\"<view>\": [\"<column>\"]}")
-        sampled = [n for n in names if n in chosen]
+        lost = [n for n in names if n in chosen and views[n].key.mode == "none"]
+        if lost:  # the sip only watches: it leaves those steps out and says why, the run goes on
+            warnings.append("the sip can't follow the key through " + "; ".join(
+                f"{n} ({views[n].origin}): {views[n].key.reason}" for n in lost) +
+                " — the sip skips it. Keep the key in the SELECT, or say which column(s) are the key: "
+                "\"keys\": {\"<view>\": [\"<column>\"]}")
+        sampled = [n for n in names if n in chosen and n not in lost]
         keep = set(sampled)
         for n in sampled:
             v = views[n]
@@ -517,4 +551,4 @@ def build_plan(spec: PipelineSpec, statements: List[Statement], reserved=()) -> 
         if t.mode == "merge" and not (t.key or views[t.view].key.mode != "none" or spec.primary_key):
             raise PipelineError(f"merge into {t.where}: view {t.view} has no key — set 'key' on the target")
     return Plan(spec=spec, views=views, needed=needed, unused=unused, targets=targets, sampled=sampled,
-                keep=keep, queries=analyzer.queries, ignored=analyzer.ignored)
+                keep=keep, queries=analyzer.queries, ignored=analyzer.ignored, warnings=warnings)

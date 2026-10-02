@@ -290,6 +290,9 @@ def _run(spec: PipelineSpec, started: float, duck: Any, spark: Any, config_path:
     catalog_of = catalog_lookup(spec, duck, catalogs)
     run = PipelineRun(pipeline=spec.name, run_id=values["run_id"], run_at=values["run_at"], engine=engine.name,
                       plan=plan, dry_run=dry_run)
+    for w in plan.warnings:  # what the sip can't follow: said, never a reason to stop
+        logger.warning("%s: %s", spec.name, w)
+        run.warnings.append(w)
     # the sip's run_at keeps the microseconds: two runs in the same second still sort in the order they ran
     sip = Sip(spec.sip, engine, spec.name, run.run_id, now.isoformat(sep=" "), values["run_date"]) \
         if spec.sip.enabled else None

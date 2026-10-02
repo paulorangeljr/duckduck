@@ -182,10 +182,10 @@ def test_the_plan_follows_the_key_through_renames_and_groups(tmp_path):
     ("CREATE VIEW a AS SELECT count(*) AS n FROM incidents", "aggregates every row into one"),
     ("CREATE VIEW a AS SELECT count(*) AS n FROM incidents GROUP BY region", "groups by region, which isn't"),
 ])
-def test_a_key_it_cant_follow_fails_the_plan_with_the_fix(sql, reason):
-    with pytest.raises(PipelineError) as e:
-        plan_pipeline({"pipeline": "x", "primary_key": "sys_id", "sql": sql, "sip": True, "target": "/lake/a"})
-    assert reason in str(e.value) and '"keys": {"<view>": ["<column>"]}' in str(e.value)
+def test_a_key_it_cant_follow_is_a_warning_with_the_fix(sql, reason):
+    plan = plan_pipeline({"pipeline": "x", "primary_key": "sys_id", "sql": sql, "sip": True, "target": "/lake/a"})
+    assert plan.sampled == [] and len(plan.warnings) == 1
+    assert reason in plan.warnings[0] and '"keys": {"<view>": ["<column>"]}' in plan.warnings[0]
 
 
 def test_declared_keys_and_lookups_off_the_way_are_fine():
@@ -867,3 +867,45 @@ def test_silver_never_declares_loaded_at_even_listing_its_columns(duck, tmp_path
         assert first.writes[0]["rows"] == 2 and first.load["now"]["_loaded_at"]
         again = run_pipeline(spec, duck=duck)
         assert again.writes[0].get("skipped") and "nothing newer" in again.report()
+
+
+def _axon_duck():
+    duck = DuckAPI()
+    duck.register_api_function("mytable", lambda: pd.DataFrame({
+        "internal_axon_id": ["123", "a1", "b2", "c3"], "cola": [1, 2, 3, 4], "colb": ["x", "y", "z", "w"]}))
+    return duck
+
+
+def test_a_key_computed_from_the_key_is_followed_and_watch_names_it_as_it_came_in(tmp_path):
+    sql = ("SELECT CASE WHEN internal_axon_id = '123' THEN 'other' ELSE internal_axon_id END AS internal_axon_id, "
+           "cola, colb FROM mytable")
+    run = run_pipeline({"pipeline": "axon", "primary_key": "internal_axon_id", "sql": sql,
+                        "sip": {"watch": ["123"], "columns": ["internal_axon_id", "cola", "colb"]},
+                        "target": str(tmp_path / "out")}, duck=_axon_duck())
+    assert not run.warnings or all("can't follow" not in w for w in run.warnings)
+    assert "computed here from internal_axon_id" in run.plan.report()
+    watched = run.sip[run.sip["key"] == "123"]
+    assert watched[["event", "stage_key"]].values.tolist() == [["seen", "other"]]
+    assert "123 became other" in watched["note"].iloc[0]
+
+    # a step after the one that reads the source: traced from the key before
+    sql2 = ("CREATE VIEW raw AS SELECT * FROM mytable;\n"
+            "CREATE VIEW clean AS SELECT CASE WHEN internal_axon_id = '123' THEN 'other' "
+            "ELSE internal_axon_id END AS internal_axon_id, colb FROM raw")
+    run = run_pipeline({"pipeline": "axon2", "primary_key": "internal_axon_id", "sql": sql2,
+                        "sip": {"watch": ["123"], "rate": 1.0}, "target": str(tmp_path / "out2")},
+                       duck=_axon_duck())
+    events = run.sip[run.sip["stage"] == "clean"].set_index("key")
+    assert events.loc["123", "stage_key"] == "other" and events.loc["a1", "stage_key"] == "a1"
+    assert events.loc["123", "event"] == "changed" and events.loc["123", "changed"] == "internal_axon_id"
+    assert set(events.drop(index="123")["event"]) == {"seen"}
+
+
+def test_a_sip_that_cant_follow_the_key_warns_and_the_run_goes_on(tmp_path):
+    sql = "SELECT upper(colb) AS label, cola FROM mytable"  # the key is gone, nothing names it
+    run = run_pipeline({"pipeline": "axon", "primary_key": "internal_axon_id", "sql": sql,
+                        "sip": {"watch": ["123"]}, "target": {"path": str(tmp_path / "out"), "mode": "overwrite"}},
+                       duck=_axon_duck())
+    assert run.writes and run.writes[0]["rows"] == 4
+    assert any("can't follow the key through axon" in w and "the sip skips it" in w for w in run.warnings)
+    assert run.plan.sampled == [] and "warning: the sip can't follow" in run.plan.report()

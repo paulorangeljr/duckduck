@@ -204,7 +204,9 @@ class Sip:
             self._event(view.name, "lineage_break", note=note)
             return
         up = self.states.get(key.upstream) if key.upstream else None
-        if up is None:
+        if key.computed:
+            state = self._computed(view, cols, up)
+        elif up is None:
             state = self._root(view, cols)
         elif key.mode == "group":
             state = self._group(view, cols, up)
@@ -280,9 +282,17 @@ class Sip:
                                 note=f"not in {up.view}")
         return state
 
+    @staticmethod
+    def _ast(view: View) -> exp.Expression:
+        """The view as it runs now — an incremental load ANDed its WHERE into the text after it was parsed."""
+        try:
+            return sqlglot.parse_one(view.sql, dialect="duckdb")
+        except sqlglot.errors.ParseError:
+            return view.ast.copy()
+
     def trace_sql(self, view: View, up: StageState) -> str:
         """The view's own FROM/JOIN/WHERE, selecting each followed key of the step before and its group."""
-        query = view.ast.copy()
+        query = self._ast(view)
         select = leftmost(query)
         alias = view.key.alias or up.view
         up_key = key_sql([f"{ident(alias)}.{ident(c)}" for c in up.columns])
@@ -306,6 +316,68 @@ class Sip:
             for arg in ("order", "limit", "offset"):
                 query.set(arg, None)
         return query.sql(dialect="duckdb")
+
+    def _computed(self, view: View, cols: List[str], up: Optional[StageState]) -> StageState:
+        """A key computed from the one before (``CASE WHEN id = '1' THEN 'x' ELSE id END AS id``). The expression
+        reads only the key, so what each followed key became is the expression over its values — nothing is
+        read again. At the first step the keys are picked as they come out; a watched key is taken as it came
+        in (``watch: ["123"]`` follows the row whose key became ``'other'``)."""
+        if up is None:
+            state = self._root(view, cols)
+            values = {w: (w.split("|") if len(view.key.upstream_columns) > 1 else [w]) for w in self.spec.watch}
+            origins = {w: w for w in values}
+        else:
+            state = StageState(view.name, cols, hash_mode=up.hash_mode, cutoff=up.cutoff)
+            origins = {o: s for o, s in up.stage_of.items() if s is not None}
+            values = {}
+            for s in set(origins.values()):
+                row = {k.lower(): v for k, v in (up.rows.get(s) or {}).items()}
+                values[s] = [row.get(c.lower()) for c in up.columns]
+        became = self._evaluate(view, values)
+        k = key_sql([ident(c) for c in cols])
+        targets = sorted({became[s] for s in origins.values() if became.get(s) is not None} - set(state.rows))
+        if targets:
+            rows, counts = self._collect(self.engine.query(
+                f"SELECT *, {k} AS _sip_key FROM {ident(view.name)} WHERE {in_list(k, targets)}"), cols)
+            state.rows.update(rows)
+            state.counts.update(counts)
+        for origin, s in origins.items():
+            new = became.get(s)
+            if new is None or new not in state.rows:
+                if up is not None:
+                    state.stage_of[origin] = None
+                    self._event(view.name, "dropped", key=origin, stage_key=new, n=0,
+                                note=f"in {up.view} as {s}, not in {view.name}" + (f" as {new}" if new else ""))
+                continue
+            state.stage_of[origin] = new
+            if up is None and new == origin:
+                continue  # picked as it came out: _root said so already
+            n = state.counts[new]
+            changed = self._changed(up.rows.get(s), state.rows[new]) if up else []
+            event = "duplicated" if n > 1 and (up is None or up.counts.get(s, 1) <= 1) else \
+                ("changed" if changed else "seen")
+            self._event(view.name, event, key=origin, stage_key=new, n=n, row=state.rows[new], changed=changed,
+                        note=f"key {s} became {new} here" if new != s else "")
+        return state
+
+    def _evaluate(self, view: View, values: Dict[str, List[Any]]) -> Dict[str, Optional[str]]:
+        """{key before: the key here}, the view's key expressions run over those values."""
+        if not values:
+            return {}
+        names = view.key.upstream_columns
+        rows = ", ".join("(" + ", ".join([literal(s)] + ["NULL" if v is None else literal(v) for v in vs]) + ")"
+                         for s, vs in values.items())
+        exprs = []
+        for e in view.key.group_exprs:
+            e = e.copy()
+            for c in e.find_all(exp.Column):
+                c.set("table", None)
+            exprs.append(e.sql(dialect="duckdb"))
+        cols = ", ".join(ident(n) for n in names)
+        out = self.engine.query(f"SELECT _sip_up, {key_sql(exprs)} AS _sip_new "
+                                f"FROM (VALUES {rows}) AS _sip_values(_sip_up, {cols})")
+        return {str(u): (None if g is None or (isinstance(g, float) and math.isnan(g)) else str(g))
+                for u, g in zip(out["_sip_up"], out["_sip_new"])}
 
     def _group(self, view: View, cols: List[str], up: StageState) -> StageState:
         mapping = self.engine.query(self.trace_sql(view, up))
