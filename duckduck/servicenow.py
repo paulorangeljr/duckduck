@@ -62,6 +62,7 @@ import requests
 from . import slicing
 from .kinds import catalog
 from .logs import PageProgress, get_logger, instrument_session, log_http
+from .retry import RetryPolicy, send
 from .pushdown import Condition, parse_like, require_like
 from .sparkplan import spark_plan
 
@@ -287,6 +288,7 @@ class ServiceNow:
         self.default_page_size = default_page_size
         self.session = requests.Session()
         instrument_session(self.session, "servicenow")
+        self.retry = RetryPolicy()  # the service's "retry" in duckduck.json replaces it
         self._last_total: Optional[int] = None
         self.session.verify = verify
         self.session.headers.update({"Accept": "application/json"})
@@ -317,12 +319,12 @@ class ServiceNow:
         if self._scope:
             body["scope"] = self._scope
 
-        r = requests.post(
+        r = send(self.retry, "servicenow", lambda timeout: requests.post(
             self._token_url,
             data=body,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
-            timeout=30,
-        )
+            timeout=timeout,
+        ), 30, what="OAuth2 token")
         log_http("servicenow", r, log_body=False)  # the body carries client_secret
         if not r.ok:
             # r.raise_for_status() drops the response body — but that's exactly
@@ -347,11 +349,11 @@ class ServiceNow:
         thread in ``_COUNTED`` — pages read at once in threads each see their own."""
         if self._auth_mode == "oauth2":
             self._ensure_token()
-        r = self.session.get(
+        r = send(self.retry, "servicenow", lambda timeout: self.session.get(
             f"{self.base_url}/table/{table_name}",
             params=params,
-            timeout=60,
-        )
+            timeout=timeout,
+        ), 60, what=f"table {table_name}")
         r.raise_for_status()
         # ServiceNow reports the query's total row count in a header.
         total = r.headers.get("X-Total-Count")

@@ -44,6 +44,7 @@ import urllib3
 
 from . import slicing
 from .logs import PageProgress, instrument_session
+from .retry import RetryPolicy, send
 from .pushdown import require_like
 from .sparkplan import spark_plan
 
@@ -81,6 +82,7 @@ class InsightVM:
 
         self.session = requests.Session()
         instrument_session(self.session, "insightvm")
+        self.retry = RetryPolicy()  # the service's "retry" in duckduck.json replaces it
         self.session.auth = (username, password)
         self.session.verify = verify
 
@@ -110,22 +112,22 @@ class InsightVM:
 
     def _get(self, path: str, params: Optional[Dict] = None) -> Dict:
         params = params or {}
-        r = self.session.get(
+        r = send(self.retry, "insightvm", lambda timeout: self.session.get(
             f"{self.base_url}{path}",
             params=params,
-            timeout=60,
-        )
+            timeout=timeout,
+        ), 60, what=path)
         r.raise_for_status()
         return r.json()
 
     def _post(self, path: str, body: Dict, params: Optional[Dict] = None) -> Dict:
         params = params or {}
-        r = self.session.post(
+        r = send(self.retry, "insightvm", lambda timeout: self.session.post(
             f"{self.base_url}{path}",
             params=params,
             json=body,
-            timeout=60,
-        )
+            timeout=timeout,
+        ), 60, what=path)
         r.raise_for_status()
         return r.json()
 

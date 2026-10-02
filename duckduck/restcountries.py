@@ -52,6 +52,7 @@ import pandas as pd
 import requests
 
 from .logs import PageProgress, get_logger, instrument_session
+from .retry import RetryPolicy, send
 from .pushdown import require_like
 from .sparkplan import spark_plan
 
@@ -97,6 +98,7 @@ class RestCountries:
         self.timeout = timeout
         self.session = requests.Session()
         instrument_session(self.session, "restcountries")
+        self.retry = RetryPolicy()  # the service's "retry" in duckduck.json replaces it
         self.session.headers.update({"Accept": "application/json", "Authorization": f"Bearer {api_key}"})
         self.session.verify = verify
 
@@ -113,7 +115,8 @@ class RestCountries:
 
     def _get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Tuple[List[Dict[str, Any]], Optional[int]]:
         """The countries of one response and the total it reports (if it does); 404 → none."""
-        response = self.session.get(f"{self.base_url}{path}", params=params, timeout=self.timeout)
+        response = send(self.retry, "restcountries", lambda timeout: self.session.get(
+            f"{self.base_url}{path}", params=params, timeout=timeout), self.timeout, what=path)
         final = str(getattr(response, "url", "") or "")
         if RETIRED in final or "legacy.json" in final:
             raise RestCountriesError(f"{final} is the retired REST Countries API (v3.1) — use {BASE_URL}")

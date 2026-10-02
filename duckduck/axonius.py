@@ -56,6 +56,7 @@ import pandas as pd
 import requests
 
 from .logs import PageProgress, instrument_session
+from .retry import RetryPolicy, send
 from .pushdown import require_like
 from .sparkplan import spark_plan
 
@@ -90,6 +91,7 @@ class Axonius:
 
         self.session = requests.Session()
         instrument_session(self.session, "axonius")
+        self.retry = RetryPolicy()  # the service's "retry" in duckduck.json replaces it
         self.session.headers.update({
             "api-key": api_key,
             "api-secret": api_secret,
@@ -119,7 +121,8 @@ class Axonius:
     # ------------------------------------------------------------------
 
     def _post(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
-        r = self.session.post(f"{self.base_url}{path}", json=body, timeout=60)
+        r = send(self.retry, "axonius", lambda timeout: self.session.post(f"{self.base_url}{path}", json=body,
+                                                                          timeout=timeout), 60, what=path)
         r.raise_for_status()
         return r.json()
 

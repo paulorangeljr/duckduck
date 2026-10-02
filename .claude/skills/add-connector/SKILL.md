@@ -30,6 +30,10 @@ the shapes you couldn't verify in one place.
   an `IN_MAX` per request when it can take a list of values — that's what narrows it in a JOIN); `limit: Optional[int] = None`
   last. Return a `pd.DataFrame` (`pd.json_normalize(..., sep="_")`).
 - Log HTTP with `instrument_session(self.session)`; report pages with `PageProgress`.
+- **Retries**: an HTTP connector keeps `self.retry = RetryPolicy()` (`duckduck.retry`) and sends every request
+  through `send(self.retry, "<name>", lambda timeout: self.session.get(..., timeout=timeout), <default timeout>,
+  what=...)` — then a service's `"retry"` in duckduck.json and a pipeline's `"retry"` reach it with no other code.
+  Never hard-code `timeout=` or write its own retry loop (NVD's predates it).
 - **Page loop**: a page-numbered or offset API that reports a total pages through
   `duckduck.slicing.pages(fetch_page, page_size)` — `fetch_page(n) -> (rows, total_rows or None)` — never its own
   `while` loop. That is what lets Spark split the read. Cursor APIs keep their own loop.

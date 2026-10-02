@@ -61,6 +61,7 @@ import pandas as pd
 import requests
 
 from .logs import PageProgress, log_http
+from .retry import RetryPolicy, send
 from .kinds import needs_arguments
 from .sparkplan import spark_plan
 
@@ -108,6 +109,9 @@ class SharePoint:
     # ------------------------------------------------------------------
     # Constructors
     # ------------------------------------------------------------------
+
+    #: retries for every Graph request — the service's "retry" in duckduck.json replaces it
+    retry: RetryPolicy = RetryPolicy()
 
     def __init__(
         self,
@@ -386,14 +390,14 @@ class SharePoint:
 
     def _get(self, url: str) -> Dict:
         token = self._get_token()
-        r = requests.get(
+        r = send(self.retry, "sharepoint", lambda timeout: requests.get(
             url,
             headers={
                 "Authorization": f"Bearer {token}",
                 "Accept": "application/json",
             },
-            timeout=30,
-        )
+            timeout=timeout,
+        ), 30, what="Graph request")
         log_http("sharepoint", r)
         r.raise_for_status()
         return r.json()

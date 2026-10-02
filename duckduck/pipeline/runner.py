@@ -27,6 +27,8 @@ from .lakeread import LakeReads, check_sources
 from .settings import lake_settings, with_settings
 from .state import read_state, write_state
 
+from ..retry import RetryPolicy, is_policy
+
 logger = logging.getLogger("duckduck.pipeline")
 
 
@@ -295,11 +297,14 @@ def _run(spec: PipelineSpec, started: float, duck: Any, spark: Any, config_path:
 _UNSET = object()
 
 
-def _per_run(duck: Any, value: Any, key: str, attribute: str, owns: Any, what: str) -> List[Tuple[Any, str, Any]]:
-    """``value`` (a number for every connector ``owns`` picks, or {service: n}) set as ``attribute`` on those
-    connectors for this run; [(connector, attribute, its value before)] to put back afterwards."""
+def _per_run(duck: Any, value: Any, key: str, attribute: str, owns: Any, what: str,
+             for_all: Any = None, make: Any = None) -> List[Tuple[Any, str, Any]]:
+    """``value`` (one for every connector ``owns`` picks — ``for_all(value)`` says so, default a non-dict — or
+    {service: value}) set as ``attribute`` on those connectors for this run (``make(before, value)`` when the
+    new value builds on the old); [(connector, attribute, its value before)] to put back afterwards."""
     if value is None:
         return []
+    for_all = for_all or (lambda v: not isinstance(v, dict))
     by_service: Dict[str, List[Any]] = {}
     for name, fn in getattr(duck, "functions", {}).items():
         instance = getattr(fn, "__self__", None)
@@ -307,7 +312,7 @@ def _per_run(duck: Any, value: Any, key: str, attribute: str, owns: Any, what: s
             service = duck.service_of.get(name) or name
             if all(instance is not i for i in by_service.setdefault(service, [])):
                 by_service[service].append(instance)
-    wanted = value if isinstance(value, dict) else {s: value for s in by_service}
+    wanted = {s: value for s in by_service} if for_all(value) else value
     unknown = sorted(set(wanted) - set(by_service))
     if unknown:
         raise PipelineError(f"{key}: no connector {', '.join(unknown)} that {what} (there are: "
@@ -320,6 +325,8 @@ def _per_run(duck: Any, value: Any, key: str, attribute: str, owns: Any, what: s
             before = getattr(instance, attribute, _UNSET)
             restore.append((instance, attribute, before))
             top = getattr(instance, "MAX_PAGE_SIZE", None) if attribute == "default_page_size" else None
+            if make is not None:
+                n = make(before, n)
             setattr(instance, attribute, min(n, top) if top else n)  # an API's own maximum (NVD's 2000)
             logger.info("  %s: %s = %s for this run (was %s)", service, key, getattr(instance, attribute),
                         "the declared one" if before is _UNSET else before)
@@ -333,14 +340,20 @@ def _paged_at_once(instance: Any, fn: Any) -> bool:
     return bool(plan and plan.strategy == "partitioned")
 
 
+def _retries(instance: Any, fn: Any) -> bool:
+    return isinstance(getattr(instance, "retry", None), RetryPolicy)
+
+
 def page_sizes(spec: PipelineSpec, duck: Any) -> List[Tuple[Any, str, Any]]:
-    """The file's ``page_size`` and ``max_parallel`` set on the connectors for this run — every one it can
+    """The file's ``page_size``, ``max_parallel`` and ``retry`` set on the connectors for this run — every one it can
     read, or the services it names; [(connector, attribute, its value before)] to put back afterwards."""
     restore = _per_run(duck, spec.page_size, "page_size", "default_page_size",
                        lambda instance, fn: hasattr(instance, "default_page_size"), "reads in pages")
     try:
-        return restore + _per_run(duck, spec.max_parallel, "max_parallel", "max_parallel", _paged_at_once,
-                                  "reads several requests at once")
+        restore += _per_run(duck, spec.max_parallel, "max_parallel", "max_parallel", _paged_at_once,
+                            "reads several requests at once")
+        return restore + _per_run(duck, spec.retry, "retry", "retry", _retries, "retries its requests",
+                                  for_all=is_policy, make=lambda before, block: before.with_(block))
     except PipelineError:
         put_back(restore)
         raise

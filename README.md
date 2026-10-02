@@ -357,6 +357,41 @@ faster. Raise it a little at a time and watch the `-v` lines. APIs read one
 page after another (cursor pagination, NVD's rate limit) ignore it. Spark
 uses the same number (`SparkReader(max_parallel=)` still caps it).
 
+### Retries and timeouts
+
+The HTTP connectors (ServiceNow, InsightVM, Axonius, SharePoint, REST
+Countries) try a request again when it times out, the connection drops, or
+the API answers 429 or 5xx: 3 more tries, waiting 2 s, 4 s, 8 s (a
+`Retry-After` header wins; at most 60 s). A 4xx other than 429 isn't tried
+again — a bad key or a wrong table won't get better. Each retry is a warning
+in the log:
+
+```
+servicenow: table incident — ReadTimeout (no answer in time); try 2 of 4 in 2s
+```
+
+and once every try failed the error says so and what to change. Set it per
+service in `duckduck.json` (any of the keys; `"retry": false` = no retries):
+
+```json
+"servicenow": {"connector": "servicenow", "instance": "minhaempresa", "authentication": {…},
+               "retry": {"retries": 5, "backoff": 2, "max_wait": 60, "timeout": 120, "statuses": [429, 500, 502, 503, 504]}}
+```
+
+`timeout` is the seconds one request may take (default: the connector's own,
+60 s for ServiceNow's tables) — a big page (`default_page_size` 2000) on a slow
+instance may need more. A pipeline file can set its own for that run only, on
+top of the service's, put back when it ends:
+
+```json
+"retry": {"retries": 8, "timeout": 300}
+"retry": {"servicenow": {"timeout": 180}}
+```
+
+A wait between tries stops at once when the read is paused or cancelled.
+NVD keeps its own retries (`max_retries`, `timeout`), Airflow and Athena go
+through boto3's.
+
 **Rows per request** are each service's `default_page_size` in `duckduck.json`
 (ServiceNow and Axonius 200, InsightVM 500, Airflow 100, NVD 2000 — its own
 maximum, SharePoint Graph's `$top`):

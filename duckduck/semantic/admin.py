@@ -548,6 +548,11 @@ def config_reference() -> Dict[str, Any]:
             {"name": "max_parallel", "type": "integer", "input": "int", "description": "How many requests of one "
              "table run at once (pages read in threads, a join's split calls). Default: what each table declares "
              "(ServiceNow and InsightVM 4, Airflow 2); APIs read one page after another (cursors, NVD) ignore it."},
+            {"name": "retry", "type": "object", "input": "json", "description": "HTTP connectors (servicenow, "
+             "insightvm, axonius, sharepoint, restcountries): a timeout, a dropped connection, 429 or 5xx is tried "
+             "again. {\"retries\": 3, \"backoff\": 2, \"max_wait\": 60, \"timeout\": 60, \"statuses\": [429, 500, "
+             "502, 503, 504]} — any of these keys; false = no retries. timeout = seconds per request (default: the "
+             "connector's, 30–60)."},
             {"name": "authentication", "type": "object", "description": "Where credentials come from — below."},
         ],
         "authentication": [
@@ -759,10 +764,16 @@ def validate_config(data: Any, path: str = "") -> Dict[str, List[str]]:
         if cls is not None:
             params = set(list(inspect.signature(cls.__init__).parameters)[1:])
             takes_any = any(p.kind == p.VAR_KEYWORD for p in inspect.signature(cls.__init__).parameters.values())
-            extra = set(svc) - {"connector", "authentication", "table_prefix", "max_parallel"} - params
+            extra = set(svc) - {"connector", "authentication", "table_prefix", "max_parallel", "retry"} - params
             at_once = svc.get("max_parallel")
             if at_once is not None and not (isinstance(at_once, int) and not isinstance(at_once, bool) and at_once >= 1):
                 errors.append(f"services.{name}.max_parallel must be a whole number ≥ 1")
+            if "retry" in svc:
+                from ..retry import policy_problem
+
+                problem = policy_problem(svc["retry"])
+                if problem:
+                    errors.append(f"services.{name}.{problem}")
             if extra and not takes_any:
                 warnings.append(f"services.{name}: {', '.join(sorted(extra))} — not an option of {connector!r} "
                                 f"(options: {', '.join(sorted(params))})")

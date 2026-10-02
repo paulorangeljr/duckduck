@@ -1047,6 +1047,7 @@ class DuckAPI:
                         )
                     config[option] = resolved
 
+                retry_block = config.pop("retry", None)
                 at_once = config.pop("max_parallel", None)
                 if at_once is not None and not (isinstance(at_once, int) and not isinstance(at_once, bool)
                                                 and at_once >= 1):
@@ -1056,6 +1057,17 @@ class DuckAPI:
                 instance = spec.factory(credentials, **config)
                 if at_once is not None:
                     instance.max_parallel = at_once  # wins over the tables' declared @spark_plan(max_parallel=)
+                if retry_block is not None:
+                    from .retry import RetryPolicy
+
+                    current = getattr(instance, "retry", None)
+                    if not isinstance(current, RetryPolicy):
+                        raise ValueError(f"'{name}': connector {connector!r} doesn't take \"retry\" (only the HTTP "
+                                         f"connectors do: servicenow, insightvm, axonius, sharepoint, restcountries)")
+                    try:
+                        instance.retry = current.with_(retry_block)
+                    except ValueError as e:
+                        raise ValueError(f"'{name}': {e}") from None
 
                 tables = {t: getattr(instance, m) for t, m in spec.tables.items()}
                 if spec.dynamic_tables:

@@ -37,7 +37,7 @@ MODES = ("append", "overwrite", "overwrite_partitions", "merge")
 FORMATS = ("parquet", "delta", "iceberg")
 SOURCES = ("notebook", "sql_file", "sql")
 KEYS = {"pipeline", "description", "engine", "primary_key", "keys", "sip", "target", "targets", "output",
-        "parameters", "catalogs", "catalog", "schema_evolution", "state", "load", "timezone", "audit_columns", "layer", "aws", "read_engine", "virtualized_table", "page_size", "max_parallel", *SOURCES}
+        "parameters", "catalogs", "catalog", "schema_evolution", "state", "load", "timezone", "audit_columns", "layer", "aws", "read_engine", "virtualized_table", "page_size", "max_parallel", "retry", *SOURCES}
 SIP_KEYS = {"enabled", "rate", "max_rows", "watch", "columns", "mask", "store", "stages", "null_keys"}
 TARGET_KEYS = {"path", "table", "format", "mode", "partition_by", "key", "unique", "storage_options", "catalog",
                "schema", "schema_evolution", "layer", "database", "table_name"}
@@ -153,6 +153,7 @@ class PipelineSpec:
     lake: Dict[str, Any] = field(default_factory=dict)  # duckduck.json's "lake", once with_settings applied it
     page_size: Any = None  # rows per API request during this run: a number (every connector) or {service: n}
     max_parallel: Any = None  # requests at once per table during this run: a number (every connector) or {service: n}
+    retry: Any = None  # retries of API requests during this run: a setting (every connector) or {service: setting}
 
     def resolve(self, value: str) -> str:
         """A local path relative to the pipeline file."""
@@ -251,6 +252,16 @@ def load_spec(source: Union[str, os.PathLike, Dict[str, Any]], base_dir: Optiona
             raise PipelineError(f"'{key}' is {what} for this run: a number (every connector it reads) or one "
                                 f"per service: {{\"servicenow\": {example}}}")
         setattr(spec, key, value)
+    retry = data.get("retry")
+    if retry is not None:
+        from ..retry import is_policy, policy_problem
+
+        settings = [retry] if is_policy(retry) else list(retry.values())
+        problems = [p for p in map(policy_problem, settings) if p]
+        if problems:
+            raise PipelineError(f"'retry' for this run: {problems[0]} — one setting for every connector, or one "
+                                f"per service: {{\"servicenow\": {{\"retries\": 5, \"timeout\": 120}}}}")
+        spec.retry = retry
     audit = data.get("audit_columns", True)
     if audit is True:
         spec.audit_columns = list(AUDIT_COLUMNS)
