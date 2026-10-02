@@ -24,13 +24,13 @@ Via ``auto_register()``::
 import os
 import re
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
 from ...common.kinds import catalog
 from ..lake.lakehouse import LakehouseConnection
-from ...common.pushdown import Condition
+from ...common.pushdown import Condition, sortable
 from ...common.sparkplan import SparkSource, spark_plan
 
 #: extension → (format label, DuckDB reader call template).
@@ -76,8 +76,10 @@ class FileTable:
         self.__doc__ = f"{file_format.upper()} data at {path} (WHERE/LIMIT run inside the DuckDB scan)."
 
     @spark_plan("native", source="_spark_source", why="a local file / folder Spark reads directly (the path must be visible to the executors)")
-    def __call__(self, where: Optional[List[Condition]] = None, limit: Optional[int] = None) -> pd.DataFrame:
-        return self._lake.scan(self.scan_expression, limit=limit, where=where)
+    @sortable(exact=True)
+    def __call__(self, where: Optional[List[Condition]] = None, order_by: Optional[List[Tuple[str, bool]]] = None,
+                 limit: Optional[int] = None) -> pd.DataFrame:
+        return self._lake.scan(self.scan_expression, limit=limit, where=where, order_by=order_by)
 
     def _spark_source(self) -> SparkSource:
         """The file or folder itself, in Spark's reader for its format."""

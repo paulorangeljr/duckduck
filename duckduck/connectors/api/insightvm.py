@@ -36,7 +36,7 @@ Supported query examples
     SELECT * FROM policy_rules(policy_id=7) WHERE status = 'failed'
 """
 
-from typing import Any, Dict, Iterator, List, Optional, Union
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 import pandas as pd
 import requests
@@ -45,10 +45,24 @@ import urllib3
 from ...common import slicing
 from ...common.logs import PageProgress, instrument_session
 from ...common.retry import RetryPolicy, send
-from ...common.pushdown import require_like
+from ...common.pushdown import require_like, sortable
 from ...common.sparkplan import spark_plan
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+
+#: assets columns the API's ``sort`` orders by (``property,ASC|DESC``) — numbers only (``riskScore`` is the
+#: documented example; text would follow the console database's collation). Other tables: not sent — which
+#: of their properties the API sorts by isn't documented, and an unknown one is a 400.
+_ASSET_SORTS = {"riskscore": "riskScore", "id": "id"}
+
+
+def _sort_param(order_by: Optional[List[Tuple[str, bool]]]) -> Dict[str, str]:
+    """DuckAPI's ``order_by`` as InsightVM's ``sort`` query parameter (one column)."""
+    if not order_by:
+        return {}
+    column, descending = order_by[0]
+    return {"sort": f"{_ASSET_SORTS.get(column.lower(), column)},{'DESC' if descending else 'ASC'}"}
 
 
 class InsightVM:
@@ -195,11 +209,13 @@ class InsightVM:
     _SEARCH_OPERATORS = {"contains": "contains", "startswith": "starts-with", "endswith": "ends-with", "equals": "is"}
 
     @spark_plan("partitioned", by="pages", max_parallel=4, why="page=N with page.totalResources: any page can be read on its own")
+    @sortable(*_ASSET_SORTS)
     def assets(
         self,
         hostname: Optional[str] = None,
         ip: Optional[str] = None,
         hostname_ilike: Optional[str] = None,
+        order_by: Optional[List[Tuple[str, bool]]] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -252,13 +268,13 @@ class InsightVM:
             payload = self._post(
                 "/assets/search",
                 body,
-                params={"size": limit or self.default_page_size, "page": 0},
+                params={"size": limit or self.default_page_size, "page": 0, **_sort_param(order_by)},
             )
             return pd.json_normalize(
                 payload.get("resources", []), sep="_"
             )
 
-        resources = self._fetch("/assets", limit=limit)
+        resources = self._fetch("/assets", params=_sort_param(order_by), limit=limit)
         return pd.json_normalize(resources, sep="_")
 
     # ------------------------------------------------------------------
@@ -635,18 +651,20 @@ class InsightVM:
         """Yields one page of remediation projects at a time."""
         return self._pages_kept("/remediation/projects", equals={"status": status})
 
+    @sortable(*_ASSET_SORTS)
     def iter_assets(
         self,
         hostname: Optional[str] = None,
         ip: Optional[str] = None,
         hostname_ilike: Optional[str] = None,
+        order_by: Optional[List[Tuple[str, bool]]] = None,
     ) -> Iterator[pd.DataFrame]:
-        """Yields one page of assets at a time."""
+        """Yields one page of assets at a time (``order_by``: in the API's ``sort`` order)."""
         if hostname or ip or hostname_ilike:
             # The search endpoint returns everything in a single call; single yield.
-            yield self.assets(hostname=hostname, ip=ip, hostname_ilike=hostname_ilike)
+            yield self.assets(hostname=hostname, ip=ip, hostname_ilike=hostname_ilike, order_by=order_by)
             return
-        for page in self._iter_pages("/assets"):
+        for page in self._iter_pages("/assets", _sort_param(order_by)):
             yield pd.json_normalize(page, sep="_")
 
     def iter_vulnerabilities(

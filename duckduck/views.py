@@ -440,6 +440,10 @@ def _bound(base: Callable, args: Dict[str, Any], name: str, definition: Dict[str
     if owner is not None:
         saved_table.__self__ = owner  # the connector: its pushdown_blocker and endpoint still apply
     setattr(saved_table, VIEW_ATTR, definition)
+    from .common.pushdown import SORTABLE_ATTR, sortable_of
+
+    if sortable_of(base) is not None:  # sorts at the source like its base table
+        setattr(saved_table, SORTABLE_ATTR, sortable_of(base))
     return saved_table
 
 

@@ -56,7 +56,7 @@ from ..lake import s3layout
 from ...common.kinds import catalog, raw_query
 from ..lake.lakehouse import LakehouseConnection
 from ...common.logs import get_logger
-from ...common.pushdown import Condition, parse_like
+from ...common.pushdown import Condition, parse_like, sortable
 from ...common.sparkplan import SparkSource, spark_plan
 
 logger = get_logger("athena")
@@ -348,12 +348,12 @@ class Athena:
                 for c in (meta.get("Columns") or []) + (meta.get("PartitionKeys") or [])}
 
     def _select(self, database: str, table_name: str, where: Optional[List[Condition]],
-                limit: Optional[int]) -> Tuple[str, bool]:
+                limit: Optional[int], order_by: Optional[List[Tuple[str, bool]]] = None) -> Tuple[str, bool]:
         """(the SELECT, whether every condition went into it)."""
         for part in (database, table_name):
             if not _NAME_RE.match(part or ""):
                 raise ValueError(f"not an Athena database/table name: {part!r}")
-        types = self._column_types(database, table_name) if where else {}
+        types = self._column_types(database, table_name) if where or order_by else {}
         clauses, complete = [], True
         for cond in where or []:
             clause, why = _clause(cond, types)
@@ -365,6 +365,12 @@ class Athena:
         sql = f'SELECT * FROM "{database}"."{table_name}"'
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
+        if order_by:
+            order = _order(order_by, types)
+            if order is None:
+                limit = None  # both or neither: DuckDB sorts and cuts
+            else:
+                sql += f" ORDER BY {order}"
         if limit is not None and complete:
             sql += f" LIMIT {int(limit)}"
         return sql, complete
@@ -374,19 +380,21 @@ class Athena:
     # ------------------------------------------------------------------
 
     @spark_plan("native", source="_spark_table", why="a Glue-catalogued table on S3: Spark reads it by name or path")
+    @sortable(exact=True)
     def table(
         self,
         database: str,
         table_name: str,
         where: Optional[List[Condition]] = None,
+        order_by: Optional[List[Tuple[str, bool]]] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
-        An Athena table, queried on Athena: the WHERE and LIMIT go into its
-        SQL. ``database`` and ``table_name`` are required
-        (``athena.<database>.<table>``).
+        An Athena table, queried on Athena: the WHERE, an ``ORDER BY … NULLS
+        LAST`` and the LIMIT go into its SQL. ``database`` and ``table_name``
+        are required (``athena.<database>.<table>``).
         """
-        sql, complete = self._select(database, table_name, where, limit)
+        sql, complete = self._select(database, table_name, where, limit, order_by)
         empty = [c[0] for c in self._column_types(database, table_name).values()]
         return self._read(sql, database, limit if complete else None, empty_columns=empty)
 
@@ -529,6 +537,18 @@ class Athena:
 # ---------------------------------------------------------------------------
 # Writing a condition in Athena (Trino) SQL
 # ---------------------------------------------------------------------------
+
+
+def _order(order_by: List[Tuple[str, bool]], types: Dict[str, Tuple[str, str]]) -> Optional[str]:
+    """``"c" DESC NULLS LAST, …`` — Trino orders text by code point, as DuckDB does; arrays / maps / rows
+    (and an unknown column) can't be sorted the same: None."""
+    parts = []
+    for column, descending in order_by:
+        name, kind = types.get(column.lower(), (None, ""))
+        if name is None or kind.startswith(("array", "map", "row", "struct")):
+            return None
+        parts.append('"' + name.replace('"', '""') + '"' + (" DESC" if descending else "") + " NULLS LAST")
+    return ", ".join(parts)
 
 
 def _clause(cond: Condition, types: Dict[str, Tuple[str, str]]) -> Tuple[Optional[str], str]:

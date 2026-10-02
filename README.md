@@ -357,6 +357,28 @@ faster. Raise it a little at a time and watch the `-v` lines. APIs read one
 page after another (cursor pagination, NVD's rate limit) ignore it. Spark
 uses the same number (`SparkReader(max_parallel=)` still caps it).
 
+### `ORDER BY … LIMIT`: only the top rows are read
+
+`SELECT … ORDER BY start_date DESC LIMIT 10` doesn't read the whole source
+when it can sort:
+
+- **APIs that sort their pages** — ServiceNow (date fields: `opened_at`,
+  `sys_created_on`, `sys_updated_on`…), InsightVM `assets` (`riskScore`),
+  Airflow `dag_runs` (`start_date`, `end_date`, the logical date) and
+  `import_errors` (`timestamp`): the API returns the pages in that order and
+  the read stops once it has the top 10 (rows with an empty date count after
+  the others, as in DuckDB). If the API turns out not to sort, a warning says
+  so and everything is read — the answer is the same either way.
+- **Query engines** — SQL databases, Athena, ADX, Glue / Blob Storage /
+  local files: `ORDER BY … NULLS LAST LIMIT 10` goes inside the query.
+
+Only dates, numbers and booleans are sorted by an API or a SQL database: text
+follows the server's collation (case, accents), which isn't DuckDB's, so a
+text ORDER BY is sorted here (Athena and the DuckDB scans sort text as DuckDB
+does, so any column goes there). `-v` shows the decision:
+`✓ ORDER BY start_date DESC → order_by`. `LIMIT n OFFSET m` asks the source
+for `n + m` rows.
+
 ### Retries and timeouts
 
 The HTTP connectors (ServiceNow, InsightVM, Axonius, SharePoint, REST

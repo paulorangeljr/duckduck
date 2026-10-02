@@ -217,3 +217,66 @@ def map_conditions(
         else:
             kwargs[target] = list(c.value) if c.op == "in" else c.value
     return kwargs, consumed
+
+
+SORTABLE_ATTR = "__duckduck_sortable__"
+
+
+@dataclass(frozen=True)
+class Sorting:
+    """What ``@sortable`` declared: the columns (None = any, the connector checks), how many keys, the mode."""
+
+    columns: Optional[frozenset]
+    keys: int
+    exact: bool
+
+    def takes(self, order_by: List[Tuple[str, bool]]) -> bool:
+        return len(order_by) <= self.keys and (self.columns is None
+                                               or all(c.lower() in self.columns for c, _ in order_by))
+
+
+def sortable(*columns: str, keys: Optional[int] = None, exact: bool = False) -> Callable:
+    """
+    Declares that a table sorts at the source, through an ``order_by: Optional[List[Tuple[str, bool]]] = None``
+    parameter receiving ``[(column, descending)]`` (at most ``keys`` of them: 1 for an API, any for exact). Two ways:
+
+    - **pages** (default, an API): pages come back in that order, nothing more promised — DuckAPI reads them
+      (``_materialize_pages``) until it holds the top N, NULLs wherever the server puts them. Name the
+      ``columns``: only ones the server orders exactly as DuckDB does — dates, timestamps, numbers (text
+      follows the database's collation: case, accents, punctuation).
+    - **exact** (a query engine): ``order_by`` and ``limit`` arrive together and the source applies both
+      exactly as DuckDB would — NULLs last, the same order — or neither (it drops the limit too, e.g. a text
+      column whose collation it can't vouch for). No ``columns``: the connector decides per call.
+    """
+    names = frozenset(c.lower() for c in columns) if columns else None
+    keys = keys or (16 if exact else 1)  # a query engine takes a whole ORDER BY; an API one field
+    if not exact and names is None:
+        raise ValueError("sortable: name the columns the API sorts by (or exact=True for a query engine)")
+
+    def mark(fn: Callable) -> Callable:
+        setattr(fn, SORTABLE_ATTR, Sorting(names, int(keys), bool(exact)))
+        return fn
+
+    return mark
+
+
+def sortable_of(fn: Any) -> Optional[Sorting]:
+    """What ``@sortable`` says of a table function: a bound method, a saved table, or a callable object."""
+    for owner in (fn, getattr(fn, "__func__", None), getattr(type(fn), "__call__", None)):
+        found = getattr(owner, SORTABLE_ATTR, None) if owner is not None else None
+        if isinstance(found, Sorting):
+            return found
+    return None
+
+
+def order_sql(order_by: Optional[List[Tuple[str, bool]]], columns: Iterable[str]) -> Optional[str]:
+    """``"a" DESC NULLS LAST, …`` for DuckDB-flavoured SQL (columns matched case-insensitively); None when a
+    column isn't there — then neither the order nor the limit may be applied."""
+    by_name = {c.lower(): c for c in columns}
+    parts = []
+    for column, descending in order_by or []:
+        real = by_name.get(column.lower())
+        if real is None:
+            return None
+        parts.append('"' + real.replace('"', '""') + '"' + (" DESC" if descending else "") + " NULLS LAST")
+    return ", ".join(parts) or None

@@ -63,8 +63,15 @@ from ...common import slicing
 from ...common.kinds import catalog
 from ...common.logs import PageProgress, get_logger, instrument_session, log_http
 from ...common.retry import RetryPolicy, send
-from ...common.pushdown import Condition, parse_like, require_like
+from ...common.pushdown import Condition, parse_like, require_like, sortable
 from ...common.sparkplan import spark_plan
+
+#: date columns ServiceNow sorts by (``ORDERBY``) — dates only: its text order follows the database's collation.
+#: Values come back as ``YYYY-MM-DD HH:MM:SS`` (UTC), which sort as text exactly as the dates do.
+_SORT_ANY = ("sys_created_on", "sys_updated_on")
+_SORT_TASK = _SORT_ANY + ("opened_at", "closed_at", "resolved_at", "due_date", "work_start", "work_end")
+_SORT_CHANGE = _SORT_TASK + ("start_date", "end_date")
+_SORT_USER = _SORT_ANY + ("last_login_time",)
 
 #: one token request at a time (a lock kept off the instance: the connector is pickled for Spark)
 _TOKEN_LOCK = threading.Lock()
@@ -462,6 +469,26 @@ class ServiceNow:
         """
         return self._condition_clause(cond, getattr(self, "timezone", None))[1] or None
 
+    @staticmethod
+    def _ordered(query: Optional[str], order_by: Optional[List[Tuple[str, bool]]]) -> Optional[str]:
+        """``query`` + ``^ORDERBY[DESC]<field>`` (DuckAPI's ``order_by``: pages come back in that order)."""
+        if not order_by:
+            return query
+        sort = "^".join(("ORDERBYDESC" if desc else "ORDERBY") + field.lower() for field, desc in order_by
+                        if re.fullmatch(r"[a-z][a-z0-9_]*", field.lower()))
+        return "^".join(p for p in (query, sort) if p) or None
+
+    @staticmethod
+    def _frame(rows: List[Dict], order_by: Optional[List[Tuple[str, bool]]] = None) -> pd.DataFrame:
+        """The rows as a DataFrame — an empty date (``""``) in a sorted column becomes NULL: DuckDB ranks it
+        last, where ServiceNow's empty value belongs, never first like an empty string."""
+        df = pd.json_normalize(rows, sep="_")
+        for field, _ in order_by or []:
+            column = next((c for c in df.columns if c.lower() == field.lower()), None)
+            if column is not None:
+                df[column] = df[column].replace("", None)
+        return df
+
     def _with_where(
         self, table_name: str, query: Optional[str], where: Optional[List[Condition]]
     ) -> Tuple[Optional[str], bool]:
@@ -494,12 +521,14 @@ class ServiceNow:
         fields: Optional[List[str]] = None,
         display_value: bool = False,
         where: Optional[List[Condition]] = None,
+        order_by: Optional[List[Tuple[str, bool]]] = None,
     ) -> Iterator[List[Dict]]:
         """
         Generator that pages through a table via sysparm_limit/sysparm_offset,
-        yielding one page of records at a time.
+        yielding one page of records at a time (in ``order_by``'s order when given).
         """
         query, _ = self._with_where(table_name, query, where)
+        query = self._ordered(query, order_by)
         progress = PageProgress("servicenow", table_name)
 
         def fetch_page(page: int):
@@ -532,6 +561,7 @@ class ServiceNow:
         display_value: bool = False,
         limit: Optional[int] = None,
         where: Optional[List[Condition]] = None,
+        order_by: Optional[List[Tuple[str, bool]]] = None,
     ) -> List[Dict]:
         """
         A single request if ``limit`` is set; full sysparm_offset
@@ -541,6 +571,7 @@ class ServiceNow:
         N rows fetched *before* that filter could hold fewer than N matches.
         """
         query, complete = self._with_where(table_name, query, where)
+        query = self._ordered(query, order_by)
         if not complete and limit is not None:
             logger.info("%s: LIMIT %s not sent — DuckDB still has conditions to apply", table_name, limit)
             limit = None
@@ -556,7 +587,7 @@ class ServiceNow:
             return payload.get("result", [])
 
         all_results: List[Dict] = []
-        for page in self._iter_pages(table_name, query=query, fields=fields, display_value=display_value):
+        for page in self._iter_pages(table_name, query=query, fields=fields, display_value=display_value):  # ordered
             all_results.extend(page)
         return all_results
 
@@ -565,11 +596,13 @@ class ServiceNow:
     # ------------------------------------------------------------------
 
     @spark_plan("partitioned", by="pages", max_parallel=4, why="sysparm_offset with X-Total-Count; instance rate limits: 4 at a time")
+    @sortable(*_SORT_ANY)
     def table(
         self,
         table_name: str,
         query: Optional[str] = None,
         where: Optional[List[Condition]] = None,
+        order_by: Optional[List[Tuple[str, bool]]] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -588,8 +621,8 @@ class ServiceNow:
         limit : int, optional
             Maximum number of records.
         """
-        results = self._fetch(table_name, query=query, limit=limit, where=where)
-        return pd.json_normalize(results, sep="_")
+        results = self._fetch(table_name, query=query, limit=limit, where=where, order_by=order_by)
+        return self._frame(results, order_by)
 
     # ------------------------------------------------------------------
     # The instance's tables (sys_db_object) — what table() can read
@@ -634,6 +667,7 @@ class ServiceNow:
     # ------------------------------------------------------------------
 
     @spark_plan("partitioned", by="pages", max_parallel=4, why="sysparm_offset with X-Total-Count; instance rate limits: 4 at a time")
+    @sortable(*_SORT_TASK)
     def incidents(
         self,
         number: Optional[str] = None,
@@ -643,6 +677,7 @@ class ServiceNow:
         number_ilike: Optional[str] = None,
         short_description_ilike: Optional[str] = None,
         where: Optional[List[Condition]] = None,
+        order_by: Optional[List[Tuple[str, bool]]] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -672,14 +707,15 @@ class ServiceNow:
             number=number, state=state, priority=priority, assigned_to=assigned_to,
             number_ilike=number_ilike, short_description_ilike=short_description_ilike,
         )
-        results = self._fetch("incident", query=query, limit=limit, where=where)
-        return pd.json_normalize(results, sep="_")
+        results = self._fetch("incident", query=query, limit=limit, where=where, order_by=order_by)
+        return self._frame(results, order_by)
 
     # ------------------------------------------------------------------
     # Problems
     # ------------------------------------------------------------------
 
     @spark_plan("partitioned", by="pages", max_parallel=4, why="sysparm_offset with X-Total-Count; instance rate limits: 4 at a time")
+    @sortable(*_SORT_TASK)
     def problems(
         self,
         number: Optional[str] = None,
@@ -688,6 +724,7 @@ class ServiceNow:
         number_ilike: Optional[str] = None,
         short_description_ilike: Optional[str] = None,
         where: Optional[List[Condition]] = None,
+        order_by: Optional[List[Tuple[str, bool]]] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -698,14 +735,15 @@ class ServiceNow:
             number=number, state=state, priority=priority,
             number_ilike=number_ilike, short_description_ilike=short_description_ilike,
         )
-        results = self._fetch("problem", query=query, limit=limit, where=where)
-        return pd.json_normalize(results, sep="_")
+        results = self._fetch("problem", query=query, limit=limit, where=where, order_by=order_by)
+        return self._frame(results, order_by)
 
     # ------------------------------------------------------------------
     # Change Requests
     # ------------------------------------------------------------------
 
     @spark_plan("partitioned", by="pages", max_parallel=4, why="sysparm_offset with X-Total-Count; instance rate limits: 4 at a time")
+    @sortable(*_SORT_CHANGE)
     def change_requests(
         self,
         number: Optional[str] = None,
@@ -714,6 +752,7 @@ class ServiceNow:
         number_ilike: Optional[str] = None,
         short_description_ilike: Optional[str] = None,
         where: Optional[List[Condition]] = None,
+        order_by: Optional[List[Tuple[str, bool]]] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -729,14 +768,15 @@ class ServiceNow:
             number=number, state=state, type=type,
             number_ilike=number_ilike, short_description_ilike=short_description_ilike,
         )
-        results = self._fetch("change_request", query=query, limit=limit, where=where)
-        return pd.json_normalize(results, sep="_")
+        results = self._fetch("change_request", query=query, limit=limit, where=where, order_by=order_by)
+        return self._frame(results, order_by)
 
     # ------------------------------------------------------------------
     # Users
     # ------------------------------------------------------------------
 
     @spark_plan("partitioned", by="pages", max_parallel=4, why="sysparm_offset with X-Total-Count; instance rate limits: 4 at a time")
+    @sortable(*_SORT_USER)
     def users(
         self,
         user_name: Optional[str] = None,
@@ -745,6 +785,7 @@ class ServiceNow:
         name_ilike: Optional[str] = None,
         email_ilike: Optional[str] = None,
         where: Optional[List[Condition]] = None,
+        order_by: Optional[List[Tuple[str, bool]]] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -762,14 +803,15 @@ class ServiceNow:
             user_name=user_name, active=active, user_name_ilike=user_name_ilike,
             name_ilike=name_ilike, email_ilike=email_ilike,
         )
-        results = self._fetch("sys_user", query=query, limit=limit, where=where)
-        return pd.json_normalize(results, sep="_")
+        results = self._fetch("sys_user", query=query, limit=limit, where=where, order_by=order_by)
+        return self._frame(results, order_by)
 
     # ------------------------------------------------------------------
     # CMDB Configuration Items
     # ------------------------------------------------------------------
 
     @spark_plan("partitioned", by="pages", max_parallel=4, why="sysparm_offset with X-Total-Count; instance rate limits: 4 at a time")
+    @sortable(*_SORT_ANY)
     def cmdb_ci(
         self,
         name: Optional[str] = None,
@@ -777,6 +819,7 @@ class ServiceNow:
         operational_status: Optional[str] = None,
         name_ilike: Optional[str] = None,
         where: Optional[List[Condition]] = None,
+        order_by: Optional[List[Tuple[str, bool]]] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -788,28 +831,32 @@ class ServiceNow:
             name=name, sys_class_name=sys_class_name, operational_status=operational_status,
             name_ilike=name_ilike,
         )
-        results = self._fetch("cmdb_ci", query=query, limit=limit, where=where)
-        return pd.json_normalize(results, sep="_")
+        results = self._fetch("cmdb_ci", query=query, limit=limit, where=where, order_by=order_by)
+        return self._frame(results, order_by)
 
     # ------------------------------------------------------------------
     # Streaming (iter_*) — for use with DuckAPI.stream()
     # ------------------------------------------------------------------
 
+    @sortable(*_SORT_ANY)
     def iter_table(
         self,
         table_name: str,
         query: Optional[str] = None,
         where: Optional[List[Condition]] = None,
+        order_by: Optional[List[Tuple[str, bool]]] = None,
     ) -> Iterator[pd.DataFrame]:
         """Yields one page of records at a time from any table."""
-        for page in self._iter_pages(table_name, query=query, where=where):
-            yield pd.json_normalize(page, sep="_")
+        for page in self._iter_pages(table_name, query=query, where=where, order_by=order_by):
+            yield self._frame(page, order_by)
 
-    def _iter_query(self, table_name: str, where: Optional[List[Condition]], **filters: Any) -> Iterator[pd.DataFrame]:
+    def _iter_query(self, table_name: str, where: Optional[List[Condition]],
+                    order_by: Optional[List[Tuple[str, bool]]] = None, **filters: Any) -> Iterator[pd.DataFrame]:
         """One DataFrame per page of ``table_name``, with the same encoded query its table method sends."""
-        for page in self._iter_pages(table_name, query=self._build_query(**filters), where=where):
-            yield pd.json_normalize(page, sep="_")
+        for page in self._iter_pages(table_name, query=self._build_query(**filters), where=where, order_by=order_by):
+            yield self._frame(page, order_by)
 
+    @sortable(*_SORT_TASK)
     def iter_incidents(
         self,
         number: Optional[str] = None,
@@ -819,12 +866,14 @@ class ServiceNow:
         number_ilike: Optional[str] = None,
         short_description_ilike: Optional[str] = None,
         where: Optional[List[Condition]] = None,
+        order_by: Optional[List[Tuple[str, bool]]] = None,
     ) -> Iterator[pd.DataFrame]:
         """Yields one page of incidents at a time (the filters of ``incidents``)."""
-        return self._iter_query("incident", where, number=number, state=state, priority=priority,
+        return self._iter_query("incident", where, order_by, number=number, state=state, priority=priority,
                                 assigned_to=assigned_to, number_ilike=number_ilike,
                                 short_description_ilike=short_description_ilike)
 
+    @sortable(*_SORT_TASK)
     def iter_problems(
         self,
         number: Optional[str] = None,
@@ -833,11 +882,13 @@ class ServiceNow:
         number_ilike: Optional[str] = None,
         short_description_ilike: Optional[str] = None,
         where: Optional[List[Condition]] = None,
+        order_by: Optional[List[Tuple[str, bool]]] = None,
     ) -> Iterator[pd.DataFrame]:
         """Yields one page of problems at a time (the filters of ``problems``)."""
-        return self._iter_query("problem", where, number=number, state=state, priority=priority,
+        return self._iter_query("problem", where, order_by, number=number, state=state, priority=priority,
                                 number_ilike=number_ilike, short_description_ilike=short_description_ilike)
 
+    @sortable(*_SORT_CHANGE)
     def iter_change_requests(
         self,
         number: Optional[str] = None,
@@ -846,11 +897,13 @@ class ServiceNow:
         number_ilike: Optional[str] = None,
         short_description_ilike: Optional[str] = None,
         where: Optional[List[Condition]] = None,
+        order_by: Optional[List[Tuple[str, bool]]] = None,
     ) -> Iterator[pd.DataFrame]:
         """Yields one page of change requests at a time (the filters of ``change_requests``)."""
-        return self._iter_query("change_request", where, number=number, state=state, type=type,
+        return self._iter_query("change_request", where, order_by, number=number, state=state, type=type,
                                 number_ilike=number_ilike, short_description_ilike=short_description_ilike)
 
+    @sortable(*_SORT_USER)
     def iter_users(
         self,
         user_name: Optional[str] = None,
@@ -859,11 +912,13 @@ class ServiceNow:
         name_ilike: Optional[str] = None,
         email_ilike: Optional[str] = None,
         where: Optional[List[Condition]] = None,
+        order_by: Optional[List[Tuple[str, bool]]] = None,
     ) -> Iterator[pd.DataFrame]:
         """Yields one page of users at a time (the filters of ``users``)."""
-        return self._iter_query("sys_user", where, user_name=user_name, active=active,
+        return self._iter_query("sys_user", where, order_by, user_name=user_name, active=active,
                                 user_name_ilike=user_name_ilike, name_ilike=name_ilike, email_ilike=email_ilike)
 
+    @sortable(*_SORT_ANY)
     def iter_cmdb_ci(
         self,
         name: Optional[str] = None,
@@ -871,7 +926,8 @@ class ServiceNow:
         operational_status: Optional[str] = None,
         name_ilike: Optional[str] = None,
         where: Optional[List[Condition]] = None,
+        order_by: Optional[List[Tuple[str, bool]]] = None,
     ) -> Iterator[pd.DataFrame]:
         """Yields one page of configuration items at a time (the filters of ``cmdb_ci``)."""
-        return self._iter_query("cmdb_ci", where, name=name, sys_class_name=sys_class_name,
+        return self._iter_query("cmdb_ci", where, order_by, name=name, sys_class_name=sys_class_name,
                                 operational_status=operational_status, name_ilike=name_ilike)

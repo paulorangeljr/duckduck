@@ -16,6 +16,8 @@ Every step ends in something a test checks.
   or arbitrary conditions (→ `where`). Superset, never subset (CLAUDE.md "Operator → parameter convention").
 - **Pagination kind**: `page=N` · `offset=N` · cursor (`nextLink`, `after=`, a token) · none.
 - **Does a response say the total** (rows or pages)? Which field/header?
+- **Sorting**: can the server sort (`order_by=`, `sort=`, `ORDERBY`, an `ORDER BY` in its query language)?
+  By which fields — and are they dates/numbers (same order everywhere) or text (the server's collation)?
 - **Rate limit**: requests per window, per key? Parallel requests allowed?
 - **Where the data lives**: behind the API only, or also in files/tables Spark could read (S3/ADLS/JDBC)?
 
@@ -45,6 +47,21 @@ the shapes you couldn't verify in one place.
   such a catalog** whenever the source can list its tables: without it SQL clients (the PostgreSQL endpoint)
   only see the function (arguments in the WHERE), the SQL tab can't show them, and catalog generation can't discover them. `drafts=False` when the listing
   is mostly the platform's own tables (ServiceNow's `sys_db_object`), so they aren't all drafted.
+- **ORDER BY at the source — every table decides it** (`duckduck.common.pushdown.sortable`): a query's
+  `ORDER BY … LIMIT n` should read the top n, not the whole table. Add `order_by: Optional[List[Tuple[str,
+  bool]]] = None` (before `limit`) and one of:
+  - an **API that sorts its pages** (`order_by=-field`, `sort=field,DESC`, `ORDERBYDESCfield`):
+    `@sortable("col_a", "col_b")` on the table **and** its `iter_` (same columns — `tests/test_streaming_contract.py`
+    checks), the API's sort sent on every page. Name **dates, timestamps and numbers only** (text sorts by the
+    server's collation, not DuckDB's); NULLs can land anywhere — DuckAPI reads pages until it holds n rows with
+    the key set, and reads everything if the pages turn out unsorted. An empty-string "date" (ServiceNow)
+    becomes NULL in the frame. One column unless the API takes several (`keys=`).
+  - a **query engine** (SQL, KQL, a DuckDB scan): `@sortable(exact=True)` — `order_by` and `limit` arrive together;
+    write `ORDER BY … NULLS LAST` + the limit into the query, or, when a column can't be sorted exactly as
+    DuckDB would (missing, text under a collation you can't vouch for, nested types), **neither** (drop the
+    limit). `pushdown.order_sql` writes it for DuckDB scans.
+  - the source can't sort: add the table to `NO_SORT` in `tests/test_sorting.py` with the reason
+    (`test_every_table_sorts_at_the_source_or_says_why_not` fails otherwise).
 - **`iter_<table>` for every table whose API pages** (any pagination: page=N, offset, cursor), registered in
   `streaming_tables`, taking **the same filter parameters** as the table (minus `limit`) and yielding one DataFrame
   per page with the same client-side filters — share one helper between both so they can't drift (ServiceNow's
@@ -89,6 +106,8 @@ picklable (it travels to Spark executors for partitioned reads).
 - Mock the HTTP session (a `requests` adapter mounted on `self.session`, or `MagicMock`), never the network.
 - Push-down: the kwargs a `duck.sql(...)` query sends reach the method (and LIMIT only when safe).
 - Pagination: every page read; a total stops it.
+- Sorting: `SELECT … ORDER BY <col> DESC LIMIT n` gives DuckDB's own answer (NULLs included) while reading
+  fewer pages / sending the ORDER BY + LIMIT (see `tests/test_sorting.py`).
 - Spark: `tests/test_spark.py` already fails if a table has no `@spark_plan`. For `by="pages"` tables add the
   connector to `test_paged_tables_really_go_through_the_shared_pager` (a probe must see the total); for
   `by=<method>` test that the pieces cover the call exactly once; for `native` test the `SparkSource`.

@@ -34,7 +34,7 @@ import sqlglot.expressions as exp
 from .common.logs import get_logger, set_verbose, short, verbose_from_env
 from .common import slicing
 from .common.pushdown import (Condition, assign_conditions, blocker_of, conditions_to_sql, map_conditions, parse_like,
-                       where_ops_of)
+                              sortable_of, where_ops_of)
 
 logger = get_logger("core")
 
@@ -88,6 +88,12 @@ class PushDownContext:
     limit_safe: bool = True
     #: Why ``limit_safe`` is False (e.g. ``"ORDER BY"``), for verbose output.
     limit_blocker: Optional[str] = None
+    #: ``OFFSET n``: the source has to send ``limit + offset`` rows for DuckDB to skip the first ``n``.
+    offset: int = 0
+    #: ``ORDER BY`` of plain columns ``[(column, descending)]`` when it's the only thing keeping the LIMIT from
+    #: the source (``_order_of``): a table that sorts by them (``@sortable``) reads pages in that order and
+    #: stops once it has the top N.
+    order_by: Optional[List[Tuple[str, bool]]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -312,6 +318,48 @@ def _limit_blocker(parsed: exp.Expression) -> Optional[str]:
         if parsed.find(node):
             return reason
     return None
+
+
+def _still_sorted(rows: pd.DataFrame, descending: List[bool], last: Optional[tuple]) -> Tuple[Optional[tuple], bool]:
+    """Whether ``rows`` (sort keys, no NULLs) continue the order seen so far; returns the last key and the verdict.
+    A source that ignored the ORDER BY it was sent shows up here, and its read isn't cut short."""
+    for key in rows.itertuples(index=False, name=None):
+        if last is not None:
+            try:
+                for a, b, desc in zip(last, key, descending):
+                    if a == b:
+                        continue
+                    if (b > a) if desc else (b < a):
+                        return key, False
+                    break
+            except TypeError:
+                return key, False
+        last = key
+    return last, True
+
+
+def _order_of(parsed: exp.Expression) -> Optional[List[Tuple[str, bool]]]:
+    """
+    The ORDER BY as ``[(column, descending)]`` when it's all that stands between the query and a source-side
+    top N: one SELECT whose only LIMIT blocker is ORDER BY, every key a plain column of the source (not an
+    alias of something computed, not an ordinal), and no explicit ``NULLS FIRST`` (DuckDB puts NULLs last,
+    which the early stop counts on). None otherwise.
+    """
+    if not isinstance(parsed, exp.Select) or not parsed.args.get("order"):
+        return None
+    probe = parsed.copy()
+    probe.set("order", None)
+    if _limit_blocker(probe) is not None:
+        return None
+    computed = {a.alias.lower() for a in parsed.expressions if isinstance(a, exp.Alias)
+                and not (isinstance(a.this, exp.Column) and a.this.name.lower() == a.alias.lower())}
+    keys: List[Tuple[str, bool]] = []
+    for ordered in parsed.args["order"].expressions:
+        column = ordered.this
+        if not isinstance(column, exp.Column) or ordered.args.get("nulls_first") or column.name.lower() in computed:
+            return None
+        keys.append((column.name, bool(ordered.args.get("desc"))))
+    return keys
 
 
 _OP_SQL = {"eq": "=", "like": "LIKE", "ilike": "ILIKE", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
@@ -1404,6 +1452,12 @@ class DuckAPI:
                 ctx.limit = int(limit_node.expression.this)
             except (ValueError, AttributeError, TypeError):
                 pass
+        offset_node = parsed.args.get("offset") if isinstance(parsed, exp.Select) else None
+        if offset_node is not None:
+            try:
+                ctx.offset = int(offset_node.expression.this)
+            except (ValueError, AttributeError, TypeError):
+                ctx.limit = None  # an offset that isn't a number: no top-N at the source
 
         selects = list(parsed.find_all(exp.Select))
         if isinstance(parsed, exp.Select) and len(selects) == 1:
@@ -1416,6 +1470,7 @@ class DuckAPI:
 
         ctx.limit_blocker = _limit_blocker(parsed)
         ctx.limit_safe = ctx.limit_blocker is None
+        ctx.order_by = _order_of(parsed)
         return ctx
 
     # ------------------------------------------------------------------
@@ -1489,21 +1544,37 @@ class DuckAPI:
         if not pushdown.complete:
             report.append("✗ part of the WHERE (OR / NOT / IN / functions...) — DuckDB only")
 
+        exact_order = False
+        if pushdown.order_by:
+            shown = ", ".join(f"{c} DESC" if desc else c for c, desc in pushdown.order_by)
+            sorts = sortable_of(fetch_function)
+            if "order_by" not in accepted or sorts is None:
+                report.append(f"✗ ORDER BY {shown} — the source can't sort, DuckDB sorts every row read")
+            elif not sorts.takes(pushdown.order_by):
+                report.append(f"✗ ORDER BY {shown} — the source sorts only by "
+                              f"{', '.join(sorted(sorts.columns or ()))}" + (" (one column)" if sorts.keys == 1 else ""))
+            else:
+                merged["order_by"] = list(pushdown.order_by)
+                exact_order = sorts.exact
+                report.append(f"✓ ORDER BY {shown} → order_by" + ("" if sorts.exact else " (pages read in order)"))
+
         if pushdown.limit is not None:
             blocker = None
             if not allow_limit:
                 blocker = "stream() reads every page"
             elif "limit" not in accepted:
                 blocker = "function has no limit parameter"
-            elif not pushdown.limit_safe:
+            elif not pushdown.limit_safe and not (exact_order and pushdown.limit_blocker == "ORDER BY"):
                 blocker = f"{pushdown.limit_blocker} in the query"
             elif not pushdown.complete:
                 blocker = "WHERE has conditions DuckDB must apply first"
             elif len(consumed) + args_taken != len(pushdown.conditions):
                 blocker = "not every WHERE condition reached the source"
             if blocker is None:
-                merged["limit"] = pushdown.limit
-                report.append(f"✓ LIMIT {pushdown.limit} → limit")
+                merged["limit"] = pushdown.limit + pushdown.offset  # DuckDB skips the OFFSET rows itself
+                report.append(f"✓ LIMIT {pushdown.limit}" + (f" OFFSET {pushdown.offset} → limit "
+                              f"{merged['limit']}" if pushdown.offset else " → limit")
+                              + (" (sorted at the source: both or neither)" if exact_order else ""))
             else:
                 report.append(f"✗ LIMIT {pushdown.limit} — {blocker}")
 
@@ -1541,7 +1612,7 @@ class DuckAPI:
             name for name, p in inspect.signature(fn).parameters.items()
             if p.default is inspect.Parameter.empty and p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)
         }
-        return {k.lower() for k in explicit} | {k.lower() for k in required} | {"where", "limit"}
+        return {k.lower() for k in explicit} | {k.lower() for k in required} | {"where", "limit", "order_by"}
 
     def _log_call(self, fn_name: str, kwargs: Dict[str, Any], report: List[str]) -> None:
         if not logger.isEnabledFor(logging.INFO):
@@ -1765,8 +1836,18 @@ class DuckAPI:
         star = parsed is None or parsed.find(exp.Star) is not None
         used = {c.lower() for c in (fallback_columns or [])}
         tables = len(list(parsed.find_all(exp.Table))) if parsed is not None else 2
-        stop_at = (pushdown.limit if pushdown.limit is not None and pushdown.limit_safe and pushdown.complete
-                   and tables == 1 else None)
+        stop_at = (pushdown.limit + pushdown.offset if pushdown.limit is not None and pushdown.limit_safe
+                   and pushdown.complete and tables == 1 else None)
+        # ORDER BY sent to the source (kwargs["order_by"]): pages come sorted, so the top N is read once N rows
+        # with every sort key set have been kept — a row with a NULL key can't outrank them (NULLs sort last
+        # here), whatever the source does with NULLs
+        ranked_by: List[str] = []
+        if (stop_at is None and kwargs.get("order_by") and pushdown.limit is not None and pushdown.complete
+                and pushdown.limit_blocker == "ORDER BY" and tables == 1):
+            stop_at = pushdown.limit + pushdown.offset
+            ranked_by = [c.lower() for c, _ in kwargs["order_by"]]
+        descending = [bool(d) for _, d in kwargs.get("order_by") or []]
+        ranked, last_key = 0, None
 
         from . import cache as source_cache
         from .common import progress
@@ -1823,8 +1904,22 @@ class DuckAPI:
                 if len(out):
                     kept.append(out)
                     count += len(out)
+                    if ranked_by:
+                        by_name = {c.lower(): c for c in out.columns}
+                        keys = [by_name[c] for c in ranked_by if c in by_name]
+                        full = out[keys].dropna() if len(keys) == len(ranked_by) else out.iloc[0:0]
+                        last_key, sorted_ok = _still_sorted(full, descending, last_key)
+                        if not sorted_ok:  # the source didn't sort after all: the whole table is read
+                            logger.warning("  %s: the pages didn't come sorted by %s — reading every page",
+                                           fn_name, ", ".join(ranked_by))
+                            ranked_by, stop_at = [], None
+                        else:
+                            ranked += len(full)
                 progress.update(f"Reading {fn_name}: page {pages} · kept {count:,} of {scanned:,} rows")
-                if stop_at is not None and every and count >= stop_at:
+                if stop_at is not None and every and (ranked if ranked_by else count) >= stop_at:
+                    if ranked_by:
+                        logger.info("  %s: the top %s by %s is read — no more pages asked", fn_name, stop_at,
+                                    ", ".join(ranked_by))
                     break  # enough rows for the answer: no more pages asked
         finally:
             close = getattr(pages_iter, "close", None)

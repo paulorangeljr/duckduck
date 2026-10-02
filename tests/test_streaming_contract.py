@@ -7,6 +7,7 @@ import inspect
 import pytest
 
 from duckduck.common.kinds import CATALOG, RAW_QUERY, kind_of
+from duckduck.common.pushdown import sortable_of
 from duckduck.connectors.registry import SERVICE_REGISTRY
 from duckduck.common.sparkplan import plan_of
 
@@ -41,4 +42,9 @@ def test_a_paging_table_streams_with_the_same_filters(service, spec, cls, table,
     stream = getattr(cls, spec.streaming_tables[table])
     takes = set(inspect.signature(stream).parameters) - {"self"}
     needs = set(inspect.signature(fn).parameters) - {"self", "limit"}
+    sorts = sortable_of(fn)
+    if sorts is not None and sorts.exact:
+        needs -= {"order_by"}  # a query engine sorts with the LIMIT in one call; its pages aren't a top N
     assert needs <= takes, f"{service}.{spec.streaming_tables[table]} lacks {sorted(needs - takes)}"
+    if sorts is not None and not sorts.exact:  # an API sorting its pages: the iter_ is what reads them in order
+        assert sortable_of(stream) == sorts, f"{service}.{spec.streaming_tables[table]}: same @sortable as {method}"

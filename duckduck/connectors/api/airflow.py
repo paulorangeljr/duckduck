@@ -34,18 +34,32 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import pandas as pd
 
 from ...common import slicing
 from ...common.logs import PageProgress, get_logger
-from ...common.pushdown import require_like
+from ...common.pushdown import require_like, sortable
 from ...common.sparkplan import spark_plan
 
 logger = get_logger("airflow")
 
 PAGE_SIZE = 100  # Airflow's default maximum_page_limit
+#: dag_runs columns the API sorts by (``order_by``), as Airflow names the field — dates only: they sort the
+#: same in Airflow's database as here (text would follow its collation). The logical date is
+#: ``execution_date`` on Airflow 2, ``logical_date`` on 3 — either column name is accepted.
+_RUN_SORTS = {"logical_date": "logical_date", "execution_date": "logical_date", "start_date": "start_date",
+              "end_date": "end_date"}
+
+def _order_param(order_by: Optional[List[Tuple[str, bool]]]) -> Dict[str, str]:
+    """DuckAPI's ``order_by`` as the API's ``order_by`` (one field, ``-`` for descending)."""
+    if not order_by:
+        return {}
+    column, descending = order_by[0]
+    return {"order_by": ("-" if descending else "") + column.lower()}
+
+
 _DATES = {
     "dags": ("last_parsed_time", "last_expired", "next_dagrun", "next_dagrun_create_after",
              "next_dagrun_data_interval_start", "next_dagrun_data_interval_end", "next_dagrun_logical_date",
@@ -279,9 +293,13 @@ class Airflow:
 
     def _dag_runs(self, dag_id, state, run_type, logical_date_gte, logical_date_gt, logical_date_lte,
                   logical_date_lt, start_date_gte, start_date_gt, start_date_lte, start_date_lt, end_date_gte,
-                  end_date_gt, end_date_lte, end_date_lt):
+                  end_date_gt, end_date_lte, end_date_lt, order_by=None):
         logical = "execution_date" if self.airflow_version < 3 else "logical_date"
         params: Dict[str, Any] = {"state": state}
+        if order_by:  # one field, "-" for descending (the API's order_by): DuckAPI reads pages until the top N
+            column, descending = order_by[0]
+            field = _RUN_SORTS.get(column.lower(), column.lower())
+            params["order_by"] = ("-" if descending else "") + (logical if field == "logical_date" else field)
         if run_type is not None and self.airflow_version >= 3:
             params["run_type"] = run_type
         params.update(self._date_params(logical, logical_date_gte, logical_date_gt, logical_date_lte,
@@ -318,6 +336,7 @@ class Airflow:
         return self._iter("dags", path, key, params, keep)
 
     @spark_plan("partitioned", by="pages", max_parallel=2, why=_WHY)
+    @sortable(*_RUN_SORTS)
     def dag_runs(self, dag_id: Optional[str] = None, state: Optional[str] = None, run_type: Optional[str] = None,
                  logical_date_gte: Optional[str] = None, logical_date_gt: Optional[str] = None,
                  logical_date_lte: Optional[str] = None, logical_date_lt: Optional[str] = None,
@@ -325,14 +344,15 @@ class Airflow:
                  start_date_lte: Optional[str] = None, start_date_lt: Optional[str] = None,
                  end_date_gte: Optional[str] = None, end_date_gt: Optional[str] = None,
                  end_date_lte: Optional[str] = None, end_date_lt: Optional[str] = None,
-                 limit: Optional[int] = None) -> pd.DataFrame:
+                 order_by: Optional[List[Tuple[str, bool]]] = None, limit: Optional[int] = None) -> pd.DataFrame:
         """Every DAG run (``dag_id`` narrows it to one DAG): state, run type, logical / start / end dates."""
         path, key, params, keep = self._dag_runs(dag_id, state, run_type, logical_date_gte, logical_date_gt,
                                                  logical_date_lte, logical_date_lt, start_date_gte, start_date_gt,
                                                  start_date_lte, start_date_lt, end_date_gte, end_date_gt,
-                                                 end_date_lte, end_date_lt)
+                                                 end_date_lte, end_date_lt, order_by)
         return self._read("dag_runs", path, key, params, keep, limit)
 
+    @sortable(*_RUN_SORTS)
     def iter_dag_runs(self, dag_id: Optional[str] = None, state: Optional[str] = None,
                       run_type: Optional[str] = None, logical_date_gte: Optional[str] = None,
                       logical_date_gt: Optional[str] = None, logical_date_lte: Optional[str] = None,
@@ -340,11 +360,12 @@ class Airflow:
                       start_date_gt: Optional[str] = None, start_date_lte: Optional[str] = None,
                       start_date_lt: Optional[str] = None, end_date_gte: Optional[str] = None,
                       end_date_gt: Optional[str] = None, end_date_lte: Optional[str] = None,
-                      end_date_lt: Optional[str] = None) -> Iterator[pd.DataFrame]:
+                      end_date_lt: Optional[str] = None,
+                      order_by: Optional[List[Tuple[str, bool]]] = None) -> Iterator[pd.DataFrame]:
         path, key, params, keep = self._dag_runs(dag_id, state, run_type, logical_date_gte, logical_date_gt,
                                                  logical_date_lte, logical_date_lt, start_date_gte, start_date_gt,
                                                  start_date_lte, start_date_lt, end_date_gte, end_date_gt,
-                                                 end_date_lte, end_date_lt)
+                                                 end_date_lte, end_date_lt, order_by)
         return self._iter("dag_runs", path, key, params, keep)
 
     @spark_plan("partitioned", by="pages", max_parallel=2, why=_WHY)
@@ -374,12 +395,16 @@ class Airflow:
         return self._iter("task_instances", path, key, params, keep)
 
     @spark_plan("partitioned", by="pages", max_parallel=2, why=_WHY)
-    def import_errors(self, limit: Optional[int] = None) -> pd.DataFrame:
+    @sortable("timestamp")
+    def import_errors(self, order_by: Optional[List[Tuple[str, bool]]] = None,
+                      limit: Optional[int] = None) -> pd.DataFrame:
         """DAG files that failed to import: file, when, the stack trace."""
-        return self._read("import_errors", "/importErrors", "import_errors", {}, self._keep(), limit)
+        return self._read("import_errors", "/importErrors", "import_errors", _order_param(order_by), self._keep(),
+                          limit)
 
-    def iter_import_errors(self) -> Iterator[pd.DataFrame]:
-        return self._iter("import_errors", "/importErrors", "import_errors", {}, self._keep())
+    @sortable("timestamp")
+    def iter_import_errors(self, order_by: Optional[List[Tuple[str, bool]]] = None) -> Iterator[pd.DataFrame]:
+        return self._iter("import_errors", "/importErrors", "import_errors", _order_param(order_by), self._keep())
 
 
 __all__ = ["Airflow", "AirflowError"]

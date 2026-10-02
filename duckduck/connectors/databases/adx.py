@@ -53,13 +53,13 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import pandas as pd
 
 from ...common.kinds import catalog, raw_query
 from ...common.logs import get_logger
-from ...common.pushdown import Condition, parse_like
+from ...common.pushdown import Condition, parse_like, sortable
 from ...common.sparkplan import spark_plan
 
 logger = get_logger("adx")
@@ -346,11 +346,34 @@ class DataExplorer:
             raise ValueError(f"unsupported push-down operator {cond.op!r}")
         return f"{col} {_COMPARISONS[cond.op]} {self._literal(cond.value, kql_type)}"
 
-    def _table_kql(self, table_name: str, where: Optional[List[Condition]], limit: Optional[int]) -> str:
+    #: column types ADX orders as DuckDB does (strings: not vouched for)
+    _ORDERED_TYPES = {"datetime", "date", "timespan", "time", "long", "int", "real", "double", "decimal", "bool",
+                      "boolean"}
+
+    def _order_kql(self, table_name: str, order_by: List[Tuple[str, bool]]) -> Optional[str]:
+        """``sort by ['c'] desc nulls last, …``; None when a column is missing or not of an ordered type."""
+        schema = self._schema(table_name)
+        by_lower = {name.lower(): name for name in schema}
+        parts = []
+        for column, descending in order_by:
+            name = by_lower.get(column.lower())
+            if name is None or str(schema[name]).lower().replace("system.", "") not in self._ORDERED_TYPES:
+                return None
+            parts.append(f"{kql_ident(name)} {'desc' if descending else 'asc'} nulls last")
+        return "sort by " + ", ".join(parts)
+
+    def _table_kql(self, table_name: str, where: Optional[List[Condition]], limit: Optional[int],
+                   order_by: Optional[List[Tuple[str, bool]]] = None) -> str:
         kql = self._table_ref(table_name)
         clauses = self._where_kql(table_name, where)
         if clauses:
             kql += "\n| where " + "\n    and ".join(clauses)
+        if order_by:
+            order = self._order_kql(table_name, order_by)
+            if order is None:
+                limit = None  # both or neither: DuckDB sorts and cuts
+            else:
+                kql += f"\n| {order}"
         if limit is not None:
             kql += f"\n| take {int(limit)}"
         return kql
@@ -360,10 +383,12 @@ class DataExplorer:
     # ------------------------------------------------------------------
 
     @spark_plan("driver", why="ADX answers a query in one response (the Kusto Spark connector would be native)")
+    @sortable(exact=True)
     def table(
         self,
         table_name: str,
         where: Optional[List[Condition]] = None,
+        order_by: Optional[List[Tuple[str, bool]]] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -377,8 +402,11 @@ class DataExplorer:
             Filled by DuckAPI's push-down; translated to a KQL ``where``.
         limit : int, optional
             ``| take n`` on the cluster.
+        order_by : list of (column, descending), optional
+            A query's ``ORDER BY … LIMIT n``: ``| sort by … nulls last | take n``
+            on the cluster — dates, numbers, booleans (strings stay with DuckDB).
         """
-        return self._run(self._table_kql(table_name, where, limit))
+        return self._run(self._table_kql(table_name, where, limit, order_by))
 
     @spark_plan("driver", why="ADX answers a query in one response (the Kusto Spark connector would be native)")
     @raw_query

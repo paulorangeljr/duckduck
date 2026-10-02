@@ -552,3 +552,16 @@ def test_bundled_connectors_mark_catalogs_and_raw_queries():
     assert kind_of(LocalFiles.tables) == kind_of(DataExplorer.tables) == "catalog"
     assert kind_of(DataExplorer.query) == kind_of(SQLDatabase.query) == "raw query"
     assert kind_of(GlueTable.table) == kind_of(SQLDatabase.table) == "table function"
+
+
+def test_limit_with_offset_asks_the_source_for_both():
+    seen = []
+
+    def t(limit=None):
+        seen.append(limit)
+        return pd.DataFrame({"id": range(10)}).head(limit) if limit else pd.DataFrame({"id": range(10)})
+
+    duck = DuckAPI(stream_pages=False)
+    duck.register_api_function("t", t)
+    assert duck.sql("SELECT id FROM t LIMIT 2 OFFSET 3").fetchall() == [(3,), (4,)]
+    assert seen == [5]

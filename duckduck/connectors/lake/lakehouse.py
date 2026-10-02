@@ -19,13 +19,13 @@ downloaded once and cached under ``~/.duckdb/extensions``).
 """
 
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import duckdb
 import pandas as pd
 
 from ...common.logs import get_logger
-from ...common.pushdown import Condition, conditions_to_sql
+from ...common.pushdown import Condition, conditions_to_sql, order_sql
 
 logger = get_logger("lakehouse")
 
@@ -66,6 +66,7 @@ class LakehouseConnection:
         limit: Optional[int] = None,
         where: Optional[List[Condition]] = None,
         variables: Optional[Dict[str, Any]] = None,
+        order_by: Optional[List[Tuple[str, bool]]] = None,
     ) -> pd.DataFrame:
         """
         Runs ``SELECT * FROM {scan_expression} [WHERE ...] [LIMIT n]`` and
@@ -75,16 +76,26 @@ class LakehouseConnection:
         doesn't have are skipped (a ``DESCRIBE`` — metadata only — finds out).
         ``variables``: set first (``SET VARIABLE name = value``) — a file list
         the expression reads with ``getvariable('name')``, however long.
+        ``order_by`` (``@sortable(exact=True)`` tables): ``ORDER BY … NULLS LAST``
+        before the LIMIT — DuckDB itself, so exactly the order asked; a column
+        the scan doesn't have drops the order and the limit together.
         """
         with self._lock:
             for name, value in (variables or {}).items():
                 self._conn.execute(f"SET VARIABLE {name} = ?", [value])
             sql = f"SELECT * FROM {scan_expression}"
+            columns = ([row[0] for row in self._conn.sql(f"DESCRIBE {sql}").fetchall()]
+                       if where or order_by else [])
             if where:
-                columns = [row[0] for row in self._conn.sql(f"DESCRIBE {sql}").fetchall()]
                 body = conditions_to_sql(where, columns)
                 if body:
                     sql += f" WHERE {body}"
+            if order_by:
+                order = order_sql(order_by, columns)
+                if order is None:
+                    limit = None  # both or neither: DuckAPI sorts and cuts what it reads
+                else:
+                    sql += f" ORDER BY {order}"
             if limit is not None:
                 sql += f" LIMIT {int(limit)}"
             logger.info("DuckDB scan: %s", sql)

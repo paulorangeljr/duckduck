@@ -54,7 +54,7 @@ import pandas as pd
 from . import s3layout
 from ...common.kinds import catalog
 from .lakehouse import LakehouseConnection
-from ...common.pushdown import Condition, LikePattern, require_like
+from ...common.pushdown import Condition, LikePattern, require_like, sortable
 from ...common.logs import get_logger
 from ...common.sparkplan import SparkSource, spark_plan
 
@@ -224,11 +224,13 @@ class GlueTable:
     # ------------------------------------------------------------------
 
     @spark_plan("native", source="_spark_table", why="Parquet / Delta / Iceberg on S3, described by Glue")
+    @sortable(exact=True)
     def table(
         self,
         database: str,
         table_name: str,
         where: Optional[List[Condition]] = None,
+        order_by: Optional[List[Tuple[str, bool]]] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -246,6 +248,9 @@ class GlueTable:
             row-group/file pruning), so non-matching rows never reach Python.
         limit : int, optional
             Applied via DuckDB's own ``LIMIT`` on the scan.
+        order_by : list of (column, descending), optional
+            ``ORDER BY … NULLS LAST`` inside the DuckDB scan, with the
+            ``limit``: a query's top N is read as such (``@sortable(exact=True)``).
         """
         table = self._describe(database, table_name)
         if self.list_files and self._detect_format(table) == "parquet":
@@ -253,9 +258,9 @@ class GlueTable:
             if planned is None:
                 return self._empty(table)
             expression, variables = planned
-            return self._lake.scan(expression, limit=limit, where=where, variables=variables)
+            return self._lake.scan(expression, limit=limit, where=where, variables=variables, order_by=order_by)
         scan_expr = self._scan_expression(database, table_name)
-        return self._lake.scan(scan_expr, limit=limit, where=where)
+        return self._lake.scan(scan_expr, limit=limit, where=where, order_by=order_by)
 
     # ------------------------------------------------------------------
     # Finding a Parquet table's files — as Athena does (duckduck.connectors.lake.s3layout)
@@ -370,11 +375,13 @@ class GlueTable:
         return pd.DataFrame({c: pd.Series(dtype="object") for c in columns if c})
 
     @spark_plan("native", source="_spark_path", why="an S3 location Spark reads directly")
+    @sortable(exact=True)
     def path(
         self,
         s3_path: str,
         format: str = "parquet",
         where: Optional[List[Condition]] = None,
+        order_by: Optional[List[Tuple[str, bool]]] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -404,7 +411,7 @@ class GlueTable:
             scan_expr = f"iceberg_scan('{s3_path}')"
         else:
             raise ValueError(f"Unsupported format '{format}'. Use parquet, delta, or iceberg.")
-        return self._lake.scan(scan_expr, limit=limit, where=where)
+        return self._lake.scan(scan_expr, limit=limit, where=where, order_by=order_by)
 
     # ------------------------------------------------------------------
     # Spark (``duckduck.spark``): where the data is, for a native read

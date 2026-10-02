@@ -282,7 +282,7 @@ def test_incidents_pushes_down_filters():
     with patch.object(sn, "_fetch", return_value=[{"number": "INC001"}]) as mock_fetch:
         df = sn.incidents(state="2", priority="1")
 
-    mock_fetch.assert_called_once_with("incident", query="state=2^priority=1", limit=None, where=None)
+    mock_fetch.assert_called_once_with("incident", query="state=2^priority=1", limit=None, where=None, order_by=None)
     assert list(df["number"]) == ["INC001"]
 
 
@@ -291,7 +291,7 @@ def test_problems_pushes_down_state():
     with patch.object(sn, "_fetch", return_value=[{"number": "PRB001"}]) as mock_fetch:
         sn.problems(state="open")
 
-    mock_fetch.assert_called_once_with("problem", query="state=open", limit=None, where=None)
+    mock_fetch.assert_called_once_with("problem", query="state=open", limit=None, where=None, order_by=None)
 
 
 def test_change_requests_pushes_down_type():
@@ -299,7 +299,7 @@ def test_change_requests_pushes_down_type():
     with patch.object(sn, "_fetch", return_value=[{"number": "CHG001"}]) as mock_fetch:
         sn.change_requests(type="normal")
 
-    mock_fetch.assert_called_once_with("change_request", query="type=normal", limit=None, where=None)
+    mock_fetch.assert_called_once_with("change_request", query="type=normal", limit=None, where=None, order_by=None)
 
 
 def test_users_pushes_down_active():
@@ -307,7 +307,7 @@ def test_users_pushes_down_active():
     with patch.object(sn, "_fetch", return_value=[{"user_name": "jdoe"}]) as mock_fetch:
         sn.users(active="true")
 
-    mock_fetch.assert_called_once_with("sys_user", query="active=true", limit=None, where=None)
+    mock_fetch.assert_called_once_with("sys_user", query="active=true", limit=None, where=None, order_by=None)
 
 
 def test_cmdb_ci_pushes_down_class_name():
@@ -316,7 +316,7 @@ def test_cmdb_ci_pushes_down_class_name():
         sn.cmdb_ci(sys_class_name="cmdb_ci_server")
 
     mock_fetch.assert_called_once_with(
-        "cmdb_ci", query="sys_class_name=cmdb_ci_server", limit=None, where=None
+        "cmdb_ci", query="sys_class_name=cmdb_ci_server", limit=None, where=None, order_by=None
     )
 
 
@@ -330,7 +330,7 @@ def test_table_uses_structural_table_name():
     with patch.object(sn, "_fetch", return_value=[{"x": 1}]) as mock_fetch:
         df = sn.table(table_name="sys_user_group", query="active=true", limit=20)
 
-    mock_fetch.assert_called_once_with("sys_user_group", query="active=true", limit=20, where=None)
+    mock_fetch.assert_called_once_with("sys_user_group", query="active=true", limit=20, where=None, order_by=None)
     assert list(df["x"]) == [1]
 
 

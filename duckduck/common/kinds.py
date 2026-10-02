@@ -165,7 +165,7 @@ def pushdown_summary(fn: Callable) -> str:
         parts.append("any column (=, LIKE, <, >...)")
         params = []
     for p in params:
-        if p.default is not None or p.name in ("where", "limit") or p.name in _RAW_PARAMS:
+        if p.default is not None or p.name in ("where", "limit", "order_by") or p.name in _RAW_PARAMS:
             continue  # required/structural, defaulted options, or raw fragments
         for suffix, label in _SUFFIXES:
             if p.name.endswith(suffix):
@@ -173,6 +173,11 @@ def pushdown_summary(fn: Callable) -> str:
                 break
         else:
             parts.append(f"{p.name} =")
+    from .pushdown import sortable_of
+
+    sorts = sortable_of(fn)
+    if sorts and "order_by" in names:  # @sortable: ORDER BY … LIMIT n reads the top n only
+        parts.append("ORDER BY " + (" / ".join(sorted(sorts.columns)) if sorts.columns else "any column"))
     if "limit" in names:
         parts.append("LIMIT")
     return ", ".join(parts) if parts else "none — DuckDB filters after fetching"

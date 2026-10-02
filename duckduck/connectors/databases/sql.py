@@ -51,13 +51,13 @@ Via ``auto_register()`` (connector ``"database"``, registered as
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import pandas as pd
 
 from ...common.kinds import catalog, raw_query
 from ...common.logs import get_logger
-from ...common.pushdown import Condition
+from ...common.pushdown import Condition, sortable
 from ...common.sparkplan import SparkSource, spark_plan
 
 logger = get_logger("database")
@@ -234,10 +234,12 @@ class SQLDatabase:
         return SparkSource("jdbc", options={**self.jdbc_options(), "query": sql})
 
     @spark_plan("native", source="_spark_table", why="a database table: Spark reads it over JDBC")
+    @sortable(exact=True)
     def table(
         self,
         table_name: str,
         where: Optional[List[Condition]] = None,
+        order_by: Optional[List[Tuple[str, bool]]] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -259,16 +261,42 @@ class SQLDatabase:
             (``=``, ``LIKE``, ``ILIKE``, ``>``, ``>=``, ``<``, ``<=``) runs
             server-side as a real ``WHERE`` in the database's own dialect,
             so only matching rows are transferred.
+        order_by : list of (column, descending), optional
+            A query's ``ORDER BY … LIMIT n`` (``@sortable(exact=True)``): sorted
+            in the database with NULLs last (written as ``CASE WHEN c IS NULL``,
+            which every dialect takes) — on number, date/time and boolean columns
+            only: text follows the database's collation, which may not be
+            DuckDB's, so its order (and the limit) stay with DuckDB.
         """
         tbl = self._reflect(table_name)
         stmt = sa.select(tbl)
         clauses = self._where_clauses(tbl, where)
         if clauses:
             stmt = stmt.where(*clauses)
+        if order_by:
+            keys = self._order_keys(tbl, order_by)
+            if keys is None:
+                limit = None  # both or neither: DuckDB sorts and cuts
+            else:
+                stmt = stmt.order_by(*keys)
         if limit is not None:
             stmt = stmt.limit(limit)
         self._log_statement(stmt)
         return pd.read_sql(stmt, self.engine)
+
+    #: column types whose order is the same here as in DuckDB (text has a collation)
+    _ORDERED_TYPES = (sa.Integer, sa.Numeric, sa.Float, sa.Date, sa.DateTime, sa.Time, sa.Boolean, sa.Interval)
+
+    def _order_keys(self, tbl, order_by: List[Tuple[str, bool]]):
+        """ORDER BY clauses, NULLs last; None when a column is missing or not of an ordered type."""
+        by_name = {c.name.lower(): c for c in tbl.columns}
+        keys = []
+        for column, descending in order_by:
+            col = by_name.get(column.lower())
+            if col is None or not isinstance(col.type, self._ORDERED_TYPES):
+                return None
+            keys += [sa.case((col.is_(None), 1), else_=0), col.desc() if descending else col.asc()]
+        return keys
 
     def _log_statement(self, stmt) -> None:
         """The SQL sent to the database at INFO (placeholders), bound values at DEBUG."""

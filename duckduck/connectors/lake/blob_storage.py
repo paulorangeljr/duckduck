@@ -20,12 +20,12 @@ parameter a wrapper doesn't recognize.
 """
 
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
 from .lakehouse import LakehouseConnection
-from ...common.pushdown import Condition
+from ...common.pushdown import Condition, sortable
 from ...common.sparkplan import SparkSource, spark_plan
 
 
@@ -120,12 +120,14 @@ class BlobStorage:
         )
 
     @spark_plan("native", source="_spark_table", why="files on ADLS / Blob Storage Spark reads directly")
+    @sortable(exact=True)
     def table(
         self,
         container: str,
         path: str,
         format: str = "parquet",
         where: Optional[List[Condition]] = None,
+        order_by: Optional[List[Tuple[str, bool]]] = None,
         limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
@@ -147,9 +149,12 @@ class BlobStorage:
             row-group/file pruning), so non-matching rows never reach Python.
         limit : int, optional
             Applied via DuckDB's own ``LIMIT`` on the scan.
+        order_by : list of (column, descending), optional
+            ``ORDER BY … NULLS LAST`` inside the DuckDB scan, with the
+            ``limit``: a query's top N is read as such (``@sortable(exact=True)``).
         """
         scan_expr = self._scan_expression(container, path, format)
-        return self._lake.scan(scan_expr, limit=limit, where=where)
+        return self._lake.scan(scan_expr, limit=limit, where=where, order_by=order_by)
 
     # ------------------------------------------------------------------
     # Streaming (iter_*) — for use with DuckAPI.stream()

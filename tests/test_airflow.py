@@ -26,8 +26,8 @@ def _runs(n=7):
 
 
 class FakeMWAA:
-    def __init__(self, version="2.10.3", page_cap=100, dags=None, runs=None):
-        self.version, self.page_cap = version, page_cap
+    def __init__(self, version="2.10.3", page_cap=100, dags=None, runs=None, sorts=True):
+        self.version, self.page_cap, self.sorts = version, page_cap, sorts
         self.dags = dags if dags is not None else [
             {"dag_id": "etl", "is_paused": False, "tags": [{"name": "core"}], "owners": ["data"],
              "last_parsed_time": "2026-10-01T10:00:00+00:00"},
@@ -52,6 +52,13 @@ class FakeMWAA:
             if dag not in ("~", "etl", "etl_daily"):
                 raise ClientError(404, {"title": "DAG not found", "status": 404, "detail": f"{dag} not found"})
             rows = [r for r in self.runs if dag in ("~", r["dag_id"]) and q.get("state", r["state"]) == r["state"]]
+            if q.get("order_by") and self.sorts:  # like Airflow's Postgres: NULLs last ascending, first descending
+                field = q["order_by"].lstrip("-")
+                field = "logical_date" if field == "execution_date" else field
+                desc = q["order_by"].startswith("-")
+                present = sorted((r for r in rows if r.get(field)), key=lambda r: r[field], reverse=desc)
+                missing = [r for r in rows if not r.get(field)]
+                rows = missing + present if desc else present + missing
             key = "dag_runs"
         elif Path.endswith("/taskInstances"):
             rows = [{"dag_id": "etl", "dag_run_id": "run_1", "task_id": t, "state": "success", "try_number": 1,
@@ -201,3 +208,70 @@ def test_auto_register_builds_it_from_the_config(monkeypatch):
     df = duck.sql("SELECT dag_id FROM airflow.dags ORDER BY dag_id").df()
     assert df["dag_id"].tolist() == ["etl", "etl_daily"]
     assert made == {"profile_name": "data", "region_name": "us-east-1", "service": "mwaa"}
+
+
+def _many_runs(n=20, missing=()):
+    return [{"dag_id": "etl", "dag_run_id": f"run_{i:02d}", "state": "success", "run_type": "scheduled",
+             "logical_date": f"2026-09-{1 + i:02d}T00:00:00+00:00",
+             "start_date": None if i in missing else f"2026-09-{1 + (i * 7) % 20:02d}T00:05:00+00:00",
+             "end_date": None} for i in range(n)]
+
+
+def _expected(runs, column, desc, n):
+    df = pd.DataFrame(runs)
+    df[column] = pd.to_datetime(df[column], utc=True)
+    return df.sort_values(column, ascending=not desc, na_position="last")["dag_run_id"].head(n).tolist()
+
+
+@pytest.mark.parametrize("desc", [True, False])
+def test_order_by_and_limit_read_only_the_top_pages(desc, caplog):
+    import logging
+
+    af, client = _airflow(runs=_many_runs())
+    duck = _duck(af)
+    sql = f"SELECT dag_run_id FROM airflow_dag_runs ORDER BY start_date {'DESC' if desc else ''} LIMIT 4"
+    with caplog.at_level(logging.INFO, logger="duckduck"):
+        got = [r[0] for r in duck.sql(sql).fetchall()]
+    assert got == _expected(_many_runs(), "start_date", desc, 4)
+    assert client.calls[0][1]["order_by"] == ("-" if desc else "") + "start_date"
+    assert len(client.calls) <= 4  # 4 rows: 2 pages of 3, plus the pages read ahead (2 at a time) — not all 7
+    assert any("✓ ORDER BY start_date" in r.getMessage() for r in caplog.records)
+
+
+def test_runs_without_a_start_still_rank_last_whatever_the_server_does_with_nulls():
+    runs = _many_runs(missing={1, 3, 5, 8})  # the server puts them first when descending
+    af, client = _airflow(runs=runs)
+    duck = _duck(af)
+    got = [r[0] for r in duck.sql("SELECT dag_run_id FROM airflow_dag_runs ORDER BY start_date DESC LIMIT 3")
+           .fetchall()]
+    assert got == _expected(runs, "start_date", True, 3)  # it read past the NULL runs to 3 with a start
+    assert len(client.calls) < 7
+
+
+def test_the_logical_date_is_execution_date_on_airflow_2_and_offset_is_counted():
+    af, client = _airflow(runs=_many_runs())
+    rows = _duck(af).sql("SELECT dag_run_id FROM airflow_dag_runs ORDER BY logical_date DESC LIMIT 2 OFFSET 2").fetchall()
+    assert [r[0] for r in rows] == ["run_17", "run_16"]
+    assert client.calls[0][1]["order_by"] == "-execution_date" and len(client.calls) <= 4
+
+
+def test_a_server_that_ignores_the_order_is_read_to_the_end(caplog):
+    af, client = _airflow(runs=_many_runs(), sorts=False)
+    with caplog.at_level("WARNING", logger="duckduck"):
+        got = [r[0] for r in _duck(af).sql("SELECT dag_run_id FROM airflow_dag_runs ORDER BY start_date DESC "
+                                           "LIMIT 4").fetchall()]
+    assert got == _expected(_many_runs(), "start_date", True, 4) and len(client.calls) == 7
+    assert any("didn't come sorted by start_date" in r.getMessage() for r in caplog.records)
+
+
+def test_what_the_source_cant_sort_by_stays_with_duckdb():
+    af, client = _airflow(runs=_many_runs())
+    duck = _duck(af)
+    got = duck.sql("SELECT dag_run_id FROM airflow_dag_runs ORDER BY dag_run_id DESC LIMIT 2").fetchall()
+    assert [r[0] for r in got] == ["run_19", "run_18"] and "order_by" not in client.calls[0][1]
+    assert len(client.calls) == 7  # text sorts by the database's collation: not sent, every page read
+    client.calls.clear()
+    duck.sql("SELECT dag_run_id FROM airflow_dag_runs ORDER BY start_date DESC, end_date LIMIT 2").fetchall()
+    assert "order_by" not in client.calls[0][1]  # one column only
+    assert "ORDER BY end_date / execution_date / logical_date / start_date" in \
+        duck.list_tables().set_index("name").loc["airflow_dag_runs", "pushdown"]
