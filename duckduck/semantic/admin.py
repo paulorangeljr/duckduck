@@ -473,6 +473,7 @@ class _captured_log:
 SOURCE_KINDS = {
     "duckduck.sharepoint": "sharepoint", "duckduck.rapid7": "insightvm", "duckduck.servicenow": "servicenow",
     "duckduck.axonius": "axonius", "duckduck.database": "database", "duckduck.glue": "glue", "duckduck.athena": "athena",
+    "duckduck.airflow": "airflow",
     "duckduck.blob_storage": "blob_storage", "duckduck.adx": "adx", "duckduck.local_files": "files",
     "duckduck.python_source": "python", "duckduck.semantic.takeover": "dataset", "duckduck.views": "dataset",
 }

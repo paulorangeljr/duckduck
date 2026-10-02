@@ -1995,6 +1995,7 @@ class DuckAPI:
         "duckduck.database": "SQL database",
         "duckduck.glue": "S3 / Glue Data Catalog",
         "duckduck.athena": "Amazon Athena (SQL on S3)",
+        "duckduck.airflow": "Apache Airflow on MWAA (REST API)",
         "duckduck.blob_storage": "Azure Blob Storage",
         "duckduck.adx": "Azure Data Explorer (KQL)",
         "duckduck.local_files": "Local files",

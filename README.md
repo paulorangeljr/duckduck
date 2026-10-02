@@ -191,6 +191,36 @@ duck.register_api_function("vulnerabilities", r7.vulnerabilities)
 duck.sql("SELECT * FROM assets WHERE hostname = 'web-prod' LIMIT 25").df()
 ```
 
+## Apache Airflow on Amazon MWAA — even in a private VPC
+
+The `airflow` connector reads Airflow's REST API **through AWS**
+(`InvokeRestApi`), so an environment whose webserver sits in a private VPC
+needs no VPN, peering or machine inside it — only an IAM permission,
+`airflow:InvokeRestApi` (plus `airflow:GetEnvironment` to find the Airflow
+version by itself):
+
+```json
+"airflow": {"connector": "airflow", "environment": "data-platform-prod",
+            "authentication": {"type": "local", "region_name": "us-east-1", "profile_name": "prod-account"}}
+```
+
+```sql
+SELECT dag_id, state, count(*) FROM airflow.dag_runs
+WHERE start_date >= now() - INTERVAL 1 DAY GROUP BY ALL;
+
+SELECT dag_id, task_id, try_number, duration FROM airflow.task_instances
+WHERE dag_id = 'etl_daily' AND state = 'failed';
+
+SELECT filename, timestamp FROM airflow.import_errors;
+```
+
+Tables: `dags`, `dag_runs`, `task_instances`, `import_errors`. `dag_id`,
+`state`, date ranges (`logical_date`, `start_date`, `end_date`), `is_paused`
+and more go to Airflow as its own filters; works with Airflow 2 and 3
+(`"airflow_version"`, else read from the environment). Connections and
+variables aren't tables — they hold secrets. Authentication: keys or a
+profile in the block, or nothing for the default AWS chain.
+
 ## Public APIs: NVD (CVEs) and REST Countries
 
 Two connectors for APIs from [public-apis](https://github.com/public-apis/public-apis):

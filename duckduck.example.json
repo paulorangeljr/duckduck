@@ -115,6 +115,15 @@
         "profile_name": "prod-account"
       }
     },
+    "airflow": {
+      "connector": "airflow",
+      "environment": "data-platform-prod",
+      "authentication": {
+        "type": "local",
+        "region_name": "us-east-1",
+        "profile_name": "prod-account"
+      }
+    },
     "s3_data": {
       "connector": "glue",
       "authentication": {

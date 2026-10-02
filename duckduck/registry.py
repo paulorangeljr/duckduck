@@ -3,7 +3,7 @@ Central registry of the API wrappers supported by
 ``DuckAPI.auto_register`` (see ``core.py``).
 
 Each entry maps a "type" (``"sharepoint"``, ``"insightvm"``, ``"database"``,
-``"servicenow"``, ``"axonius"``, ``"glue"``, ``"athena"``, ``"blob_storage"``, ``"adx"``,
+``"servicenow"``, ``"axonius"``, ``"glue"``, ``"athena"``, ``"airflow"``, ``"blob_storage"``, ``"adx"``,
 ``"files"``, ``"python"``, ``"nvd"``, ``"restcountries"``) to:
 
 - ``factory``          : classmethod that builds the instance from a
@@ -19,6 +19,7 @@ becomes available in ``DuckAPI.auto_register()``.
 from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple
 
 from .adx import DataExplorer
+from .airflow import Airflow
 from .athena import Athena
 from .axonius import Axonius
 from .blob_storage import BlobStorage
@@ -185,6 +186,22 @@ SERVICE_REGISTRY: Dict[str, ServiceSpec] = {
         streaming_tables={
             "table": "iter_table",
             "query": "iter_query",
+        },
+        requires_authentication=False,  # the default AWS credential chain, like the CLI
+    ),
+    "airflow": ServiceSpec(
+        factory=Airflow.from_secret,
+        tables={
+            "dags": "dags",
+            "dag_runs": "dag_runs",
+            "task_instances": "task_instances",
+            "import_errors": "import_errors",
+        },
+        streaming_tables={
+            "dags": "iter_dags",
+            "dag_runs": "iter_dag_runs",
+            "task_instances": "iter_task_instances",
+            "import_errors": "iter_import_errors",
         },
         requires_authentication=False,  # the default AWS credential chain, like the CLI
     ),
