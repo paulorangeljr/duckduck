@@ -20,8 +20,9 @@ from .lake import write_target
 from .sip import Sip
 from .sources import Statement, statements_of
 from .sip import ident
-from .sources import inject_where
-from .spec import DURATION_RE, PipelineError, PipelineSpec, _shifted, load_spec, run_parameters, substitute
+from .sources import add_to_select, inject_where
+from .spec import (DEFAULT_LOAD_COLUMN, DURATION_RE, PipelineError, PipelineSpec, _shifted, load_spec, run_parameters,
+                   substitute)
 from .settings import lake_settings, with_settings
 from .state import read_state, write_state
 
@@ -88,8 +89,31 @@ def apply_load(spec: PipelineSpec, plan: Plan, state: Dict[str, Any]) -> Dict[st
     if conditions:
         where = conditions[0] if len(conditions) == 1 else "(" + " OR ".join(conditions) + ")"
         view.sql = inject_where(view.sql, where)
+    if DEFAULT_LOAD_COLUMN in load.columns and select is not None and not _selects(select, DEFAULT_LOAD_COLUMN):
+        # the internal column the run needs for its next watermark: read along, never declared in the SQL (the
+        # write replaces it with this run's own _loaded_at anyway)
+        view.sql = add_to_select(view.sql, f"{ident(alias) + '.' if alias else ''}{ident(DEFAULT_LOAD_COLUMN)}")
     plan.keep.add(step)
     return {"type": "incremental", "step": step, "columns": list(load.columns), "where": where, "since": since}
+
+
+def _selects(select: Any, column: str) -> bool:
+    """Whether the SELECT's output has ``column`` — by name, or through a star that doesn't exclude it. A grouped
+    or DISTINCT select counts as having it: a column added there would change its rows."""
+    from sqlglot import exp
+
+    if select.args.get("group") or select.args.get("distinct"):
+        return True
+    for e in select.expressions:
+        star = e if isinstance(e, exp.Star) else (e.this if isinstance(e, exp.Column) and isinstance(e.this, exp.Star)
+                                                   else None)
+        if star is not None:
+            excluded = star.args.get("except_") or star.args.get("except") or []
+            if column.lower() not in {x.name.lower() for x in excluded}:
+                return True
+        elif (e.alias_or_name or "").lower() == column.lower():
+            return True
+    return False
 
 
 def plan_pipeline(source: Union[str, os.PathLike, Dict[str, Any], PipelineSpec],

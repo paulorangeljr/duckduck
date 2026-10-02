@@ -238,11 +238,20 @@ def hive_escape(value: Any) -> str:
     return "".join(out)
 
 
+def _no_scheme(path: str) -> str:
+    return path.split("://", 1)[1] if "://" in path else path
+
+
 def partitions_from_files(base: str, files: Iterable[str], keys: Sequence[str]) -> List[Tuple[Dict[str, str], str]]:
-    """The partitions files were written into: (values, folder relative to ``base``), from ``k=v`` folders."""
-    base = base.rstrip("/") + "/"
+    """The partitions files were written into: (values, folder relative to ``base``), from ``k=v`` folders.
+
+    ``base`` and the files are compared without their scheme: pyarrow names an S3 file ``bucket/key``, the table's
+    location is ``s3://bucket/key`` (with the scheme kept, every folder came out as ``bucket/key/…/k=v`` and the
+    partition's location in Glue as the table's location twice — Athena read nothing)."""
+    base = _no_scheme(base).rstrip("/") + "/"
     seen: Dict[str, Dict[str, str]] = {}
     for f in files:
+        f = _no_scheme(f)
         rel = f[len(base):] if f.startswith(base) else f
         parts = rel.split("/")[:-1]
         values = {}
@@ -400,19 +409,39 @@ class GlueCatalog:
               "Columns": self._glue_columns(info.columns), "Location": f"{info.location.rstrip('/')}/{folder}"}
         return {"Values": [values[k.name] for k in info.partition_keys], "StorageDescriptor": sd}
 
-    def existing_partitions(self, info: TableInfo) -> List[List[str]]:
-        out = []
+    def existing_partitions(self, info: TableInfo) -> Dict[Tuple[str, ...], Optional[str]]:
+        """Each registered partition's values → its location."""
+        out: Dict[Tuple[str, ...], Optional[str]] = {}
         for page in self.client.get_paginator("get_partitions").paginate(
                 DatabaseName=info.database, TableName=info.name, ExcludeColumnSchema=True, **self._ids()):
-            out += [p["Values"] for p in page.get("Partitions", [])]
+            for p in page.get("Partitions", []):
+                out[tuple(p["Values"])] = (p.get("StorageDescriptor") or {}).get("Location")
         return out
 
     def sync_partitions(self, info: TableInfo, written: List[Tuple[Dict[str, str], str]], replace: bool) -> Dict[str, int]:
-        """Registers the partitions written (existing ones skipped); with ``replace``, drops the ones not written."""
+        """Registers the partitions written; one already registered somewhere else is pointed at where it was
+        written; with ``replace``, drops the ones not written."""
         if info.format != "parquet" or not info.partition_keys or info.projected:
             return {}
-        have = {tuple(v) for v in self.existing_partitions(info)}
-        new = [(v, f) for v, f in written if tuple(v[k.name] for k in info.partition_keys) not in have]
+        have = self.existing_partitions(info)
+
+        def values(v):
+            return tuple(v[k.name] for k in info.partition_keys)
+
+        def where(folder):
+            return f"{info.location.rstrip('/')}/{folder}"
+
+        new = [(v, f) for v, f in written if values(v) not in have]
+        moved = [(v, f) for v, f in written
+                 if values(v) in have and (have[values(v)] or "").rstrip("/") != where(f).rstrip("/")]
+        for i in range(0, len(moved), 100):
+            chunk = moved[i:i + 100]
+            resp = self.client.batch_update_partition(
+                DatabaseName=info.database, TableName=info.name,
+                Entries=[{"PartitionValueList": list(values(v)), "PartitionInput": self._partition_input(info, v, f)}
+                         for v, f in chunk], **self._ids())
+            if resp.get("Errors"):
+                raise PipelineError(f"Glue refused updating partitions of {info.full_name}: {resp['Errors'][0]}")
         added = 0
         for i in range(0, len(new), 100):
             chunk = new[i:i + 100]
@@ -432,9 +461,12 @@ class GlueCatalog:
                                                    PartitionsToDelete=[{"Values": v} for v in gone[i:i + 25]],
                                                    **self._ids())
                 removed += len(gone[i:i + 25])
-        if added or removed:
-            logger.info("  Glue: %s partitions +%d -%d", info.full_name, added, removed)
-        return {"partitions_added": added, "partitions_removed": removed}
+        if added or removed or moved:
+            logger.info("  Glue: %s partitions +%d -%d, %d relocated", info.full_name, added, removed, len(moved))
+        out = {"partitions_added": added, "partitions_removed": removed}
+        if moved:
+            out["partitions_relocated"] = len(moved)
+        return out
 
     def iceberg(self):
         try:

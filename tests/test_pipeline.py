@@ -849,3 +849,21 @@ def test_a_domain_is_optional(tmp_path):
                                                           "target": {"database": "misc"}}}},
                          base_dir=str(tmp_path))
     assert d.spec("x").name == "raw_x" and d.spec("x").targets[0].table == "misc.x"
+
+
+def test_silver_never_declares_loaded_at_even_listing_its_columns(duck, tmp_path):
+    """The internal _loaded_at is read along for the next watermark — the SQL doesn't name it."""
+    raw = tmp_path / "raw"
+    run_pipeline({"pipeline": "r", "sql": "SELECT 1 AS id, 'a' AS name UNION ALL SELECT 2, 'b'",
+                  "target": {"path": str(raw), "mode": "append"}}, duck=duck)
+    from duckduck.local_files import LocalFiles
+
+    duck.register_api_function("raw_tbl", LocalFiles(str(tmp_path)).table_functions()["raw"])
+    for sql in ("SELECT id, name FROM raw_tbl", "SELECT * EXCLUDE (_loaded_at, _run_id) FROM raw_tbl"):
+        spec = {"pipeline": "s" + str(abs(hash(sql)) % 1000), "primary_key": "id", "sql": sql, "load": "incremental",
+                "state": str(tmp_path / "state"), "target": {"path": str(tmp_path / "silver" / sql[:12].replace(" ", "_")),
+                                                             "mode": "merge"}}
+        first = run_pipeline(spec, duck=duck)
+        assert first.writes[0]["rows"] == 2 and first.load["now"]["_loaded_at"]
+        again = run_pipeline(spec, duck=duck)
+        assert again.writes[0].get("skipped") and "nothing newer" in again.report()

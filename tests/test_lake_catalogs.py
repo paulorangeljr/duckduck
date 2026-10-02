@@ -456,3 +456,29 @@ def test_iceberg_with_schema_evolution_off(ice):
     spec["sql"] = "SELECT 2 AS id, 'x' AS label"
     with pytest.raises(PipelineError, match="label — new column\\(s\\), and schema evolution is off"):
         run_pipeline(spec, duck=duck)
+
+
+def test_s3_partitions_are_registered_where_the_files_are_and_wrong_ones_moved_back(glue, lake):
+    """pyarrow names S3 files ``bucket/key``; the table's location keeps ``s3://``. Matching them with the scheme on
+    one side only made every partition ``s3://…/incident/meu-lake-raw/…/incident/_load_date=…`` — Athena read nothing."""
+    location = "s3://meu-lake-raw/servicenow/incident"
+    lake.create(TableInfo("raw_servicenow", "incident", location, "parquet", columns=[Column("number", "string")],
+                          partition_keys=[Column("_load_date", "string")]))
+    info = lake.table("raw_servicenow", "incident")
+    wrong = f"{location}/meu-lake-raw/servicenow/incident/_load_date=2026-10-01"  # what an earlier run registered
+    glue.batch_create_partition(DatabaseName="raw_servicenow", TableName="incident", PartitionInputList=[
+        {"Values": ["2026-10-01"], "StorageDescriptor": {"Location": wrong}}])
+
+    files = [f"meu-lake-raw/servicenow/incident/_load_date=2026-10-0{d}/part-r1-0.parquet" for d in (1, 2)]
+    written = partitions_from_files(location, files, ["_load_date"])
+    assert written == [({"_load_date": "2026-10-01"}, "_load_date=2026-10-01"),
+                       ({"_load_date": "2026-10-02"}, "_load_date=2026-10-02")]
+    assert lake.sync_partitions(info, written, replace=False) == {
+        "partitions_added": 1, "partitions_removed": 0, "partitions_relocated": 1}
+    got = {p["Values"][0]: p["StorageDescriptor"]
+           for p in glue.get_partitions(DatabaseName="raw_servicenow", TableName="incident")["Partitions"]}
+    assert {d: sd["Location"] for d, sd in got.items()} == {
+        "2026-10-01": f"{location}/_load_date=2026-10-01", "2026-10-02": f"{location}/_load_date=2026-10-02"}
+    assert got["2026-10-01"]["SerdeInfo"]["SerializationLibrary"].endswith("ParquetHiveSerDe")
+    assert lake.sync_partitions(lake.table("raw_servicenow", "incident"), written, replace=False) == {
+        "partitions_added": 0, "partitions_removed": 0}  # nothing left to fix

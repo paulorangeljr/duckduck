@@ -292,6 +292,19 @@ def _top_level_words(sql: str):
             i += 1
 
 
+def add_to_select(sql: str, expression: str) -> str:
+    """The query with ``expression`` added to its (first) SELECT's list, right before its FROM — the text
+    otherwise as written."""
+    body = sql.rstrip().rstrip(";").rstrip()
+    words = list(_top_level_words(body))
+    start = next((e for w, s, e in words if w == "select"), None)
+    at = next((s for w, s, _ in words if w == "from" and start is not None and s > start), None)
+    if at is None:
+        return sql
+    head = body[:at].rstrip()
+    return f"{head},\n  {expression}\n{body[at:]}"
+
+
 def inject_where(sql: str, condition: str) -> str:
     """The query with ``condition`` ANDed into its (first) SELECT's WHERE — the text otherwise as written."""
     body = sql.rstrip().rstrip(";").rstrip()
