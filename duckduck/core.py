@@ -1047,7 +1047,15 @@ class DuckAPI:
                         )
                     config[option] = resolved
 
+                at_once = config.pop("max_parallel", None)
+                if at_once is not None and not (isinstance(at_once, int) and not isinstance(at_once, bool)
+                                                and at_once >= 1):
+                    raise ValueError(f"'{name}': max_parallel is how many requests run at once — a whole "
+                                     f"number ≥ 1 (got {at_once!r})")
+
                 instance = spec.factory(credentials, **config)
+                if at_once is not None:
+                    instance.max_parallel = at_once  # wins over the tables' declared @spark_plan(max_parallel=)
 
                 tables = {t: getattr(instance, m) for t, m in spec.tables.items()}
                 if spec.dynamic_tables:
@@ -2323,29 +2331,41 @@ class DuckAPI:
         ``max_parallel`` unless it's read on the driver only (a rate limit, a cursor) — then one."""
         if not self.parallel:
             return 1
+        from .sparkplan import requests_at_once
+
         plan = self._plan_of(fn_name)
         if plan is None or plan.strategy == "driver":
             return 1
-        return plan.max_parallel
+        return requests_at_once(self._base_function(fn_name), plan)
 
-    def _plan_of(self, fn_name: str) -> Any:
-        from .sparkplan import plan_of
+    def _base_function(self, fn_name: str) -> Any:
+        """The registered function, or for a saved table bound to one, that table function."""
         from .views import VIEW_ATTR
 
         fn = self.functions.get(fn_name)
         view = getattr(fn, VIEW_ATTR, None)
         if isinstance(view, dict) and view.get("table"):
             fn = self.functions.get(str(view["table"]).lower(), fn)
+        return fn
+
+    def _plan_of(self, fn_name: str) -> Any:
+        from .sparkplan import plan_of
+
+        fn = self._base_function(fn_name)
         return plan_of(fn) if fn is not None else None
 
     def _parallel_of(self, fn_name: str) -> int:
         """How many of this table's pages may be requested at once: its declared ``max_parallel`` when its API
         reads any page on its own (``@spark_plan("partitioned", by="pages")``), else 1 — a saved table's is its
-        base table's."""
+        base table's. The service's ``"max_parallel"`` in duckduck.json (set on the connector) wins."""
+        from .sparkplan import requests_at_once
+
         if not self.parallel:
             return 1
         plan = self._plan_of(fn_name)
-        return plan.max_parallel if plan and plan.strategy == "partitioned" and plan.by == "pages" else 1
+        if not (plan and plan.strategy == "partitioned" and plan.by == "pages"):
+            return 1
+        return requests_at_once(self._base_function(fn_name), plan)
 
     def _calls_blanked(self, query: str) -> str:
         """The query with each registered function's inline arguments emptied (``assets(limit=3)`` → ``assets()``):

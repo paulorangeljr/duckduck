@@ -37,7 +37,7 @@ MODES = ("append", "overwrite", "overwrite_partitions", "merge")
 FORMATS = ("parquet", "delta", "iceberg")
 SOURCES = ("notebook", "sql_file", "sql")
 KEYS = {"pipeline", "description", "engine", "primary_key", "keys", "sip", "target", "targets", "output",
-        "parameters", "catalogs", "catalog", "schema_evolution", "state", "load", "timezone", "audit_columns", "layer", "aws", "read_engine", "virtualized_table", "page_size", *SOURCES}
+        "parameters", "catalogs", "catalog", "schema_evolution", "state", "load", "timezone", "audit_columns", "layer", "aws", "read_engine", "virtualized_table", "page_size", "max_parallel", *SOURCES}
 SIP_KEYS = {"enabled", "rate", "max_rows", "watch", "columns", "mask", "store", "stages", "null_keys"}
 TARGET_KEYS = {"path", "table", "format", "mode", "partition_by", "key", "unique", "storage_options", "catalog",
                "schema", "schema_evolution", "layer", "database", "table_name"}
@@ -152,6 +152,7 @@ class PipelineSpec:
     virtualized: Any = False  # past ingestion, tables that aren't the lake's may be read: True or their names
     lake: Dict[str, Any] = field(default_factory=dict)  # duckduck.json's "lake", once with_settings applied it
     page_size: Any = None  # rows per API request during this run: a number (every connector) or {service: n}
+    max_parallel: Any = None  # requests at once per table during this run: a number (every connector) or {service: n}
 
     def resolve(self, value: str) -> str:
         """A local path relative to the pipeline file."""
@@ -237,15 +238,19 @@ def load_spec(source: Union[str, os.PathLike, Dict[str, Any]], base_dir: Optiona
         raise PipelineError("'virtualized_table' is true (any table that isn't the lake's) or the list of "
                             "the ones it reads: [\"axonius_devices\"]")
     spec.virtualized = virtualized
-    page_size = data.get("page_size")
-    if page_size is not None:
-        def _size(v):
-            return isinstance(v, int) and not isinstance(v, bool) and v > 0
-        if not (_size(page_size) or (isinstance(page_size, dict) and page_size
-                                     and all(isinstance(k, str) and _size(v) for k, v in page_size.items()))):
-            raise PipelineError("'page_size' is the rows per API request for this run: a number (every connector "
-                                "it reads) or one per service: {\"servicenow\": 2000}")
-        spec.page_size = page_size
+    def _size(v):
+        return isinstance(v, int) and not isinstance(v, bool) and v > 0
+
+    for key, what, example in (("page_size", "the rows per API request", 2000),
+                               ("max_parallel", "how many requests of a table run at once", 8)):
+        value = data.get(key)
+        if value is None:
+            continue
+        if not (_size(value) or (isinstance(value, dict) and value
+                                 and all(isinstance(k, str) and _size(v) for k, v in value.items()))):
+            raise PipelineError(f"'{key}' is {what} for this run: a number (every connector it reads) or one "
+                                f"per service: {{\"servicenow\": {example}}}")
+        setattr(spec, key, value)
     audit = data.get("audit_columns", True)
     if audit is True:
         spec.audit_columns = list(AUDIT_COLUMNS)

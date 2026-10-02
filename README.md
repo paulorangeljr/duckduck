@@ -341,6 +341,22 @@ pages: the API sent no total — reading 4 page(s) ahead, until a short one
 
 (and the page lines read `page 3` instead of `page 3/37`).
 
+**How many at once** is what each table declares (ServiceNow and InsightVM 4,
+Airflow 2 — what the API's rate limit usually allows). A service can set its
+own in `duckduck.json`:
+
+```json
+"servicenow": {"connector": "servicenow", "instance": "minhaempresa", "max_parallel": 8, "authentication": {…}}
+```
+
+and a pipeline file for its run only — `"max_parallel": 8` (every connector
+it reads) or `"max_parallel": {"servicenow": 8}` — put back when the run
+ends, like `page_size`. More threads means more requests at the same time on
+the API: past its rate limit it answers 429 and the read is slower, not
+faster. Raise it a little at a time and watch the `-v` lines. APIs read one
+page after another (cursor pagination, NVD's rate limit) ignore it. Spark
+uses the same number (`SparkReader(max_parallel=)` still caps it).
+
 **Rows per request** are each service's `default_page_size` in `duckduck.json`
 (ServiceNow and Axonius 200, InsightVM 500, Airflow 100, NVD 2000 — its own
 maximum, SharePoint Graph's `$top`):

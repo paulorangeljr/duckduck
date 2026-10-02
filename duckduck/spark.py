@@ -49,7 +49,7 @@ import pandas as pd
 
 from . import slicing
 from .core import DuckAPI
-from .sparkplan import SPARK_ATTR, STRATEGIES, SparkPlan, SparkSource, plan_of, spark_plan  # noqa: F401
+from .sparkplan import SPARK_ATTR, STRATEGIES, SparkPlan, SparkSource, plan_of, requests_at_once, spark_plan  # noqa: F401
 
 logger = logging.getLogger("duckduck.spark")
 
@@ -220,7 +220,7 @@ class SparkReader:
         return {"table": name, "strategy": plan.strategy if plan else "driver",
                 "declared": plan is not None, "why": (plan.why if plan else "no spark_plan declared"),
                 "source": plan.source if plan else None, "by": plan.by if plan else None,
-                "max_parallel": plan.max_parallel if plan else None}
+                "max_parallel": requests_at_once(fn, plan) if plan else None}
 
     # -- one table ----------------------------------------------------------------------------------------
 
@@ -305,7 +305,8 @@ class SparkReader:
     # -- partitioned ------------------------------------------------------------------------------------------
 
     def _partitioned(self, name: str, fn: Any, kwargs: Dict[str, Any], fallback_columns, plan: SparkPlan):
-        parallel = min(plan.max_parallel, self.max_parallel or plan.max_parallel)
+        declared = requests_at_once(fn, plan)  # the service's max_parallel, else the plan's
+        parallel = min(declared, self.max_parallel or declared)
         if plan.by == "pages":
             with slicing.probing() as probe:
                 first = _frame(fn(**kwargs), name)

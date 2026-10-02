@@ -132,3 +132,30 @@ def test_a_server_capping_its_pages_below_the_page_size_fails_instead_of_skippin
 def _parallel(api):
     with slicing.parallel(3):
         return list(slicing.pages(api._page, 2))
+
+
+def test_the_service_s_max_parallel_wins_over_the_declared_one():
+    api = Paged(rows=20)
+    api.max_parallel = 6  # what auto_register sets from the service's "max_parallel" in duckduck.json
+    duck = DuckAPI(stream_pages=False)
+    duck.register_api_function("items", api.items)
+    duck.sql("SELECT * FROM items").fetchall()
+    assert api.most == 6  # 10 pages: page 0, then 6 at a time (the table declares 3)
+    api.max_parallel, api.most = 1, 0
+    duck.sql("SELECT * FROM items").fetchall()
+    assert api.most == 1
+
+
+def test_auto_register_takes_max_parallel_per_service(tmp_path):
+    import pytest
+
+    from duckduck import servicenow
+
+    duck = DuckAPI()
+    instances = duck.auto_register({"sn": {"connector": "servicenow", "instance": "x", "max_parallel": 8,
+                                           "authentication": {"username": "u", "password": "p"}}})
+    assert instances["sn"].max_parallel == 8 and isinstance(instances["sn"], servicenow.ServiceNow)
+    assert duck._parallel_of("sn_incidents") == 8
+    with pytest.raises(ValueError, match="max_parallel is how many requests run at once"):
+        DuckAPI().auto_register({"sn": {"connector": "servicenow", "instance": "x", "max_parallel": 0,
+                                        "authentication": {"username": "u", "password": "p"}}})

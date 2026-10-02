@@ -289,38 +289,72 @@ def _run(spec: PipelineSpec, started: float, duck: Any, spark: Any, config_path:
         return _execute(spec, plan, started, duck, spark, params, values, state, dry_run, now, engine, catalog_of)
     finally:
         reads.close()
-        for instance, size in restore:
-            instance.default_page_size = size
+        put_back(restore)
 
 
-def page_sizes(spec: PipelineSpec, duck: Any) -> List[Tuple[Any, Any]]:
-    """The file's ``page_size`` set on the connectors for this run — every one it can read, or the services it
-    names; [(connector, its size before)] to put back afterwards."""
-    if spec.page_size is None:
+_UNSET = object()
+
+
+def _per_run(duck: Any, value: Any, key: str, attribute: str, owns: Any, what: str) -> List[Tuple[Any, str, Any]]:
+    """``value`` (a number for every connector ``owns`` picks, or {service: n}) set as ``attribute`` on those
+    connectors for this run; [(connector, attribute, its value before)] to put back afterwards."""
+    if value is None:
         return []
     by_service: Dict[str, List[Any]] = {}
     for name, fn in getattr(duck, "functions", {}).items():
         instance = getattr(fn, "__self__", None)
-        if instance is not None and hasattr(instance, "default_page_size"):
+        if instance is not None and owns(instance, fn):
             service = duck.service_of.get(name) or name
             if all(instance is not i for i in by_service.setdefault(service, [])):
                 by_service[service].append(instance)
-    wanted = spec.page_size if isinstance(spec.page_size, dict) else {s: spec.page_size for s in by_service}
+    wanted = value if isinstance(value, dict) else {s: value for s in by_service}
     unknown = sorted(set(wanted) - set(by_service))
     if unknown:
-        raise PipelineError(f"page_size: no connector {', '.join(unknown)} that reads in pages (there are: "
+        raise PipelineError(f"{key}: no connector {', '.join(unknown)} that {what} (there are: "
                             f"{', '.join(sorted(by_service)) or 'none'})")
-    restore: List[Tuple[Any, Any]] = []
-    for service, size in wanted.items():
+    restore: List[Tuple[Any, str, Any]] = []
+    for service, n in wanted.items():
         for instance in by_service[service]:
-            if any(instance is i for i, _ in restore):
+            if any(instance is i for i, _, _ in restore):
                 continue
-            restore.append((instance, instance.default_page_size))
-            top = getattr(instance, "MAX_PAGE_SIZE", None)  # an API's own maximum (NVD's 2000)
-            instance.default_page_size = min(size, top) if top else size
-            logger.info("  %s: %s rows per request for this run (was %s)", service, instance.default_page_size,
-                        restore[-1][1])
+            before = getattr(instance, attribute, _UNSET)
+            restore.append((instance, attribute, before))
+            top = getattr(instance, "MAX_PAGE_SIZE", None) if attribute == "default_page_size" else None
+            setattr(instance, attribute, min(n, top) if top else n)  # an API's own maximum (NVD's 2000)
+            logger.info("  %s: %s = %s for this run (was %s)", service, key, getattr(instance, attribute),
+                        "the declared one" if before is _UNSET else before)
     return restore
+
+
+def _paged_at_once(instance: Any, fn: Any) -> bool:
+    from ..sparkplan import plan_of
+
+    plan = plan_of(fn)
+    return bool(plan and plan.strategy == "partitioned")
+
+
+def page_sizes(spec: PipelineSpec, duck: Any) -> List[Tuple[Any, str, Any]]:
+    """The file's ``page_size`` and ``max_parallel`` set on the connectors for this run — every one it can
+    read, or the services it names; [(connector, attribute, its value before)] to put back afterwards."""
+    restore = _per_run(duck, spec.page_size, "page_size", "default_page_size",
+                       lambda instance, fn: hasattr(instance, "default_page_size"), "reads in pages")
+    try:
+        return restore + _per_run(duck, spec.max_parallel, "max_parallel", "max_parallel", _paged_at_once,
+                                  "reads several requests at once")
+    except PipelineError:
+        put_back(restore)
+        raise
+
+
+def put_back(restore: List[Tuple[Any, str, Any]]) -> None:
+    for instance, attribute, before in reversed(restore):
+        if before is _UNSET:
+            try:
+                delattr(instance, attribute)
+            except AttributeError:
+                pass
+        else:
+            setattr(instance, attribute, before)
 
 
 def _execute(spec: PipelineSpec, plan: Plan, started: float, duck: Any, spark: Any, params: Optional[Dict[str, Any]],

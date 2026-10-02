@@ -545,6 +545,9 @@ def config_reference() -> Dict[str, Any]:
              "service's own name."},
             {"name": "table_prefix", "type": "string", "input": "text", "description": "Tables are registered as <prefix>_<table>; "
              "\"\" for bare table names. Default: the service's name."},
+            {"name": "max_parallel", "type": "integer", "input": "int", "description": "How many requests of one "
+             "table run at once (pages read in threads, a join's split calls). Default: what each table declares "
+             "(ServiceNow and InsightVM 4, Airflow 2); APIs read one page after another (cursors, NVD) ignore it."},
             {"name": "authentication", "type": "object", "description": "Where credentials come from — below."},
         ],
         "authentication": [
@@ -756,7 +759,10 @@ def validate_config(data: Any, path: str = "") -> Dict[str, List[str]]:
         if cls is not None:
             params = set(list(inspect.signature(cls.__init__).parameters)[1:])
             takes_any = any(p.kind == p.VAR_KEYWORD for p in inspect.signature(cls.__init__).parameters.values())
-            extra = set(svc) - {"connector", "authentication", "table_prefix"} - params
+            extra = set(svc) - {"connector", "authentication", "table_prefix", "max_parallel"} - params
+            at_once = svc.get("max_parallel")
+            if at_once is not None and not (isinstance(at_once, int) and not isinstance(at_once, bool) and at_once >= 1):
+                errors.append(f"services.{name}.max_parallel must be a whole number ≥ 1")
             if extra and not takes_any:
                 warnings.append(f"services.{name}: {', '.join(sorted(extra))} — not an option of {connector!r} "
                                 f"(options: {', '.join(sorted(params))})")

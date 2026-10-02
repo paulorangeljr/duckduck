@@ -937,3 +937,32 @@ def test_a_pipeline_reads_with_its_own_page_size_and_puts_it_back(tmp_path):
         run_pipeline({**spec, "page_size": {"jira": 10}}, duck=duck)
     with pytest.raises(PipelineError, match="'page_size' is the rows per API request"):
         run_pipeline({**spec, "page_size": 0}, duck=duck)
+
+
+def test_a_pipeline_reads_with_its_own_max_parallel_and_puts_it_back(tmp_path):
+    from duckduck.sparkplan import spark_plan
+
+    class Source:
+        seen = []
+
+        @spark_plan("partitioned", by="pages", max_parallel=4, why="test")
+        def rows(self, limit=None):
+            Source.seen.append(getattr(self, "max_parallel", None))
+            return pd.DataFrame({"id": [1, 2]})
+
+    sn = Source()
+    duck = DuckAPI()
+    duck.register_api_function("sn_incident", sn.rows)
+    duck.service_of["sn_incident"] = "servicenow"
+    duck.register_api_function("plain", lambda limit=None: pd.DataFrame({"id": [1]}))
+    spec = {"pipeline": "p", "sql": "SELECT * FROM sn_incident", "target": str(tmp_path / "o"),
+            "max_parallel": {"servicenow": 10}}
+    run_pipeline(spec, duck=duck)
+    assert Source.seen == [10] and not hasattr(sn, "max_parallel")  # this run only
+    sn.max_parallel = 6  # the service's own (duckduck.json) comes back after the run
+    run_pipeline({**spec, "max_parallel": 2}, duck=duck)
+    assert Source.seen[-1] == 2 and sn.max_parallel == 6
+    with pytest.raises(PipelineError, match="max_parallel: no connector jira .*there are: servicenow"):
+        run_pipeline({**spec, "max_parallel": {"jira": 3}}, duck=duck)
+    with pytest.raises(PipelineError, match="'max_parallel' is how many requests of a table run at once"):
+        run_pipeline({**spec, "max_parallel": True}, duck=duck)

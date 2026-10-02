@@ -80,3 +80,24 @@ def plan_of(fn: Any) -> Optional[SparkPlan]:
     if plan is None and not isinstance(fn, type) and hasattr(type(fn), "__call__"):
         plan = getattr(type(fn).__call__, SPARK_ATTR, None)
     return plan
+
+
+def owner_of(fn: Any) -> Any:
+    """The connector a table function belongs to: a bound method's instance (a saved table's bound function
+    carries its connector as ``__self__`` too), or a callable object itself (``FileTable``)."""
+    import inspect
+
+    if inspect.isfunction(fn):  # a plain function, or a saved table's wrapper (it sets __self__)
+        return getattr(fn, "__self__", None)
+    return getattr(fn, "__self__", fn)  # a bound method → its instance; a callable object → itself
+
+
+def requests_at_once(fn: Any, plan: Optional[SparkPlan] = None) -> int:
+    """How many requests of this table may run at once: the connector's own ``max_parallel`` (a service's
+    ``"max_parallel"`` in duckduck.json, or a pipeline's for its run) when set, else the plan's declared one."""
+    plan = plan or plan_of(fn)
+    own = getattr(owner_of(fn), "max_parallel", None)
+    if isinstance(own, int) and not isinstance(own, bool) and own >= 1:
+        return own
+    return plan.max_parallel if plan else 1
+
