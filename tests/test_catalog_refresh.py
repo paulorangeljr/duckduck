@@ -471,7 +471,7 @@ def test_auto_register_records_each_table_s_service(project):
     folder, write, llm = project
     duck = DuckAPI()
     duck.auto_register(config_path=write())
-    assert duck.service_of == {"hosts": "src", "alerts": "src"}
+    assert {t: s for t, s in duck.service_of.items() if s != "duckduck"} == {"hosts": "src", "alerts": "src"}
 
 
 def test_cli_only(project, capsys):

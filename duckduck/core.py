@@ -700,6 +700,9 @@ class DuckAPI:
         #: Saved tables that couldn't be registered (``on_error="warn"``): name → why.
         self.failed_views: Dict[str, str] = {}
         self._config_views: Optional[Dict[str, Any]] = None
+        #: Every service ``auto_register`` was given (name → config as written) — ``duckduck.services`` lists them.
+        self.configured_services: Dict[str, Dict[str, Any]] = {}
+        self._config_system_tables: Optional[bool] = None
         self._table_counter = 0
         self.stream_pages = stream_pages
         self.join_pushdown = join_pushdown
@@ -806,6 +809,7 @@ class DuckAPI:
         config_path: Optional[str] = None,
         on_error: Optional[str] = None,
         views: Optional[Dict[str, Any]] = None,
+        system_tables: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Instantiates and registers known API wrappers automatically
@@ -895,6 +899,11 @@ class DuckAPI:
             {"table": ..., "args": {...}} | {"sql": ...}}`` — see
             ``duckduck.views``); from a JSON file, its top-level ``views``.
             ``on_error`` applies to them too.
+        system_tables : bool, optional
+            Registers ``duckduck.services`` / ``tables`` / ``saved_tables`` /
+            ``settings`` / ``pipeline_runs`` (``duckduck.system``) after the
+            services — default on; a JSON file's top-level
+            ``"system_tables": false`` turns them off.
 
         Returns
         -------
@@ -990,6 +999,7 @@ class DuckAPI:
             raise ValueError(f"on_error must be 'raise' or 'warn' (got '{on_error}').")
 
         overrides = dict(secrets) if secrets else {}
+        self.configured_services.update({n: dict(c) if isinstance(c, dict) else {} for n, c in services.items()})
         backend_cache: Dict[Any, Any] = {}
         instances: Dict[str, Any] = {}
         registered_by: Dict[str, str] = {}  # table name → service, to catch collisions
@@ -1098,7 +1108,28 @@ class DuckAPI:
             from . import views as saved
 
             saved.register_all(self, views, on_error=on_error)
+        if system_tables is None:
+            system_tables = self._config_system_tables if base_dir is not None else None
+        if system_tables is not False:
+            self.register_system_tables()
         return instances
+
+    def register_system_tables(self) -> None:
+        """
+        ``duckduck.services`` / ``tables`` / ``saved_tables`` / ``settings`` /
+        ``pipeline_runs`` — this process's own state as read-only tables,
+        secrets masked (``duckduck.system``). Skipped, with a warning, when a
+        service is itself named ``duckduck``.
+        """
+        from . import system
+
+        if system.SERVICE in self.configured_services:
+            with warnings.catch_warnings():
+                warnings.simplefilter("always", RuntimeWarning)
+                warnings.warn(f"a service is named '{system.SERVICE}': the duckduck.* system tables aren't "
+                              "registered (rename the service to get them)", RuntimeWarning, stacklevel=2)
+            return
+        system.register(self)
 
     def resolve_credentials(self, auth: Dict[str, Any], name: str = "credentials") -> Dict[str, Any]:
         """
@@ -1268,6 +1299,7 @@ class DuckAPI:
         self._config_base_dir = os.path.dirname(self._config_path)
 
         self._config_views = config.get("views")
+        self._config_system_tables = config.get("system_tables")
         file_services = config.get("services")
         if not file_services:
             raise ValueError(f"Config file '{path}' has no 'services' key.")

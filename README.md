@@ -736,6 +736,33 @@ everything is a plain table — the `kind` column says which is which, and
 | `catalog` | lists what a source contains — how you find those arguments | `SELECT * FROM glue_tables` |
 | `raw query` | runs a query you write in the source's own language | `SELECT * FROM db_query(sql='<sql>')` |
 
+### duckduck's own state: `duckduck.*`
+
+Every `auto_register()` also registers five read-only tables about duckduck
+itself:
+
+| Table | What it holds |
+|---|---|
+| `duckduck.services` | each connector of the config: `started`, the `error` when it didn't, its `tables`, `auth_type` / `secret_id`, its other options (secrets masked) |
+| `duckduck.tables` | `SHOW TABLES`, plus each table's `service` and `address` |
+| `duckduck.saved_tables` | the saved tables: kind, definition, description, whether it `registered` and the `error` when not |
+| `duckduck.settings` | the config file as it is now, one row per setting (`services.servicenow.timezone`), `section`, `service` |
+| `duckduck.pipeline_runs` | each pipeline's last successful run and watermarks, from the `lake.state` folder |
+
+```sql
+SELECT name, error FROM duckduck.services WHERE NOT started;
+SELECT key, value FROM duckduck.settings WHERE section = 'lake';
+SELECT pipeline, last_success_at FROM duckduck.pipeline_runs ORDER BY last_success_at;
+```
+
+**No secret is ever shown**: a value whose key reads like one (password,
+token, api key, connection string…) is `***` — the same rule as the web
+app's Config tab — and `"$secret.<key>"` references stay (they say where a
+secret is, not what it is). Don't point a `files` connector at the folder of
+`duckduck.json` instead: it would read the file as it is, `local` passwords
+included. `"system_tables": false` (top level) turns them off; a service
+named `duckduck` keeps its name and these aren't registered.
+
 **Glue tables are read the way Athena reads them.** For a Parquet table,
 duckduck doesn't glob the table's whole S3 prefix: the WHERE's conditions on
 partition keys go to Glue (`get_partitions` with an `Expression`, served by

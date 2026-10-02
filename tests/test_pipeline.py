@@ -649,8 +649,9 @@ def test_incremental_options(duck, tmp_path):
     assert plan.load["step"] == "f" and plan.views["f"].sql.endswith('WHERE "x"."loaded" > \'2026-10-02\'')
     with pytest.raises(PipelineError, match="set \"state\" in duckduck.json's \"lake\""):
         plan_pipeline({"pipeline": "x", "sql": "SELECT 1", "load": {"columns": ["t"]}}, config_path="/nowhere.json")
-    with pytest.raises(PipelineError, match="which column\\(s\\) show what changed"):
-        load_spec({"pipeline": "x", "sql": "SELECT 1", "load": "incremental", "state": "/s"})
+    # no columns: the _loaded_at the layer below stamped on every row
+    assert load_spec({"pipeline": "x", "sql": "SELECT 1", "load": "incremental", "state": "/s"}).load.columns == \
+        ["_loaded_at"]
     with pytest.raises(PipelineError, match="couldn't read max\\(missing\\) from x"):
         run_pipeline({**base, "pipeline": "x", "sql": "SELECT id FROM feed", "load": {"columns": ["missing"]}},
                      duck=duck)

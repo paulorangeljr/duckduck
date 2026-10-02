@@ -38,10 +38,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..addresses import address_pattern, services
 from ..views import read_only_reason, statements as _statements  # noqa: F401 — the SQL guard, shared with saved tables
 
-MASK = "***"
-_SECRETISH = re.compile(r"pass(word|wd)?|secret|token|api[-_]?key|private[-_]?key|connection[-_]?string|"
-                        r"\bsas\b|signature|credential", re.I)
-_NOT_SECRET_SUFFIX = ("_id", "_env", "_file", "_path", "_url", "_name", "_type")
+from ..system import _NOT_SECRET_SUFFIX, _SECRETISH, MASK, is_secret_key as _is_secret_key, mask  # noqa: F401
 
 
 
@@ -695,21 +692,6 @@ def _jsonable(value: Any) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def _is_secret_key(key: str) -> bool:
-    key = str(key)
-    return bool(_SECRETISH.search(key)) and not key.lower().endswith(_NOT_SECRET_SUFFIX)
-
-
-def mask(data: Any) -> Any:
-    """Secret values (by key name) → ``"***"``; ``"$secret.<key>"`` references stay (they aren't secrets)."""
-    if isinstance(data, dict):
-        return {k: (MASK if _is_secret_key(k) and isinstance(v, str) and v and not v.startswith("$secret.")
-                    else mask(v)) for k, v in data.items()}
-    if isinstance(data, list):
-        return [mask(v) for v in data]
-    return data
-
-
 def unmask(edited: Any, saved: Any, path: str = "") -> Any:
     """Puts the saved secret back wherever the edited config still says ``"***"``."""
     if isinstance(edited, dict):
@@ -734,9 +716,11 @@ def validate_config(data: Any, path: str = "") -> Dict[str, List[str]]:
     if not isinstance(data, dict):
         return {"errors": ["the config must be a JSON object"], "warnings": []}
     known = {"services", "on_error", "ai_providers", "semantic", "views", "kql", "default_database", "sql_cache",
-             "pg_server", "catalogs", "lake"}
+             "pg_server", "catalogs", "lake", "system_tables"}
     for key in sorted(set(data) - known):
         warnings.append(f"unknown top-level key {key!r} (known: {', '.join(sorted(known))})")
+    if data.get("system_tables") not in (None, True, False):
+        errors.append("system_tables is true or false (the duckduck.* tables; on by default)")
     if data.get("on_error") not in (None, "raise", "warn"):
         errors.append("on_error must be \"raise\" or \"warn\"")
     services = data.get("services", {})
