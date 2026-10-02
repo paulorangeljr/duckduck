@@ -201,7 +201,11 @@
       "gold": "s3://my-gold-layer"
     },
     "state": "s3://my-raw-layer/_duckduck/state",
-    "sip_store": "s3://my-raw-layer/_duckduck/sip"
+    "sip_store": "s3://my-raw-layer/_duckduck/sip",
+    "aws": {
+      "profile": "data-prod",
+      "region": "us-east-1"
+    }
   },
   "ai_providers": {
     "jev": {

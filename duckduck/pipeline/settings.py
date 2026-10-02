@@ -6,7 +6,8 @@ What every pipeline shares, set once in ``duckduck.json`` — the top-level
       "catalog": "glue",                                  (the catalog targets register in)
       "layers": {"raw": "s3://raw-layer", "silver": "s3://silver-layer", "gold": "s3://gold-layer"},
       "state": "s3://raw-layer/_duckduck/state",          (each job's last run + watermarks)
-      "sip_store": "s3://raw-layer/_duckduck/sip"
+      "sip_store": "s3://raw-layer/_duckduck/sip",
+      "aws": {"profile": "data-prod", "region": "us-east-1"}   (the account the lake is written with — aws.py)
     }
 
 A target then only says ``"layer": "raw", "database": "servicenow",
@@ -23,7 +24,7 @@ from typing import Any, Dict, Optional
 
 from .spec import PipelineError, PipelineSpec
 
-LAKE_KEYS = {"catalog", "layers", "state", "sip_store"}
+LAKE_KEYS = {"catalog", "layers", "state", "sip_store", "aws"}
 
 
 def _find_config(start: Optional[str] = None) -> Optional[str]:
@@ -73,7 +74,9 @@ def lake_problems(lake: Any) -> list:
     for k in ("catalog", "state", "sip_store"):
         if lake.get(k) is not None and not (isinstance(lake[k], str) and lake[k]):
             problems.append(f"lake.{k} is text")
-    return problems
+    from .aws import aws_problems
+
+    return problems + aws_problems(lake.get("aws"), "lake.aws")
 
 
 def with_settings(spec: PipelineSpec, lake: Dict[str, Any]) -> PipelineSpec:
@@ -93,6 +96,8 @@ def with_settings(spec: PipelineSpec, lake: Dict[str, Any]) -> PipelineSpec:
         t.catalog = t.catalog or lake.get("catalog")
         if not t.catalog:
             t.table = None  # no catalog to register in: the files only
+    if spec.aws is None and lake.get("aws"):
+        spec.aws = dict(lake["aws"])
     if not spec.state and lake.get("state"):
         spec.state = lake["state"]
     if spec.sip.enabled and not spec.sip.store and lake.get("sip_store"):

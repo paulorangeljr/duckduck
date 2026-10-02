@@ -43,6 +43,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     s.add_argument("--pipeline", help="only this pipeline")
     s.add_argument("--key", help="only this key's way")
     s.add_argument("--run-id", help="only this run")
+    s.add_argument("--config", help="duckduck.json whose lake.aws reads the store (default: DUCKDUCK_CONFIG / "
+                                    "duckduck.json)")
     args = parser.parse_args(argv)
     try:
         if args.command == "plan":
@@ -54,7 +56,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                                run_id=args.run_id, dry_run=args.dry_run)
             print(run.report())
         else:
-            df = read_sip(args.store, pipeline=args.pipeline, key=args.key, run_id=args.run_id)
+            from .settings import lake_settings
+
+            df = read_sip(args.store, pipeline=args.pipeline, key=args.key, run_id=args.run_id,
+                          aws=lake_settings(config_path=args.config).get("aws"))
             cols = ["run_id", "stage", "position", "key", "stage_key", "event", "n", "changed", "note"]
             print(df[cols].to_string(index=False) if len(df) else "no sip events there")
     except PipelineError as exc:

@@ -367,6 +367,11 @@ def _filesystem(location: str):
     if "://" not in location:
         location = os.path.abspath(os.path.expanduser(location))
         return pafs.LocalFileSystem(), location
+    from .aws import current, is_s3, s3_filesystem
+
+    account = current()  # the lake's AWS account ("lake": {"aws": …}) while a pipeline runs
+    if account is not None and is_s3(location) and (account.has_keys or account.region):
+        return s3_filesystem(location, account)
     return pafs.FileSystem.from_uri(location)
 
 
@@ -385,8 +390,16 @@ def save_events(events: List[Dict[str, Any]], store: str, pipeline: str, run_dat
 
 
 def read_sip(store: str, pipeline: Optional[str] = None, key: Optional[str] = None,
-             run_id: Optional[str] = None) -> pd.DataFrame:
-    """Every sip event kept in ``store`` (or one pipeline's), oldest run first; ``key`` / ``run_id`` narrow it."""
+             run_id: Optional[str] = None, aws: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+    """Every sip event kept in ``store`` (or one pipeline's), oldest run first; ``key`` / ``run_id`` narrow it.
+    ``aws``: the account to read an S3 store with (an ``"aws"`` block, like duckduck.json's ``lake.aws``)."""
+    from . import aws as _aws
+
+    with _aws.using(_aws.account_of(aws)):
+        return _read_sip(store, pipeline, key, run_id)
+
+
+def _read_sip(store: str, pipeline: Optional[str], key: Optional[str], run_id: Optional[str]) -> pd.DataFrame:
     import pyarrow.fs as pafs
     import pyarrow.parquet as pq
 

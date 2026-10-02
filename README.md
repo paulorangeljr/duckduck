@@ -2564,9 +2564,28 @@ and where each column's mark moved.
   "catalog": "glue",
   "layers": {"raw": "s3://raw-layer", "silver": "s3://silver-layer", "gold": "s3://gold-layer"},
   "state": "s3://raw-layer/_duckduck/state",
-  "sip_store": "s3://raw-layer/_duckduck/sip"
+  "sip_store": "s3://raw-layer/_duckduck/sip",
+  "aws": {"profile": "data-prod", "region": "us-east-1"}
 }
 ```
+
+**The AWS account the lake is written with** is `lake.aws` (or a pipeline
+file's own `"aws"`, to write somewhere else):
+
+| `aws` | Writes with |
+|---|---|
+| `{"profile": "data-prod"}` | a profile of `~/.aws` — one machine, several accounts |
+| `{"role_arn": "arn:aws:iam::123456789012:role/lake-writer"}` (+ `external_id`, `session_name`) | that role, assumed with the profile / keys / default chain — the usual way into another account |
+| `{"authentication": {"type": "aws", "secret_id": "prod/lake-writer"}}` | keys from a secret (any connector-style block: `aws_access_key_id`, `aws_secret_access_key`, `aws_session_token`) |
+| `{"region": "us-east-1"}` | the default chain (environment, default profile, the machine's role) in that region |
+| nothing | the default chain, as before |
+
+It covers everything the pipeline writes and reads in the lake — the files
+(Parquet through pyarrow, Delta through deltalake), the state, the sip and a
+Glue catalog that doesn't name its own `profile` / `authentication` — and the
+run's report says which account it used (`aws: role … · us-east-1`). The
+connectors the SQL reads keep their own credentials, and a Spark job writes
+with the cluster's.
 
 A target then says only where in the lake it belongs — `"layer"` (on the target
 or for the whole file), `"database"` and `"table_name"`: the files always go to
@@ -2624,7 +2643,7 @@ python -m duckduck.pipeline sip s3://lake/_sip/ --key INC0001234       # one row
 |---|---|
 | `python -m duckduck.pipeline plan FILE [--config]` | `plan_pipeline(FILE, config_path=).report()` |
 | `python -m duckduck.pipeline run FILE [--config] [--param k=v] [--dry-run]` | `run_pipeline(FILE, duck=, spark=, params=, dry_run=).report()` |
-| `python -m duckduck.pipeline sip STORE [--pipeline] [--key] [--run-id]` | `read_sip(STORE, pipeline=, key=, run_id=)` |
+| `python -m duckduck.pipeline sip STORE [--pipeline] [--key] [--run-id] [--config]` | `read_sip(STORE, pipeline=, key=, run_id=, aws=)` |
 
 ### Catalog apart from storage: Glue, Unity Catalog (Azure), Iceberg catalogs
 

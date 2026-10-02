@@ -37,7 +37,7 @@ MODES = ("append", "overwrite", "overwrite_partitions", "merge")
 FORMATS = ("parquet", "delta", "iceberg")
 SOURCES = ("notebook", "sql_file", "sql")
 KEYS = {"pipeline", "description", "engine", "primary_key", "keys", "sip", "target", "targets", "output",
-        "parameters", "catalogs", "catalog", "schema_evolution", "state", "load", "timezone", "audit_columns", "layer", *SOURCES}
+        "parameters", "catalogs", "catalog", "schema_evolution", "state", "load", "timezone", "audit_columns", "layer", "aws", *SOURCES}
 SIP_KEYS = {"enabled", "rate", "max_rows", "watch", "columns", "mask", "store", "stages", "null_keys"}
 TARGET_KEYS = {"path", "table", "format", "mode", "partition_by", "key", "unique", "storage_options", "catalog",
                "schema", "schema_evolution", "layer", "database", "table_name"}
@@ -142,6 +142,7 @@ class PipelineSpec:
     catalogs: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # name → {type: glue|unity|iceberg, …}
     state: Optional[str] = None  # where each run's record (last success, watermarks) is kept: a folder in the lake
     load: Load = field(default_factory=Load)
+    aws: Optional[Dict[str, Any]] = None  # the AWS account it writes the lake with (else duckduck.json's lake.aws)
     timezone: str = "UTC"  # the job's clock: {{ run_at }} (with its offset) and {{ run_date }} (its local date)
     audit_columns: List[str] = field(default_factory=lambda: list(AUDIT_COLUMNS))  # added to every row written
     parameters: Dict[str, Any] = field(default_factory=dict)
@@ -206,6 +207,13 @@ def load_spec(source: Union[str, os.PathLike, Dict[str, Any]], base_dir: Optiona
     spec.keys = {str(v).lower(): _names(k, f"keys.{v}") for v, k in keys.items()}
     spec.sip = _sip(data.get("sip"), spec.primary_key)
     spec.catalogs = _catalogs(data.get("catalogs"))
+    if data.get("aws") is not None:
+        from .aws import aws_problems
+
+        problems = aws_problems(data["aws"])
+        if problems:
+            raise PipelineError("; ".join(problems))
+        spec.aws = dict(data["aws"])
     if data.get("state") is not None:
         if not isinstance(data["state"], str) or not data["state"].strip():
             raise PipelineError("'state' is a folder in the lake (s3://lake/_state/) or a local folder")

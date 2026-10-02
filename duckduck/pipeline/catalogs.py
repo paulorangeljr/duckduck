@@ -295,12 +295,29 @@ class GlueCatalog:
                 import boto3
             except ImportError:
                 raise PipelineError("a Glue catalog needs boto3: pip install \"duckduck[aws]\"") from None
-            session = boto3.Session(profile_name=self.profile, region_name=self.region,
-                                    aws_access_key_id=self.credentials.get("aws_access_key_id"),
-                                    aws_secret_access_key=self.credentials.get("aws_secret_access_key"),
-                                    aws_session_token=self.credentials.get("aws_session_token"))
+            creds, region = self._credentials()
+            session = boto3.Session(profile_name=None if creds else self.profile, region_name=region,
+                                    aws_access_key_id=creds.get("aws_access_key_id"),
+                                    aws_secret_access_key=creds.get("aws_secret_access_key"),
+                                    aws_session_token=creds.get("aws_session_token"))
             self._client = session.client("glue")
         return self._client
+
+    def _credentials(self):
+        """The catalog's own keys (its ``authentication``) or profile; else the lake's AWS account
+        (``"lake": {"aws": …}``, see ``pipeline/aws.py``) while a pipeline runs — keys and region."""
+        own = {k: v for k, v in self.credentials.items() if k in ("aws_access_key_id", "aws_secret_access_key",
+                                                                    "aws_session_token") and v}
+        if own or self.profile:
+            return own, self.region
+        from .aws import current
+
+        account = current()
+        if account is None:
+            return {}, self.region
+        keys = {"aws_access_key_id": account.access_key, "aws_secret_access_key": account.secret_key,
+                "aws_session_token": account.session_token} if account.has_keys else {}
+        return {k: v for k, v in keys.items() if v}, self.region or account.region
 
     def _ids(self) -> Dict[str, str]:
         return {"CatalogId": self.catalog_id} if self.catalog_id else {}
@@ -425,10 +442,17 @@ class GlueCatalog:
         except ImportError:
             raise PipelineError("Iceberg tables need pyiceberg: pip install \"pyiceberg[glue,pyarrow]\"") from None
         props = dict(self.iceberg_properties)
-        if self.region:
-            props.setdefault("glue.region", self.region)
-        if self.profile:
+        creds, region = self._credentials()
+        if region:
+            props.setdefault("glue.region", region)
+            props.setdefault("s3.region", region)
+        if self.profile and not creds:
             props.setdefault("glue.profile-name", self.profile)
+        for name, key in (("access-key-id", "aws_access_key_id"), ("secret-access-key", "aws_secret_access_key"),
+                          ("session-token", "aws_session_token")):
+            if creds.get(key):
+                props.setdefault(f"glue.{name}", creds[key])
+                props.setdefault(f"s3.{name}", creds[key])
         if self.catalog_id:
             props.setdefault("glue.id", self.catalog_id)
         if self.warehouse:

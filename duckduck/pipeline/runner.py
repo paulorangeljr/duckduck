@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Union
 
 import pandas as pd
 
+from . import aws
 from .analysis import Plan, _from_sources, build_plan, leftmost
 from .engines import make_engine
 from .lake import write_target
@@ -98,11 +99,13 @@ def plan_pipeline(source: Union[str, os.PathLike, Dict[str, Any], PipelineSpec],
     ``duck``: the connectors (a WITH named like one of their tables stays inside its query); ``config_path``:
     the duckduck.json whose ``"lake"`` settings apply (default: duck's, DUCKDUCK_CONFIG, duckduck.json)."""
     spec = with_settings(_spec(source), lake_settings(duck, config_path))
-    values = run_parameters(spec, params, now=now, state=_state(spec, quiet=True))
+    with aws.using(aws.account_of(spec.aws, duck)):  # the state may sit in another account's bucket
+        state = _state(spec, quiet=True)
+    values = run_parameters(spec, params, now=now, state=state)
     plan = build_plan(spec, [Statement(substitute(s.sql, values), s.origin) for s in statements_of(spec)],
                       reserved=getattr(duck, "functions", ()))
     plan.parameters = values
-    plan.load = apply_load(spec, plan, _state(spec, quiet=True))
+    plan.load = apply_load(spec, plan, state)
     return plan
 
 
@@ -122,6 +125,7 @@ class PipelineRun:
     seconds: float = 0.0
     load: Dict[str, Any] = field(default_factory=dict)  # full / incremental: the WHERE added, since → now
     state_path: Optional[str] = None
+    aws: Optional[str] = None  # the AWS account the lake was written with, when one was declared
 
     def report(self) -> str:
         lines = [f"pipeline {self.pipeline} · run {self.run_id} · {self.engine}"
@@ -148,6 +152,8 @@ class PipelineRun:
             else:
                 moved = ", ".join(f"{c}: {before.get(c, '—')} → {v}" for c, v in after.items()) or "no rows"
             lines.append(f"  incremental on {cols}: {read} · {moved}")
+        if self.aws:
+            lines.append(f"  aws: {self.aws}")
         for w in self.warnings:
             lines.append(f"  ⚠ {w}")
         return "\n".join(lines)
@@ -228,6 +234,16 @@ def run_pipeline(source: Union[str, os.PathLike, Dict[str, Any], PipelineSpec], 
     """
     started = time.perf_counter()
     spec = with_settings(_spec(source), lake_settings(duck, config_path))
+    account = aws.account_of(spec.aws, duck)  # the lake's AWS account: files, state, sip, a Glue catalog
+    with aws.using(account):
+        run = _run(spec, started, duck, spark, config_path, params, run_id, dry_run, now, engine, catalogs)
+    run.aws = account.describe() if account else None
+    return run
+
+
+def _run(spec: PipelineSpec, started: float, duck: Any, spark: Any, config_path: Optional[str],
+         params: Optional[Dict[str, Any]], run_id: Optional[str], dry_run: bool, now: Optional[dt.datetime],
+         engine: Any, catalogs: Optional[Dict[str, Any]]) -> PipelineRun:
     now = now or dt.datetime.now(dt.timezone.utc)
     state = _state(spec)
     values = run_parameters(spec, params, now=now, run_id=run_id, state=state)

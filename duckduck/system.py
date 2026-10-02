@@ -249,6 +249,13 @@ class SystemTables:
         except ImportError as exc:
             raise RuntimeError("duckduck.pipeline_runs reads the lake.state folder with pyarrow: "
                                "pip install \"duckduck[pipeline]\"") from exc
+        from .pipeline import aws
+
+        lake = self._config().get("lake")
+        with aws.using(aws.account_of(lake.get("aws") if isinstance(lake, dict) else None, self.duck)):
+            return self._runs(location, pipeline, columns, _filesystem, pafs)
+
+    def _runs(self, location, pipeline, columns, _filesystem, pafs) -> pd.DataFrame:
         fs, base = _filesystem(location)
         try:
             infos = fs.get_file_info(pafs.FileSelector(base.rstrip("/"), allow_not_found=True))

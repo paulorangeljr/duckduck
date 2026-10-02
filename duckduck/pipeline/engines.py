@@ -177,7 +177,9 @@ class DuckEngine:
             raise PipelineError("writing Delta with the duckdb engine needs the deltalake package: "
                                 "pip install deltalake") from None
         uri = target.path if "://" in target.path else _filesystem(target.path)[1]
-        opts = target.storage_options or None
+        from .aws import current, delta_options, is_s3
+
+        opts = {**(delta_options(current()) if is_s3(uri) else {}), **(target.storage_options or {})} or None
         schema_mode = {"evolve": "merge", "overwrite": "overwrite"}.get(target.schema)  # strict: as it is
         counter = [0]
         reader = self._reader(f"SELECT * FROM {ident(target.view)}", counter)
