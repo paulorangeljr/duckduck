@@ -24,6 +24,8 @@ yielded in order; closing the loop early cancels what hasn't started.
 from __future__ import annotations
 
 import contextvars
+import itertools
+import logging
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -61,6 +63,8 @@ def window(first_page: int, pages: int) -> Iterator[Window]:
     finally:
         _WINDOW.reset(token)
 
+
+logger = logging.getLogger("duckduck.slicing")
 
 _PARALLEL: contextvars.ContextVar[int] = contextvars.ContextVar("duckduck_parallel", default=1)
 
@@ -136,28 +140,30 @@ def pages(fetch_page: Callable[[int], Tuple[List[Any], Optional[int]]], page_siz
 def _parallel_pages(fetch_page: Callable[[int], Tuple[List[Any], Optional[int]]], page_size: int,
                     workers: int) -> Iterator[List[Any]]:
     """Page 0 first (it tells the total), then the rest ``workers`` at a time, yielded in order. Without a total
-    the API can't be read out of order: one page after another, as ``pages`` does."""
+    (a gateway that drops the API's count header) the next pages are asked for ahead all the same — up to
+    ``workers`` past the last one read — and the first short or empty page ends it: at most ``workers - 1``
+    requests come back empty at the end."""
     rows, total = fetch_page(0)
     _check_first(rows, page_size, total)
     if rows:
         yield rows
-    if not rows or total is None:
-        if rows and total is None and len(rows) >= page_size:
-            page = 1
-            while True:
-                rows, _ = fetch_page(page)
-                if rows:
-                    yield rows
-                if not rows or len(rows) < page_size:
-                    return
-                page += 1
+    if not rows:
         return
-    last = -(-int(total) // page_size)  # pages in all
-    if last <= 1:
-        return
+    if total is None:
+        if len(rows) < page_size:
+            return
+        logger.info("pages: the API sent no total — reading %d page(s) ahead, until a short one", workers)
+        following = itertools.count(1)
+        last_short = True
+    else:
+        last = -(-int(total) // page_size)  # pages in all
+        if last <= 1:
+            return
+        following = iter(range(1, last))
+        last_short = False
+        logger.info("pages: %d in all, %d at a time", last, workers)
     pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="duckduck-page")
     pending: deque = deque()
-    following = iter(range(1, last))
     try:
         for page in following:  # the first `workers` requests
             pending.append(pool.submit(contextvars.copy_context().run, fetch_page, page))
@@ -165,12 +171,14 @@ def _parallel_pages(fetch_page: Callable[[int], Tuple[List[Any], Optional[int]]]
                 break
         while pending:
             rows, _ = pending.popleft().result()
+            if not rows:
+                return  # the data shrank since page 0 counted it (or, with no total, the end): nothing after this
             nxt = next(following, None)
             if nxt is not None:
                 pending.append(pool.submit(contextvars.copy_context().run, fetch_page, nxt))
-            if not rows:
-                return  # the data shrank since page 0 counted it: nothing after this
             yield rows
+            if last_short and len(rows) < page_size:
+                return  # no total: a short page is the last one
     finally:
         for future in pending:
             future.cancel()

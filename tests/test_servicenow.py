@@ -544,3 +544,44 @@ def test_an_incremental_pipeline_sends_its_watermark_to_servicenow(tmp_path):
     sent = mock_get.call_args.args[1]["sysparm_query"]
     assert "sys_updated_on>javascript:gs.dateGenerate('2026-10-01','09:00:00')" in sent
     duck.close()
+
+
+class _Instance:
+    """A ServiceNow answering by offset, slowly, counting requests in flight; ``counted`` = sends X-Total-Count."""
+
+    def __init__(self, rows=9, counted=True, delay=0.05):
+        import threading
+
+        self.rows, self.counted, self.delay = rows, counted, delay
+        self.lock, self.in_flight, self.most, self.offsets = threading.Lock(), 0, 0, []
+
+    def get(self, url, params=None, timeout=None):
+        import time
+
+        with self.lock:
+            self.in_flight += 1
+            self.most = max(self.most, self.in_flight)
+            self.offsets.append(params["sysparm_offset"])
+        time.sleep(self.delay)
+        with self.lock:
+            self.in_flight -= 1
+        start, size = params["sysparm_offset"], params["sysparm_limit"]
+        r = _response({"result": [{"number": f"INC{i}"} for i in range(start, min(start + size, self.rows))]})
+        r.headers = {"X-Total-Count": str(self.rows)} if self.counted else {}
+        return r
+
+
+@pytest.mark.parametrize("counted", [True, False])
+def test_pages_are_read_several_at_once_with_or_without_the_total_header(counted):
+    sn = ServiceNow("dev12345", "admin", "secret", default_page_size=2)
+    fake = _Instance(counted=counted)
+    sn.session.get = fake.get
+    duck = DuckAPI()
+    duck.register_api_function("incidents", sn.table)
+    df = duck.sql("SELECT number FROM incidents(table_name='incident')").df()
+    assert df["number"].tolist() == [f"INC{i}" for i in range(9)]  # every row, in order
+    assert fake.most > 1  # more than one request in flight at a time
+    if counted:
+        assert sorted(fake.offsets) == [0, 2, 4, 6, 8]
+    else:  # no total: read ahead until a short page, a few empty ones at most at the end
+        assert sorted(fake.offsets)[:5] == [0, 2, 4, 6, 8] and len(fake.offsets) <= 5 + 3

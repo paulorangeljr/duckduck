@@ -67,6 +67,8 @@ from .sparkplan import spark_plan
 
 #: one token request at a time (a lock kept off the instance: the connector is pickled for Spark)
 _TOKEN_LOCK = threading.Lock()
+#: the total (X-Total-Count) of this thread's last request — not the instance's: pages run in threads at once
+_COUNTED = threading.local()
 
 logger = get_logger("servicenow")
 
@@ -341,6 +343,8 @@ class ServiceNow:
     # ------------------------------------------------------------------
 
     def _get(self, table_name: str, params: Dict[str, Any]) -> Dict:
+        """The response; the query's total (``X-Total-Count``, None when a gateway dropped it) is kept for this
+        thread in ``_COUNTED`` — pages read at once in threads each see their own."""
         if self._auth_mode == "oauth2":
             self._ensure_token()
         r = self.session.get(
@@ -351,7 +355,9 @@ class ServiceNow:
         r.raise_for_status()
         # ServiceNow reports the query's total row count in a header.
         total = r.headers.get("X-Total-Count")
-        self._last_total = int(total) if isinstance(total, str) and total.isdigit() else None
+        counted = int(total) if isinstance(total, str) and total.isdigit() else None
+        self._last_total = counted
+        _COUNTED.total = counted
         return r.json()
 
     #: ``where`` applies join key values (``fieldINa,b,c``) — at most ``IN_MAX`` per request (the URL's length):
@@ -505,9 +511,10 @@ class ServiceNow:
                 params["sysparm_fields"] = ",".join(fields)
             if display_value:
                 params["sysparm_display_value"] = "true"
+            _COUNTED.total = None
             payload = self._get(table_name, params)
             results = payload.get("result", [])
-            total = self._last_total
+            total = getattr(_COUNTED, "total", None)
             pages = -(-total // self.default_page_size) if total else None
             progress.page(len(results), total_pages=pages, total_rows=total)
             return results, total

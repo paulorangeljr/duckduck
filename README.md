@@ -328,6 +328,19 @@ calls several at once too. APIs read one page after another by nature
 (cursor pagination, a strict rate limit like NVD's) stay sequential.
 `DuckAPI(parallel=False)` turns it off.
 
+When the API doesn't send its total (a gateway in front of ServiceNow often
+drops the `X-Total-Count` header), the pages are still read several at a
+time: it asks for the next ones ahead and stops at the first short or empty
+page — at most a few extra empty requests at the end. With `-v` the log says
+which it was:
+
+```
+pages: 37 in all, 4 at a time
+pages: the API sent no total — reading 4 page(s) ahead, until a short one
+```
+
+(and the page lines read `page 3` instead of `page 3/37`).
+
 **Rows per request** are each service's `default_page_size` in `duckduck.json`
 (ServiceNow and Axonius 200, InsightVM 500, Airflow 100, NVD 2000 — its own
 maximum, SharePoint Graph's `$top`):
