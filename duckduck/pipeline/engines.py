@@ -59,6 +59,15 @@ def check_unique(engine: Any, view: str, key: List[str]) -> None:
                             "(a _loaded_at column picks the newest by itself), or set \"unique\": false")
 
 
+def _under(location: str, *parts: str) -> str:
+    """A folder under a location — a local path or ``s3://…``."""
+    if "://" in location:
+        return "/".join([location.rstrip("/"), *parts])
+    import os
+
+    return os.path.join(location, *parts)
+
+
 def _quoted_path(path: str) -> str:
     return "'" + path.replace("'", "''") + "'"
 
@@ -86,21 +95,29 @@ class DuckEngine:
         self.resume = resume
         self.resume_column = resume_column
         self.load_columns = tuple(load_columns or ())
+        self._spill: Optional[str] = None
         if batch_rows:
             if not staging:
                 raise PipelineError("batch_rows needs a staging folder for the batches")
             import os
+            import tempfile
 
-            spill = os.path.join(staging, "duckdb_tmp")
+            # DuckDB spills joins, sorts and aggregates to local disk (never the object store): the staging
+            # folder when it's local, else a temp folder of this machine
+            spill = os.path.join(staging, "duckdb_tmp") if "://" not in staging else \
+                tempfile.mkdtemp(prefix="duckduck-spill-")
             os.makedirs(spill, exist_ok=True)
-            try:  # joins, sorts and aggregates over the batches spill there instead of running out of memory
+            self._spill = spill if "://" in staging else None
+            try:
                 self.conn.execute(f"SET temp_directory = {_quoted_path(spill)}")
             except Exception as exc:  # noqa: BLE001
                 logger.debug("couldn't set DuckDB's temp_directory: %s", exc)
 
     def _drop(self, name: str) -> None:
         kind = self._made.pop(name, None)
-        if kind:
+        if kind == "registered":  # an Arrow dataset over the run's staged files
+            self.conn.unregister(name)
+        elif kind:
             self.conn.execute(f"DROP {'TABLE' if kind == 'table' else 'VIEW'} IF EXISTS {ident(name)}")
 
     def define(self, name: str, sql: str, keep: bool) -> None:
@@ -112,28 +129,32 @@ class DuckEngine:
 
             from ..common import batches
 
-            spec = batches.Batching(self.batch_rows, os.path.join(self.staging, "sources", name), resume=self.resume,
-                                    column=self.resume_column, load_columns=self.load_columns)
+            from . import sip
+
+            spec = batches.Batching(self.batch_rows, _under(self.staging, "sources", name), resume=self.resume,
+                                    column=self.resume_column, load_columns=self.load_columns,
+                                    filesystem=sip._filesystem)  # s3://… with the lake's AWS account
             with batches.batching(spec):
                 rel = self.duck.sql(sql)
             self.notes.extend(f"{name}: {n}" for n in spec.notes)
         else:
             rel = self.duck.sql(sql)
         self._drop(name)
-        if keep and self.batch_rows:  # kept on disk: a Parquet file under the run's staging, read as a view
-            import os
+        if keep and self.batch_rows:  # kept in the run's staging (local or s3://…), read back as a dataset
+            import pyarrow.dataset as ds
 
-            path = os.path.join(self.staging, "views", f"{name}.parquet")
-            os.makedirs(os.path.dirname(path), exist_ok=True)
+            from . import sip
+
+            fs, base = sip._filesystem(_under(self.staging, "views", name))
             rel.create_view("__duckduck_pipeline_rel", replace=True)
             try:
-                self.conn.execute(f"COPY (SELECT * FROM __duckduck_pipeline_rel) TO {_quoted_path(path)} "
-                                  "(FORMAT parquet)")
+                ds.write_dataset(self._reader("SELECT * FROM __duckduck_pipeline_rel", [0]), base, filesystem=fs,
+                                 format="parquet", basename_template="part-{i}.parquet",
+                                 existing_data_behavior="delete_matching")
             finally:
                 self.conn.execute("DROP VIEW IF EXISTS __duckduck_pipeline_rel")
-            self.conn.execute(f"CREATE OR REPLACE VIEW {ident(name)} AS SELECT * FROM read_parquet("
-                              f"{_quoted_path(path)})")
-            self._made[name] = "view"
+            self.conn.register(name, ds.dataset(base, filesystem=fs, format="parquet"))
+            self._made[name] = "registered"
         elif keep:
             rel.create_view("__duckduck_pipeline_rel", replace=True)
             self.conn.execute(f"CREATE OR REPLACE TABLE {ident(name)} AS SELECT * FROM __duckduck_pipeline_rel")
@@ -301,6 +322,10 @@ class DuckEngine:
                 self.conn.execute("RESET temp_directory")
             except Exception:  # noqa: BLE001
                 pass
+            if self._spill:
+                import shutil
+
+                shutil.rmtree(self._spill, ignore_errors=True)
 
 
 class SparkEngine:

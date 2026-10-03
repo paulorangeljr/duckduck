@@ -241,7 +241,7 @@ def test_a_named_resume_column_the_source_cant_sort_by_restarts(tmp_path):
 @pytest.mark.parametrize("data, message", [
     ({"batch_rows": 0}, "batch_rows"),
     ({"batch_rows": "10"}, "batch_rows"),
-    ({"staging": "s3://bucket/x"}, "local folder"),
+    ({"staging": ""}, "staging"),
     ({"resume": {"col": "x"}}, "resume"),
     ({"resume": "yes"}, "resume"),
 ])
@@ -326,3 +326,68 @@ def test_the_state_says_which_run_is_pending(tmp_path):
     tables._config = lambda: config
     df = tables.pipeline_runs()
     assert df.loc[0, "pending_run_id"] == state(tmp_path)["pending"]["run_id"]
+
+
+@pytest.fixture
+def fake_s3(tmp_path, monkeypatch):
+    """s3://… locations on a pyarrow filesystem that isn't the local one DuckDB could read by path: the batches
+    must go and come back through pyarrow, as they do on S3 with the lake's AWS account."""
+    import pyarrow.fs as pafs
+
+    from duckduck.pipeline import sip, state as state_module
+
+    root = tmp_path / "s3"
+    root.mkdir()
+    real = sip._filesystem
+
+    def filesystem(location):
+        if location.startswith("s3://"):
+            return pafs.SubTreeFileSystem(str(root), pafs.LocalFileSystem()), location[len("s3://"):]
+        return real(location)
+
+    monkeypatch.setattr(sip, "_filesystem", filesystem)
+    monkeypatch.setattr(state_module, "_filesystem", filesystem)
+    return root
+
+
+def test_batches_and_state_on_s3_let_another_machine_finish_the_run(tmp_path, fake_s3):
+    src = Paged()
+    src.fail_after = 4
+    on_s3 = spec(tmp_path, batch_rows=4, state="s3://lake/state")
+    with pytest.raises(TimeoutError):
+        run_pipeline(on_s3, duck=duck_of(src), now=NOW)
+    staged = glob.glob(str(fake_s3 / "lake" / "state" / "_staging" / "p" / "*" / "sources" / "*" / "*" / "batch-*"))
+    assert len(staged) >= 2  # what was read is in the bucket, not on the machine that died
+    with open(fake_s3 / "lake" / "state" / "p.json") as f:
+        pending = json.load(f)["pending"]
+    assert pending["staging"].startswith("s3://lake/state/_staging/p/")
+
+    other_machine = duck_of(src)  # a new process: only the bucket knows how far the first one got
+    run = run_pipeline(on_s3, duck=other_machine, now=NOW)
+    assert run.resumed and run.run_id == pending["run_id"] and src.calls[-1]["n_gt"] is not None
+    assert written(tmp_path) == sorted(r["v"] for r in src.data)
+    assert not glob.glob(str(fake_s3 / "lake" / "state" / "_staging" / "p" / "*"))  # removed after success
+
+
+def test_the_lake_sets_the_staging_for_every_pipeline(tmp_path, fake_s3):
+    from duckduck.pipeline.settings import with_settings
+
+    s = with_settings(load_spec(spec(tmp_path)), {"staging": "s3://lake/_staging"})
+    assert runner.staging_folder(s, "r1") == "s3://lake/_staging/p/r1"
+    assert runner.staging_folder(load_spec(spec(tmp_path, state="s3://lake/state")), "r 2") == \
+        "s3://lake/state/_staging/p/r_2"
+
+
+def test_batches_whose_types_differ_read_as_one_table(tmp_path):
+    class Mixed(Paged):
+        IDEMPOTENCY = restart("test")
+
+        @sortable("n")
+        def iter_items(self, n_gt=None, order_by=None):
+            yield pd.DataFrame({"n": [1, 2], "v": [None, None]})  # an all-NULL column first
+            yield pd.DataFrame({"n": [3], "v": ["x"], "extra": [{"k": 1}]})  # then text, and a new column
+
+    d = duck_of(Mixed())
+    with batches.batching(batches.Batching(rows=1, folder=str(tmp_path / "b"))):
+        out = d.sql("SELECT * FROM items ORDER BY n").df()
+    assert list(out["v"].fillna("-")) == ["-", "-", "x"] and "extra" in out.columns

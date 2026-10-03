@@ -155,7 +155,7 @@ class PipelineSpec:
     max_parallel: Any = None  # requests at once per table during this run: a number (every connector) or {service: n}
     retry: Any = None  # retries of API requests during this run: a setting (every connector) or {service: setting}
     batch_rows: Optional[int] = None  # read sources in batches of this many rows on disk (duckdb engine); None: in memory
-    staging: Optional[str] = None  # a local folder for the batches (default: {state}/_staging, else the temp folder)
+    staging: Optional[str] = None  # where the batches go: a folder or s3://… (default: {state}/_staging, else temp)
     resume: bool = True  # a failed run's next attempt is the same run, picking up its batches and written targets
     resume_column: Optional[str] = None  # the column a batched read sorts by and resumes after
 
@@ -263,8 +263,9 @@ def load_spec(source: Union[str, os.PathLike, Dict[str, Any]], base_dir: Optiona
         spec.batch_rows = rows
     staging = data.get("staging")
     if staging is not None:
-        if not isinstance(staging, str) or not staging or "://" in staging:
-            raise PipelineError("'staging' is a local folder for the batches (\"/data/staging\"), not a URL")
+        if not isinstance(staging, str) or not staging:
+            raise PipelineError("'staging' is where the batches go: a folder (\"/data/staging\") or "
+                                "\"s3://bucket/staging\"")
         spec.staging = staging
     resume = data.get("resume", True)
     if isinstance(resume, dict):

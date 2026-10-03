@@ -2022,8 +2022,8 @@ class DuckAPI:
         def register(columns: List[str]) -> tuple:
             self._table_counter += 1
             table_name = f"_api_{fn_name}_{self._table_counter}"
-            if staged.files:
-                self.conn.register(table_name, self.conn.read_parquet(staged.files, union_by_name=True))
+            if staged.files:  # the batches as one Arrow dataset: local or s3://…, read a piece at a time
+                self.conn.register(table_name, staged.dataset())
                 listed = [d[0] for d in self.conn.sql(f'SELECT * FROM "{table_name}" LIMIT 0').description]
             else:
                 listed = columns or list(fallback_columns or []) or [self.EMPTY_PLACEHOLDER_COLUMN]
@@ -2078,15 +2078,14 @@ class DuckAPI:
             staged.save()  # at once: an "after" written while the order looked right can't be trusted now
 
         def write(df: pd.DataFrame, after: Any) -> None:
-            path = staged.next_file()
             view = f"_batch_{fn_name}_{self._table_counter}_{len(staged.files)}"
             self.conn.register(view, json_for_mixed_objects(df.reset_index(drop=True)))
-            try:
-                self.conn.execute(f"COPY (SELECT * FROM \"{view}\") TO '{path.replace(chr(39), chr(39) * 2)}' "
-                                  "(FORMAT parquet)")
+            try:  # typed by DuckDB, as the in-memory read would be (dicts → STRUCT, …)
+                result = self.conn.execute(f'SELECT * FROM "{view}"')
+                table = (getattr(result, "to_arrow_table", None) or result.fetch_arrow_table)()
             finally:
                 self.conn.unregister(view)
-            staged.added(path, len(df), after, list(df.columns))
+            staged.write(table, after)
 
         def flush(final: bool) -> None:
             nonlocal buffer, buffered
@@ -2168,7 +2167,7 @@ class DuckAPI:
         logger.info("  %s: kept %s of %s rows from %s page(s) in %s batch(es) of ≤%s rows, in %.2fs", fn_name,
                     f"{kept:,}", f"{scanned:,}", pages, len(staged.files), f"{staging.rows:,}",
                     time.perf_counter() - started)
-        staging.note(f"{fn_name}: {staged.rows:,} rows in {len(staged.files)} batch(es) at {staged.path}")
+        staging.note(f"{fn_name}: {staged.rows:,} rows in {len(staged.files)} batch(es) at {staged.location}")
         result = register(last_columns)
         if star and staged.files:
             self._learn_columns(fn_name, result[0], kwargs)

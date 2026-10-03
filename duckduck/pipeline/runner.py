@@ -7,7 +7,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -335,16 +334,18 @@ def _run(spec: PipelineSpec, started: float, duck: Any, spark: Any, config_path:
 
 
 def staging_folder(spec: PipelineSpec, run_id: str) -> str:
-    """Where this run's batches go: ``{staging}/{pipeline}/{run_id}`` — the file's / the call's ``staging``,
-    else ``{state}/_staging`` when the state is a local folder, else the temp folder. Local disk: the batches
-    are read back by DuckDB, and a resumed run finds them there."""
+    """Where this run's batches go: ``{staging}/{pipeline}/{run_id}`` — the call's / the file's / the lake's
+    ``staging`` (a local folder or ``s3://…``), else ``{state}/_staging`` (next to the state, wherever it is:
+    a run on another machine finds the batches of the one that failed), else the temp folder."""
     if spec.staging:
         root = spec.resolve(spec.staging)
-    elif spec.state and "://" not in spec.state:
-        root = os.path.join(spec.resolve(spec.state), "_staging")
+    elif spec.state:
+        root = spec.resolve(spec.state).rstrip("/") + "/_staging"
     else:
         root = os.path.join(tempfile.gettempdir(), "duckduck-staging")
     safe = re.sub(r"[^\w.-]", "_", str(run_id))
+    if "://" in root:
+        return f"{root.rstrip('/')}/{spec.name}/{safe}"
     return os.path.join(root, spec.name, safe)
 
 
@@ -536,7 +537,10 @@ def _execute(spec: PipelineSpec, plan: Plan, started: float, duck: Any, spark: A
         except Exception:  # noqa: BLE001
             pass
     if run.staging:  # done: the batches of this run aren't needed any more
-        shutil.rmtree(run.staging, ignore_errors=True)
+        from ..common.batches import delete
+        from . import sip as _sip
+
+        delete(run.staging, _sip._filesystem)
     if sip is not None:
         if not dry_run:
             if spec.sip.store:

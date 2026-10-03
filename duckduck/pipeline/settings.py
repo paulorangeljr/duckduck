@@ -24,7 +24,7 @@ from typing import Any, Dict, Optional
 
 from .spec import PipelineError, PipelineSpec
 
-LAKE_KEYS = {"catalog", "layers", "state", "sip_store", "aws", "read_engine", "ingestion_layers", "athena"}
+LAKE_KEYS = {"catalog", "layers", "state", "sip_store", "aws", "read_engine", "ingestion_layers", "athena", "staging"}
 
 
 def _find_config(start: Optional[str] = None) -> Optional[str]:
@@ -56,7 +56,7 @@ def lake_settings(duck: Any = None, config_path: Optional[str] = None) -> Dict[s
 
     out = dict(lake)
     out["layers"] = {k: local(v) for k, v in (lake.get("layers") or {}).items()}
-    for k in ("state", "sip_store"):
+    for k in ("state", "sip_store", "staging"):
         if lake.get(k):
             out[k] = local(lake[k])
     return out
@@ -71,7 +71,7 @@ def lake_problems(lake: Any) -> list:
     layers = lake.get("layers", {})
     if not isinstance(layers, dict) or not all(isinstance(v, str) and v for v in layers.values()):
         problems.append("lake.layers maps a layer to its prefix: {\"raw\": \"s3://raw-layer\"}")
-    for k in ("catalog", "state", "sip_store"):
+    for k in ("catalog", "state", "sip_store", "staging"):
         if lake.get(k) is not None and not (isinstance(lake[k], str) and lake[k]):
             problems.append(f"lake.{k} is text")
     from .aws import aws_problems
@@ -118,6 +118,8 @@ def with_settings(spec: PipelineSpec, lake: Dict[str, Any]) -> PipelineSpec:
         spec.aws = dict(lake["aws"])
     if not spec.state and lake.get("state"):
         spec.state = lake["state"]
+    if not spec.staging and lake.get("staging"):
+        spec.staging = lake["staging"]
     if spec.sip.enabled and not spec.sip.store and lake.get("sip_store"):
         spec.sip.store = lake["sip_store"]
     if spec.load.incremental and not spec.state:

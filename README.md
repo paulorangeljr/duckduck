@@ -2718,9 +2718,10 @@ would take turns pointing it at their files.
 
 By default a step reads its sources into memory before writing. For a big
 table give the run a batch size — the sources are read page by page and every
-`batch_rows` rows go to a Parquet file on local disk; the step reads the files,
-DuckDB spills joins and sorts there too, and the target is written as a stream.
-Memory holds one batch, never the table:
+`batch_rows` rows go to a Parquet file in the staging folder (local or S3); the
+step reads the files back as a dataset, DuckDB spills joins and sorts to local
+disk, and the target is written as a stream. Memory holds one batch, never the
+table:
 
 ```python
 run_pipeline("incidents_raw.json", batch_rows=100_000)               # or "batch_rows": 100000 in the file
@@ -2730,8 +2731,17 @@ Pipelines().domain("raw_inventory.json").run(batch_rows=100_000, staging="/data/
 python -m duckduck.pipeline run incidents_raw.json --batch-rows 100000 [--staging DIR] [--no-resume]
 ```
 
-The batches go under `staging` (default `{state}/_staging`, else the temp
-folder) in `{pipeline}/{run_id}/` and are removed when the run succeeds.
+The batches go under `staging` in `{pipeline}/{run_id}/` and are removed when
+the run succeeds. `staging` is the call's, the file's, or the lake's
+(`"lake": {"staging": "s3://my-lake/_staging"}` in duckduck.json); without one,
+`{state}/_staging` — so with the state in S3 the batches are in S3 too, written
+with the lake's AWS account (`lake.aws`), and a run on another machine (a new
+container) finishes the one that died. Without a state, the temp folder.
+
+The batches are a **staging area, not the target**: the target (the layer's
+table) is written once, at the end of the step, from the batches. That's what
+keeps the lake clean when a run fails half-way — no table ever holds half a
+run — and what lets the next run finish it without duplicates.
 
 **A run that fails is finished by the next one** (needs `"state"`): the run
 records in its state file that it's pending — its id, its clock, the targets
