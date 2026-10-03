@@ -94,6 +94,82 @@ class PushDownContext:
     #: the source (``_order_of``): a table that sorts by them (``@sortable``) reads pages in that order and
     #: stops once it has the top N.
     order_by: Optional[List[Tuple[str, bool]]] = None
+    #: ``ORDER BY`` with no ``LIMIT``: every row is in the answer, so every row is read (DuckDB sorts them).
+    sorted_without_limit: bool = False
+    #: The parts of the WHERE no source can be sent: (as written, the table qualifiers it names) — an OR, NOT,
+    #: IS NULL, a function…
+    residual: List[Tuple[str, frozenset]] = field(default_factory=list)
+
+
+#: The push-down decisions of the calls being planned — a list while ``sql()`` / ``explain()`` collects them.
+_PUSHDOWN_LOG: contextvars.ContextVar[Optional[List[Dict[str, Any]]]] = contextvars.ContextVar(
+    "duckduck_pushdown_log", default=None)
+#: True under ``explain()``: every call is planned and reported, none is made (nothing is read).
+_DRY_RUN: contextvars.ContextVar[bool] = contextvars.ContextVar("duckduck_dry_run", default=False)
+
+
+def _call_entry(name: str, kwargs: Dict[str, Any], report: List[str]) -> Dict[str, Any]:
+    """One planned call as data: the table, the call as written, each decision, and what it reads."""
+    table, _, how = name.partition(" ")
+    decisions = [{"pushed": line.startswith("✓") if line[:1] in "✓✗" else None,
+                  "text": line[1:].strip() if line[:1] in "✓✗·" else line.strip()} for line in report]
+    args = ", ".join(f"{k}=[{len(v)} conditions]" if k == "where" and isinstance(v, list) else f"{k}={short(v, 60)}"
+                     for k, v in kwargs.items())
+    judged = [d for d in decisions if d["pushed"] is not None]
+    missed = [d["text"] for d in judged if not d["pushed"]]
+    if any(d["pushed"] and d["text"].endswith(": not read") for d in judged):
+        reads, warning = "nothing (the other side of its join has no rows)", None
+    elif not missed:
+        reads, warning = ("only what the query needs" if judged else "every row (the query asks for all of them)"), None
+    elif len(missed) == len(judged):
+        reads, warning = "every row", f"{table} reads every row: " + "; ".join(missed)
+    else:
+        reads, warning = "more rows than the answer needs", f"{table} reads more than it needs: " + "; ".join(missed)
+    return {"table": table, "how": how.strip("()") or "one call", "call": f"{table}({args})",
+            "decisions": decisions, "reads": reads, "warning": warning}
+
+
+@dataclass
+class Explanation:
+    """What a query sends to each source — ``DuckAPI.explain(query)`` (nothing read) or ``DuckAPI.last_pushdown``
+    (the query that just ran). ``warnings``: one line per table that reads more than the answer needs."""
+
+    query: str
+    calls: List[Dict[str, Any]] = field(default_factory=list)
+    ran: bool = False
+
+    @property
+    def warnings(self) -> List[str]:
+        return [c["warning"] for c in self.calls if c.get("warning")]
+
+    @property
+    def ok(self) -> bool:
+        return not self.warnings
+
+    def report(self) -> str:
+        if not self.calls:
+            return "no source is read (the query reads no registered table)"
+        lines = []
+        for c in self.calls:
+            lines.append(f"{'⚠' if c['warning'] else '✓'} {c['call']}" + (f" — {c['how']}" if c["how"] != "one call"
+                                                                          else "") + f" → reads {c['reads']}")
+            for d in c["decisions"]:
+                mark = {True: "✓", False: "✗", None: "·"}[d["pushed"]]
+                lines.append(f"    {mark} {d['text']}")
+        return "\n".join(lines)
+
+    def frame(self) -> pd.DataFrame:
+        rows = [{"table": c["table"], "call": c["call"], "how": c["how"], "reads": c["reads"],
+                 "pushed": {True: "yes", False: "no", None: ""}[d["pushed"]], "decision": d["text"]}
+                for c in self.calls for d in (c["decisions"] or [{"pushed": None, "text": ""}])]
+        return pd.DataFrame(rows, columns=["table", "call", "how", "reads", "pushed", "decision"])
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"query": self.query, "ran": self.ran, "ok": self.ok, "warnings": self.warnings,
+                "calls": self.calls, "report": self.report()}
+
+    def __str__(self) -> str:
+        return self.report()
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +218,7 @@ def _extract_filters(node: exp.Expression, ctx: "PushDownContext") -> None:
         val = _literal_value(right) if isinstance(left, exp.Column) else None
         if val is None:
             ctx.complete = False
+            ctx.residual.append(_written(node))
             return
         column = left.name.lower()
         table = left.table.lower() if left.table else None
@@ -155,6 +232,7 @@ def _extract_filters(node: exp.Expression, ctx: "PushDownContext") -> None:
         low, high = _literal_value(node.args.get("low")), _literal_value(node.args.get("high"))
         if low is None or high is None or node.args.get("symmetric"):
             ctx.complete = False
+            ctx.residual.append(_written(node))
             return
         column, table = node.this.name.lower(), (node.this.table.lower() if node.this.table else None)
         ctx.conditions.append(Condition(column=column, op="gte", value=low, table=table))
@@ -165,6 +243,15 @@ def _extract_filters(node: exp.Expression, ctx: "PushDownContext") -> None:
         _extract_filters(node.this, ctx)
         return
 
+    # WHERE is_paused / WHERE NOT is_paused: a boolean column is "= TRUE" / "= FALSE"
+    flag = node.this if isinstance(node, exp.Not) and isinstance(node.this, exp.Column) else node
+    if isinstance(flag, exp.Column) and flag.name and flag.name != "*":
+        column, table = flag.name.lower(), (flag.table.lower() if flag.table else None)
+        value = not isinstance(node, exp.Not)
+        ctx.conditions.append(Condition(column=column, op="eq", value=value, table=table))
+        ctx.filters[column] = value
+        return
+
     if isinstance(node, (exp.And, exp.Where)):
         for child in node.args.values():
             if isinstance(child, exp.Expression):
@@ -172,6 +259,17 @@ def _extract_filters(node: exp.Expression, ctx: "PushDownContext") -> None:
         return
 
     ctx.complete = False
+    ctx.residual.append(_written(node))
+
+
+def _written(node: exp.Expression) -> Tuple[str, frozenset]:
+    """A part of the WHERE as written (cut at 80 characters) and the tables its columns are qualified with."""
+    try:
+        text = node.sql(dialect="duckdb")
+    except Exception:  # noqa: BLE001
+        text = type(node).__name__
+    tables = frozenset(c.table.lower() for c in node.find_all(exp.Column) if c.table)
+    return (text if len(text) <= 80 else text[:79] + "…"), tables
 
 
 def _sources_of(select: exp.Select) -> List[exp.Expression]:
@@ -270,6 +368,7 @@ def _extract_scoped(selects: List[exp.Select], ctx: "PushDownContext", arg_quali
         _extract_filters(where, found)
         if not found.complete:
             ctx.complete = False
+            ctx.residual.extend(found.residual)
         sources = _sources_of(select)
         by_label = {}
         for src in sources:
@@ -285,6 +384,8 @@ def _extract_scoped(selects: List[exp.Select], ctx: "PushDownContext", arg_quali
                 hit = target(sources[0], c.column) if len(sources) == 1 else None
             if hit is None:
                 ctx.complete = False
+                ctx.residual.append((_describe_condition(c) + " (not on one table's own column)",
+                                 frozenset([c.table]) if c.table else frozenset()))
                 continue
             table, column = hit
             ctx.conditions.append(Condition(column=column, op=c.op, value=c.value, table=table))
@@ -753,6 +854,10 @@ class DuckAPI:
         self._config_system_tables: Optional[bool] = None
         self._table_counter = 0
         self.stream_pages = stream_pages
+        #: What the last ``sql()`` sent to each source (``Explanation``): what was pushed, what stayed with DuckDB.
+        self.last_pushdown: Optional[Explanation] = None
+        #: Log a warning when a table reads more than the answer needs (a condition / LIMIT that didn't reach it).
+        self.pushdown_warnings = True
         self.join_pushdown = join_pushdown
         self.join_values_max = int(join_values_max)
         self.join_calls_max = int(join_calls_max)
@@ -1473,6 +1578,7 @@ class DuckAPI:
         ctx.limit_blocker = _limit_blocker(parsed)
         ctx.limit_safe = ctx.limit_blocker is None
         ctx.order_by = _order_of(parsed)
+        ctx.sorted_without_limit = ctx.limit is None and bool(parsed.args.get("order"))
         return ctx
 
     # ------------------------------------------------------------------
@@ -1543,23 +1649,31 @@ class DuckAPI:
                 report.append(f"✗ {_describe_condition(c)} — {blocker(c)}, DuckDB filters")
             else:
                 report.append(f"✗ {_describe_condition(c)} — {_why_not_pushed(c, accepted)}")
-        if not pushdown.complete:
-            report.append("✗ part of the WHERE (OR / NOT / IN / functions...) — DuckDB only")
+        mine = [text for text, tables in pushdown.residual if not tables or names is None or tables & names]
+        if not pushdown.complete and (mine or not pushdown.residual):
+            parts = "; ".join(mine[:3]) + (" …" if len(mine) > 3 else "") if mine else "part of the WHERE"
+            report.append(f"✗ {parts} — DuckDB only: a source is sent `col <op> value` ANDed (=, <, >, LIKE, "
+                          "BETWEEN); OR, NOT, IS NULL, IN, functions and column-to-column stay here")
 
         exact_order = False
         if pushdown.order_by:
             shown = ", ".join(f"{c} DESC" if desc else c for c, desc in pushdown.order_by)
             sorts = sortable_of(fetch_function)
+            # without a LIMIT every row is read either way: a source that can't sort costs nothing (· not ✗)
+            missed = "·" if pushdown.limit is None else "✗"
             if "order_by" not in accepted or sorts is None:
-                report.append(f"✗ ORDER BY {shown} — the source can't sort, DuckDB sorts every row read")
+                report.append(f"{missed} ORDER BY {shown} — the source can't sort, DuckDB sorts every row read")
             elif not sorts.takes(pushdown.order_by):
-                report.append(f"✗ ORDER BY {shown} — the source sorts only by "
+                report.append(f"{missed} ORDER BY {shown} — the source sorts only by "
                               f"{', '.join(sorted(sorts.columns or ()))}" + (" (one column)" if sorts.keys == 1 else ""))
             else:
                 merged["order_by"] = list(pushdown.order_by)
                 exact_order = sorts.exact
                 report.append(f"✓ ORDER BY {shown} → order_by" + ("" if sorts.exact else " (pages read in order)"))
 
+        if pushdown.sorted_without_limit:
+            report.append("· ORDER BY without LIMIT — every row is in the answer, so every row is read and "
+                          "DuckDB sorts them (a LIMIT lets a source that sorts send only the top rows)")
         if pushdown.limit is not None:
             blocker = None
             if not allow_limit:
@@ -1617,6 +1731,9 @@ class DuckAPI:
         return {k.lower() for k in explicit} | {k.lower() for k in required} | {"where", "limit", "order_by"}
 
     def _log_call(self, fn_name: str, kwargs: Dict[str, Any], report: List[str]) -> None:
+        collected = _PUSHDOWN_LOG.get()
+        if collected is not None:  # sql() / explain(): what each call was sent, as data
+            collected.append(_call_entry(fn_name, kwargs, report))
         if not logger.isEnabledFor(logging.INFO):
             return
         args = ", ".join(
@@ -1736,7 +1853,7 @@ class DuckAPI:
 
         validated = self._validate_arguments(function_name, fetch_function, kwargs)
         key = (source_cache.key_of("call", function_name, id(fetch_function), validated)
-               if self.cache is not None else None)
+               if self.cache is not None and not _DRY_RUN.get() else None)
         hit = self.cache.get(key) if key is not None else None
         if hit is not None:
             df, age = hit
@@ -1753,8 +1870,11 @@ class DuckAPI:
                              + ("a LIMIT reached it" if "limit" in kwargs else "it has no page-by-page reader")
                              + "; a failure reads it again")
             started = time.perf_counter()
-            with slicing.parallel(self._parallel_of(function_name)):
-                data = fetch_function(**validated)
+            if _DRY_RUN.get():  # explain(): planned and reported, never called
+                data = []
+            else:
+                with slicing.parallel(self._parallel_of(function_name)):
+                    data = fetch_function(**validated)
             progress.checkpoint()
             df = self._to_dataframe(data, function_name, allow_empty=True)
             if key is not None:
@@ -1828,6 +1948,7 @@ class DuckAPI:
         names: set,
         parsed: Optional[exp.Expression],
         fallback_columns: Optional[List[str]] = None,
+        notes: Optional[List[str]] = None,
     ) -> tuple:
         """
         ``_materialize`` page by page, through the table's streaming
@@ -1850,11 +1971,10 @@ class DuckAPI:
         """
         from .common import batches
 
-        if batches.current() is not None:  # a pipeline reading in batches: on disk, never one frame
-            return self._materialize_batches(fn_name, pushdown, explicit, names, parsed, fallback_columns)
+        if batches.current() is not None and not _DRY_RUN.get():  # a pipeline reading in batches: on disk
+            return self._materialize_batches(fn_name, pushdown, explicit, names, parsed, fallback_columns, notes)
         iter_fn = self._streaming_functions[fn_name]
         kwargs, report = self._plan_call(iter_fn, pushdown, explicit, names, allow_limit=False)
-        self._log_call(f"{fn_name} (page by page)", kwargs, report)
         conditions = [c for c in pushdown.conditions if c.table is None or c.table in names]
         star = parsed is None or parsed.find(exp.Star) is not None
         used = {c.lower() for c in (fallback_columns or [])}
@@ -1871,6 +1991,18 @@ class DuckAPI:
             ranked_by = [c.lower() for c, _ in kwargs["order_by"]]
         descending = [bool(d) for _, d in kwargs.get("order_by") or []]
         ranked, last_key = 0, None
+        if pushdown.limit is not None:  # page by page, the LIMIT means "stop asking for pages", not a parameter
+            report = [line for line in report if not line.startswith("✗ LIMIT")]
+            if stop_at is not None:
+                report.append(f"✓ LIMIT {pushdown.limit} — pages stop once " + (
+                    f"the top {stop_at} by {', '.join(ranked_by)} are read" if ranked_by else f"{stop_at} rows are kept"))
+            else:
+                why = (f"{pushdown.limit_blocker} in the query" if not pushdown.limit_safe and pushdown.limit_blocker
+                       != "ORDER BY" else "WHERE has parts only DuckDB applies" if not pushdown.complete
+                       else "ORDER BY the source doesn't sort by" if pushdown.limit_blocker == "ORDER BY"
+                       else "more than one table in the query")
+                report.append(f"✗ LIMIT {pushdown.limit} — {why}: every page is read")
+        self._log_call(f"{fn_name} (page by page)", kwargs, list(notes or []) + report)
 
         from . import cache as source_cache
         from .common import progress
@@ -1878,7 +2010,7 @@ class DuckAPI:
         validated = self._validate_arguments(fn_name, iter_fn, kwargs)
         key = (source_cache.key_of("pages", fn_name, id(iter_fn), validated, conditions,
                                    "*" if star else sorted(used), stop_at)
-               if self.cache is not None else None)
+               if self.cache is not None and not _DRY_RUN.get() else None)
         hit = self.cache.get(key) if key is not None else None
         if hit is not None:
             (df, count, scanned, pages), age = hit
@@ -1897,7 +2029,7 @@ class DuckAPI:
         kept: List[pd.DataFrame] = []
         count = pages = scanned = 0
         last_columns: List[str] = []
-        pages_iter = iter_fn(**validated)
+        pages_iter = iter(()) if _DRY_RUN.get() else iter_fn(**validated)
         requests_at_once = slicing.parallel(self._parallel_of(fn_name))
         requests_at_once.__enter__()  # read by the connector's pager at its first page, below
         try:
@@ -1994,7 +2126,8 @@ class DuckAPI:
         return None, "name the column to resume after: \"resume\": {\"column\": \"…\"} (a key or a date that only grows)"
 
     def _materialize_batches(self, fn_name: str, pushdown: PushDownContext, explicit: Dict[str, Any], names: set,
-                             parsed: Optional[exp.Expression], fallback_columns: Optional[List[str]] = None) -> tuple:
+                             parsed: Optional[exp.Expression], fallback_columns: Optional[List[str]] = None,
+                             notes: Optional[List[str]] = None) -> tuple:
         """
         ``_materialize_pages`` for a pipeline that reads in batches
         (``common.batches``): the kept rows of each page go into a buffer
@@ -2062,7 +2195,7 @@ class DuckAPI:
             logger.info("  %s: a failure here means reading it again from the start — %s", fn_name, why)
             if idem is None:
                 logger.debug("  %s has no IDEMPOTENCY", fn_name)
-        self._log_call(f"{fn_name} (in batches of {staging.rows:,} rows)", kwargs, report)
+        self._log_call(f"{fn_name} (in batches of {staging.rows:,} rows)", kwargs, list(notes or []) + report)
         validated = self._validate_arguments(fn_name, iter_fn, kwargs)
 
         progress.step("fetching", f"Reading {fn_name} in batches…")
@@ -2552,6 +2685,29 @@ class DuckAPI:
             return repr(value)
         return "'" + str(value).replace("'", "''") + "'"
 
+    #: ``EXPLAIN PUSHDOWN <query>``: what each source would be sent, as a table — nothing is read.
+    _EXPLAIN_RE = re.compile(r"^\s*EXPLAIN\s+PUSH[-_ ]?DOWN\s+(.+?);?\s*$", re.IGNORECASE | re.DOTALL)
+
+    def explain(self, query: str) -> Explanation:
+        """
+        What ``sql(query)`` would send to each source — its call, each WHERE
+        condition / LIMIT / ORDER BY that reaches it (✓) or stays with DuckDB
+        (✗, and why), and whether it reads only what the answer needs or more
+        — **without reading anything** (every call is planned, none is made).
+        A join's IN on the other side's values shows as "narrowed when it runs".
+        ``print(duck.explain(q))``, ``.warnings``, ``.frame()``; in SQL,
+        ``EXPLAIN PUSHDOWN SELECT …``. ``duck.last_pushdown`` is the same for
+        the last query that ran.
+        """
+        collected: List[Dict[str, Any]] = []
+        token, dry = _PUSHDOWN_LOG.set(collected), _DRY_RUN.set(True)
+        try:
+            self._sql(query)
+        finally:
+            _DRY_RUN.reset(dry)
+            _PUSHDOWN_LOG.reset(token)
+        return Explanation(query, collected)
+
     def sql(self, query: str):
         """
         Executes a SQL query, replacing references to registered
@@ -2576,6 +2732,24 @@ class DuckAPI:
         duckdb.DuckDBPyRelation
             DuckDB relation. Use ``.df()`` to get a DataFrame.
         """
+        explain = self._EXPLAIN_RE.match(query)
+        if explain:
+            self.conn.register("_duckduck_explain", self.explain(explain.group(1)).frame())
+            return self.conn.sql("SELECT * FROM _duckduck_explain")
+        if _PUSHDOWN_LOG.get() is not None:  # inside another query (a saved query's): its calls count there
+            return self._sql(query)
+        collected: List[Dict[str, Any]] = []
+        token = _PUSHDOWN_LOG.set(collected)
+        try:
+            return self._sql(query)
+        finally:
+            _PUSHDOWN_LOG.reset(token)
+            if collected or not self._LIST_TABLES_RE.match(query):
+                self.last_pushdown = Explanation(query, collected, ran=True)
+                for line in self.last_pushdown.warnings if self.pushdown_warnings else ():
+                    logger.warning("⚠ %s", line)
+
+    def _sql(self, query: str):
         if self._LIST_TABLES_RE.match(query):
             self.conn.register("_duckduck_tables", self.list_tables())
             return self.conn.sql("SELECT * FROM _duckduck_tables")
@@ -2749,9 +2923,7 @@ class DuckAPI:
         used = {k for k in list(pushdown.filters) + [c.column for c in extra if c.op == "eq"]
                 if any(k in kw for kw in calls)}
         if len(calls) == 1 and self._pages_instead(fn_name, calls[0]):
-            for line in notes:
-                logger.info("    %s", line)
-            tname, df_cols, kwargs = self._materialize_pages(fn_name, call, explicit, names, parsed, fallback)
+            tname, df_cols, kwargs = self._materialize_pages(fn_name, call, explicit, names, parsed, fallback, notes)
             return tname, df_cols, {k for k in used if k in kwargs}
         if len(calls) == 1:
             self._log_call(fn_name, calls[0], report)
@@ -2779,6 +2951,10 @@ class DuckAPI:
             tname, columns = read[e.build]
             column = {c.lower(): c for c in columns}.get(e.build_column.lower())
             what = f"{e.join} {e.probe}.{e.probe_column} = {e.build}.{e.build_column}"
+            if _DRY_RUN.get():  # explain(): nothing was read, so the values aren't known yet
+                notes.append(f"✓ {what} — narrowed when it runs: {e.probe_column} IN (the values {e.build} sends, "
+                             f"up to {self.join_values_max:,})")
+                continue
             if column is None:
                 notes.append(f"✗ {what} — {e.build} came back without {e.build_column}")
                 continue
@@ -2875,7 +3051,7 @@ class DuckAPI:
             else:
                 progress.checkpoint()
                 with slicing.parallel(1):  # the calls are the parallelism: each reads its pages in turn
-                    df = self._to_dataframe(fn(**validated), fn_name, allow_empty=True)
+                    df = self._to_dataframe([] if _DRY_RUN.get() else fn(**validated), fn_name, allow_empty=True)
                 if key is not None:
                     self.cache.put(key, df, len(df))
             if fanned and fanned.lower() not in {c.lower() for c in df.columns}:

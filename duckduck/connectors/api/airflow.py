@@ -98,6 +98,23 @@ def _moment(value: Any) -> str:
     return moment.isoformat()
 
 
+def _dates(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """A table method's date arguments (``logical_date``, ``start_date_gte``…), the ones given."""
+    return {k: v for k, v in arguments.items() if v is not None and k.split("_date")[0] in
+            ("logical", "execution", "start", "end") and "_date" in k}
+
+
+def _range(dates: Dict[str, Any], *names: str) -> Tuple[Any, Any, Any, Any]:
+    """(gte, gt, lte, lt) of a date under any of its names; ``= v`` is ``>= v`` and ``<= v``."""
+    def first(suffix: str) -> Any:
+        return next((dates[n + suffix] for n in names if dates.get(n + suffix) is not None), None)
+
+    equal = first("")
+    if equal is not None:
+        return equal, None, equal, None
+    return first("_gte"), first("_gt"), first("_lte"), first("_lt")
+
+
 class Airflow:
     """
     One MWAA environment. ``environment``: its name; ``region_name`` /
@@ -295,9 +312,7 @@ class Airflow:
             params["dag_id_pattern"] = pattern  # a case-insensitive substring: a superset of both
         return "/dags", "dags", params, self._keep(dag_id=dag_id, dag_id_ilike=dag_id_ilike, is_paused=is_paused)
 
-    def _dag_runs(self, dag_id, state, run_type, logical_date_gte, logical_date_gt, logical_date_lte,
-                  logical_date_lt, start_date_gte, start_date_gt, start_date_lte, start_date_lt, end_date_gte,
-                  end_date_gt, end_date_lte, end_date_lt, order_by=None):
+    def _dag_runs(self, dag_id, state, run_type, dates: Dict[str, Any], order_by=None):
         logical = "execution_date" if self.airflow_version < 3 else "logical_date"
         params: Dict[str, Any] = {"state": state}
         if order_by:  # one field, "-" for descending (the API's order_by): DuckAPI reads pages until the top N
@@ -306,10 +321,9 @@ class Airflow:
             params["order_by"] = ("-" if descending else "") + (logical if field == "logical_date" else field)
         if run_type is not None and self.airflow_version >= 3:
             params["run_type"] = run_type
-        params.update(self._date_params(logical, logical_date_gte, logical_date_gt, logical_date_lte,
-                                        logical_date_lt))
-        params.update(self._date_params("start_date", start_date_gte, start_date_gt, start_date_lte, start_date_lt))
-        params.update(self._date_params("end_date", end_date_gte, end_date_gt, end_date_lte, end_date_lt))
+        params.update(self._date_params(logical, *_range(dates, "logical_date", "execution_date")))
+        params.update(self._date_params("start_date", *_range(dates, "start_date")))
+        params.update(self._date_params("end_date", *_range(dates, "end_date")))
         return (f"/dags/{dag_id or '~'}/dagRuns", "dag_runs", params,
                 self._keep(dag_id=dag_id, state=state, run_type=run_type))
 
@@ -342,34 +356,37 @@ class Airflow:
     @spark_plan("partitioned", by="pages", max_parallel=2, why=_WHY)
     @sortable(*_RUN_SORTS)
     def dag_runs(self, dag_id: Optional[str] = None, state: Optional[str] = None, run_type: Optional[str] = None,
-                 logical_date_gte: Optional[str] = None, logical_date_gt: Optional[str] = None,
-                 logical_date_lte: Optional[str] = None, logical_date_lt: Optional[str] = None,
-                 start_date_gte: Optional[str] = None, start_date_gt: Optional[str] = None,
-                 start_date_lte: Optional[str] = None, start_date_lt: Optional[str] = None,
+                 logical_date: Optional[str] = None, logical_date_gte: Optional[str] = None,
+                 logical_date_gt: Optional[str] = None, logical_date_lte: Optional[str] = None,
+                 logical_date_lt: Optional[str] = None, execution_date: Optional[str] = None,
+                 execution_date_gte: Optional[str] = None, execution_date_gt: Optional[str] = None,
+                 execution_date_lte: Optional[str] = None, execution_date_lt: Optional[str] = None,
+                 start_date: Optional[str] = None, start_date_gte: Optional[str] = None,
+                 start_date_gt: Optional[str] = None, start_date_lte: Optional[str] = None,
+                 start_date_lt: Optional[str] = None, end_date: Optional[str] = None,
                  end_date_gte: Optional[str] = None, end_date_gt: Optional[str] = None,
                  end_date_lte: Optional[str] = None, end_date_lt: Optional[str] = None,
                  order_by: Optional[List[Tuple[str, bool]]] = None, limit: Optional[int] = None) -> pd.DataFrame:
-        """Every DAG run (``dag_id`` narrows it to one DAG): state, run type, logical / start / end dates."""
-        path, key, params, keep = self._dag_runs(dag_id, state, run_type, logical_date_gte, logical_date_gt,
-                                                 logical_date_lte, logical_date_lt, start_date_gte, start_date_gt,
-                                                 start_date_lte, start_date_lt, end_date_gte, end_date_gt,
-                                                 end_date_lte, end_date_lt, order_by)
+        """Every DAG run (``dag_id`` narrows it to one DAG): state, run type, logical / start / end dates.
+        ``execution_date`` is Airflow 2's name of the logical date: either name filters at the API."""
+        path, key, params, keep = self._dag_runs(dag_id, state, run_type, _dates(locals()), order_by)
         return self._read("dag_runs", path, key, params, keep, limit)
 
     @sortable(*_RUN_SORTS)
     def iter_dag_runs(self, dag_id: Optional[str] = None, state: Optional[str] = None,
-                      run_type: Optional[str] = None, logical_date_gte: Optional[str] = None,
-                      logical_date_gt: Optional[str] = None, logical_date_lte: Optional[str] = None,
-                      logical_date_lt: Optional[str] = None, start_date_gte: Optional[str] = None,
-                      start_date_gt: Optional[str] = None, start_date_lte: Optional[str] = None,
-                      start_date_lt: Optional[str] = None, end_date_gte: Optional[str] = None,
+                      run_type: Optional[str] = None, logical_date: Optional[str] = None,
+                      logical_date_gte: Optional[str] = None, logical_date_gt: Optional[str] = None,
+                      logical_date_lte: Optional[str] = None, logical_date_lt: Optional[str] = None,
+                      execution_date: Optional[str] = None, execution_date_gte: Optional[str] = None,
+                      execution_date_gt: Optional[str] = None, execution_date_lte: Optional[str] = None,
+                      execution_date_lt: Optional[str] = None, start_date: Optional[str] = None,
+                      start_date_gte: Optional[str] = None, start_date_gt: Optional[str] = None,
+                      start_date_lte: Optional[str] = None, start_date_lt: Optional[str] = None,
+                      end_date: Optional[str] = None, end_date_gte: Optional[str] = None,
                       end_date_gt: Optional[str] = None, end_date_lte: Optional[str] = None,
                       end_date_lt: Optional[str] = None,
                       order_by: Optional[List[Tuple[str, bool]]] = None) -> Iterator[pd.DataFrame]:
-        path, key, params, keep = self._dag_runs(dag_id, state, run_type, logical_date_gte, logical_date_gt,
-                                                 logical_date_lte, logical_date_lt, start_date_gte, start_date_gt,
-                                                 start_date_lte, start_date_lt, end_date_gte, end_date_gt,
-                                                 end_date_lte, end_date_lt, order_by)
+        path, key, params, keep = self._dag_runs(dag_id, state, run_type, _dates(locals()), order_by)
         return self._iter("dag_runs", path, key, params, keep)
 
     @spark_plan("partitioned", by="pages", max_parallel=2, why=_WHY)

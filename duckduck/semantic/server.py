@@ -26,6 +26,7 @@ HTML page (``webpage.PAGE``) over a JSON API:
 ``GET  /api/connections`` · ``GET /api/tables/nested?service=&refresh=1``  each connector started or why not · the tables behind catalogs (one connector's, or all)
 ``GET|DELETE /api/sql/cache``  the source cache: status / forget every kept read (``cache: false`` on /api/sql skips it)
 ``GET /api/sql/results/{id}[/csv]?offset&limit&sort&desc&q``  a query's whole result, paged / searched / sorted / as CSV
+``POST /api/sql/explain {sql, language}``  what each source would be sent (push-down), nothing read
 ``POST /api/sql {sql, debug, background, cache}`` · ``GET /api/tables``  the SQL console (``allow_sql``, on by default; read-only, no files/network; ``background`` → a job)
 ``POST /api/takeover {conversation_id, name, full, user}``  "take over from here": the answer's rows as a table (an unrated answer → answered)
 ``POST /api/takeover/proposal {conversation_id}``  what that would give: suggested name, rows, columns, capped
@@ -505,6 +506,12 @@ def create_app(
             return start_job(lambda: console.run(sql, debug=debug, log=log, language=language, cache=cache),
                              render=lambda r: r, on_cancel=console.interrupt, log=log)
         return dump(console.run(sql, debug=debug, language=language, cache=cache))
+
+    @app.post("/api/sql/explain")
+    def explain_sql(body: Dict[str, Any] = Body(...)):
+        """``{sql, language}`` → what each source would be sent, and what would stay with DuckDB — nothing is read."""
+        language = str(body.get("language") or "sql").lower()
+        return dump(the_console().explain(str(body.get("sql") or ""), language=language))
 
     @app.get("/api/sql/cache")
     def sql_cache():

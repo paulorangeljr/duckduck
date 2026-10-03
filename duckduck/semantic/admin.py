@@ -162,7 +162,9 @@ class SQLConsole:
                 try:
                     with source_cache.refreshing(not cache), source_cache.collecting() as used:
                         progress.step("planning", "Reading the query: what goes to each source")
+                        self.duck.last_pushdown = None
                         relation = self.duck.sql(query)
+                        pushdown = self.duck.last_pushdown
                         progress.step("query", "DuckDB runs the query")
                         df = relation.df()
                 except Exception as exc:
@@ -183,8 +185,33 @@ class SQLConsole:
             "rows": _json_rows(shown),
             "row_count": int(len(df)), "truncated": len(df) > self.max_rows,
             "elapsed_ms": ms(), "log": log, "debug": debug, "result_id": result_id,
-            "cache": {**self.cache_status(), "used": used, "skipped": not cache}, **extra,
+            "cache": {**self.cache_status(), "used": used, "skipped": not cache},
+            "pushdown": pushdown.to_dict() if pushdown is not None else None, **extra,
         }
+
+    def explain(self, query: str, language: str = "sql") -> Dict[str, Any]:
+        """What ``run`` would send to each source (``DuckAPI.explain``) — nothing is read: each condition, LIMIT and
+        ORDER BY that reaches a source or stays with DuckDB, and the tables that would read more than needed."""
+        extra: Dict[str, Any] = {"language": language}
+        if language == "kql":
+            from ..kql import KqlError, KqlUnavailable
+
+            try:
+                translation = self.kql.to_sql(query, self.duck)
+            except (KqlError, KqlUnavailable) as exc:
+                return {"error": str(exc), **extra}
+            query, extra["translation"] = translation.sql, translation.to_dict()
+        reason = read_only_reason(query)
+        if reason:
+            return {"error": reason, **extra}
+        if not self._lock.acquire(timeout=self.timeout):
+            return {"error": "another SQL query is still running (or paused) — try again when it's done", **extra}
+        try:
+            return {"pushdown": self.duck.explain(query).to_dict(), **extra}
+        except Exception as exc:  # noqa: BLE001 — a typo, an unknown table: said, like a run's error
+            return {"error": f"{type(exc).__name__}: {exc}", **extra}
+        finally:
+            self._lock.release()
 
     def cache_status(self) -> Dict[str, Any]:
         """The source cache: on or off, ttl, reads kept (``duckduck.cache``)."""

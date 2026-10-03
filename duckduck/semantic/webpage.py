@@ -112,6 +112,11 @@ button.verdict.pop { animation: fbpop .28s ease; }
 .jobnote { font-size: 13px; color: var(--muted); margin-top: 8px; }
 .conntable td { vertical-align: top; }
 .connok { color: var(--good-ink); font-weight: 600; white-space: nowrap; }
+.pushdown { margin: 8px 0; border-left: 3px solid var(--good); padding: 4px 10px; }
+.pushdown.warn { border-left-color: var(--warn); }
+.pushdown summary { cursor: pointer; }
+.pushdown ul { margin: 6px 0 0; padding-left: 18px; }
+.pushdown .pdline { font-size: 12.5px; }
 .connbad { color: var(--bad); font-weight: 600; white-space: nowrap; }
 .connwhy { color: var(--bad); font-size: 12.5px; margin-top: 2px; }
 .conncheck { font-size: 12.5px; margin-top: 2px; }
@@ -744,6 +749,7 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
             <div class="acpop" id="sqlac" role="listbox" hidden></div></div>
           <div class="row" style="margin-top:8px"><button class="primary" id="sqlrun">Run</button>
             <button class="secondary" type="button" id="sqlfresh" title="Read every source again instead of reusing what the cache kept (Ctrl+Shift+Enter)">↻ Run without cache</button>
+            <button class="secondary" type="button" id="sqlexplain" title="What each source would be sent (WHERE, LIMIT, ORDER BY) and what stays with DuckDB — without reading anything">Check push-down</button>
             <button class="secondary" type="button" id="sqlsave" title="Keep this query as a table with a name — in duckduck.json, for SQL and Ask">Save as table</button>
             <label class="check small" title="Log at DEBUG: request bodies, bound parameters, every page (secrets stay masked)">
               <input type="checkbox" id="sqldebug"> Debug log</label>
@@ -2623,9 +2629,28 @@ function drawSqlResult(r) {
       <pre class="log mono">${esc(tr.sql)}</pre>${tr.route !== "native" ? `<button class="mini" type="button" id="sqlastext" title="Switch the editor to SQL with this query">Open as SQL</button>` : ""}</details>` : "";
   $("#sqlresult").innerHTML = `<div class="card sqlres">` + trHtml + (r.error ? `<p class="error">${esc(r.error)}</p>` :
     `<div class="resbar"><span class="muted small">${r.row_count.toLocaleString()} row${r.row_count === 1 ? "" : "s"} · ${r.columns.length} column${r.columns.length === 1 ? "" : "s"} · ${r.elapsed_ms} ms${r.truncated ? " · first " + rows.length.toLocaleString() + " shown here" : ""}</span>
-      ${cacheNote(r.cache)}<span class="grow"></span>${r.columns.length ? `<button class="secondary" type="button" id="sqlexpand" title="Open the result full screen: search, sort, every row, CSV">⤢ Expand</button>` : ""}</div>${table(rows)}`) +
+      ${cacheNote(r.cache)}<span class="grow"></span>${r.columns.length ? `<button class="secondary" type="button" id="sqlexpand" title="Open the result full screen: search, sort, every row, CSV">⤢ Expand</button>` : ""}</div>${pushdownNote(r.pushdown)}${table(rows)}`) +
     ((r.log || []).length ? `<details${r.error || r.debug ? " open" : ""}><summary>${r.debug ? "Debug log" : "What went to each source (push-down)"}</summary><pre class="log mono">${esc(r.log.join("\n"))}</pre></details>` : "") + `</div>`;
 }
+// what reached each source (✓) and what stayed with DuckDB (✗): open, and amber, when a table read more than needed
+function pushdownNote(p, checked) {
+  if (!p || !(p.calls || []).length) return checked ? `<div class="pushdown"><span class="small">No source is read by this query.</span></div>` : "";
+  const warn = (p.warnings || []).length;
+  const head = warn ? `⚠ ${warn} table${warn === 1 ? "" : "s"} ${checked ? "would read" : "read"} more than the answer needs`
+    : `✓ ${checked ? "Every source would be sent" : "Every source was sent"} what it needed`;
+  const calls = p.calls.map(c => `<li><span class="mono">${esc(c.call)}</span> <span class="muted small">— ${esc(c.how)} · reads ${esc(c.reads)}</span>
+    <ul>${c.decisions.map(d => `<li class="pdline">${d.pushed === true ? "✓" : d.pushed === false ? "✗" : "·"} ${esc(d.text)}</li>`).join("")}</ul></li>`).join("");
+  return `<details class="pushdown${warn ? " warn" : ""}" ${warn || checked ? "open" : ""}><summary class="small"><b>${head}</b>${checked ? " — nothing was read" : ""}</summary><ul>${calls}</ul></details>`;
+}
+async function explainSql() {
+  const text = $("#sqltext").value.trim(); if (!text) return;
+  $("#sqlresult").innerHTML = `<div class="card"><span class="spin" aria-hidden="true"></span> Checking what each source would be sent…</div>`;
+  let r;
+  try { r = await api("/api/sql/explain", {sql: text, language: LANG}); }
+  catch (err) { $("#sqlresult").innerHTML = `<div class="card"><p class="error">${esc(err.message)}</p></div>`; return; }
+  $("#sqlresult").innerHTML = `<div class="card">${r.error ? `<p class="error">${esc(r.error)}</p>` : pushdownNote(r.pushdown, true)}</div>`;
+}
+$("#sqlexplain").addEventListener("click", explainSql);
 // which sources came from the cache, and how old those reads are — with a way to read them again
 function cacheNote(c) {
   if (!c || !c.enabled) return "";

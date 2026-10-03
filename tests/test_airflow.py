@@ -107,6 +107,21 @@ def test_where_conditions_reach_the_api_in_its_own_parameters():
     assert df["dag_run_id"].tolist() == ["run_3"]
 
 
+def test_execution_date_and_equality_reach_the_api():
+    runs = [{**r, "execution_date": r["logical_date"]} for r in _runs()]  # Airflow 2 sends both names
+    af, client = _airflow(runs=runs)
+    duck = _duck(af)
+    got = duck.sql("SELECT dag_run_id FROM airflow_dag_runs WHERE execution_date = '2026-10-02 01:00'").df()
+    path, q = client.calls[-1]
+    assert q["execution_date_gte"] == q["execution_date_lte"] == "2026-10-02T01:00:00+00:00"  # = is both bounds
+    assert got["dag_run_id"].tolist() == ["run_1"]
+    duck.sql("SELECT dag_run_id FROM airflow_dag_runs WHERE execution_date >= '2026-10-02' "
+             "AND execution_date < '2026-10-03' AND start_date = '2026-10-01 01:05'").df()
+    q = client.calls[-1][1]
+    assert q["execution_date_gte"] == "2026-10-02T00:00:00+00:00" and q["execution_date_lte"] == "2026-10-03T00:00:00+00:00"
+    assert q["start_date_gte"] == q["start_date_lte"] == "2026-10-01T01:05:00+00:00"
+
+
 def test_airflow_3_gets_its_own_parameter_names():
     af, client = _airflow(version="3.0.6")
     af.dag_runs(logical_date_lte="2026-10-02T00:00:00Z", run_type="manual")

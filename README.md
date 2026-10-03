@@ -357,6 +357,31 @@ faster. Raise it a little at a time and watch the `-v` lines. APIs read one
 page after another (cursor pagination, NVD's rate limit) ignore it. Spark
 uses the same number (`SparkReader(max_parallel=)` still caps it).
 
+### Did my WHERE reach the source? `explain` / `EXPLAIN PUSHDOWN`
+
+A condition only reaches a source when the connector has a parameter for it
+(or takes any condition); anything else is read in full and filtered by DuckDB.
+To see it before running — nothing is read:
+
+```python
+print(duck.explain("SELECT * FROM airflow.dag_runs WHERE note = 'x' LIMIT 10"))
+# ⚠ airflow_dag_runs() — page by page → reads more rows than the answer needs
+#     ✗ note = 'x' — no 'note' parameter, DuckDB filters
+#     ✓ LIMIT 10 — pages stop once 10 rows are kept
+```
+```sql
+EXPLAIN PUSHDOWN SELECT * FROM airflow.dag_runs WHERE execution_date >= '2026-09-11'
+```
+
+After a query runs, `duck.last_pushdown` says the same, and a table that read
+more than the answer needed is logged as a warning (`duck.pushdown_warnings =
+False` turns that off). In the SQL tab every result shows it (amber when a
+table read more than needed), and **Check push-down** shows it without running.
+What only DuckDB can apply is named: `OR`, `NOT`, `IS NULL`, `IN (…)`,
+functions (`CAST(x AS DATE) = …`), column-to-column. `ORDER BY` with no `LIMIT`
+reads every row either way — a `LIMIT` is what lets a source that sorts send
+only the top rows.
+
 ### `ORDER BY … LIMIT`: only the top rows are read
 
 `SELECT … ORDER BY start_date DESC LIMIT 10` doesn't read the whole source
