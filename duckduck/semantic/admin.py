@@ -86,6 +86,8 @@ class SQLConsole:
         self.keep_results = 5
         self._results_lock = threading.Lock()  # not the query lock: a paused query mustn't hold up the viewer
         self._lock = threading.Lock()  # one DuckDB connection: one query at a time
+        self._planner: Any = None  # explain()'s own DuckAPI: checking a query never waits on the one running
+        self._plan_lock = threading.Lock()
 
     @property
     def kql(self) -> Any:
@@ -162,6 +164,10 @@ class SQLConsole:
                 try:
                     with source_cache.refreshing(not cache), source_cache.collecting() as used:
                         progress.step("planning", "Reading the query: what goes to each source")
+                        try:  # what each source will be sent, shown before any of them is read
+                            progress.note(pushdown=self.plan(query).to_dict())
+                        except Exception as exc:  # noqa: BLE001 — the run itself reports a bad query
+                            logging.getLogger("duckduck.admin").debug("couldn't plan ahead: %s", exc)
                         self.duck.last_pushdown = None
                         relation = self.duck.sql(query)
                         pushdown = self.duck.last_pushdown
@@ -210,14 +216,27 @@ class SQLConsole:
         reason = read_only_reason(query)
         if reason:
             return {"error": reason, **extra}
-        if not self._lock.acquire(timeout=self.timeout):
-            return {"error": "another SQL query is still running (or paused) — try again when it's done", **extra}
         try:
-            return {"pushdown": self.duck.explain(query).to_dict(), **extra}
+            return {"pushdown": self.plan(query).to_dict(), **extra}
         except Exception as exc:  # noqa: BLE001 — a typo, an unknown table: said, like a run's error
             return {"error": f"{type(exc).__name__}: {exc}", **extra}
-        finally:
-            self._lock.release()
+
+    def plan(self, query: str) -> Any:
+        """``DuckAPI.explain`` on a planner of its own — the same tables, its own DuckDB connection — so it runs
+        at once, even while a query holds the console (the page checks as you type, and before each run)."""
+        with self._plan_lock:
+            if self._planner is None:
+                from duckduck import DuckAPI
+
+                planner = DuckAPI()
+                for attr in ("functions", "service_of", "failed_services", "views", "view_key", "service_prefix",
+                             "failed_views", "default_database", "_streaming_functions"):
+                    setattr(planner, attr, getattr(self.duck, attr, None))
+                planner.pushdown_warnings = False
+                planner.conn.execute("SET enable_external_access = false")
+                planner.conn.execute("SET lock_configuration = true")
+                self._planner = planner
+            return self._planner.explain(query)
 
     def cache_status(self) -> Dict[str, Any]:
         """The source cache: on or off, ttl, reads kept (``duckduck.cache``)."""

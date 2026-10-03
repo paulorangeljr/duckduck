@@ -181,3 +181,28 @@ def test_the_page_keeps_the_log_open_and_offers_stop_and_show():
     from duckduck.semantic.webpage import PAGE
 
     assert 'data-sqljob="stop"' in PAGE and "LOG_OPEN[v.job_id]" in PAGE and "typeTag(" in PAGE
+
+
+def test_what_each_source_will_be_sent_is_shown_before_it_is_read_and_checking_never_waits():
+    pages = Pages()
+    client = _client(pages)
+    jid = client.post("/api/sql", json={"sql": "SELECT n FROM rows WHERE n > 1", "background": True}).json()["job_id"]
+    view = lambda: client.get(f"/api/jobs/{jid}").json()  # noqa: E731
+    assert _wait(lambda: "pushdown" in view()["partial"])
+    planned = view()["partial"]["pushdown"]
+    assert pages.served == 0 and planned["calls"][0]["table"] == "rows"  # nothing read yet
+    assert "n > 1" in planned["report"] and planned["warnings"]
+    assert not any("kept 0 of 0" in line for line in view()["log"])  # planning ahead isn't in the run's log
+    # the query holds the console (waiting on its first page): checking another one still answers at once
+    started = time.time()
+    checked = client.post("/api/sql/explain", json={"sql": "SELECT * FROM rows LIMIT 2"}).json()
+    assert time.time() - started < 2 and checked["pushdown"]["calls"]
+    for _ in range(3):
+        pages.go.release()
+    assert _wait(lambda: view()["state"] == "done")
+
+
+def test_the_page_checks_push_down_as_you_type():
+    from duckduck.semantic.webpage import PAGE
+
+    assert 'id="sqlpd"' in PAGE and "livePushdownSoon" in PAGE and '"planned", "job:"' in PAGE

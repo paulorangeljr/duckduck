@@ -111,3 +111,11 @@ def test_paged_reads_say_when_a_limit_stops_the_pages():
     text = d.explain("SELECT * FROM items WHERE n > 2 LIMIT 4").report()
     assert "LIMIT 4 — pages stop once 4 rows are kept" in text
     assert "the top 2 by n are read" in d.explain("SELECT * FROM items ORDER BY n DESC LIMIT 2").report()
+
+
+def test_explain_answers_even_when_duckdb_cant_bind_the_stand_ins(duck):
+    # nothing is read, so a column only the source would have can't be bound — the plan is still the answer
+    e = duck.explain("SELECT x FROM runs WHERE state = 'ok'")
+    assert e.calls and "✓ state = 'ok' → state" in e.report()
+    with pytest.raises(Exception):
+        duck.explain("SELECT * FROM nowhere_at_all JOIN")  # a typo fails before anything is planned

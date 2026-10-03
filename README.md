@@ -375,8 +375,11 @@ EXPLAIN PUSHDOWN SELECT * FROM airflow.dag_runs WHERE execution_date >= '2026-09
 
 After a query runs, `duck.last_pushdown` says the same, and a table that read
 more than the answer needed is logged as a warning (`duck.pushdown_warnings =
-False` turns that off). In the SQL tab every result shows it (amber when a
-table read more than needed), and **Check push-down** shows it without running.
+False` turns that off). In the SQL tab you see it **before anything is read**:
+under the editor as you type (amber when a table would read more than the
+answer needs), at the top of a running query before its first source is read
+— so you can cancel right there —, and again under the result; **Check
+push-down** shows the details without running.
 What only DuckDB can apply is named: `OR`, `NOT`, `IS NULL`, `IN (…)`,
 functions (`CAST(x AS DATE) = …`), column-to-column. `ORDER BY` with no `LIMIT`
 reads every row either way — a `LIMIT` is what lets a source that sorts send

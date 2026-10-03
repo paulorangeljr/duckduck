@@ -39,6 +39,14 @@ from .common.pushdown import (Condition, assign_conditions, blocker_of, conditio
 logger = get_logger("core")
 
 
+class _QuietWhenPlanning(logging.Filter):
+    """``explain()`` plans every call without making it: its lines ("▶ assets(...)", "kept 0 of 0 rows") would
+    read like a run's in a query's log — they're its report instead (``Explanation``)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not _DRY_RUN.get()
+
+
 # ---------------------------------------------------------------------------
 # Push-down context
 # ---------------------------------------------------------------------------
@@ -106,6 +114,7 @@ _PUSHDOWN_LOG: contextvars.ContextVar[Optional[List[Dict[str, Any]]]] = contextv
     "duckduck_pushdown_log", default=None)
 #: True under ``explain()``: every call is planned and reported, none is made (nothing is read).
 _DRY_RUN: contextvars.ContextVar[bool] = contextvars.ContextVar("duckduck_dry_run", default=False)
+logger.addFilter(_QuietWhenPlanning())
 
 
 def _call_entry(name: str, kwargs: Dict[str, Any], report: List[str]) -> Dict[str, Any]:
@@ -1859,7 +1868,8 @@ class DuckAPI:
             df, age = hit
             progress.step("fetching", f"{function_name}: from the cache (read {_ago(age)})")
             logger.info("  %s: %s rows from the cache, read %s", function_name, f"{len(df):,}", _ago(age))
-            source_cache.note(function_name, True, len(df), age)
+            if not _DRY_RUN.get():  # a planned call isn't a read
+                source_cache.note(function_name, True, len(df), age)
         else:
             progress.step("fetching", f"Reading {function_name}…")  # a paused / cancelled run stops here
             from .common import batches
@@ -1882,7 +1892,8 @@ class DuckAPI:
                 progress.note_item("stopped", function_name, {"rows": len(df)})
             if key is not None and not cut:
                 self.cache.put(key, df, len(df))
-            source_cache.note(function_name, False, len(df))
+            if not _DRY_RUN.get():  # a planned call isn't a read
+                source_cache.note(function_name, False, len(df))
             logger.info("  %s: %s rows × %s columns in %.2fs", function_name, f"{len(df):,}", len(df.columns),
                         time.perf_counter() - started)
         shaped = len(df.columns) == 0  # columns made up from the query: not the table's
@@ -2020,7 +2031,8 @@ class DuckAPI:
             progress.step("fetching", f"{fn_name}: from the cache (read {_ago(age)})")
             logger.info("  %s: %s rows from the cache (kept of %s read page by page), read %s", fn_name,
                         f"{count:,}", f"{scanned:,}", _ago(age))
-            source_cache.note(fn_name, True, len(df), age)
+            if not _DRY_RUN.get():  # a planned call isn't a read
+                source_cache.note(fn_name, True, len(df), age)
             progress.note_item("fetched", fn_name, {"rows": count, "rows_scanned": scanned, "pages": pages,
                                                     "cached": True})
             self._table_counter += 1
@@ -2098,7 +2110,8 @@ class DuckAPI:
             df = pd.DataFrame({c: pd.Series(dtype="object") for c in columns})
         if key is not None and not stopped_by_user:  # a read cut short is never kept as the whole table
             self.cache.put(key, (df, count, scanned, pages), len(df))
-        source_cache.note(fn_name, False, len(df))
+        if not _DRY_RUN.get():  # a planned call isn't a read
+            source_cache.note(fn_name, False, len(df))
         progress.note_item("fetched", fn_name, {"rows": count, "rows_scanned": scanned, "pages": pages})
         logger.info("  %s: kept %s of %s rows from %s page(s), %s column(s), in %.2fs", fn_name, f"{count:,}",
                     f"{scanned:,}", pages, len(df.columns), time.perf_counter() - started)
@@ -2709,10 +2722,19 @@ class DuckAPI:
         ``EXPLAIN PUSHDOWN SELECT …``. ``duck.last_pushdown`` is the same for
         the last query that ran.
         """
+        from .common import progress
+
         collected: List[Dict[str, Any]] = []
         token, dry = _PUSHDOWN_LOG.set(collected), _DRY_RUN.set(True)
         try:
-            self._sql(query)
+            with progress.quiet():  # no steps of its own in a job's progress (nothing is fetched)
+                self._sql(query)
+        except Exception:  # noqa: BLE001
+            # nothing was read, so DuckDB binding the final query over empty stand-ins can fail where the real
+            # run wouldn't (a column only the source has): the calls are planned by then — that's the answer.
+            # A typo, an unknown table or argument fails before any call is planned, and is raised.
+            if not collected:
+                raise
         finally:
             _DRY_RUN.reset(dry)
             _PUSHDOWN_LOG.reset(token)

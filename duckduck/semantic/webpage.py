@@ -758,6 +758,7 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
               <input type="checkbox" id="sqldebug"> Debug log</label>
             <span class="muted small" id="sqlhint">Ctrl+Enter · Ctrl+Shift+Enter without cache · read queries only (SELECT, WITH, SHOW, DESCRIBE…) · no file or network access</span></div>
         </div>
+        <div id="sqlpd" aria-live="polite"></div>
         <div id="sqlresult"></div>
       </div>
     </div>
@@ -2612,6 +2613,7 @@ function drawSqlJob(v, debug) {
       ${st !== "cancelled" && !v.stopped ? `<button class="secondary" type="button" data-sqljob="stop" title="Stop reading the sources and run the query on what was read so far — a partial result">⏹ Stop and show</button>` : ""}
       ${st !== "cancelled" ? `<button class="secondary" type="button" data-sqljob="cancel" title="Stop the query">✕ Cancel</button>` : ""}
     </div>
+    ${pushdownNote(v.partial?.pushdown, "planned", "job:" + v.job_id)}
     <ol class="steps">${steps.map((e, k) => {
       const now = k === steps.length - 1 && live;
       return `<li class="${now ? "now" : "done"}"><span class="mark">${now ? `<span class="spin" aria-hidden="true"></span>` : k < steps.length - 1 ? "✓" : st === "cancelled" ? "✕" : st === "paused" ? "⏸" : "✓"}</span>
@@ -2640,7 +2642,7 @@ function drawSqlResult(r) {
       <pre class="log mono">${esc(tr.sql)}</pre>${tr.route !== "native" ? `<button class="mini" type="button" id="sqlastext" title="Switch the editor to SQL with this query">Open as SQL</button>` : ""}</details>` : "";
   $("#sqlresult").innerHTML = `<div class="card sqlres">` + trHtml + (r.error ? `<p class="error">${esc(r.error)}</p>` :
     `<div class="resbar"><span class="muted small">${r.row_count.toLocaleString()} row${r.row_count === 1 ? "" : "s"} · ${r.columns.length} column${r.columns.length === 1 ? "" : "s"} · ${r.elapsed_ms} ms${r.truncated ? " · first " + rows.length.toLocaleString() + " shown here" : ""}</span>
-      ${cacheNote(r.cache)}<span class="grow"></span>${r.columns.length ? `<button class="secondary" type="button" id="sqlexpand" title="Open the result full screen: search, sort, every row, CSV">⤢ Expand</button>` : ""}</div>${stoppedNote(r.stopped)}${pushdownNote(r.pushdown)}${table(rows, 500, Object.fromEntries(r.columns.map((c, i) => [c, (r.types || [])[i]])))}`) +
+      ${cacheNote(r.cache)}<span class="grow"></span>${r.columns.length ? `<button class="secondary" type="button" id="sqlexpand" title="Open the result full screen: search, sort, every row, CSV">⤢ Expand</button>` : ""}</div>${stoppedNote(r.stopped)}${pushdownNote(r.pushdown, "ran", r.result_id ? "ran:" + r.result_id : null)}${table(rows, 500, Object.fromEntries(r.columns.map((c, i) => [c, (r.types || [])[i]])))}`) +
     ((r.log || []).length ? `<details${r.error || r.debug ? " open" : ""}><summary>${r.debug ? "Debug log" : "What went to each source (push-down)"}</summary><pre class="log mono">${esc(r.log.join("\n"))}</pre></details>` : "") + `</div>`;
 }
 // "Stop and show": the answer covers the rows read before the reading stopped, not the whole table
@@ -2650,14 +2652,36 @@ function stoppedNote(s) {
   return `<div class="stoppednote">⏹ <b>Partial result</b> — you stopped the reading, so this covers only what was read${parts.length ? ": " + parts.join(" · ") : ""}. Run again to read everything.</div>`;
 }
 // what reached each source (✓) and what stayed with DuckDB (✗): open, and amber, when a table read more than needed
-function pushdownNote(p, checked) {
-  if (!p || !(p.calls || []).length) return checked ? `<div class="pushdown"><span class="small">No source is read by this query.</span></div>` : "";
+// mode: "ran" (after a run) · "checked" (Check push-down) · "planned" (a run that hasn't read yet) · "live" (as you type)
+const PD_OPEN = {};  // a note's key → open or not: your choice survives the redraws
+function pushdownNote(p, mode = "ran", key = null) {
+  const ahead = mode !== "ran";
+  if (!p || !(p.calls || []).length) return mode === "checked" ? `<div class="pushdown"><span class="small">No source is read by this query.</span></div>` : "";
   const warn = (p.warnings || []).length;
-  const head = warn ? `⚠ ${warn} table${warn === 1 ? "" : "s"} ${checked ? "would read" : "read"} more than the answer needs`
-    : `✓ ${checked ? "Every source would be sent" : "Every source was sent"} what it needed`;
+  const head = warn ? `⚠ ${warn} table${warn === 1 ? "" : "s"} ${ahead ? "will read" : "read"} more than the answer needs`
+    : `✓ ${ahead ? "Every source will be sent" : "Every source was sent"} what it needs`;
+  const tail = {checked: " — nothing was read", planned: " — before reading anything", live: " — checked as you type, nothing read"}[mode] || "";
   const calls = p.calls.map(c => `<li><span class="mono">${esc(c.call)}</span> <span class="muted small">— ${esc(c.how)} · reads ${esc(c.reads)}</span>
     <ul>${c.decisions.map(d => `<li class="pdline">${d.pushed === true ? "✓" : d.pushed === false ? "✗" : "·"} ${esc(d.text)}</li>`).join("")}</ul></li>`).join("");
-  return `<details class="pushdown${warn ? " warn" : ""}" ${warn || checked ? "open" : ""}><summary class="small"><b>${head}</b>${checked ? " — nothing was read" : ""}</summary><ul>${calls}</ul></details>`;
+  const open = key !== null && key in PD_OPEN ? PD_OPEN[key] : (mode === "checked" || (warn && mode !== "live"));
+  return `<details class="pushdown${warn ? " warn" : ""}" ${key !== null ? `data-pdkey="${esc(key)}"` : ""} ${open ? "open" : ""}><summary class="small"><b>${head}</b>${tail}</summary><ul>${calls}</ul></details>`;
+}
+// remember open / closed per note (delegated: notes are redrawn while a job runs and as you type)
+document.addEventListener("toggle", (e) => { const k = e.target?.dataset?.pdkey; if (k) PD_OPEN[k] = e.target.open; }, true);
+// as you type: what each source would be sent — before you run it (nothing is read; errors while typing stay quiet)
+let LIVE_PD = {timer: null, seq: 0, text: null};
+function livePushdownSoon() { clearTimeout(LIVE_PD.timer); LIVE_PD.timer = setTimeout(livePushdown, 700); }
+async function livePushdown() {
+  const box = $("#sqlpd"); if (!box) return;
+  const text = $("#sqltext").value.trim();
+  if (!text || /^\s*(show|list)\b/i.test(text)) { box.innerHTML = ""; LIVE_PD.text = text; return; }
+  if (text === LIVE_PD.text) return;
+  LIVE_PD.text = text;
+  const seq = ++LIVE_PD.seq;
+  let r;
+  try { r = await api("/api/sql/explain", {sql: text, language: LANG}); } catch { r = null; }
+  if (seq !== LIVE_PD.seq) return;  // you typed on meanwhile
+  box.innerHTML = r && !r.error ? pushdownNote(r.pushdown, "live", "live") : "";
 }
 async function explainSql() {
   const text = $("#sqltext").value.trim(); if (!text) return;
@@ -2665,9 +2689,10 @@ async function explainSql() {
   let r;
   try { r = await api("/api/sql/explain", {sql: text, language: LANG}); }
   catch (err) { $("#sqlresult").innerHTML = `<div class="card"><p class="error">${esc(err.message)}</p></div>`; return; }
-  $("#sqlresult").innerHTML = `<div class="card">${r.error ? `<p class="error">${esc(r.error)}</p>` : pushdownNote(r.pushdown, true)}</div>`;
+  $("#sqlresult").innerHTML = `<div class="card">${r.error ? `<p class="error">${esc(r.error)}</p>` : pushdownNote(r.pushdown, "checked")}</div>`;
 }
 $("#sqlexplain").addEventListener("click", explainSql);
+$("#sqltext").addEventListener("input", livePushdownSoon);
 // which sources came from the cache, and how old those reads are — with a way to read them again
 function cacheNote(c) {
   if (!c || !c.enabled) return "";
@@ -2716,6 +2741,7 @@ function kqlNote() {
 // each tab keeps a text per language: switching back finds it
 function setLang(lang, text) {
   if (lang === LANG && text === undefined) return;
+  setTimeout(() => { LIVE_PD.text = null; livePushdown(); }, 0);  // the other text's push-down, before it runs
   const tab = curTab();
   if (tab) { tab.texts[LANG] = $("#sqltext").value; tab.lang = lang; }
   LANG = lang;
@@ -2750,6 +2776,7 @@ function newTab(text, lang = "sql", name = null) {
 function switchTab(id) {
   const cur = curTab(), next = QTABS.find(t => t.id === id);
   if (!next) return;
+  setTimeout(() => { LIVE_PD.text = null; livePushdown(); }, 0);  // the other text's push-down, before it runs
   if (cur) cur.texts[LANG] = $("#sqltext").value;
   try { acClose(); } catch {}  // the autocomplete isn't set up yet while the tabs load
   QACTIVE = id; LANG = next.lang; next.unseen = false;
