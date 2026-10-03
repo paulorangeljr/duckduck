@@ -47,6 +47,7 @@ from ...common.logs import PageProgress, instrument_session
 from ...common.retry import RetryPolicy, send
 from ...common.pushdown import require_like, sortable
 from ...common.sparkplan import spark_plan
+from ...common.idempotency import restart
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -81,6 +82,9 @@ class InsightVM:
     default_page_size : int
         Default page size when ``limit`` isn't passed by DuckAPI.
     """
+
+    #: what a failed batched pipeline read does next (duckduck.common.idempotency)
+    IDEMPOTENCY = restart("assets sort by riskScore or id, but no request asks for the rows after an id")
 
     def __init__(
         self,

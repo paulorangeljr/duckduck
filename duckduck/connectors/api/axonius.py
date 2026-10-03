@@ -59,6 +59,7 @@ from ...common.logs import PageProgress, instrument_session
 from ...common.retry import RetryPolicy, send
 from ...common.pushdown import require_like
 from ...common.sparkplan import spark_plan
+from ...common.idempotency import restart
 
 
 class Axonius:
@@ -77,6 +78,9 @@ class Axonius:
     verify : bool
         TLS certificate verification.
     """
+
+    #: what a failed batched pipeline read does next (duckduck.common.idempotency)
+    IDEMPOTENCY = restart("offset pages with no sort and no total")
 
     def __init__(
         self,

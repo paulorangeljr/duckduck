@@ -238,11 +238,17 @@ def test_iter_table_chunks_result(monkeypatch):
     fake_glue_client.get_table.return_value = {
         "Table": {"StorageDescriptor": {"Location": "s3://bucket/events"}, "Parameters": {}}
     }
-    fake_duck_conn.sql.return_value.df.return_value = pd.DataFrame([{"id": i} for i in range(5)])
+    seen = {}
 
-    chunks = list(gt.iter_table("analytics", "events", chunksize=2))
+    def batches(expression, where=None, variables=None, order_by=None, chunksize=0):
+        seen.update(expression=expression, order_by=order_by, chunksize=chunksize)
+        yield from (pd.DataFrame([{"id": i} for i in range(n, min(n + chunksize, 5))]) for n in range(0, 5, chunksize))
+
+    monkeypatch.setattr(gt._lake, "scan_batches", batches)  # DuckDB streams the scan: never one whole frame
+    chunks = list(gt.iter_table("analytics", "events", order_by=[("id", False)], chunksize=2))
 
     assert [len(c) for c in chunks] == [2, 2, 1]
+    assert "s3://bucket/events" in seen["expression"] and seen["order_by"] == [("id", False)]
 
 
 # ---------------------------------------------------------------------------

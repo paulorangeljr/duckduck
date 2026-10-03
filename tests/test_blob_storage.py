@@ -152,8 +152,14 @@ def test_table_pushes_down_limit(monkeypatch):
 
 def test_iter_table_chunks_result(monkeypatch):
     bs, fake_duck_conn = _make_blob(monkeypatch, account_name="acct")
-    fake_duck_conn.sql.return_value.df.return_value = pd.DataFrame([{"id": i} for i in range(5)])
+    seen = {}
 
+    def batches(expression, where=None, variables=None, order_by=None, chunksize=0):
+        seen.update(expression=expression, chunksize=chunksize)
+        yield from (pd.DataFrame([{"id": i} for i in range(n, min(n + chunksize, 5))]) for n in range(0, 5, chunksize))
+
+    monkeypatch.setattr(bs._lake, "scan_batches", batches)  # DuckDB streams the scan: never one whole frame
     chunks = list(bs.iter_table("data", "events/*.parquet", chunksize=2))
 
     assert [len(c) for c in chunks] == [2, 2, 1]
+    assert seen == {"expression": "read_parquet('az://data/events/*.parquet')", "chunksize": 2}

@@ -27,6 +27,7 @@ import pandas as pd
 from .lakehouse import LakehouseConnection
 from ...common.pushdown import Condition, sortable
 from ...common.sparkplan import SparkSource, spark_plan
+from ...common.idempotency import checkpoint
 
 
 class BlobStorage:
@@ -43,6 +44,9 @@ class BlobStorage:
         A full Azure Storage connection string — takes precedence over
         ``account_name``/credential-chain auth when given.
     """
+
+    #: what a failed batched pipeline read does next (duckduck.common.idempotency)
+    IDEMPOTENCY = checkpoint("DuckDB sorts the scan and filters col > value inside it — name a column that only grows")
 
     #: ``where`` goes into the DuckDB scan (``conditions_to_sql``), join key values included
     WHERE_OPS = frozenset({"eq", "like", "ilike", "gt", "gte", "lt", "lte", "in"})
@@ -160,25 +164,20 @@ class BlobStorage:
     # Streaming (iter_*) — for use with DuckAPI.stream()
     # ------------------------------------------------------------------
 
+    @sortable(exact=True)
     def iter_table(
         self,
         container: str,
         path: str,
         format: str = "parquet",
         where: Optional[List[Condition]] = None,
-        chunksize: int = 10_000,
+        order_by: Optional[List[Tuple[str, bool]]] = None,
+        chunksize: int = 100_000,
     ):
         """
-        Yields up to ``chunksize`` rows at a time.
-
-        DuckDB scans the whole result natively in one shot (that's the
-        point — it's efficient even without true incremental chunking
-        here); this just splits the resulting DataFrame into
-        ``chunksize``-row pieces, same trade-off as ``SQLDatabase.query()``'s
-        client-side ``limit``.
+        Yields up to ``chunksize`` rows at a time, as DuckDB streams the scan
+        (``LakehouseConnection.scan_batches``) — the data is never whole in
+        memory. ``order_by`` sorts the whole scan.
         """
-        df = self.table(container, path, format=format, where=where)
-        for start in range(0, len(df), chunksize):
-            chunk = df.iloc[start : start + chunksize]
-            if not chunk.empty:
-                yield chunk
+        scan_expr = self._scan_expression(container, path, format)
+        yield from self._lake.scan_batches(scan_expr, where=where, order_by=order_by, chunksize=chunksize)

@@ -36,6 +36,16 @@ the shapes you couldn't verify in one place.
   through `send(self.retry, "<name>", lambda timeout: self.session.get(..., timeout=timeout), <default timeout>,
   what=...)` — then a service's `"retry"` in duckduck.json and a pipeline's `"retry"` reach it with no other code.
   Never hard-code `timeout=` or write its own retry loop (NVD's predates it).
+- **Idempotency — required**: a class attribute `IDEMPOTENCY` (`duckduck.common.idempotency`) saying what a
+  pipeline run that failed half-way does next with this source. `checkpoint(why, column=…)` when its page-by-page
+  reader sorts (`@sortable` + `order_by` on the `iter_`) **and** a `col > value` filter reaches the source (a
+  `col_gt` parameter or `where`): the next attempt continues after the last batch on disk; `column` = one every row
+  has that only grows (a creation date, an id) — none when the tables differ (a database: the pipeline names it).
+  Otherwise `restart(why)` — cursor pages, no sort, one response. `why` names the fact. `tests/test_batches.py`
+  fails without it.
+- **Really stream**: an `iter_` reads a piece at a time from the source — a server-side cursor
+  (`stream_results`), `LakehouseConnection.scan_batches` (DuckDB record batches), the API's pages — never the whole
+  result first and then sliced: a pipeline with `batch_rows` relies on it not to run out of memory.
 - **Page loop**: a page-numbered or offset API that reports a total pages through
   `duckduck.common.slicing.pages(fetch_page, page_size)` — `fetch_page(n) -> (rows, total_rows or None)` — never its own
   `while` loop. That is what lets Spark split the read. Cursor APIs keep their own loop.

@@ -58,6 +58,7 @@ from ..lake.lakehouse import LakehouseConnection
 from ...common.logs import get_logger
 from ...common.pushdown import Condition, parse_like, sortable
 from ...common.sparkplan import SparkSource, spark_plan
+from ...common.idempotency import restart
 
 logger = get_logger("athena")
 
@@ -103,6 +104,9 @@ class Athena:
         Seconds between status checks (doubling up to 2 s); give up after
         ``timeout`` (None: wait).
     """
+
+    #: what a failed batched pipeline read does next (duckduck.common.idempotency)
+    IDEMPOTENCY = restart("UNLOAD writes its files in parallel (no order across them), and each read is a new query over everything")
 
     #: ``where`` applies join key values too (``col IN (…)``); more than ``IN_MAX`` → several queries
     WHERE_OPS = frozenset({"eq", "like", "ilike", "gt", "gte", "lt", "lte", "in"})

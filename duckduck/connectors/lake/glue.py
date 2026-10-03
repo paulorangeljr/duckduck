@@ -57,6 +57,7 @@ from .lakehouse import LakehouseConnection
 from ...common.pushdown import Condition, LikePattern, require_like, sortable
 from ...common.logs import get_logger
 from ...common.sparkplan import SparkSource, spark_plan
+from ...common.idempotency import checkpoint
 
 logger = get_logger("glue")
 
@@ -96,6 +97,9 @@ class GlueTable:
         boto3 itself would use, so Glue lookups (boto3) and S3 reads
         (DuckDB) end up authenticated the same way.
     """
+
+    #: what a failed batched pipeline read does next (duckduck.common.idempotency)
+    IDEMPOTENCY = checkpoint("DuckDB sorts the scan and filters col > value inside it — name a column that only grows")
 
     #: ``where`` goes into the DuckDB scan (``conditions_to_sql``), join key values included
     WHERE_OPS = frozenset({"eq", "like", "ilike", "gt", "gte", "lt", "lte", "in"})
@@ -252,15 +256,18 @@ class GlueTable:
             ``ORDER BY … NULLS LAST`` inside the DuckDB scan, with the
             ``limit``: a query's top N is read as such (``@sortable(exact=True)``).
         """
+        table, planned = self._planned(database, table_name, where)
+        if planned is None:
+            return self._empty(table)
+        expression, variables = planned
+        return self._lake.scan(expression, limit=limit, where=where, variables=variables, order_by=order_by)
+
+    def _planned(self, database: str, table_name: str, where: Optional[List[Condition]]):
+        """(Glue's table, (scan expression, variables)) — None for the second when no file can match."""
         table = self._describe(database, table_name)
         if self.list_files and self._detect_format(table) == "parquet":
-            planned = self._parquet_read(database, table_name, table, where)
-            if planned is None:
-                return self._empty(table)
-            expression, variables = planned
-            return self._lake.scan(expression, limit=limit, where=where, variables=variables, order_by=order_by)
-        scan_expr = self._scan_expression(database, table_name)
-        return self._lake.scan(scan_expr, limit=limit, where=where, order_by=order_by)
+            return table, self._parquet_read(database, table_name, table, where)
+        return table, (self._scan_expression(database, table_name), None)
 
     # ------------------------------------------------------------------
     # Finding a Parquet table's files — as Athena does (duckduck.connectors.lake.s3layout)
@@ -527,22 +534,25 @@ class GlueTable:
     # Streaming (iter_*) — for use with DuckAPI.stream()
     # ------------------------------------------------------------------
 
+    @sortable(exact=True)
     def iter_table(
         self,
         database: str,
         table_name: str,
         where: Optional[List[Condition]] = None,
-        chunksize: int = 10_000,
+        order_by: Optional[List[Tuple[str, bool]]] = None,
+        chunksize: int = 100_000,
     ):
         """
-        Yields up to ``chunksize`` rows at a time.
-
-        DuckDB scans the whole result natively in one shot; this just
-        splits the resulting DataFrame into ``chunksize``-row pieces —
-        same trade-off as ``BlobStorage.iter_table``/``SQLDatabase.query()``.
+        Yields up to ``chunksize`` rows at a time, as DuckDB streams the scan
+        (``LakehouseConnection.scan_batches``) — the table is never whole in
+        memory. ``order_by`` sorts the whole scan (a pipeline resuming after a
+        column's value).
         """
-        df = self.table(database, table_name, where=where)
-        for start in range(0, len(df), chunksize):
-            chunk = df.iloc[start : start + chunksize]
-            if not chunk.empty:
-                yield chunk
+        table, planned = self._planned(database, table_name, where)
+        if planned is None:
+            yield self._empty(table)
+            return
+        expression, variables = planned
+        yield from self._lake.scan_batches(expression, where=where, variables=variables, order_by=order_by,
+                                           chunksize=chunksize)

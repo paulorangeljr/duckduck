@@ -238,7 +238,7 @@ class SystemTables:
     def pipeline_runs(self, pipeline: Optional[str] = None) -> pd.DataFrame:
         """Each pipeline's last successful run and watermarks — what the ``lake.state`` folder holds."""
         columns = ["pipeline", "last_run_id", "last_success_at", "load", "watermarks", "previous_watermarks",
-                   "state_file"]
+                   "pending_run_id", "pending_written", "state_file"]
         location = self._state_location()
         if not location:
             return _frame([], columns)
@@ -282,6 +282,9 @@ class SystemTables:
                 "watermarks": _text(state.get("watermarks")) if state.get("watermarks") else None,
                 "previous_watermarks": _text(state.get("previous_watermarks")) if state.get("previous_watermarks")
                 else None,
+                # a run that failed: the next one finishes it (same id), skipping the targets it had written
+                "pending_run_id": (state.get("pending") or {}).get("run_id"),
+                "pending_written": ", ".join((state.get("pending") or {}).get("written") or []) or None,
                 "state_file": info.path if "://" not in location else location.rstrip("/") + "/" + name + ".json",
             })
         return _frame(rows, columns)

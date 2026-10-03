@@ -61,6 +61,7 @@ from ...common.kinds import catalog, raw_query
 from ...common.logs import get_logger
 from ...common.pushdown import Condition, parse_like, sortable
 from ...common.sparkplan import spark_plan
+from ...common.idempotency import restart
 
 logger = get_logger("adx")
 
@@ -173,6 +174,9 @@ class DataExplorer:
         really need the whole result. Prefer ``WHERE``/``LIMIT``, which
         run on the cluster anyway.
     """
+
+    #: what a failed batched pipeline read does next (duckduck.common.idempotency)
+    IDEMPOTENCY = restart("one response: the answer comes whole, nothing to resume within")
 
     #: ``where`` applies join key values as ``col in (…)`` (case-sensitive, like SQL ``=``)
     WHERE_OPS = frozenset({"eq", "like", "ilike", "gt", "gte", "lt", "lte", "in"})

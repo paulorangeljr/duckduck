@@ -37,7 +37,7 @@ MODES = ("append", "overwrite", "overwrite_partitions", "merge")
 FORMATS = ("parquet", "delta", "iceberg")
 SOURCES = ("notebook", "sql_file", "sql")
 KEYS = {"pipeline", "description", "engine", "primary_key", "keys", "sip", "target", "targets", "output",
-        "parameters", "catalogs", "catalog", "schema_evolution", "state", "load", "timezone", "audit_columns", "layer", "aws", "read_engine", "virtualized_table", "page_size", "max_parallel", "retry", *SOURCES}
+        "parameters", "catalogs", "catalog", "schema_evolution", "state", "load", "timezone", "audit_columns", "layer", "aws", "read_engine", "virtualized_table", "page_size", "max_parallel", "retry", "batch_rows", "staging", "resume", *SOURCES}
 SIP_KEYS = {"enabled", "rate", "max_rows", "watch", "columns", "mask", "store", "stages", "null_keys"}
 TARGET_KEYS = {"path", "table", "format", "mode", "partition_by", "key", "unique", "storage_options", "catalog",
                "schema", "schema_evolution", "layer", "database", "table_name"}
@@ -154,6 +154,10 @@ class PipelineSpec:
     page_size: Any = None  # rows per API request during this run: a number (every connector) or {service: n}
     max_parallel: Any = None  # requests at once per table during this run: a number (every connector) or {service: n}
     retry: Any = None  # retries of API requests during this run: a setting (every connector) or {service: setting}
+    batch_rows: Optional[int] = None  # read sources in batches of this many rows on disk (duckdb engine); None: in memory
+    staging: Optional[str] = None  # a local folder for the batches (default: {state}/_staging, else the temp folder)
+    resume: bool = True  # a failed run's next attempt is the same run, picking up its batches and written targets
+    resume_column: Optional[str] = None  # the column a batched read sorts by and resumes after
 
     def resolve(self, value: str) -> str:
         """A local path relative to the pipeline file."""
@@ -252,6 +256,28 @@ def load_spec(source: Union[str, os.PathLike, Dict[str, Any]], base_dir: Optiona
             raise PipelineError(f"'{key}' is {what} for this run: a number (every connector it reads) or one "
                                 f"per service: {{\"servicenow\": {example}}}")
         setattr(spec, key, value)
+    rows = data.get("batch_rows")
+    if rows is not None:
+        if not _size(rows):
+            raise PipelineError("'batch_rows' is how many rows a batch on disk holds: a number, e.g. 100000")
+        spec.batch_rows = rows
+    staging = data.get("staging")
+    if staging is not None:
+        if not isinstance(staging, str) or not staging or "://" in staging:
+            raise PipelineError("'staging' is a local folder for the batches (\"/data/staging\"), not a URL")
+        spec.staging = staging
+    resume = data.get("resume", True)
+    if isinstance(resume, dict):
+        unknown = sorted(set(resume) - {"enabled", "column"})
+        column = resume.get("column")
+        if unknown or (column is not None and (not isinstance(column, str) or not column)):
+            raise PipelineError("'resume' is true / false or {\"enabled\": true, \"column\": \"sys_created_on\"} — the "
+                                "column a batched read sorts by and picks up after")
+        spec.resume, spec.resume_column = bool(resume.get("enabled", True)), column
+    elif isinstance(resume, bool):
+        spec.resume = resume
+    else:
+        raise PipelineError("'resume' is true / false or {\"column\": \"…\"}")
     retry = data.get("retry")
     if retry is not None:
         from ..common.retry import is_policy, policy_problem

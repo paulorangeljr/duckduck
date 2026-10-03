@@ -42,6 +42,7 @@ from ...common import slicing
 from ...common.logs import PageProgress, get_logger
 from ...common.pushdown import require_like, sortable
 from ...common.sparkplan import spark_plan
+from ...common.idempotency import checkpoint
 
 logger = get_logger("airflow")
 
@@ -104,6 +105,9 @@ class Airflow:
     ``airflow_version``: 2 or 3 (read from the environment when unset).
     ``client``: an injected boto3 ``mwaa`` client (tests).
     """
+
+    #: what a failed batched pipeline read does next (duckduck.common.idempotency)
+    IDEMPOTENCY = checkpoint("dag_runs sort by their dates (order_by) and a logical-date filter reaches the API; the other tables don't sort", column="logical_date")
 
     def __init__(
         self,

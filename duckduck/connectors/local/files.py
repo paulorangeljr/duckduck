@@ -24,7 +24,7 @@ Via ``auto_register()``::
 import os
 import re
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import pandas as pd
 
@@ -32,6 +32,7 @@ from ...common.kinds import catalog
 from ..lake.lakehouse import LakehouseConnection
 from ...common.pushdown import Condition, sortable
 from ...common.sparkplan import SparkSource, spark_plan
+from ...common.idempotency import checkpoint
 
 #: extension → (format label, DuckDB reader call template).
 _READERS = {
@@ -62,6 +63,9 @@ class FileTable:
     push-down ``where`` and ``limit`` and it scans the data with DuckDB.
     """
 
+    #: what a failed batched pipeline read does next (duckduck.common.idempotency)
+    IDEMPOTENCY = checkpoint("DuckDB sorts the scan and filters col > value inside it — name a column that only grows")
+
     #: ``where`` goes into the DuckDB scan (``conditions_to_sql``), join key values included
     WHERE_OPS = frozenset({"eq", "like", "ilike", "gt", "gte", "lt", "lte", "in"})
 
@@ -80,6 +84,12 @@ class FileTable:
     def __call__(self, where: Optional[List[Condition]] = None, order_by: Optional[List[Tuple[str, bool]]] = None,
                  limit: Optional[int] = None) -> pd.DataFrame:
         return self._lake.scan(self.scan_expression, limit=limit, where=where, order_by=order_by)
+
+    @sortable(exact=True)
+    def batches(self, where: Optional[List[Condition]] = None, order_by: Optional[List[Tuple[str, bool]]] = None,
+                chunksize: int = 100_000) -> Iterator[pd.DataFrame]:
+        """The table page by page, as DuckDB streams the scan — never whole in memory."""
+        yield from self._lake.scan_batches(self.scan_expression, where=where, order_by=order_by, chunksize=chunksize)
 
     def _spark_source(self) -> SparkSource:
         """The file or folder itself, in Spark's reader for its format."""
@@ -107,6 +117,8 @@ class LocalFiles:
         Also pick up files/directories starting with ``.`` or ``_``
         (skipped by default: ``_SUCCESS`` markers, ``.DS_Store``...).
     """
+
+    IDEMPOTENCY = FileTable.IDEMPOTENCY  # its data tables are FileTables
 
     def __init__(self, path: str, include_hidden: bool = False):
         if not os.path.isdir(path):
@@ -171,6 +183,10 @@ class LocalFiles:
     def table_functions(self) -> Dict[str, FileTable]:
         """``{table_name: callable}`` — what ``auto_register()`` registers."""
         return dict(self._tables)
+
+    def streaming_functions(self) -> Dict[str, Any]:
+        """``{table_name: generator}`` — each table page by page (``FileTable.batches``)."""
+        return {name: t.batches for name, t in self._tables.items()}
 
     @spark_plan("driver", why="catalog: a small listing")
     @catalog

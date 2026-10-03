@@ -64,6 +64,7 @@ from ...common.logs import PageProgress, log_http
 from ...common.retry import RetryPolicy, send
 from ...common.kinds import needs_arguments
 from ...common.sparkplan import spark_plan
+from ...common.idempotency import restart
 
 try:
     import msal
@@ -105,6 +106,9 @@ class SharePoint:
 
     See the module docstring for full examples.
     """
+
+    #: what a failed batched pipeline read does next (duckduck.common.idempotency)
+    IDEMPOTENCY = restart("@odata.nextLink cursors: no sort, no \"after this value\" filter")
 
     # ------------------------------------------------------------------
     # Constructors

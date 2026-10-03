@@ -7,6 +7,8 @@ import json
 import logging
 import os
 import re
+import shutil
+import tempfile
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -154,13 +156,21 @@ class PipelineRun:
     load: Dict[str, Any] = field(default_factory=dict)  # full / incremental: the WHERE added, since → now
     state_path: Optional[str] = None
     aws: Optional[str] = None  # the AWS account the lake was written with, when one was declared
+    resumed: bool = False  # the next attempt of a run that failed: same run id and parameters
+    batch_rows: Optional[int] = None  # read in batches of this many rows on disk (None: in memory)
+    staging: Optional[str] = None  # this run's batches (removed after a successful run)
+    batches: List[str] = field(default_factory=list)  # one line per source read in batches
 
     def report(self) -> str:
         lines = [f"pipeline {self.pipeline} · run {self.run_id} · {self.engine}"
+                 f"{' · resumed after a failure' if self.resumed else ''}"
+                 f"{f' · batches of {self.batch_rows:,} rows' if self.batch_rows else ''}"
                  f"{' · dry run (nothing written)' if self.dry_run else ''} · {self.seconds:.1f}s"]
         for s in self.steps:
             rows = f", {s['rows']:,} rows" if s.get("rows") is not None else ""
             lines.append(f"  {s['view']}: {s['seconds']:.2f}s{rows}{' (kept)' if s['kept'] else ''}")
+        for b in self.batches:
+            lines.append(f"  batches · {b}")
         for w in self.writes:
             extra = ", ".join(_fact(k, v) for k, v in w.items()
                               if k not in ("view", "target", "mode", "seconds", "table") and v)
@@ -252,16 +262,35 @@ def catalog_lookup(spec: PipelineSpec, duck: Any, given: Optional[Dict[str, Any]
 def run_pipeline(source: Union[str, os.PathLike, Dict[str, Any], PipelineSpec], duck: Any = None, spark: Any = None,
                  config_path: Optional[str] = None, params: Optional[Dict[str, Any]] = None,
                  run_id: Optional[str] = None, dry_run: bool = False, now: Optional[dt.datetime] = None,
-                 engine: Any = None, catalogs: Optional[Dict[str, Any]] = None) -> PipelineRun:
+                 engine: Any = None, catalogs: Optional[Dict[str, Any]] = None, batch_rows: Optional[int] = None,
+                 staging: Optional[str] = None, resume: Optional[bool] = None) -> PipelineRun:
     """
     Runs a pipeline file. ``duck``: the DuckAPI its SQL reads through (default:
     one ``auto_register``ed from ``config_path`` / ``DUCKDUCK_CONFIG`` /
     ``duckduck.json``); ``spark``: the session for ``"engine": "spark"``;
     ``params``: overrides of its ``parameters``; ``dry_run``: runs the views
     and the sip, writes nothing (the sip isn't stored either).
+
+    ``batch_rows``: read every source that pages in batches of that many rows
+    written to Parquet under ``staging`` (a local folder; default
+    ``{state}/_staging``, else the temp folder) — memory holds one batch, never
+    the table (the file's ``"batch_rows"`` / ``"staging"`` otherwise).
+    ``resume`` (default: the file's ``"resume"``, true): with a ``state``, a run
+    that failed is finished by the next one — same run id and parameters, the
+    targets it wrote skipped, an append replacing its own files, its batches
+    reused and, where the connector can (``IDEMPOTENCY``), its reads continued
+    after the last batch. False drops it and starts a new run.
     """
     started = time.perf_counter()
     spec = with_settings(_spec(source), lake_settings(duck, config_path))
+    if batch_rows is not None:
+        if not isinstance(batch_rows, int) or isinstance(batch_rows, bool) or batch_rows < 1:
+            raise PipelineError(f"batch_rows is how many rows a batch on disk holds (≥ 1), not {batch_rows!r}")
+        spec.batch_rows = batch_rows
+    if staging is not None:
+        spec.staging = os.fspath(staging)
+    if resume is not None:
+        spec.resume = bool(resume)
     account = aws.account_of(spec.aws, duck)  # the lake's AWS account: files, state, sip, a Glue catalog
     with aws.using(account):
         run = _run(spec, started, duck, spark, config_path, params, run_id, dry_run, now, engine, catalogs)
@@ -272,8 +301,18 @@ def run_pipeline(source: Union[str, os.PathLike, Dict[str, Any], PipelineSpec], 
 def _run(spec: PipelineSpec, started: float, duck: Any, spark: Any, config_path: Optional[str],
          params: Optional[Dict[str, Any]], run_id: Optional[str], dry_run: bool, now: Optional[dt.datetime],
          engine: Any, catalogs: Optional[Dict[str, Any]]) -> PipelineRun:
-    now = now or dt.datetime.now(dt.timezone.utc)
     state = _state(spec)
+    pending = state.get("pending") if spec.state and spec.resume and not dry_run else None
+    if pending and run_id is not None and run_id != pending.get("run_id"):
+        logger.warning("%s: run %s failed and isn't finished — starting run %s instead (its batches stay at %s)",
+                       spec.name, pending.get("run_id"), run_id, pending.get("staging"))
+        pending = None
+    if pending:  # finish the run that failed: its id and its clock, so every parameter is what it was
+        run_id = pending["run_id"]
+        now = dt.datetime.fromisoformat(pending["now"])
+        logger.info("%s: resuming run %s, which failed (%s written before it stopped)", spec.name, run_id,
+                    ", ".join(pending.get("written") or []) or "nothing")
+    now = now or dt.datetime.now(dt.timezone.utc)
     values = run_parameters(spec, params, now=now, run_id=run_id, state=state)
     statements = [Statement(substitute(s.sql, values), s.origin) for s in statements_of(spec)]
     if duck is None and engine is not None:
@@ -288,10 +327,25 @@ def _run(spec: PipelineSpec, started: float, duck: Any, spark: Any, config_path:
     try:
         for name in plan.needed:  # FROM inventory.assets / raw.inventory.assets: the lake's own tables
             plan.views[name].sql = reads.rewrite(plan.views[name].sql)
-        return _execute(spec, plan, started, duck, spark, params, values, state, dry_run, now, engine, catalog_of)
+        return _execute(spec, plan, started, duck, spark, params, values, state, dry_run, now, engine, catalog_of,
+                        pending)
     finally:
         reads.close()
         put_back(restore)
+
+
+def staging_folder(spec: PipelineSpec, run_id: str) -> str:
+    """Where this run's batches go: ``{staging}/{pipeline}/{run_id}`` — the file's / the call's ``staging``,
+    else ``{state}/_staging`` when the state is a local folder, else the temp folder. Local disk: the batches
+    are read back by DuckDB, and a resumed run finds them there."""
+    if spec.staging:
+        root = spec.resolve(spec.staging)
+    elif spec.state and "://" not in spec.state:
+        root = os.path.join(spec.resolve(spec.state), "_staging")
+    else:
+        root = os.path.join(tempfile.gettempdir(), "duckduck-staging")
+    safe = re.sub(r"[^\w.-]", "_", str(run_id))
+    return os.path.join(root, spec.name, safe)
 
 
 _UNSET = object()
@@ -372,7 +426,7 @@ def put_back(restore: List[Tuple[Any, str, Any]]) -> None:
 
 def _execute(spec: PipelineSpec, plan: Plan, started: float, duck: Any, spark: Any, params: Optional[Dict[str, Any]],
              values: Dict[str, Any], state: Dict[str, Any], dry_run: bool, now: dt.datetime, engine: Any,
-             catalog_of: Any) -> PipelineRun:
+             catalog_of: Any, pending: Optional[Dict[str, Any]] = None) -> PipelineRun:
     if params and "watermark" in params and spec.load.columns:  # read from a given point: a backfill / re-read
         state = {**state, "watermarks": {**(state.get("watermarks") or {}), spec.load.columns[0]: str(params["watermark"])}}
     run_load = apply_load(spec, plan, state)
@@ -381,10 +435,34 @@ def _execute(spec: PipelineSpec, plan: Plan, started: float, duck: Any, spark: A
                                             ("_load_date", f"DATE '{values['run_date']}'"),
                                             ("_run_id", "'" + str(values["run_id"]).replace("'", "''") + "'"))
              if name in spec.audit_columns}
+    run_staging = staging_folder(spec, values["run_id"]) if spec.batch_rows else None
     if engine is None:
-        engine = make_engine(spec.engine, duck=duck, spark=spark)
+        batching = {}
+        if spec.batch_rows and spec.engine != "spark":
+            batching = {"batch_rows": spec.batch_rows, "staging": run_staging, "resume": spec.resume,
+                        "resume_column": spec.resume_column, "load_columns": spec.load.columns
+                        if spec.load.incremental else ()}
+        engine = make_engine(spec.engine, duck=duck, spark=spark, **batching)
+    elif spec.batch_rows and getattr(engine, "batch_rows", "no") is None:  # a DuckEngine given without batches
+        engine.use_batches(spec.batch_rows, run_staging, spec.resume, spec.resume_column,
+                           spec.load.columns if spec.load.incremental else ())
+    engine.resuming = bool(pending)
     run = PipelineRun(pipeline=spec.name, run_id=values["run_id"], run_at=values["run_at"], engine=engine.name,
-                      plan=plan, dry_run=dry_run)
+                      plan=plan, dry_run=dry_run, resumed=bool(pending),
+                      batch_rows=spec.batch_rows if getattr(engine, "batch_rows", None) else None,
+                      staging=run_staging if getattr(engine, "batch_rows", None) else None)
+    if spec.batch_rows and not getattr(engine, "batch_rows", None):
+        run.warnings.append(f"batch_rows applies to the duckdb engine — {engine.name} reads in its own pieces")
+    written: List[str] = list((pending or {}).get("written") or [])
+    record = {k: v for k, v in state.items() if k != "pending"}
+
+    def mark_pending() -> None:  # how far this run got: what the next attempt needs to finish it
+        if spec.state and spec.resume and not dry_run:
+            write_state(spec.resolve(spec.state), spec.name, {**record, "pending": {
+                "run_id": run.run_id, "now": now.isoformat(), "staging": run.staging, "written": written,
+                "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(sep=" ")}})
+
+    mark_pending()
     for w in plan.warnings:  # what the sip can't follow: said, never a reason to stop
         logger.warning("%s: %s", spec.name, w)
         run.warnings.append(w)
@@ -411,11 +489,19 @@ def _execute(spec: PipelineSpec, plan: Plan, started: float, duck: Any, spark: A
             for target in plan.targets:
                 if target.view != name or dry_run:
                     continue
+                if target.where in written:
+                    logger.info("  %s → %s: written by the failed attempt of this run — not written again", name,
+                                target.where)
+                    run.writes.append({"view": name, "target": target.where, "mode": target.mode,
+                                       "already_written": True, "seconds": 0.0})
+                    continue
                 t1 = time.perf_counter()
                 result = write_target(engine, target, plan.key_of(target), run.run_id, catalog_of, audit)
                 run.writes.append({"view": name, "target": target.where, "mode": target.mode, **result,
                                    "seconds": round(time.perf_counter() - t1, 2)})
                 logger.info("  wrote %s → %s (%s)", name, target.where, target.mode)
+                written.append(target.where)
+                mark_pending()
         current = None
         marks = dict(state.get("watermarks") or {})
         if run_load["type"] == "incremental":
@@ -438,12 +524,19 @@ def _execute(spec: PipelineSpec, plan: Plan, started: float, duck: Any, spark: A
             sip.failed(current, exc)
             if not dry_run:
                 sip.save(spec.sip.store and spec.resolve(spec.sip.store))
+        if spec.state and spec.resume and not dry_run:
+            logger.warning("%s: run %s failed%s — the next run finishes it (same run id%s)", spec.name, run.run_id,
+                           f" at {current}" if current else "",
+                           f"; its batches stay at {run.staging}" if run.staging else "")
         raise
     finally:
+        run.batches = list(getattr(engine, "notes", []) or [])
         try:
             engine.close()
         except Exception:  # noqa: BLE001
             pass
+    if run.staging:  # done: the batches of this run aren't needed any more
+        shutil.rmtree(run.staging, ignore_errors=True)
     if sip is not None:
         if not dry_run:
             if spec.sip.store:

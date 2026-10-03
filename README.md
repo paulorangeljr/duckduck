@@ -2714,6 +2714,49 @@ give each layer's targets their own `"database"` (`raw_servicenow`,
 `silver_servicenow`) — two layers registering the same `database.table`
 would take turns pointing it at their files.
 
+### A table too big for memory: `batch_rows`, and a failed run that picks up where it stopped
+
+By default a step reads its sources into memory before writing. For a big
+table give the run a batch size — the sources are read page by page and every
+`batch_rows` rows go to a Parquet file on local disk; the step reads the files,
+DuckDB spills joins and sorts there too, and the target is written as a stream.
+Memory holds one batch, never the table:
+
+```python
+run_pipeline("incidents_raw.json", batch_rows=100_000)               # or "batch_rows": 100000 in the file
+Pipelines().domain("raw_inventory.json").run(batch_rows=100_000, staging="/data/staging")
+```
+```bash
+python -m duckduck.pipeline run incidents_raw.json --batch-rows 100000 [--staging DIR] [--no-resume]
+```
+
+The batches go under `staging` (default `{state}/_staging`, else the temp
+folder) in `{pipeline}/{run_id}/` and are removed when the run succeeds.
+
+**A run that fails is finished by the next one** (needs `"state"`): the run
+records in its state file that it's pending — its id, its clock, the targets
+it already wrote. The next run *is* that run: same `run_id` and parameters
+(`run_date` too), the targets already written are skipped, an append replaces
+the files (or the Delta rows with its `_run_id`) the failed attempt wrote — so
+nothing lands twice. Sources it had read completely come from their batches;
+the one it was reading continues **only if its connector says it can**:
+
+| Connector | After a failure | Why |
+|---|---|---|
+| ServiceNow | continues after `sys_created_on` (needs the connector's `timezone` for the date to reach the API) | pages sort by a date field, a date filter reaches the API |
+| Airflow `dag_runs` | continues after `logical_date` | sorted, and a logical-date filter reaches the API |
+| database, Glue, Blob Storage, local files | continues after the column you name | ORDER BY + `col > value` run in the database / the scan |
+| InsightVM, SharePoint, Axonius, NVD, Athena, ADX, REST Countries, Python | reads that source again from the start | no sort, cursor pages, one response… |
+
+That's each connector's `IDEMPOTENCY` attribute. Name the column with
+`"resume": {"column": "id"}` (a key or a date every row has and that only
+grows); an incremental load's column is used when the source sorts by it.
+`"resume": false` (or `resume=False`, `--no-resume`) drops a failed run and
+starts a new one; a `run_id=` of your own does too. `duckduck.pipeline_runs`
+shows `pending_run_id`. A batched read checks as it goes: pages that aren't
+sorted, or a row without the column, turn the checkpoint off (said in the run's
+report) — it then reads again rather than risk losing rows.
+
 ### Reading the lake: tables, not connectors
 
 Past raw, a job reads what's **in the lake** — by the table's name, the way
@@ -3014,7 +3057,8 @@ duckduck/
     databases/      query engines: sql (SQLAlchemy), adx, athena
     local/          this machine: files, python_source
   common/           what connectors and the engine are built with: pushdown, slicing (pages),
-                    retry, progress, logs, kinds (@catalog…), sparkplan (@spark_plan)
+                    retry, progress, logs, kinds (@catalog…), sparkplan (@spark_plan),
+                    batches (reading to Parquet on disk), idempotency (resume or restart)
   secrets/          aws (Secrets Manager), azure (Key Vault)
   pipeline/         ingestion jobs, the lake, the sip
   pgserver/         PostgreSQL wire protocol

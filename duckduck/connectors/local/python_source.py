@@ -27,6 +27,8 @@ import os
 import re
 from typing import Any, Callable, Dict, Optional
 
+from ...common.idempotency import restart
+
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -61,6 +63,9 @@ class PythonSource:
     kwargs : dict, optional
         Passed to the factory (row counts, seeds, a fixed ``now``...).
     """
+
+    #: what a failed batched pipeline read does next (duckduck.common.idempotency)
+    IDEMPOTENCY = restart("a Python function: nothing says it sorts or reads after a value")
 
     def __init__(self, module: str, factory: Optional[str] = None, kwargs: Optional[Dict[str, Any]] = None):
         mod = load_module(module)

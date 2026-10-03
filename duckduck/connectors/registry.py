@@ -41,6 +41,8 @@ class ServiceSpec(NamedTuple):
     #: Method returning ``{table_name: callable}`` for connectors whose
     #: tables are only known at runtime (one per file, per module function).
     dynamic_tables: Optional[str] = None
+    #: Method returning ``{table_name: generator}`` — the page-by-page readers of ``dynamic_tables``.
+    dynamic_streaming: Optional[str] = None
     #: False for local sources, where an ``authentication`` block is optional.
     requires_authentication: bool = True
     #: Config options holding filesystem paths — resolved against the JSON
@@ -222,6 +224,7 @@ SERVICE_REGISTRY: Dict[str, ServiceSpec] = {
         tables={"tables": "tables", "columns": "columns"},
         streaming_tables={},
         dynamic_tables="table_functions",
+        dynamic_streaming="streaming_functions",
         requires_authentication=False,
         path_options=("path",),
     ),

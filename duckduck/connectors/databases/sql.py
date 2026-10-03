@@ -59,6 +59,7 @@ from ...common.kinds import catalog, raw_query
 from ...common.logs import get_logger
 from ...common.pushdown import Condition, sortable
 from ...common.sparkplan import SparkSource, spark_plan
+from ...common.idempotency import checkpoint
 
 logger = get_logger("database")
 
@@ -85,6 +86,9 @@ class SQLDatabase:
     **engine_kwargs
         Passed straight to ``sqlalchemy.create_engine`` (e.g. ``pool_size``).
     """
+
+    #: what a failed batched pipeline read does next (duckduck.common.idempotency)
+    IDEMPOTENCY = checkpoint("ORDER BY and WHERE col > value run in the database — name a column that only grows (an id, a creation date)")
 
     #: ``where`` applies join key values as ``col IN (…)`` — bound parameters, at most ``IN_MAX`` per query
     #: (SQL Server takes 2100 parameters): DuckAPI splits more into several calls
@@ -371,25 +375,44 @@ class SQLDatabase:
     # Streaming (iter_*) — for use with DuckAPI.stream()
     # ------------------------------------------------------------------
 
+    @sortable(exact=True)
     def iter_table(
         self,
         table_name: str,
         where: Optional[List[Condition]] = None,
+        order_by: Optional[List[Tuple[str, bool]]] = None,
         chunksize: int = 10_000,
     ) -> Iterator[pd.DataFrame]:
-        """Yields one chunk of up to `chunksize` rows at a time from a table."""
+        """
+        Yields one chunk of up to ``chunksize`` rows at a time, read from a
+        server-side cursor (``stream_results``) — the table is never whole in
+        memory, here or in the driver. ``order_by``: ORDER BY in the database
+        (number/date/time/bool columns, NULLs last; another column → no order).
+        """
         tbl = self._reflect(table_name)
         stmt = sa.select(tbl)
         clauses = self._where_clauses(tbl, where)
         if clauses:
             stmt = stmt.where(*clauses)
+        if order_by:
+            keys = self._order_keys(tbl, order_by)
+            if keys is not None:
+                stmt = stmt.order_by(*keys)
         self._log_statement(stmt)
-        for chunk in pd.read_sql(stmt, self.engine, chunksize=chunksize):
-            if not chunk.empty:
-                yield chunk
+        yield from self._stream(stmt, chunksize)
+
+    def _stream(self, stmt: Any, chunksize: int) -> Iterator[pd.DataFrame]:
+        with self.engine.connect() as conn:
+            result = conn.execution_options(stream_results=True, yield_per=chunksize).execute(stmt)
+            columns = list(result.keys())
+            empty = True
+            for rows in result.partitions(chunksize):
+                if rows:
+                    empty = False
+                    yield pd.DataFrame.from_records([tuple(r) for r in rows], columns=columns)
+            if empty:
+                yield pd.DataFrame({c: pd.Series(dtype="object") for c in columns})
 
     def iter_query(self, sql: str, chunksize: int = 10_000) -> Iterator[pd.DataFrame]:
-        """Yields one chunk of up to `chunksize` rows at a time from a raw query."""
-        for chunk in pd.read_sql_query(sql, self.engine, chunksize=chunksize):
-            if not chunk.empty:
-                yield chunk
+        """Yields one chunk of up to `chunksize` rows at a time from a raw query (a server-side cursor)."""
+        yield from (chunk for chunk in self._stream(sa.text(sql), chunksize) if not chunk.empty)

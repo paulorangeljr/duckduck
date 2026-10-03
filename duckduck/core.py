@@ -1124,6 +1124,8 @@ class DuckAPI:
                             raise ValueError(f"'{name}': data table '{t}' clashes with the built-in '{t}' table")
                         tables[t] = fn
                 streaming = {t: getattr(instance, m) for t, m in spec.streaming_tables.items()}
+                if spec.dynamic_streaming:
+                    streaming.update(getattr(instance, spec.dynamic_streaming)())
 
                 full = (lambda t: f"{prefix}_{t}") if prefix else (lambda t: t)
                 clashes = [
@@ -1743,6 +1745,13 @@ class DuckAPI:
             source_cache.note(function_name, True, len(df), age)
         else:
             progress.step("fetching", f"Reading {function_name}…")  # a paused / cancelled run stops here
+            from .common import batches
+
+            staging = batches.current()
+            if staging is not None:  # a batched pipeline read: this one can't be (no page-by-page reader, or a limit)
+                staging.note(f"{function_name}: read whole, not in batches — "
+                             + ("a LIMIT reached it" if "limit" in kwargs else "it has no page-by-page reader")
+                             + "; a failure reads it again")
             started = time.perf_counter()
             with slicing.parallel(self._parallel_of(function_name)):
                 data = fetch_function(**validated)
@@ -1798,8 +1807,18 @@ class DuckAPI:
             logger.debug("  couldn't note the columns of %s: %s", function_name, exc)
 
     def _pages_instead(self, fn_name: str, kwargs: Dict[str, Any]) -> bool:
-        """Read this table page by page: streaming on, a streaming function, and no LIMIT reached the source."""
-        return self.stream_pages and "limit" not in kwargs and fn_name in self._streaming_functions
+        """Read this table page by page: streaming on, a streaming function, and no LIMIT reached the source.
+        A source that scans itself (``@spark_plan("native")``: files, a database, a lake table — its WHERE runs
+        inside its own scan) is read whole, unless a pipeline reads in batches (then never whole in memory)."""
+        if not (self.stream_pages and "limit" not in kwargs and fn_name in self._streaming_functions):
+            return False
+        from .common import batches
+        from .common.sparkplan import plan_of
+
+        if batches.current() is not None:
+            return True
+        plan = plan_of(self.functions.get(fn_name))
+        return not (plan and plan.strategy == "native")
 
     def _materialize_pages(
         self,
@@ -1829,6 +1848,10 @@ class DuckAPI:
 
         Returns ``(table_name, df_columns, kwargs)``.
         """
+        from .common import batches
+
+        if batches.current() is not None:  # a pipeline reading in batches: on disk, never one frame
+            return self._materialize_batches(fn_name, pushdown, explicit, names, parsed, fallback_columns)
         iter_fn = self._streaming_functions[fn_name]
         kwargs, report = self._plan_call(iter_fn, pushdown, explicit, names, allow_limit=False)
         self._log_call(f"{fn_name} (page by page)", kwargs, report)
@@ -1943,6 +1966,213 @@ class DuckAPI:
         if star and kept:  # every column of the pages, not just the ones the query used
             self._learn_columns(fn_name, table_name, kwargs)
         return table_name, list(df.columns), kwargs
+
+    def _resume_column(self, fn_name: str, iter_fn: Any, staging: Any) -> Tuple[Optional[str], str]:
+        """The column a batched read sorts by and can resume after — (column, why) or (None, why not):
+        the pipeline's ``resume.column``, else an incremental load column the source sorts by, else the
+        connector's default (``IDEMPOTENCY``)."""
+        from .common.idempotency import idempotency_of
+        from .common.pushdown import sortable_of
+
+        if not staging.resume:
+            return None, "resume is off for this run"
+        idem = idempotency_of(iter_fn)
+        if idem is None:
+            return None, "its connector doesn't say whether it can resume (no IDEMPOTENCY)"
+        if not idem.resumes:
+            return None, idem.why
+        sorting = sortable_of(iter_fn)
+        if sorting is None or "order_by" not in inspect.signature(iter_fn).parameters:
+            return None, "its page-by-page reader doesn't sort"
+        wanted = [staging.column] if staging.column else [*staging.load_columns, idem.column]
+        for column in wanted:
+            if column and (sorting.columns is None or column.lower() in sorting.columns):
+                return column, idem.why
+        if staging.column:
+            return None, (f"it doesn't sort by {staging.column} (it sorts by "
+                          f"{', '.join(sorted(sorting.columns or ())) or 'nothing'})")
+        return None, "name the column to resume after: \"resume\": {\"column\": \"…\"} (a key or a date that only grows)"
+
+    def _materialize_batches(self, fn_name: str, pushdown: PushDownContext, explicit: Dict[str, Any], names: set,
+                             parsed: Optional[exp.Expression], fallback_columns: Optional[List[str]] = None) -> tuple:
+        """
+        ``_materialize_pages`` for a pipeline that reads in batches
+        (``common.batches``): the kept rows of each page go into a buffer
+        that is written as a Parquet file every ``rows`` rows, and the query
+        reads the files. When the connector can resume (``IDEMPOTENCY``
+        ``checkpoint``) the pages are asked sorted by the resume column, and
+        each file ends where that column's value changes, so ``after`` (the
+        last value written) means every row up to it is on disk: a later
+        attempt reads ``column > after`` and adds to the files.
+        """
+        from .common import batches, progress
+        from .common.idempotency import idempotency_of
+
+        staging = batches.current()
+        iter_fn = self._streaming_functions[fn_name]
+        kwargs, report = self._plan_call(iter_fn, pushdown, explicit, names, allow_limit=False)
+        conditions = [c for c in pushdown.conditions if c.table is None or c.table in names]
+        star = parsed is None or parsed.find(exp.Star) is not None
+        used = {c.lower() for c in (fallback_columns or [])}
+        validated = self._validate_arguments(fn_name, iter_fn, kwargs)
+        call = (fn_name, sorted((k, repr(v)) for k, v in validated.items()), [repr(c) for c in conditions],
+                "*" if star else sorted(used))
+        staged = staging.source(fn_name, call)
+
+        def register(columns: List[str]) -> tuple:
+            self._table_counter += 1
+            table_name = f"_api_{fn_name}_{self._table_counter}"
+            if staged.files:
+                self.conn.register(table_name, self.conn.read_parquet(staged.files, union_by_name=True))
+                listed = [d[0] for d in self.conn.sql(f'SELECT * FROM "{table_name}" LIMIT 0').description]
+            else:
+                listed = columns or list(fallback_columns or []) or [self.EMPTY_PLACEHOLDER_COLUMN]
+                self.conn.register(table_name, pd.DataFrame({c: pd.Series(dtype="object") for c in listed}))
+            progress.note_item("fetched", fn_name, {"rows": staged.rows, "files": len(staged.files)})
+            return table_name, listed, kwargs
+
+        if staged.done:
+            staging.note(f"{fn_name}: {staged.rows:,} rows from the {len(staged.files)} batch(es) an earlier "
+                         "attempt of this run read — not read again")
+            return register(staged.columns)
+
+        column, why = self._resume_column(fn_name, iter_fn, staging)
+        if staged.files:
+            if staged.resumable and column is not None and staged.column.lower() == column.lower():
+                column = staged.column
+                resume = Condition(column, "gt", staged.after)
+                conditions = conditions + [resume]
+                kwargs, report = self._plan_call(iter_fn, replace(pushdown, conditions=pushdown.conditions + [resume]),
+                                                 explicit, names, allow_limit=False)
+                accepted = set(inspect.signature(iter_fn).parameters)
+                reached = resume in assign_conditions(accepted, [resume], blocker_of(iter_fn), where_ops_of(iter_fn))
+                staging.note(f"{fn_name}: resuming after {column} = {staged.after!r} ({staged.rows:,} rows in "
+                             f"{len(staged.files)} batch(es) already)" + (
+                                 "" if reached else " — the condition doesn't reach the source, so it reads from "
+                                 "the start and DuckDB skips what's already kept"))
+            else:
+                staging.note(f"{fn_name}: reading again from the start — the earlier attempt's "
+                             f"{len(staged.files)} batch(es) are dropped ({why if column is None else 'no checkpoint'})")
+                staged.reset()
+        staged.column = column
+        if column is not None:
+            kwargs["order_by"] = [(column, False)]
+        elif not staged.files:
+            idem = idempotency_of(iter_fn)
+            logger.info("  %s: a failure here means reading it again from the start — %s", fn_name, why)
+            if idem is None:
+                logger.debug("  %s has no IDEMPOTENCY", fn_name)
+        self._log_call(f"{fn_name} (in batches of {staging.rows:,} rows)", kwargs, report)
+        validated = self._validate_arguments(fn_name, iter_fn, kwargs)
+
+        progress.step("fetching", f"Reading {fn_name} in batches…")
+        started = time.perf_counter()
+        buffer: List[pd.DataFrame] = []
+        buffered = pages = scanned = kept = 0
+        last_columns: List[str] = list(staged.columns)
+        last_key: Optional[tuple] = None  # the resumed part starts after staged.after: compared from here on
+
+        def no_checkpoint(reason: str) -> None:
+            staging.note(f"{fn_name}: {reason} — no checkpoint, a failure reads it again from the start")
+            staged.column, staged.after = None, None
+            staged.save()  # at once: an "after" written while the order looked right can't be trusted now
+
+        def write(df: pd.DataFrame, after: Any) -> None:
+            path = staged.next_file()
+            view = f"_batch_{fn_name}_{self._table_counter}_{len(staged.files)}"
+            self.conn.register(view, json_for_mixed_objects(df.reset_index(drop=True)))
+            try:
+                self.conn.execute(f"COPY (SELECT * FROM \"{view}\") TO '{path.replace(chr(39), chr(39) * 2)}' "
+                                  "(FORMAT parquet)")
+            finally:
+                self.conn.unregister(view)
+            staged.added(path, len(df), after, list(df.columns))
+
+        def flush(final: bool) -> None:
+            nonlocal buffer, buffered
+            if not buffer:
+                return
+            df = pd.concat(buffer, ignore_index=True) if len(buffer) > 1 else buffer[0].reset_index(drop=True)
+            if staged.column is None or final:
+                write(df, df[staged.column].iloc[-1] if staged.column is not None and len(df) else None)
+                buffer, buffered = [], 0
+                return
+            # a file ends where the resume column's value changes: rows tied on the last value stay together
+            # (the next file), so "after" = the last value written covers every row of it
+            values = df[staged.column]
+            first_tied = int((values != values.iloc[-1]).to_numpy().nonzero()[0][-1]) + 1 \
+                if (values != values.iloc[-1]).any() else 0
+            if first_tied == 0:
+                return  # every buffered row has the same value: keep buffering
+            write(df.iloc[:first_tied], values.iloc[first_tied - 1])
+            rest = df.iloc[first_tied:]
+            buffer, buffered = [rest], len(rest)
+
+        pages_iter = iter_fn(**validated)
+        requests_at_once = slicing.parallel(self._parallel_of(fn_name))
+        requests_at_once.__enter__()
+        try:
+            for page in pages_iter:
+                progress.checkpoint()
+                df = self._to_dataframe(page, fn_name, allow_empty=True)
+                if df.empty:
+                    if len(df.columns) and not last_columns:
+                        last_columns = list(df.columns)
+                    continue
+                pages += 1
+                scanned += len(df)
+                columns = list(df.columns) if star else ([c for c in df.columns if c.lower() in used]
+                                                         or list(df.columns[:1]))
+                if staged.column is not None:
+                    by_name = {c.lower(): c for c in df.columns}
+                    real = by_name.get(staged.column.lower())
+                    if real is None:
+                        no_checkpoint(f"no column {staged.column} in its rows")
+                    else:
+                        if real not in columns:
+                            columns = columns + [real]  # kept for the checkpoint even when the query doesn't use it
+                        staged.column = real
+                last_columns = columns
+                where = conditions_to_sql(conditions, df.columns)
+                self._table_counter += 1
+                view = f"_page_{fn_name}_{self._table_counter}"
+                self.conn.register(view, df)
+                try:
+                    select = ", ".join('"' + c.replace('"', '""') + '"' for c in columns)
+                    out = self.conn.sql(f"SELECT {select} FROM {view}" + (f" WHERE {where}" if where else "")).df()
+                finally:
+                    self.conn.unregister(view)
+                if staged.column is not None and len(out):
+                    keys = out[[staged.column]]
+                    if keys[staged.column].isna().any():
+                        no_checkpoint(f"{staged.column} is empty in some rows")
+                    else:
+                        last_key, ok = _still_sorted(keys, [False], last_key)
+                        if not ok:
+                            no_checkpoint(f"the pages didn't come sorted by {staged.column}")
+                if len(out):
+                    buffer.append(out)
+                    buffered += len(out)
+                    kept += len(out)
+                    if buffered >= staging.rows:
+                        flush(final=False)
+                progress.update(f"Reading {fn_name}: page {pages} · kept {kept:,} of {scanned:,} rows · "
+                                f"{len(staged.files)} batch(es) on disk")
+            flush(final=True)
+            staged.finish(last_columns)
+        finally:
+            close = getattr(pages_iter, "close", None)
+            if close is not None:
+                close()
+            requests_at_once.__exit__(None, None, None)
+        logger.info("  %s: kept %s of %s rows from %s page(s) in %s batch(es) of ≤%s rows, in %.2fs", fn_name,
+                    f"{kept:,}", f"{scanned:,}", pages, len(staged.files), f"{staging.rows:,}",
+                    time.perf_counter() - started)
+        staging.note(f"{fn_name}: {staged.rows:,} rows in {len(staged.files)} batch(es) at {staged.path}")
+        result = register(last_columns)
+        if star and staged.files:
+            self._learn_columns(fn_name, result[0], kwargs)
+        return result
 
     #: Sole column of an empty result when neither the source nor the query
     #: says which columns there are (``SELECT *`` over zero rows).

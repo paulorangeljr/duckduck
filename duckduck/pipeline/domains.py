@@ -150,9 +150,12 @@ class Domain:
         return self._specs[table]
 
     def run(self, *tables: str, params: Optional[Dict[str, Any]] = None, dry_run: bool = False,
-            run_id: Optional[str] = None) -> "Runs":
-        """Runs the tables named (every one when none is, in the file's order), one after the other."""
-        return Runs(self.pipelines.run(self.spec(t), params=params, dry_run=dry_run, run_id=run_id)
+            run_id: Optional[str] = None, batch_rows: Optional[int] = None, staging: Optional[str] = None,
+            resume: Optional[bool] = None) -> "Runs":
+        """Runs the tables named (every one when none is, in the file's order), one after the other.
+        ``batch_rows`` / ``staging`` / ``resume``: as ``run_pipeline``'s, for each of them."""
+        return Runs(self.pipelines.run(self.spec(t), params=params, dry_run=dry_run, run_id=run_id,
+                                       batch_rows=batch_rows, staging=staging, resume=resume)
                     for t in (list(tables) or self.tables))
 
     def plan(self, table: Optional[str] = None, params: Optional[Dict[str, Any]] = None) -> Union[Plan, List[Plan]]:
@@ -198,11 +201,15 @@ class Pipelines:
 
     def run(self, source: Union[str, os.PathLike, Dict[str, Any], PipelineSpec], table: Optional[str] = None,
             params: Optional[Dict[str, Any]] = None, dry_run: bool = False,
-            run_id: Optional[str] = None) -> PipelineRun:
-        """One table — a spec, a plain pipeline file, or ``table`` of a domain file."""
+            run_id: Optional[str] = None, batch_rows: Optional[int] = None, staging: Optional[str] = None,
+            resume: Optional[bool] = None) -> PipelineRun:
+        """One table — a spec, a plain pipeline file, or ``table`` of a domain file. ``batch_rows``: read its
+        sources in batches of that many rows on disk (``staging``: where); ``resume``: finish a failed run
+        first (default: the file's, true) — see ``run_pipeline``."""
         spec = self._spec_of(source, table)
         return run_pipeline(spec, duck=self.connect(), spark=self.spark, config_path=self.config,
-                            params={**self.params, **(params or {})}, dry_run=dry_run, run_id=run_id)
+                            params={**self.params, **(params or {})}, dry_run=dry_run, run_id=run_id,
+                            batch_rows=batch_rows, staging=staging, resume=resume)
 
     def plan(self, source: Union[str, os.PathLike, Dict[str, Any], PipelineSpec], table: Optional[str] = None,
              params: Optional[Dict[str, Any]] = None) -> Plan:

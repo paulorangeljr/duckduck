@@ -65,6 +65,7 @@ from ...common.logs import PageProgress, get_logger, instrument_session, log_htt
 from ...common.retry import RetryPolicy, send
 from ...common.pushdown import Condition, parse_like, require_like, sortable
 from ...common.sparkplan import spark_plan
+from ...common.idempotency import checkpoint
 
 #: date columns ServiceNow sorts by (``ORDERBY``) — dates only: its text order follows the database's collation.
 #: Values come back as ``YYYY-MM-DD HH:MM:SS`` (UTC), which sort as text exactly as the dates do.
@@ -157,6 +158,9 @@ class ServiceNow:
         — for a custom domain / on-prem deployment that isn't on the
         standard ServiceNow cloud domain. E.g. ``"servicenow.mycompany.com"``.
     """
+
+    #: what a failed batched pipeline read does next (duckduck.common.idempotency)
+    IDEMPOTENCY = checkpoint("pages sort by a date field (^ORDERBY) and a date filter reaches the API once the connector has its \"timezone\"", column="sys_created_on")
 
     def __init__(
         self,

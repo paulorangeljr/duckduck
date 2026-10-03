@@ -60,6 +60,7 @@ import requests
 from ...common import progress
 from ...common.logs import PageProgress, get_logger, instrument_session
 from ...common.sparkplan import spark_plan
+from ...common.idempotency import restart
 
 logger = get_logger("nvd")
 
@@ -96,6 +97,9 @@ class NVD:
     include_rejected : bool
         Keep CVEs NVD marked *Rejected* (withdrawn IDs); left out by default.
     """
+
+    #: what a failed batched pipeline read does next (duckduck.common.idempotency)
+    IDEMPOTENCY = restart("startIndex pages over 120-day windows, newest first: nothing to resume after")
 
     MAX_PAGE_SIZE = MAX_PAGE  # the API's own maximum: a pipeline's page_size never goes past it
 

@@ -39,6 +39,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         if name == "run":
             p.add_argument("--run-id", help="this run's id (default: the time + a random suffix)")
             p.add_argument("--dry-run", action="store_true", help="run the views and the sip, write nothing")
+            p.add_argument("--batch-rows", type=int, metavar="N", help="read the sources in batches of N rows "
+                           "on disk instead of all in memory (a big table: no out-of-memory)")
+            p.add_argument("--staging", metavar="DIR", help="a local folder for the batches (default: "
+                           "{state}/_staging, else the temp folder)")
+            p.add_argument("--no-resume", action="store_true", help="don't finish a run that failed: start a "
+                           "new one")
             p.add_argument("-v", "--verbose", action="count", default=0, help="-v progress, -vv debug")
     s = sub.add_parser("sip", help="show the sip kept in a store")
     s.add_argument("store", help="the sip.store folder (s3://lake/_sip/ or a local folder)")
@@ -58,7 +64,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 set_verbose("debug" if args.verbose > 1 else "info")
             domain = Pipelines(config=args.config).domain(args.pipeline)
             runs = domain.run(*(args.table or ()), params=_params(args.param), run_id=args.run_id,
-                              dry_run=args.dry_run)
+                              dry_run=args.dry_run, batch_rows=args.batch_rows, staging=args.staging,
+                              resume=False if args.no_resume else None)
             print(runs.report())
         else:
             from .settings import lake_settings

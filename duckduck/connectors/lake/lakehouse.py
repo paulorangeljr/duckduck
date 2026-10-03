@@ -19,7 +19,7 @@ downloaded once and cached under ``~/.duckdb/extensions``).
 """
 
 import threading
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import duckdb
 import pandas as pd
@@ -81,22 +81,57 @@ class LakehouseConnection:
         the scan doesn't have drops the order and the limit together.
         """
         with self._lock:
-            for name, value in (variables or {}).items():
-                self._conn.execute(f"SET VARIABLE {name} = ?", [value])
-            sql = f"SELECT * FROM {scan_expression}"
-            columns = ([row[0] for row in self._conn.sql(f"DESCRIBE {sql}").fetchall()]
-                       if where or order_by else [])
-            if where:
-                body = conditions_to_sql(where, columns)
-                if body:
-                    sql += f" WHERE {body}"
-            if order_by:
-                order = order_sql(order_by, columns)
-                if order is None:
-                    limit = None  # both or neither: DuckAPI sorts and cuts what it reads
-                else:
-                    sql += f" ORDER BY {order}"
-            if limit is not None:
-                sql += f" LIMIT {int(limit)}"
-            logger.info("DuckDB scan: %s", sql)
+            sql, _ = self._scan_sql(scan_expression, limit, where, variables, order_by)
             return self._conn.sql(sql).df()
+
+    def scan_batches(
+        self,
+        scan_expression: str,
+        where: Optional[List[Condition]] = None,
+        variables: Optional[Dict[str, Any]] = None,
+        order_by: Optional[List[Tuple[str, bool]]] = None,
+        chunksize: int = 100_000,
+    ) -> Iterator[pd.DataFrame]:
+        """
+        ``scan`` a piece at a time: DuckDB streams the result as Arrow record
+        batches of ``chunksize`` rows, each yielded as a DataFrame — only one
+        is in memory (the scan itself spills as DuckDB does). ``order_by``
+        sorts the whole scan (any column; one it can't sort by is dropped,
+        and the reader that asked sees the rows aren't sorted). An empty
+        result yields one empty frame with the columns.
+        """
+        with self._lock:  # the connection is busy until the last batch is read
+            sql, _ = self._scan_sql(scan_expression, None, where, variables, order_by)
+            result = self._conn.execute(sql)
+            reader = getattr(result, "to_arrow_reader", None) or result.fetch_record_batch
+            batches = reader(chunksize)
+            empty = True
+            for batch in batches:
+                if batch.num_rows:
+                    empty = False
+                    yield batch.to_pandas()
+            if empty:
+                yield batches.schema.empty_table().to_pandas()
+
+    def _scan_sql(self, scan_expression: str, limit: Optional[int], where: Optional[List[Condition]],
+                  variables: Optional[Dict[str, Any]], order_by: Optional[List[Tuple[str, bool]]]):
+        """The scan's SQL (variables set first, under the caller's lock)."""
+        for name, value in (variables or {}).items():
+            self._conn.execute(f"SET VARIABLE {name} = ?", [value])
+        sql = f"SELECT * FROM {scan_expression}"
+        columns = ([row[0] for row in self._conn.sql(f"DESCRIBE {sql}").fetchall()]
+                   if where or order_by else [])
+        if where:
+            body = conditions_to_sql(where, columns)
+            if body:
+                sql += f" WHERE {body}"
+        if order_by:
+            order = order_sql(order_by, columns)
+            if order is None:
+                limit = None  # both or neither: DuckAPI sorts and cuts what it reads
+            else:
+                sql += f" ORDER BY {order}"
+        if limit is not None:
+            sql += f" LIMIT {int(limit)}"
+        logger.info("DuckDB scan: %s", sql)
+        return sql, limit

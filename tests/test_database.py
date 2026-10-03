@@ -185,22 +185,33 @@ def test_from_secret_missing_drivername_raises(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_iter_table_yields_chunks(monkeypatch):
-    db, fake_sa, fake_engine = _make_db(monkeypatch)
-    fake_sa.select.return_value = MagicMock()
-    chunks = [pd.DataFrame([{"id": 1}]), pd.DataFrame([{"id": 2}])]
+def _sqlite(tmp_path, rows=5):
+    import sqlite3
 
-    with patch.object(database_module.pd, "read_sql", return_value=iter(chunks)):
-        result = list(db.iter_table("customers"))
+    path = tmp_path / "t.db"
+    c = sqlite3.connect(path)
+    c.execute("CREATE TABLE customers (id INTEGER, name TEXT)")
+    c.executemany("INSERT INTO customers VALUES (?, ?)", [(i, f"c{i}") for i in range(rows)])
+    c.commit()
+    return SQLDatabase(f"sqlite:///{path}")
 
-    assert len(result) == 2
+
+def test_iter_table_yields_chunks_from_a_server_side_cursor(tmp_path):
+    db = _sqlite(tmp_path)
+    result = list(db.iter_table("customers", chunksize=2))
+    assert [len(r) for r in result] == [2, 2, 1]
+    assert list(pd.concat(result)["id"]) == [0, 1, 2, 3, 4]
 
 
-def test_iter_query_skips_empty_chunks(monkeypatch):
-    db, fake_sa, fake_engine = _make_db(monkeypatch)
-    chunks = [pd.DataFrame([{"id": 1}]), pd.DataFrame()]
+def test_iter_table_of_nothing_yields_the_columns(tmp_path):
+    from duckduck.common.pushdown import Condition
 
-    with patch.object(database_module.pd, "read_sql_query", return_value=iter(chunks)):
-        result = list(db.iter_query("SELECT * FROM t"))
+    db = _sqlite(tmp_path)
+    (only,) = list(db.iter_table("customers", where=[Condition("id", "gt", 99)]))
+    assert only.empty and list(only.columns) == ["id", "name"]
 
-    assert len(result) == 1
+
+def test_iter_query_skips_empty_chunks(tmp_path):
+    db = _sqlite(tmp_path)
+    assert [len(r) for r in db.iter_query("SELECT * FROM customers", chunksize=3)] == [3, 2]
+    assert list(db.iter_query("SELECT * FROM customers WHERE id < 0")) == []

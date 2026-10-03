@@ -55,6 +55,7 @@ from ...common.logs import PageProgress, get_logger, instrument_session
 from ...common.retry import RetryPolicy, send
 from ...common.pushdown import require_like
 from ...common.sparkplan import spark_plan
+from ...common.idempotency import restart
 
 logger = get_logger("restcountries")
 
@@ -84,6 +85,9 @@ class RestCountries:
     page_size : int
         Countries per request when reading many (there are ~250).
     """
+
+    #: what a failed batched pipeline read does next (duckduck.common.idempotency)
+    IDEMPOTENCY = restart("one read of the whole list")
 
     def __init__(self, api_key: Optional[str] = None, base_url: str = BASE_URL, page_size: int = 250,
                  timeout: float = 30.0, verify: bool = True):

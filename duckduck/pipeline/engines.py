@@ -59,13 +59,44 @@ def check_unique(engine: Any, view: str, key: List[str]) -> None:
                             "(a _loaded_at column picks the newest by itself), or set \"unique\": false")
 
 
+def _quoted_path(path: str) -> str:
+    return "'" + path.replace("'", "''") + "'"
+
+
 class DuckEngine:
     name = "duckdb"
 
-    def __init__(self, duck: Any):
+    def __init__(self, duck: Any, batch_rows: Optional[int] = None, staging: Optional[str] = None,
+                 resume: bool = True, resume_column: Optional[str] = None, load_columns: Any = ()):
+        """``batch_rows``: read every source that pages in batches of that many rows written to Parquet under
+        ``staging`` (this run's folder), and keep kept views there too — memory holds a batch, never a table.
+        ``resume`` / ``resume_column`` / ``load_columns``: how a failed attempt's batches are picked up
+        (``duckduck.common.batches``)."""
         self.duck = duck
         self.conn = duck.conn
         self._made: Dict[str, str] = {}  # name → "table" | "view"
+        self.resuming = False  # set by the runner when this run is a failed run's next attempt
+        self.notes: List[str] = []  # what each batched read did (staged / reused / resumed / restarted)
+        self.use_batches(batch_rows, staging, resume, resume_column, load_columns)
+
+    def use_batches(self, batch_rows: Optional[int], staging: Optional[str], resume: bool = True,
+                    resume_column: Optional[str] = None, load_columns: Any = ()) -> None:
+        self.batch_rows = batch_rows
+        self.staging = staging
+        self.resume = resume
+        self.resume_column = resume_column
+        self.load_columns = tuple(load_columns or ())
+        if batch_rows:
+            if not staging:
+                raise PipelineError("batch_rows needs a staging folder for the batches")
+            import os
+
+            spill = os.path.join(staging, "duckdb_tmp")
+            os.makedirs(spill, exist_ok=True)
+            try:  # joins, sorts and aggregates over the batches spill there instead of running out of memory
+                self.conn.execute(f"SET temp_directory = {_quoted_path(spill)}")
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("couldn't set DuckDB's temp_directory: %s", exc)
 
     def _drop(self, name: str) -> None:
         kind = self._made.pop(name, None)
@@ -76,9 +107,34 @@ class DuckEngine:
         if name in self.duck.functions:
             raise PipelineError(f"view {name} has the name of a registered table — DuckAPI would read the table "
                                 "instead; rename the view")
-        rel = self.duck.sql(sql)
+        if self.batch_rows:
+            import os
+
+            from ..common import batches
+
+            spec = batches.Batching(self.batch_rows, os.path.join(self.staging, "sources", name), resume=self.resume,
+                                    column=self.resume_column, load_columns=self.load_columns)
+            with batches.batching(spec):
+                rel = self.duck.sql(sql)
+            self.notes.extend(f"{name}: {n}" for n in spec.notes)
+        else:
+            rel = self.duck.sql(sql)
         self._drop(name)
-        if keep:
+        if keep and self.batch_rows:  # kept on disk: a Parquet file under the run's staging, read as a view
+            import os
+
+            path = os.path.join(self.staging, "views", f"{name}.parquet")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            rel.create_view("__duckduck_pipeline_rel", replace=True)
+            try:
+                self.conn.execute(f"COPY (SELECT * FROM __duckduck_pipeline_rel) TO {_quoted_path(path)} "
+                                  "(FORMAT parquet)")
+            finally:
+                self.conn.execute("DROP VIEW IF EXISTS __duckduck_pipeline_rel")
+            self.conn.execute(f"CREATE OR REPLACE VIEW {ident(name)} AS SELECT * FROM read_parquet("
+                              f"{_quoted_path(path)})")
+            self._made[name] = "view"
+        elif keep:
             rel.create_view("__duckduck_pipeline_rel", replace=True)
             self.conn.execute(f"CREATE OR REPLACE TABLE {ident(name)} AS SELECT * FROM __duckduck_pipeline_rel")
             self.conn.execute("DROP VIEW IF EXISTS __duckduck_pipeline_rel")
@@ -129,7 +185,7 @@ class DuckEngine:
         if target.mode == "merge" and target.unique:
             check_unique(self, target.view, key)
         if target.format == "delta":
-            return self._write_delta(target, key)
+            return self._write_delta(target, key, run_id)
         return self._write_parquet(target, key, run_id)
 
     def _write_parquet(self, target: Target, key: List[str], run_id: str) -> Dict[str, Any]:
@@ -138,6 +194,14 @@ class DuckEngine:
         fs, base = _filesystem(target.path)
         base = base.rstrip("/")
         old = _files_under(fs, base) if target.mode in ("overwrite", "merge") else []
+        if target.mode == "append" and self.resuming:
+            # the failed attempt of this run may have written some of its files: they go, the new ones replace them
+            mine = [f for f in _files_under(fs, base) if f.rsplit("/", 1)[-1].startswith(f"part-{run_id}-")]
+            for f in mine:
+                fs.delete_file(f)
+            if mine:
+                logger.info("  %s: %d file(s) the failed attempt of run %s had written are replaced", target.where,
+                            len(mine), run_id)
         sql = f"SELECT * FROM {ident(target.view)}"
         if target.mode == "merge" and old:
             partitioning = ds.partitioning(flavor="hive") if target.partition_by else None
@@ -169,7 +233,7 @@ class DuckEngine:
                     "_files": written}
         return {"rows": counter[0], "files": len(written), "removed": len(removed), "_files": written}
 
-    def _write_delta(self, target: Target, key: List[str]) -> Dict[str, Any]:
+    def _write_delta(self, target: Target, key: List[str], run_id: Optional[str] = None) -> Dict[str, Any]:
         try:
             from deltalake import DeltaTable, write_deltalake
             from deltalake.exceptions import TableNotFoundError
@@ -212,6 +276,16 @@ class DuckEngine:
             return {"rows": counter[0], "partitions": len(parts)}
         if schema_mode == "overwrite" and target.mode != "overwrite":
             schema_mode = "merge"
+        if (target.mode == "append" and self.resuming and run_id and "_run_id" in self.columns(target.view)):
+            try:
+                DeltaTable(uri, storage_options=opts)
+            except TableNotFoundError:
+                pass
+            else:  # the failed attempt may have committed it: this run's rows are replaced, never added twice
+                write_deltalake(uri, reader, mode="overwrite", predicate=f"_run_id = {literal(run_id)}",
+                                partition_by=target.partition_by or None, storage_options=opts,
+                                schema_mode="merge" if schema_mode else None)
+                return {"rows": counter[0], "replaced_run": True}
         write_deltalake(uri, reader, mode=target.mode, partition_by=target.partition_by or None,
                         storage_options=opts, schema_mode=schema_mode)
         return {"rows": counter[0]}
@@ -220,6 +294,11 @@ class DuckEngine:
         for name in list(self._made):
             try:
                 self._drop(name)
+            except Exception:  # noqa: BLE001
+                pass
+        if self.batch_rows:
+            try:  # the run's staging goes away after it: DuckDB's spill folder back to its own
+                self.conn.execute("RESET temp_directory")
             except Exception:  # noqa: BLE001
                 pass
 
@@ -349,7 +428,7 @@ class SparkEngine:
         self._views.clear()
 
 
-def make_engine(engine: str, duck: Any = None, spark: Any = None):
+def make_engine(engine: str, duck: Any = None, spark: Any = None, **batching: Any):
     if engine == "spark":
         if spark is None:
             try:
@@ -358,4 +437,4 @@ def make_engine(engine: str, duck: Any = None, spark: Any = None):
                 raise PipelineError("\"engine\": \"spark\" needs pyspark (pip install \"duckduck[spark]\")") from None
             spark = SparkSession.getActiveSession() or SparkSession.builder.getOrCreate()
         return SparkEngine(spark, duck)
-    return DuckEngine(duck)
+    return DuckEngine(duck, **batching)
