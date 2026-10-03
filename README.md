@@ -1538,9 +1538,15 @@ row and text in another) they become JSON text, queryable as
 source it reads (with the page it's on and the rows kept so far), then
 DuckDB's step, with the log live. **⏸ Pause** stops before the next API
 call or page (one already in flight finishes first) and **▶ Continue**
-picks up; **✕ Cancel** stops it — DuckDB's own step included. **Debug
-log** shows the DEBUG lines too (request bodies, bound parameters, every
-page); secrets stay masked.
+picks up; **⏹ Stop and show** (running or paused) stops reading the
+sources and runs the query on the rows read so far — the result says it's
+partial and how much of each table it covers (a table not read yet gets its
+first page), and a read cut short is never kept in the cache; **✕ Cancel**
+stops it — DuckDB's own step included. **Debug log** shows the DEBUG lines
+too (request bodies, bound parameters, every page); secrets stay masked;
+opening or closing the log, and scrolling it up, stays as you left it while
+the query runs. Each result column shows its DuckDB type under its name
+(the full viewer too).
 
 **Cache.** The SQL tab reuses what a source returned for 10 minutes: the
 same call to the same table, with the same arguments and the same filters

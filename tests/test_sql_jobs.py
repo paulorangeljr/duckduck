@@ -123,3 +123,61 @@ def test_the_page_runs_sql_as_a_job():
     from duckduck.semantic.webpage import PAGE
 
     assert 'id="sqldebug"' in PAGE and "background: true" in PAGE and 'data-sqljob="pause"' in PAGE
+
+
+def test_paused_then_stop_and_show_runs_the_query_on_what_was_read():
+    pages = Pages(pages=5)
+    client = _client(pages)
+    jid = client.post("/api/sql", json={"sql": "SELECT n FROM rows", "background": True}).json()["job_id"]
+    view = lambda: client.get(f"/api/jobs/{jid}").json()  # noqa: E731
+    pages.go.release()
+    assert _wait(lambda: "page 1" in view()["events"][-1]["text"])
+    client.post(f"/api/jobs/{jid}/pause")
+    pages.go.release()  # the page in flight arrives, then it pauses
+    assert _wait(lambda: view()["state"] == "paused")
+    assert client.post(f"/api/jobs/{jid}/stop").json()["stopped"] is True
+    assert _wait(lambda: view()["state"] == "done")
+    r = view()["result"]
+    assert r["rows"] == [[0], [1], [2], [3]] and pages.served == 2 and pages.closed  # no third page asked
+    assert r["stopped"]["rows"] == {"rows": 4, "rows_scanned": 4, "pages": 2}
+    assert r["types"] == ["BIGINT"]
+    # a read cut short is never kept as the whole table: the next run reads every page
+    for _ in range(5):
+        pages.go.release()
+    again = client.post("/api/sql", json={"sql": "SELECT count(*) AS c FROM rows"}).json()
+    assert again["rows"] == [[10]] and again["stopped"] is None
+
+
+def test_stop_ends_the_shared_pager_and_unread_sources_read_one_page():
+    from duckduck.common import progress, slicing
+
+    asked = []
+
+    def fetch_page(n):
+        asked.append(n)
+        return list(range(n * 3, n * 3 + 3)), 30
+
+    p = progress.Progress()
+    with progress.tracking(p):
+        got = []
+        for rows in slicing.pages(fetch_page, 3):
+            got += rows
+            if len(asked) == 2:
+                p.stop()
+        assert asked == [0, 1] and got == [0, 1, 2, 3, 4, 5]
+        asked.clear()
+        assert sum(len(r) for r in slicing.pages(fetch_page, 3)) == 3 and asked == [0]  # already stopped: one page
+
+
+def test_result_and_viewer_pages_carry_each_columns_type():
+    client = _client()
+    r = client.post("/api/sql", json={"sql": "SELECT 1 AS i, 'x' AS s, DATE '2026-10-01' AS d, [1, 2] AS l"}).json()
+    assert r["types"] == ["INTEGER", "VARCHAR", "DATE", "INTEGER[]"]
+    page = client.get(f"/api/sql/results/{r['result_id']}").json()
+    assert page["types"] == r["types"]
+
+
+def test_the_page_keeps_the_log_open_and_offers_stop_and_show():
+    from duckduck.semantic.webpage import PAGE
+
+    assert 'data-sqljob="stop"' in PAGE and "LOG_OPEN[v.job_id]" in PAGE and "typeTag(" in PAGE

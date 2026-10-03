@@ -32,6 +32,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator, List, Optional, Tuple
 
+from . import progress
+
 
 @dataclass
 class Window:
@@ -134,6 +136,8 @@ def pages(fetch_page: Callable[[int], Tuple[List[Any], Optional[int]]], page_siz
             yield rows
         if not rows or ((page + 1) * page_size >= total if total is not None else len(rows) < page_size):
             break
+        if progress.reading_stopped():  # "Stop and show": the pages read so far are the answer
+            break
         page += 1
 
 
@@ -179,6 +183,8 @@ def _parallel_pages(fetch_page: Callable[[int], Tuple[List[Any], Optional[int]]]
             yield rows
             if last_short and len(rows) < page_size:
                 return  # no total: a short page is the last one
+            if progress.reading_stopped():  # "Stop and show": the pages read so far are the answer
+                return
     finally:
         for future in pending:
             future.cancel()

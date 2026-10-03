@@ -42,6 +42,8 @@ class Progress:
         self.partial: Dict[str, Any] = {}
         #: ``running`` / ``pausing`` (asked, not reached a checkpoint yet) / ``paused``.
         self.state = "running"
+        #: "Stop and show": the sources stop being read (the pages so far are kept) and the work finishes with them.
+        self.stopped = False
 
     # -- the work's side -----------------------------------------------------------------------
 
@@ -98,9 +100,17 @@ class Progress:
         self.cancelled = True
         self._running.set()  # a paused worker wakes up to see it
 
+    def stop(self) -> None:
+        """Stop reading, keep what was read: every page loop ends at its next page, a source not read yet reads at
+        most its first page, and the work goes on (a query runs over the rows read). Resumes a paused one."""
+        with self._lock:
+            self.stopped = True
+            self.state = "running"
+        self._running.set()
+
     def to_dict(self, since: int = 0) -> Dict[str, Any]:
         with self._lock:
-            return {"state": "cancelled" if self.cancelled else self.state,
+            return {"state": "cancelled" if self.cancelled else self.state, "stopped": self.stopped,
                     # from ``since``, plus the one before it: the step still running may have new counts
                     "events": self.events[max(0, since - 1):],
                     "partial": dict(self.partial),
@@ -163,6 +173,12 @@ def checkpoint() -> None:
     p = _current.get()
     if p is not None:
         p.checkpoint()
+
+
+def reading_stopped() -> bool:
+    """Whether the user asked to stop reading and see what was read ("Stop and show") — page loops end here."""
+    p = _current.get()
+    return p is not None and p.stopped
 
 
 def wait(seconds: float, sleep: Any = time.sleep, step: float = 0.25) -> None:

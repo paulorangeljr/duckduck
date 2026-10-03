@@ -82,7 +82,7 @@ class SQLConsole:
         self.max_rows = max_rows
         self.timeout = timeout
         #: The last results, whole (``keep_results``): the result viewer pages, sorts, searches and exports them.
-        self._results: "OrderedDict[str, Tuple[str, Any]]" = OrderedDict()
+        self._results: "OrderedDict[str, Tuple[str, Any, List[str]]]" = OrderedDict()  # query, frame, types
         self.keep_results = 5
         self._results_lock = threading.Lock()  # not the query lock: a paused query mustn't hold up the viewer
         self._lock = threading.Lock()  # one DuckDB connection: one query at a time
@@ -166,6 +166,7 @@ class SQLConsole:
                         relation = self.duck.sql(query)
                         pushdown = self.duck.last_pushdown
                         progress.step("query", "DuckDB runs the query")
+                        types = [str(t) for t in relation.types]
                         df = relation.df()
                 except Exception as exc:
                     return {"error": f"{type(exc).__name__}: {exc}", "columns": [], "rows": [], "row_count": 0,
@@ -176,8 +177,10 @@ class SQLConsole:
             self._lock.release()
         shown = df.head(self.max_rows)
         result_id = uuid.uuid4().hex[:12]
+        tracked = progress.current()
+        stopped = dict((tracked.partial.get("stopped") or {})) if tracked is not None and tracked.stopped else None
         with self._results_lock:
-            self._results[result_id] = (query, df)
+            self._results[result_id] = (query, df, types)
             while len(self._results) > self.keep_results:
                 self._results.popitem(last=False)
         return {
@@ -186,7 +189,10 @@ class SQLConsole:
             "row_count": int(len(df)), "truncated": len(df) > self.max_rows,
             "elapsed_ms": ms(), "log": log, "debug": debug, "result_id": result_id,
             "cache": {**self.cache_status(), "used": used, "skipped": not cache},
-            "pushdown": pushdown.to_dict() if pushdown is not None else None, **extra,
+            "pushdown": pushdown.to_dict() if pushdown is not None else None,
+            "types": types,  # DuckDB's type of each column, in order
+            # "Stop and show": the sources read only partly — the answer covers the rows read, not the table
+            "stopped": stopped, **extra,
         }
 
     def explain(self, query: str, language: str = "sql") -> Dict[str, Any]:
@@ -267,7 +273,10 @@ class SQLConsole:
                               f"LIMIT {limit} OFFSET {offset}", params).df()
         finally:
             con.close()
-        return {"columns": cols, "rows": _json_rows(out[[c for c in out.columns if c != "__row"]]),
+        with self._results_lock:
+            kept = self._results.get(result_id)
+        types = list(kept[2]) if kept is not None and len(kept) > 2 else []
+        return {"columns": cols, "types": types, "rows": _json_rows(out[[c for c in out.columns if c != "__row"]]),
                 "row_numbers": [int(n) for n in out["__row"]], "total": int(total), "filtered": int(filtered),
                 "offset": offset, "limit": limit}
 

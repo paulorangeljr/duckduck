@@ -113,6 +113,9 @@ button.verdict.pop { animation: fbpop .28s ease; }
 .conntable td { vertical-align: top; }
 .connok { color: var(--good-ink); font-weight: 600; white-space: nowrap; }
 .pushdown { margin: 8px 0; border-left: 3px solid var(--good); padding: 4px 10px; }
+.stoppednote { margin: 8px 0; border-left: 3px solid var(--warn); padding: 4px 10px; font-size: 13px; }
+th .ctype { display: block; font-weight: 400; font-size: 11px; color: var(--muted, #888); text-transform: none;
+  letter-spacing: 0; max-width: 18ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pushdown.warn { border-left-color: var(--warn); }
 .pushdown summary { cursor: pointer; }
 .pushdown ul { margin: 6px 0 0; padding-left: 18px; }
@@ -1619,11 +1622,13 @@ async function reply(convId, text) {
   runJob("/api/answer", {conversation_id: convId, reply: text}, LAST_QUESTION);
 }
 
-function table(rows, max = 500) {
+// a column's DuckDB type under its name in a result's header (full type in the tooltip: a STRUCT can be long)
+const typeTag = (t) => t ? `<span class="ctype" title="${esc(t)}">${esc(t)}</span>` : "";
+function table(rows, max = 500, types = null) {
   if (!rows || !rows.length) return `<p class="muted">No rows.</p>`;
   const cols = Object.keys(rows[0]);
   const num = cols.map(c => rows.every(r => r[c] === null || typeof r[c] === "number"));
-  return `<div class="tablewrap"><table><thead><tr>${cols.map((c, i) => `<th class="${num[i] ? "num" : ""}">${esc(c)}</th>`).join("")}</tr></thead>
+  return `<div class="tablewrap"><table><thead><tr>${cols.map((c, i) => `<th class="${num[i] ? "num" : ""}">${esc(c)}${typeTag(types?.[c])}</th>`).join("")}</tr></thead>
     <tbody>${rows.slice(0, max).map(r => `<tr>${cols.map((c, i) => `<td class="${num[i] ? "num" : ""}">${cellHtml(r[c])}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
 }
 // a nested value (an ADX dynamic column, a JSON field) shows as JSON, never "[object Object]"
@@ -2590,8 +2595,11 @@ async function sqlJobAction(action, tab = curTab()) {
   else if (tab.job === job) drawSqlJob(v, job.debug);
 }
 const SQL_STATE = {running: "Running", pausing: "Pausing…", paused: "Paused", cancelled: "Cancelled"};
+const LOG_OPEN = {};  // job id → whether its log is open: the user's choice survives the redraws while it runs
 function drawSqlJob(v, debug) {
   const st = v.state, live = st === "running" || st === "pausing", steps = (v.events || []).filter(Boolean);
+  const before = $("#sqlresult pre.log");
+  const atEnd = !before || before.scrollTop + before.clientHeight >= before.scrollHeight - 8, kept = before?.scrollTop;
   const secs = (ms) => ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
   const fetched = Object.entries(v.partial?.fetched || {});
   const log = v.log || [];
@@ -2601,6 +2609,7 @@ function drawSqlJob(v, debug) {
       <span class="grow"></span>
       ${st === "running" ? `<button class="secondary" type="button" data-sqljob="pause" title="Stop before the next API call or page">⏸ Pause</button>` : ""}
       ${st === "paused" || st === "pausing" ? `<button class="secondary" type="button" data-sqljob="resume">▶ Continue</button>` : ""}
+      ${st !== "cancelled" && !v.stopped ? `<button class="secondary" type="button" data-sqljob="stop" title="Stop reading the sources and run the query on what was read so far — a partial result">⏹ Stop and show</button>` : ""}
       ${st !== "cancelled" ? `<button class="secondary" type="button" data-sqljob="cancel" title="Stop the query">✕ Cancel</button>` : ""}
     </div>
     <ol class="steps">${steps.map((e, k) => {
@@ -2610,12 +2619,14 @@ function drawSqlJob(v, debug) {
       || `<li class="now"><span class="mark"><span class="spin"></span></span><span>Starting…</span></li>`}</ol>
     ${st === "pausing" ? `<p class="jobnote">A call already in flight finishes first — then it stops. DuckDB's own step can't pause; cancel stops it.</p>` : ""}
     ${st === "cancelled" ? `<p class="jobnote">Stopped. Nothing else is read.</p>` : ""}
+    ${v.stopped && st !== "cancelled" ? `<p class="jobnote">Stopping the reading — the query runs on what was read so far…</p>` : ""}
     ${fetched.length ? `<div class="muted small" style="margin-top:6px">Read so far: ${fetched.map(([t, f]) =>
       `<span class="mono">${esc(t)}</span> ${(f.rows ?? 0).toLocaleString()} rows${f.pages ? ` (${f.pages} pages)` : ""}${f.cached ? " (from the cache)" : ""}`).join(" · ")}</div>` : ""}
-    <details class="sqllog" ${log.length && (debug || st !== "running") ? "open" : ""}><summary>Log${debug ? " (debug)" : ""} · ${log.length} line${log.length === 1 ? "" : "s"}</summary>
+    <details class="sqllog" ${(LOG_OPEN[v.job_id] ?? (log.length && (debug || st !== "running"))) ? "open" : ""}><summary>Log${debug ? " (debug)" : ""} · ${log.length} line${log.length === 1 ? "" : "s"}</summary>
       <pre class="log mono">${esc(log.join("\n"))}</pre></details>
   </div>`;
-  const pre = $("#sqlresult pre.log"); if (pre) pre.scrollTop = pre.scrollHeight;
+  const pre = $("#sqlresult pre.log"); if (pre) pre.scrollTop = atEnd ? pre.scrollHeight : kept;  // follow the end only if you were there
+  $("#sqlresult details.sqllog")?.addEventListener("toggle", (e) => { LOG_OPEN[v.job_id] = e.target.open; });
   $("#sqlresult").querySelectorAll("[data-sqljob]").forEach(b => b.addEventListener("click", () => sqlJobAction(b.dataset.sqljob)));
 }
 let LAST_SQL = null;  // {result, sql}: what ⤢ Expand opens
@@ -2629,8 +2640,14 @@ function drawSqlResult(r) {
       <pre class="log mono">${esc(tr.sql)}</pre>${tr.route !== "native" ? `<button class="mini" type="button" id="sqlastext" title="Switch the editor to SQL with this query">Open as SQL</button>` : ""}</details>` : "";
   $("#sqlresult").innerHTML = `<div class="card sqlres">` + trHtml + (r.error ? `<p class="error">${esc(r.error)}</p>` :
     `<div class="resbar"><span class="muted small">${r.row_count.toLocaleString()} row${r.row_count === 1 ? "" : "s"} · ${r.columns.length} column${r.columns.length === 1 ? "" : "s"} · ${r.elapsed_ms} ms${r.truncated ? " · first " + rows.length.toLocaleString() + " shown here" : ""}</span>
-      ${cacheNote(r.cache)}<span class="grow"></span>${r.columns.length ? `<button class="secondary" type="button" id="sqlexpand" title="Open the result full screen: search, sort, every row, CSV">⤢ Expand</button>` : ""}</div>${pushdownNote(r.pushdown)}${table(rows)}`) +
+      ${cacheNote(r.cache)}<span class="grow"></span>${r.columns.length ? `<button class="secondary" type="button" id="sqlexpand" title="Open the result full screen: search, sort, every row, CSV">⤢ Expand</button>` : ""}</div>${stoppedNote(r.stopped)}${pushdownNote(r.pushdown)}${table(rows, 500, Object.fromEntries(r.columns.map((c, i) => [c, (r.types || [])[i]])))}`) +
     ((r.log || []).length ? `<details${r.error || r.debug ? " open" : ""}><summary>${r.debug ? "Debug log" : "What went to each source (push-down)"}</summary><pre class="log mono">${esc(r.log.join("\n"))}</pre></details>` : "") + `</div>`;
+}
+// "Stop and show": the answer covers the rows read before the reading stopped, not the whole table
+function stoppedNote(s) {
+  if (!s) return "";
+  const parts = Object.entries(s).map(([t, v]) => `<span class="mono">${esc(t)}</span> ${(v.rows ?? 0).toLocaleString()} row${v.rows === 1 ? "" : "s"}${v.pages ? ` from ${v.pages} page${v.pages === 1 ? "" : "s"}` : ""}`);
+  return `<div class="stoppednote">⏹ <b>Partial result</b> — you stopped the reading, so this covers only what was read${parts.length ? ": " + parts.join(" · ") : ""}. Run again to read everything.</div>`;
 }
 // what reached each source (✓) and what stayed with DuckDB (✗): open, and amber, when a table read more than needed
 function pushdownNote(p, checked) {
@@ -3106,7 +3123,7 @@ function drawViewer() {
   const arrow = (c) => vw.sort === c ? `<span class="arrow">${vw.desc ? "▼" : "▲"}</span>` : "";
   $("#vwgrid").innerHTML = !p.rows.length ? `<div class="vwempty">${vw.q ? "No row matches." : "No rows."}</div>` :
     `<table class="vwtable${$("#vwwrap").checked ? " wrap" : ""}"><thead><tr><th class="rn" title="Row number in the result">#</th>
-      ${cols.map(({c}, k) => `<th class="${num[k] ? "num" : ""}" data-sort="${esc(c)}" title="Sort by ${esc(c)}">${esc(c)}${arrow(c)}</th>`).join("")}</tr></thead>
+      ${cols.map(({c, i}, k) => `<th class="${num[k] ? "num" : ""}" data-sort="${esc(c)}" title="Sort by ${esc(c)}">${esc(c)}${arrow(c)}${typeTag((p.types || [])[i])}</th>`).join("")}</tr></thead>
     <tbody>${p.rows.map((r, ri) => `<tr><td class="rn">${p.row_numbers[ri].toLocaleString()}</td>${cols.map(({i}, k) => {
       const v = r[i];
       return `<td class="${num[k] ? "num" : ""}" data-r="${ri}" data-c="${i}">${v === null || v === undefined ? '<span class="muted">—</span>'

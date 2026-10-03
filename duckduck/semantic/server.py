@@ -12,6 +12,7 @@ HTML page (``webpage.PAGE``) over a JSON API:
 ``POST /api/ask {..., background: true}``  the same, as a job → 202 ``{job_id}`` (also ``/api/answer``)
 ``GET  /api/jobs/{id}?since=n``              what it's doing: steps from n, what it has so far (decisions, SQL, rows read), the result
 ``POST /api/jobs/{id}/pause|resume|cancel``  stop at the next step / go on / give up (answers at once with what was done)
+``POST /api/jobs/{id}/stop``  stop reading the sources and finish with what was read (a partial answer, said so)
 ``POST /api/all {conversation_id, background}``  the latest answer with every row, not just its sample (a job with ``background``)
 ``POST /api/columns {conversation_id, columns}``  the latest answer again with these extra fields (``column_options``)
 ``POST /api/feedback {search_id, verdict, categories, reason, expected, user, feedback_id}``
@@ -249,8 +250,8 @@ def create_app(
     @app.post("/api/jobs/{job_id}/{action}")
     def job_action(job_id: str, action: str):
         job = the_job(job_id)
-        if action not in ("pause", "resume", "cancel"):
-            raise HTTPException(404, f"unknown action {action!r}: pause, resume or cancel")
+        if action not in ("pause", "resume", "cancel", "stop"):
+            raise HTTPException(404, f"unknown action {action!r}: pause, resume, stop or cancel")
         if not job["finished"]:
             getattr(job["progress"], action)()
             if action == "cancel" and job["on_cancel"] is not None:

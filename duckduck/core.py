@@ -1877,7 +1877,10 @@ class DuckAPI:
                     data = fetch_function(**validated)
             progress.checkpoint()
             df = self._to_dataframe(data, function_name, allow_empty=True)
-            if key is not None:
+            cut = progress.reading_stopped()  # "Stop and show": maybe not every page — never kept as the whole
+            if cut:
+                progress.note_item("stopped", function_name, {"rows": len(df)})
+            if key is not None and not cut:
                 self.cache.put(key, df, len(df))
             source_cache.note(function_name, False, len(df))
             logger.info("  %s: %s rows × %s columns in %.2fs", function_name, f"{len(df):,}", len(df.columns),
@@ -2028,6 +2031,7 @@ class DuckAPI:
         started = time.perf_counter()
         kept: List[pd.DataFrame] = []
         count = pages = scanned = 0
+        stopped_by_user = False
         last_columns: List[str] = []
         pages_iter = iter(()) if _DRY_RUN.get() else iter_fn(**validated)
         requests_at_once = slicing.parallel(self._parallel_of(fn_name))
@@ -2071,6 +2075,12 @@ class DuckAPI:
                         else:
                             ranked += len(full)
                 progress.update(f"Reading {fn_name}: page {pages} · kept {count:,} of {scanned:,} rows")
+                if progress.reading_stopped():  # "Stop and show": the rows kept so far are what the query gets
+                    stopped_by_user = True
+                    logger.info("  %s: reading stopped by the user after %s page(s) — %s rows kept", fn_name,
+                                pages, f"{count:,}")
+                    progress.note_item("stopped", fn_name, {"rows": count, "rows_scanned": scanned, "pages": pages})
+                    break
                 if stop_at is not None and every and (ranked if ranked_by else count) >= stop_at:
                     if ranked_by:
                         logger.info("  %s: the top %s by %s is read — no more pages asked", fn_name, stop_at,
@@ -2086,7 +2096,7 @@ class DuckAPI:
         else:
             columns = last_columns or list(fallback_columns or []) or [self.EMPTY_PLACEHOLDER_COLUMN]
             df = pd.DataFrame({c: pd.Series(dtype="object") for c in columns})
-        if key is not None:
+        if key is not None and not stopped_by_user:  # a read cut short is never kept as the whole table
             self.cache.put(key, (df, count, scanned, pages), len(df))
         source_cache.note(fn_name, False, len(df))
         progress.note_item("fetched", fn_name, {"rows": count, "rows_scanned": scanned, "pages": pages})
