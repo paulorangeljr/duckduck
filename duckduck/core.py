@@ -2244,24 +2244,34 @@ class DuckAPI:
             staged.write(table, after)
 
         def flush(final: bool) -> None:
+            """Writes files of ``staging.rows`` rows (a page bigger than that makes several). With a resume column a
+            file ends where its value changes — the boundary at or before ``rows``, else the first one after — so
+            rows tied on the last value are never split and "after" = the last value written covers all of them."""
             nonlocal buffer, buffered
             if not buffer:
                 return
             df = pd.concat(buffer, ignore_index=True) if len(buffer) > 1 else buffer[0].reset_index(drop=True)
-            if staged.column is None or final:
-                write(df, df[staged.column].iloc[-1] if staged.column is not None and len(df) else None)
-                buffer, buffered = [], 0
-                return
-            # a file ends where the resume column's value changes: rows tied on the last value stay together
-            # (the next file), so "after" = the last value written covers every row of it
-            values = df[staged.column]
-            first_tied = int((values != values.iloc[-1]).to_numpy().nonzero()[0][-1]) + 1 \
-                if (values != values.iloc[-1]).any() else 0
-            if first_tied == 0:
-                return  # every buffered row has the same value: keep buffering
-            write(df.iloc[:first_tied], values.iloc[first_tied - 1])
-            rest = df.iloc[first_tied:]
-            buffer, buffered = [rest], len(rest)
+            size = staging.rows
+            while len(df) and (final or len(df) >= size):
+                if staged.column is None:
+                    cut = min(size, len(df))
+                    write(df.iloc[:cut], None)
+                    df = df.iloc[cut:].reset_index(drop=True)
+                    continue
+                values = df[staged.column].to_numpy()
+                if final and len(df) <= size:
+                    cut = len(df)
+                else:
+                    changes = (values[1:] != values[:-1]).nonzero()[0] + 1  # where a new value starts
+                    within = changes[changes <= size]
+                    beyond = changes[changes > size]
+                    cut = int(within[-1]) if len(within) else int(beyond[0]) if len(beyond) else (
+                        len(df) if final else 0)
+                    if cut == 0:
+                        break  # every row so far has the same value: keep buffering
+                write(df.iloc[:cut], values[cut - 1])
+                df = df.iloc[cut:].reset_index(drop=True)
+            buffer, buffered = ([df], len(df)) if len(df) else ([], 0)
 
         pages_iter = iter_fn(**validated)
         requests_at_once = slicing.parallel(self._parallel_of(fn_name))

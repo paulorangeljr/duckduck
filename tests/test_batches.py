@@ -391,3 +391,22 @@ def test_batches_whose_types_differ_read_as_one_table(tmp_path):
     with batches.batching(batches.Batching(rows=1, folder=str(tmp_path / "b"))):
         out = d.sql("SELECT * FROM items ORDER BY n").df()
     assert list(out["v"].fillna("-")) == ["-", "-", "x"] and "extra" in out.columns
+
+
+def test_a_page_bigger_than_batch_rows_makes_several_files_cut_where_the_value_changes(tmp_path):
+    class BigPage(Paged):
+        @sortable("n")
+        def iter_items(self, n_gt=None, order_by=None):
+            yield pd.DataFrame(self.data)  # one page of everything
+
+    src = BigPage(rows=23)
+    d = duck_of(src)
+    with batches.batching(batches.Batching(rows=4, folder=str(tmp_path / "b"))):
+        out = d.sql("SELECT * FROM items").df()
+    files = sorted(glob.glob(str(tmp_path / "b" / "*" / "batch-*.parquet")))
+    sizes = [duckdb.sql(f"SELECT count(*) FROM '{f}'").fetchone()[0] for f in files]
+    assert len(out) == 23 and sum(sizes) == 23 and len(files) >= 5 and max(sizes) <= 4
+    for f in files[:-1]:  # no value of n is split between two files
+        last = duckdb.sql(f"SELECT max(n) FROM '{f}'").fetchone()[0]
+        assert all(duckdb.sql(f"SELECT count(*) FROM '{g}' WHERE n = {last}").fetchone()[0] == 0
+                   for g in files if g > f)
