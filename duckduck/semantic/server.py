@@ -28,6 +28,7 @@ HTML page (``webpage.PAGE``) over a JSON API:
 ``GET|DELETE /api/sql/cache``  the source cache: status / forget every kept read (``cache: false`` on /api/sql skips it)
 ``GET /api/sql/results/{id}[/csv]?offset&limit&sort&desc&q``  a query's whole result, paged / searched / sorted / as CSV
 ``POST /api/sql/explain {sql, language}``  what each source would be sent (push-down), nothing read
+``POST /api/sql/python {sql, language}``  the query as a Python script / Jupyter notebook for another computer (install, masked duckduck.json, code)
 ``POST /api/sql {sql, debug, background, cache}`` · ``GET /api/tables``  the SQL console (``allow_sql``, on by default; read-only, no files/network; ``background`` → a job)
 ``POST /api/takeover {conversation_id, name, full, user}``  "take over from here": the answer's rows as a table (an unrated answer → answered)
 ``POST /api/takeover/proposal {conversation_id}``  what that would give: suggested name, rows, columns, capped
@@ -148,8 +149,13 @@ def create_app(
         return PAGE
 
     def needs_catalog() -> Any:
-        """The search, or 409 with how to get a catalog when there isn't one yet (a first run)."""
+        """The search, or 409 with how to get a catalog when there isn't one yet (a first run) — 403 when
+        Ask is turned off."""
         search = state["search"]
+        if getattr(search, "off", None):
+            from .engine import AskOff
+
+            raise HTTPException(403, str(AskOff(search.off)))
         if getattr(search, "setup", None):
             raise HTTPException(409, search.setup["message"])
         return search
@@ -161,7 +167,9 @@ def create_app(
         return dump({
             # no catalog yet (a first run): Ask explains; SQL, Config and drafting the catalog work
             "setup": getattr(search, "setup", None),
-            "features": {"ask": not getattr(search, "setup", None),
+            # Ask turned off (semantic.enabled false / serve --no-ask): why; the page hides Ask and its tabs
+            "ask_off": getattr(search, "off", None),
+            "features": {"ask": not getattr(search, "setup", None) and not getattr(search, "off", None),
                          "sql": state["console"] is not None, "config": bool(config_path),
                          "config_edit": bool(config_path and allow_config_edit),
                          "catalog_generation": bool(catalog_runner is not None and allow_config_edit),
@@ -319,7 +327,7 @@ def create_app(
     @app.post("/api/preview")
     def preview(body: Dict[str, Any] = Body(...)):
         question = str(body.get("question") or "").strip()
-        if len(question) < 3 or getattr(state["search"], "setup", None):
+        if len(question) < 3 or getattr(state["search"], "setup", None) or getattr(state["search"], "off", None):
             return dump({"question": question, "systems": [], "sources": [], "entity": None})
         try:
             return dump(state["search"].preview(question, reader=body.get("reader") or None))
@@ -513,6 +521,13 @@ def create_app(
         """``{sql, language}`` → what each source would be sent, and what would stay with DuckDB — nothing is read."""
         language = str(body.get("language") or "sql").lower()
         return dump(the_console().explain(str(body.get("sql") or ""), language=language))
+
+    @app.post("/api/sql/python")
+    def sql_as_python(body: Dict[str, Any] = Body(...)):
+        """``{sql, language}`` → the same query as a script / notebook for another computer: install line, a
+        masked duckduck.json of the connectors it reads, the code — nothing is read."""
+        language = str(body.get("language") or "sql").lower()
+        return dump(the_console().python_code(str(body.get("sql") or ""), language=language))
 
     @app.get("/api/sql/cache")
     def sql_cache():

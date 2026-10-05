@@ -346,6 +346,10 @@ class CatalogGenerationConfig(_Strict):
 
 
 class SemanticConfig(_Strict):
+    #: Ask in the web app — the Ask tab and the History, Dashboard and Suggestions tabs about its answers.
+    #: ``false``: the server starts without loading the catalog or any AI provider; SQL and Config still
+    #: work. ``serve --ask`` / ``--no-ask`` wins over it.
+    enabled: bool = True
     catalog_path: str = "semantic_catalog.yaml"
     decision_engine: DecisionEngineConfig = Field(default_factory=DecisionEngineConfig)
     #: The named AI models — filled by ``load``/``from_file_data`` from the

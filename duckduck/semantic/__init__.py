@@ -34,7 +34,7 @@ from .decisions import (
     JEVBackend,
     LexicalDecisionEngine,
 )
-from .engine import CatalogUnavailable, Conversation, SearchResult, SemanticSearch
+from .engine import AskOff, CatalogUnavailable, Conversation, SearchResult, SemanticSearch
 from .evaluation import CalibrationReport, calibrate_thresholds, evaluate, load_dataset
 from .extraction import RuleBasedExtractor
 from .generation import CatalogGenerator, GenerationResult, TableSpec
@@ -98,6 +98,7 @@ __all__ = [
     "SemanticIntent",
     "SemanticInterpreter",
     "SemanticSearch",
+    "AskOff",
     "CatalogUnavailable",
     "TableSpec",
     "Thresholds",

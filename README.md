@@ -1471,6 +1471,7 @@ print(jev_check().ranked())                    # raises if the key/network/parsi
 | `calibrate questions.json` | `calibrate("questions.json")` → `CalibrationReport` (`.summary()`, `.thresholds`) |
 | `serve` | `serve()` — the web app ([Feedback](#feedback-learning-from-what-users-say)); `serve(run=False)` → the FastAPI app |
 | `serve --edit-config` / `serve --no-sql` | `serve(allow_config_edit=True)` — saving `duckduck.json` from the Config tab; `serve(allow_sql=False)` — turns the SQL tab off |
+| `serve --no-ask` / `serve --ask` | `serve(ask=False)` — starts without Ask (no catalog, no AI loaded); `serve(ask=True)` — on whatever the config says. Without either: `"semantic": {"enabled": …}` (default true), switchable in Config → *How questions are read* |
 | `serve --pg-port 5433` | `serve(pg_port=5433)` — also serve the tables over the PostgreSQL protocol, for SQL clients |
 | `feedback-report` | `feedback_report()` → `FeedbackReport` (`.summary()`, `.stats`) |
 | `feedback-to-eval` | `feedback_to_eval()` → `FeedbackEvaluation` (`.summary()`, `.dataset`, `.report`, `.calibration`) |
@@ -1859,12 +1860,25 @@ didn't start is skipped with the reason (`duck.failed_views`).
 - **Suggestions.** The catalog changes proposed from the feedback, to
   accept or dismiss, plus *Evaluate and calibrate*.
 
+- **Ask on or off.** `"semantic": {"enabled": false}` in `duckduck.json` (Config →
+  *How questions are read* → *Ask in the web app*, saved without a restart) or
+  `serve --no-ask` starts the web app without Ask: no catalog read, no AI provider
+  built; the Ask, History, Dashboard and Suggestions tabs go and the page opens on
+  SQL. `serve --ask` / `--no-ask` wins over the file.
 - **SQL**, right next to Ask and always there (on by default; `serve
   --no-sql` turns the console off and the tab says so). `duck.sql` on the registered tables, with
   push-down and all. The tables are listed by system with their icons;
   clicking one writes a query. *Open in the SQL tab* on an answer brings
   its SQL over. Each run shows the rows and **what went to each source**:
   which WHERE / LIMIT reached the API.
+  - **Run in Python.** The query as code for your own computer, in three steps:
+    the `pip install` line with the extras its connectors need (and the
+    database driver), a `duckduck.json` with **only** the connectors and saved
+    tables it reads — secrets written in the server's file show as `***` and
+    never leave it; vault secrets (`aws` / `azure`) are read with your own login
+    —, and a script (`run_query.py`) or a Jupyter notebook (`query.ipynb`, which
+    first prints what each source will be sent: `duck.explain(QUERY).report()`).
+    Copy or download each. KQL comes out as `run_kql(duck, QUERY)`.
   - **Read queries only:** `SELECT`, `WITH`, `FROM`, `SHOW`, `DESCRIBE`,
     `SUMMARIZE`, `EXPLAIN`, `VALUES`, one at a time.
   - **Isolated connection.** They run on their own DuckDB connection,

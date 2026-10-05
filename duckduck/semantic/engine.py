@@ -323,6 +323,8 @@ class SemanticSearch:
         self.duck = duck
         #: Set when there's no catalog to answer from (``without_catalog``): reason, catalog_path, message.
         self.setup: Optional[Dict[str, str]] = None
+        #: Ask turned off (``semantic.enabled: false`` / ``serve --no-ask``): why — see ``turned_off``
+        self.off: Optional[str] = None
         #: Catalog sources left out because their table can't be used — name → {table, reason} (``_unusable``).
         self.unavailable_sources: Dict[str, Dict[str, str]] = {}
         #: The catalog as written, unavailable sources included (``source_status``).
@@ -479,12 +481,25 @@ class SemanticSearch:
         search.setup = {"reason": missing.reason, "catalog_path": missing.path, "message": str(missing)}
         return search
 
+    @classmethod
+    def turned_off(cls, duck: Any, why: str, **kwargs: Any) -> "SemanticSearch":
+        """
+        Ask turned off (``why``: ``semantic.enabled`` is false, or ``serve --no-ask``): nothing of the
+        semantic layer is loaded — no catalog read, no AI provider built. The web app hides Ask and its
+        tabs; asking raises ``AskOff``.
+        """
+        search = cls(Catalog.model_validate({"sources": {}}), duck, **kwargs)
+        search.off = why
+        return search
+
     @property
     def ready(self) -> bool:
-        """It has a catalog to answer from (see ``without_catalog``)."""
-        return self.setup is None
+        """It has a catalog to answer from (see ``without_catalog``) and Ask is on (``turned_off``)."""
+        return self.setup is None and self.off is None
 
     def _check_ready(self) -> None:
+        if self.off is not None:
+            raise AskOff(self.off)
         if self.setup is not None:
             raise CatalogUnavailable(self.setup["catalog_path"], self.setup["reason"])
 
@@ -1395,6 +1410,16 @@ def _unusable(table: str, duck: Any) -> str:
                 f"Fix `table:` in the catalog (registered names are {{service}}_{{table}}).")
     return (f"table '{table}' is not registered in DuckAPI — no configured service registers it: "
             f"add the service to duckduck.json, or fix `table:` in the catalog")
+
+
+class AskOff(RuntimeError):
+    """Ask is turned off (``semantic.enabled: false`` or ``serve --no-ask``) — the message says how to turn it on."""
+
+    def __init__(self, why: str):
+        self.why = why
+        super().__init__(f"Ask is off ({why}). Turn it on with \"semantic\": {{\"enabled\": true}} in "
+                         f"duckduck.json (Config → How questions are read) or start the server with --ask; "
+                         f"the SQL tab works either way.")
 
 
 class CatalogUnavailable(RuntimeError):

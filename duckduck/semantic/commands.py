@@ -218,6 +218,7 @@ def serve(
     allow_sql: bool = True,
     allow_config_edit: bool = False,
     pg_port: Optional[int] = None,
+    ask: Optional[bool] = None,
 ):
     """
     The web app: ask questions, answer its clarifications, rate the answers,
@@ -236,6 +237,12 @@ def serve(
     ``generate_catalog`` does, as a background job with its log live).
     Reading the config (masked) and its options reference is always there.
 
+    ``ask``: the Ask tab (and History, Dashboard, Suggestions). ``None``
+    (default) follows ``semantic.enabled`` in the config — read again when
+    the Config tab saves, so it can be turned off and on from the page;
+    ``True`` / ``False`` (CLI ``--ask`` / ``--no-ask``) wins over it. Off,
+    nothing of the semantic layer is loaded (no catalog, no AI provider).
+
     ``pg_port`` (or ``pg_server.enabled`` in the config): also serve the
     tables over the PostgreSQL protocol, so SQL clients (DBeaver, psql,
     Power BI…) connect — the same tables, saved tables and source cache as
@@ -251,6 +258,10 @@ def serve(
             if c.feedback.memory else None
 
         def factory():
+            on = ask if ask is not None else c.enabled
+            if not on:  # nothing of the semantic layer loaded: no catalog read, no AI provider built
+                why = "started with --no-ask" if ask is False else "semantic.enabled is false in duckduck.json"
+                return SemanticSearch.turned_off(d, why, feedback=store)
             try:
                 return SemanticSearch.from_config(d, config_path, feedback=store, memory=memory)
             except CatalogUnavailable as missing:  # a first run: SQL, Config and drafting the catalog still work
@@ -306,7 +317,8 @@ def serve(
         print(f"duckduck: PostgreSQL clients connect to {pg.host}:{pg.port}, database {pg.database}"
               f"{' (password required)' if pg.password_check else ' (no password: this machine only)'}")
     print(f"duckduck: http://{host}:{port}  (feedback in {store.path}"
-          f"{'' if allow_sql else '; SQL tab off'}{'; config editing on' if allow_config_edit else ''})")
+          f"{'' if allow_sql else '; SQL tab off'}{'; config editing on' if allow_config_edit else ''}"
+          f"{'; Ask off — ' + app.state.current_search().off if getattr(app.state.current_search(), 'off', None) else ''})")
     if getattr(app.state.current_search(), "setup", None):  # a first run: the quick link to turn Ask on
         print(f"Ask isn't set up yet (no semantic catalog) — SQL works now; enable Ask at "
               f"http://{host}:{port}/#enable-ask"

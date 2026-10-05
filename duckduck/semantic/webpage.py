@@ -535,6 +535,16 @@ table.vwtable tbody tr:hover td.rn { background: var(--surface-2); }
            color: var(--accent); font: italic 700 12px/1 Georgia, "Times New Roman", serif; cursor: pointer; padding: 0; margin-right: 4px; }
 .infobtn:hover { background: var(--accent); color: #fff; }
 .fninfo { width: min(640px, calc(100vw - 32px)); }
+.pydlg { width: min(760px, calc(100vw - 32px)); }
+.pydlg .step { display: flex; gap: 10px; margin: 14px 0 6px; align-items: baseline; }
+.pydlg .step b.n { flex: none; width: 22px; height: 22px; border-radius: 50%; background: var(--surface-2); display: inline-grid;
+  place-items: center; font-size: 12px; }
+.pydlg .step .t { font-weight: 600; font-size: 14px; } .pydlg .step .d { color: var(--muted); font-size: 12.5px; }
+.pydlg pre { margin: 0; max-height: 300px; overflow: auto; white-space: pre; font-size: 12.5px; }
+.pydlg .pybar { display: flex; gap: 6px; align-items: center; margin: 8px 0 6px; flex-wrap: wrap; }
+.pydlg .pybar .grow { flex: 1; }
+.pydlg .pybar button.secondary { font-size: 12.5px; padding: 4px 10px; }
+.pydlg ul.notes { margin: 10px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--ink-2); }
 .fninfo .doc { color: var(--ink-2); font-size: 13.5px; white-space: pre-wrap; margin: 4px 0 12px; }
 .fninfo h4 { margin: 14px 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-2); }
 .fninfo table td, .fninfo table th { font-size: 13px; padding: 4px 8px; }
@@ -754,6 +764,7 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
             <button class="secondary" type="button" id="sqlfresh" title="Read every source again instead of reusing what the cache kept (Ctrl+Shift+Enter)">↻ Run without cache</button>
             <button class="secondary" type="button" id="sqlexplain" title="What each source would be sent (WHERE, LIMIT, ORDER BY) and what stays with DuckDB — without reading anything">Check push-down</button>
             <button class="secondary" type="button" id="sqlsave" title="Keep this query as a table with a name — in duckduck.json, for SQL and Ask">Save as table</button>
+            <button class="secondary" type="button" id="sqlpython" title="The same query as a Python script or a Jupyter notebook, to run on your own computer">Run in Python</button>
             <label class="check small" title="Log at DEBUG: request bodies, bound parameters, every page (secrets stay masked)">
               <input type="checkbox" id="sqldebug"> Debug log</label>
             <span class="muted small" id="sqlhint">Ctrl+Enter · Ctrl+Shift+Enter without cache · read queries only (SELECT, WITH, SHOW, DESCRIBE…) · no file or network access</span></div>
@@ -933,6 +944,14 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
   </div>
   <div class="mbody" id="fnbody"></div>
   <div class="mfoot"><button class="secondary" type="button" id="fnclose">Close</button></div>
+</dialog>
+<dialog class="modal fninfo pydlg" id="pydlg" aria-labelledby="pytitle">
+  <div class="mhead">
+    <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 4.5 1.5 8 5 11.5M11 4.5 14.5 8 11 11.5M9.5 3l-3 10"/></svg>
+    <div><h2 id="pytitle">Run this query on your computer</h2><p class="sub" id="pysub">The same query in a Python script or a Jupyter notebook — the same connectors, the same push-down.</p></div>
+  </div>
+  <div class="mbody" id="pybody"></div>
+  <div class="mfoot"><button class="secondary" type="button" id="pyclose">Close</button></div>
 </dialog>
 <dialog class="viewer" id="viewer" aria-labelledby="vwtitle">
   <div class="vwhead">
@@ -2692,6 +2711,65 @@ async function explainSql() {
   $("#sqlresult").innerHTML = `<div class="card">${r.error ? `<p class="error">${esc(r.error)}</p>` : pushdownNote(r.pushdown, "checked")}</div>`;
 }
 $("#sqlexplain").addEventListener("click", explainSql);
+// ---- the query as code for the user's own computer: install, duckduck.json, a script or a notebook ----------
+let PY = null, PYVIEW = store.get("duckduck-pyview") === "notebook" ? "notebook" : "script";
+function saveFile(name, text, type) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], {type: type || "text/plain"})); a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+function codeBox(id, text, file, type) {
+  return `<div class="pybar"><span class="grow"></span>
+      <button class="secondary small" type="button" data-pycopy="${id}">Copy</button>
+      ${file ? `<button class="secondary small" type="button" data-pysave="${id}" data-file="${esc(file)}" data-type="${esc(type || "")}">Download ${esc(file)}</button>` : ""}
+    </div><pre id="${id}">${esc(text)}</pre>`;
+}
+function drawPython() {
+  const r = PY; if (!r) return;
+  const notebookText = r.cells.map(c => c.type === "markdown" ? c.source.split("\n").map(l => "# " + l).join("\n").replace(/^# # /, "# ") : c.source).join("\n\n# ---- next cell ----\n");
+  const conns = r.services.length ? r.services.map(s => `<b>${esc(s.name)}</b> <span class="muted">(${esc(connectorName(s.connector))})</span>`).join(", ") : "none";
+  $("#pybody").innerHTML = `
+    <div class="step"><b class="n">1</b><div><div class="t">Install duckduck</div>
+      <div class="d">Once. ${r.extras.length ? `The extras <span class="mono">${esc(r.extras.join(", "))}</span> are what this query's connectors need.` : "This query's connectors need no extras."}</div></div></div>
+    ${codeBox("pyinstall", r.install.join("\n"))}
+    <div class="step"><b class="n">2</b><div><div class="t">Save duckduck.json next to your code</div>
+      <div class="d">Only what this query reads — connectors: ${conns}${r.views.length ? `; saved tables: ${r.views.map(esc).join(", ")}` : ""}. Secrets in a vault are read with your own login.</div></div></div>
+    ${codeBox("pyconfig", r.config_text, "duckduck.json", "application/json")}
+    <div class="step"><b class="n">3</b><div><div class="t">Run it</div>
+      <div class="d">As a script, or in Jupyter — the notebook also shows what each source will be sent before reading.</div></div></div>
+    <div class="pybar"><div class="seg" role="group" aria-label="Script or notebook">
+      <button type="button" data-pyview="script" aria-pressed="${PYVIEW === "script"}">Python script</button>
+      <button type="button" data-pyview="notebook" aria-pressed="${PYVIEW === "notebook"}">Jupyter notebook</button></div></div>
+    ${PYVIEW === "script" ? codeBox("pyscript", r.script, r.script_name, "text/x-python")
+      : codeBox("pynotebook", notebookText, r.notebook_name, "application/x-ipynb+json")}
+    ${r.notes.length ? `<ul class="notes">${r.notes.map(n => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}`;
+}
+async function showPython() {
+  const text = $("#sqltext").value.trim();
+  if (!text) { toast("Write a query first"); return; }
+  $("#pybody").innerHTML = `<p><span class="spin" aria-hidden="true"></span> Writing the code…</p>`;
+  $("#pydlg").showModal();
+  try { PY = await api("/api/sql/python", {sql: text, language: LANG}); drawPython(); }
+  catch (err) { $("#pybody").innerHTML = `<p class="error">${esc(err.message)}</p>`; }
+}
+$("#sqlpython").addEventListener("click", showPython);
+$("#pyclose").addEventListener("click", () => $("#pydlg").close());
+$("#pydlg").addEventListener("click", async (e) => {
+  if (e.target === $("#pydlg")) { $("#pydlg").close(); return; }
+  const view = e.target.closest("[data-pyview]");
+  if (view) { PYVIEW = view.dataset.pyview; store.set("duckduck-pyview", PYVIEW); drawPython(); return; }
+  const copy = e.target.closest("[data-pycopy]");
+  if (copy) {
+    const text = copy.dataset.pycopy === "pynotebook" ? PY.cells.map(c => c.source).join("\n\n") : $("#" + copy.dataset.pycopy).textContent;
+    try { await navigator.clipboard.writeText(text); toast("Copied"); } catch { toast("Couldn't copy — select the text instead"); }
+    return;
+  }
+  const save = e.target.closest("[data-pysave]");
+  if (save) {
+    const text = save.dataset.pysave === "pynotebook" ? JSON.stringify(PY.notebook, null, 1) : $("#" + save.dataset.pysave).textContent;
+    saveFile(save.dataset.file, text, save.dataset.type);
+  }
+});
 $("#sqltext").addEventListener("input", livePushdownSoon);
 // which sources came from the cache, and how old those reads are — with a way to read them again
 function cacheNote(c) {
@@ -3393,8 +3471,8 @@ const CFG_PAGES = {
   saved: {title: "Saved tables", intro: "Queries kept as tables. A table over a table function (sn_table(table_name='incident')) is that function with its arguments fixed — filters still go to the source; a saved query runs each time it's read.", editor: true},
   catalog: {title: "Semantic catalog", editor: false},
   connections: {title: "Catalog connections", editor: false},
-  reading: {title: "How questions are read", intro: "Who reads a question, who decides what it means, and when Ask considers several readings before asking you back.",
-            editor: true, semantic: ["reader", "default_llm", "decision_engine", "extractor", "router", "hypotheses"]},
+  reading: {title: "How questions are read", intro: "Whether Ask is on, who reads a question, who decides what it means, and when Ask considers several readings before asking you back.",
+            editor: true, semantic: ["enabled", "reader", "default_llm", "decision_engine", "extractor", "router", "hypotheses"]},
   answers: {title: "Answers & data", intro: "How much data an answer reads and shows, and which tables Ask may use.",
             editor: true, semantic: ["sample", "default_limit", "stream", "allowed_sources", "strict", "live_evidence"]},
   drafting: {title: "Catalog drafting", intro: "Where the semantic catalog lives, and how the LLM drafts it from your tables.",
@@ -3464,6 +3542,7 @@ function humanize(key) {
   words[0] = words[0][0].toUpperCase() + words[0].slice(1);
   return words.join(" ");
 }
+LABELS["semantic.enabled"] = "Ask in the web app";
 const labelOf = (key, ctx) => LABELS[ctx ? `${ctx}.${key}` : key] || LABELS[key] || humanize(key);
 // friendly names for the values of a choice
 const CHOICE_LABELS = {
@@ -4004,7 +4083,8 @@ function formSemantic(form, page) {
     form.append(fields(o.options, scope(sem, o.name), o.name));
     return;
   }
-  if (flat.length) form.append(group("General", null, "", h("div", {class: "fgrid"}, flat.map(o => field(o, sem)))));
+  if (flat.length) form.append(group("General", null, "", h("div", {class: "fgrid"}, flat.map(o => field(o, sem, {ctx: "semantic",
+    after: o.name === "enabled" ? () => toast("Save to turn Ask " + (sem.get("enabled") === false ? "off" : "on")) : undefined})))));
   nested.forEach(o => form.append(group(labelOf(o.name), "semantic." + o.name, o.description, fields(o.options, scope(sem, o.name), o.name))));
 }
 function renderForm() {
@@ -4030,6 +4110,7 @@ function drawOverview() {
     ${tile("connectors", "Connectors", svcs.length, CONN ? `${started.length} connected${failed.length ? ` · ${failed.length} didn't start` : ""}` : "status needs the SQL console", failed.length)}
     ${tile("ai", "AI providers", ai.length, sem.default_llm ? `default LLM: ${sem.default_llm}` : ai.length ? "no default LLM" : "none yet — Ask works offline", false)}
     ${tile("catalog", "Semantic catalog", cat.length, META?.setup ? "Ask is off — no catalog yet" : `tables described${notConn.length ? ` · ${notConn.length} not connected` : ""}`, !!META?.setup || notConn.length)}
+    ${tile("reading", "Ask", META?.ask_off ? "Off" : "On", META?.ask_off ? META.ask_off : "the Ask, History, Dashboard and Suggestions tabs", false)}
     ${tile("reading", "Decisions by", sem.decision_engine?.ai_provider || "offline rules", `reading mode: ${sem.reader || "rules"}`, false)}
   </div>
   ${failed.length || notConn.length || badViews.length ? `<h4 style="margin:16px 0 4px">Needs attention</h4><ul class="problems">
@@ -4072,10 +4153,16 @@ $("#optfilter").addEventListener("input", () => {
   });
 });
 
+const ASK_TABS = ["ask", "history", "dashboard", "suggestions"];
 function showFeatures() {
   showReaders();
+  // Ask turned off (semantic.enabled false / serve --no-ask): its tabs go, the page opens on SQL
+  const off = !!META?.ask_off;
+  ASK_TABS.forEach(t => document.querySelector(`nav button[data-tab="${t}"]`).hidden = off);
+  const current = document.querySelector('nav button[aria-selected="true"]')?.dataset.tab;
+  if (off && ASK_TABS.includes(current)) openTab(META?.features?.sql || !META?.features?.config ? "sql" : "config");
   // no catalog yet (a first run): Ask says what's missing; SQL and Config work
-  const setup = META?.setup, gen = !!META?.features?.catalog_generation;
+  const setup = !off && META?.setup, gen = !!META?.features?.catalog_generation;
   $("#setupcard").hidden = !setup;
   $("#enablebar").hidden = !setup;
   if (!setup && CAT) $("#enablecard").hidden = true;
@@ -4096,7 +4183,7 @@ $("#setupsql").addEventListener("click", () => openTab("sql"));
 $("#setupconfig").addEventListener("click", goEnable);
 api("/api/meta").then(m => {
   META = m; showFeatures();
-  if (location.hash === "#enable-ask" && META.setup) goEnable();
+  if (location.hash === "#enable-ask" && META.setup && !META.ask_off) goEnable();
   const page = /^#config\/(\w+)$/.exec(location.hash);  // a bookmarked Config page
   if (page && META.features?.config && CFG_PAGES[page[1]]) { CFGPAGE = page[1]; openTab("config"); }
 }).catch(err => toast(err.message));

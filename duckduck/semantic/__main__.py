@@ -86,7 +86,7 @@ def cmd_jev_check(args) -> int:
 
 def cmd_serve(args) -> int:
     serve(config_path=args.config, host=args.host, port=args.port, verbose=args.verbose,
-          allow_sql=args.sql, allow_config_edit=args.edit_config, pg_port=args.pg_port)
+          allow_sql=args.sql, allow_config_edit=args.edit_config, pg_port=args.pg_port, ask=args.ask)
     return 0
 
 
@@ -161,6 +161,9 @@ def build_parser() -> argparse.ArgumentParser:
     srv.add_argument("--sql", action=argparse.BooleanOptionalAction, default=True,
                      help="SQL tab: duck.sql on the registered tables (read queries only, no files or network); "
                           "on by default, --no-sql turns it off")
+    srv.add_argument("--ask", action=argparse.BooleanOptionalAction, default=None,
+                     help="the Ask tab (and History, Dashboard, Suggestions); default: semantic.enabled in "
+                          "duckduck.json (true unless set). --no-ask starts without loading the catalog or any AI")
     srv.add_argument("--edit-config", action="store_true",
                      help="Config tab may save duckduck.json (secrets stay masked; a .bak is kept) and reconnect")
     srv.add_argument("--pg-port", type=int, default=None,

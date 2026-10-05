@@ -221,6 +221,13 @@ class SQLConsole:
         except Exception as exc:  # noqa: BLE001 — a typo, an unknown table: said, like a run's error
             return {"error": f"{type(exc).__name__}: {exc}", **extra}
 
+    def python_code(self, query: str, language: str = "sql") -> Dict[str, Any]:
+        """The query as a Python script and a Jupyter notebook to run on another computer — the install line,
+        a masked ``duckduck.json`` of only the connectors it reads (``pycode.python_code``)."""
+        from .pycode import python_code
+
+        return python_code(self, query, language)
+
     def plan(self, query: str) -> Any:
         """``DuckAPI.explain`` on a planner of its own — the same tables, its own DuckDB connection — so it runs
         at once, even while a query holds the console (the page checks as you type, and before each run)."""
