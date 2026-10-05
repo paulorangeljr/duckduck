@@ -215,3 +215,60 @@ def test_iter_query_skips_empty_chunks(tmp_path):
     db = _sqlite(tmp_path)
     assert [len(r) for r in db.iter_query("SELECT * FROM customers", chunksize=3)] == [3, 2]
     assert list(db.iter_query("SELECT * FROM customers WHERE id < 0")) == []
+
+
+# --- Oracle (checked against Oracle Free 23ai with python-oracledb; these need neither) ---------------
+
+
+def test_date_values_are_bound_as_dates_not_text():
+    """``WHERE opened_at >= '2026-10-01'`` (or DuckDB's TIMESTAMP '…', which arrives as text): Oracle reads a text
+    bound to a DATE/TIMESTAMP with NLS_DATE_FORMAT and fails (ORA-01843) — the value goes as a datetime."""
+    import datetime as dt
+
+    import sqlalchemy as sa
+
+    from duckduck.common.pushdown import Condition
+
+    tbl = sa.Table("t", sa.MetaData(), sa.Column("opened", sa.DateTime), sa.Column("day", sa.Date),
+                   sa.Column("at", sa.Time), sa.Column("name", sa.String), sa.Column("n", sa.Integer))
+    db = SQLDatabase("sqlite:///:memory:")
+    where = [Condition("opened", "gte", "2026-10-01"), Condition("opened", "lt", "2026-10-02T08:30:00"),
+             Condition("day", "eq", "2026-10-01"), Condition("day", "lt", "2026-10-01 10:00:00"),
+             Condition("at", "gt", "08:00"), Condition("name", "eq", "2026-10-01"), Condition("n", "eq", "7"),
+             Condition("opened", "in", ("2026-10-01", "2026-10-03")),
+             Condition("opened", "gt", "2026-10-01T00:00:00+02:00"), Condition("opened", "gt", "yesterday")]
+    clauses = db._where_clauses(tbl, where)
+    values = [c.right.value for c in clauses[:7]]
+    assert values == [dt.datetime(2026, 10, 1), dt.datetime(2026, 10, 2, 8, 30), dt.date(2026, 10, 1),
+                      dt.datetime(2026, 10, 1, 10, 0),  # a moment on a DATE column stays a moment: no bound moved
+                      dt.time(8, 0), "2026-10-01", "7"]  # text and numbers as they were
+    assert clauses[7].right.value == [dt.datetime(2026, 10, 1), dt.datetime(2026, 10, 3)]
+    assert [c.right.value for c in clauses[8:]] == ["2026-10-01T00:00:00+02:00", "yesterday"]  # left alone
+
+
+def test_oracle_jdbc_url_follows_the_sqlalchemy_url():
+    import sqlalchemy as sa
+
+    url = sa.engine.make_url
+    assert SQLDatabase._oracle_jdbc(url("oracle+oracledb://u:p@db:1521/?service_name=ORCLPDB1")).format(
+        host="db", port=1521, db="") == "jdbc:oracle:thin:@//db:1521/ORCLPDB1"
+    assert SQLDatabase._oracle_jdbc(url("oracle+oracledb://u:p@db:1521/ORCL")).format(
+        host="db", port=1521, db="ORCL") == "jdbc:oracle:thin:@db:1521:ORCL"  # SQLAlchemy reads it as a SID
+    assert SQLDatabase._oracle_jdbc(url("oracle+oracledb://u:p@prod_tns")).format(
+        host="prod_tns", port=1521, db="") == "jdbc:oracle:thin:@prod_tns"
+
+
+def test_oracle_tables_leave_out_the_schemas_oracle_maintains(monkeypatch):
+    """Oracle lists every user as a schema (SYS, XDB, MDSYS… — thousands of views): ``tables`` keeps the ones
+    ``ALL_USERS.ORACLE_MAINTAINED`` doesn't mark."""
+    db = SQLDatabase("sqlite:///:memory:")
+    monkeypatch.setattr(db.engine.dialect, "name", "oracle")
+    inspector = MagicMock()
+    inspector.get_schema_names.return_value = ["app", "hr", "sys", "xdb", "mdsys"]
+    inspector.dialect.normalize_name = str.lower
+    conn = MagicMock()
+    conn.__enter__.return_value.execute.return_value = [("SYS",), ("XDB",), ("MDSYS",)]
+    monkeypatch.setattr(type(db.engine), "connect", lambda self: conn)
+    assert db._user_schemas(inspector) == ["app", "hr"]
+    conn.__enter__.return_value.execute.side_effect = RuntimeError("ORA-00904: invalid identifier")  # before 12c
+    assert db._user_schemas(inspector) == ["app", "hr", "xdb", "mdsys"]  # every schema but the generic system ones

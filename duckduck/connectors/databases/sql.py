@@ -50,6 +50,7 @@ Via ``auto_register()`` (connector ``"database"``, registered as
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
@@ -81,7 +82,8 @@ class SQLDatabase:
         - SQL Server: ``mssql+pyodbc://user:pass@host:1433/db?driver=ODBC+Driver+17+for+SQL+Server``
         - MySQL:      ``mysql+pymysql://user:pass@host:3306/db``
         - PostgreSQL: ``postgresql+psycopg2://user:pass@host:5432/db``
-        - Oracle:     ``oracle+cx_oracle://user:pass@host:1521/?service_name=orcl``
+        - Oracle:     ``oracle+oracledb://user:pass@host:1521/?service_name=ORCLPDB1`` (python-oracledb,
+          thin mode: no Instant Client; a database part instead is a SID to SQLAlchemy)
         - SQLite:     ``sqlite:///path/to/file.db``
     **engine_kwargs
         Passed straight to ``sqlalchemy.create_engine`` (e.g. ``pool_size``).
@@ -181,18 +183,45 @@ class SQLDatabase:
                 method = col.like if cond.op == "like" else col.ilike
                 clauses.append(method(pattern, escape=escape))
             elif cond.op == "eq":
-                clauses.append(col == cond.value)
+                clauses.append(col == self._typed(col, cond.value))
             elif cond.op == "gt":
-                clauses.append(col > cond.value)
+                clauses.append(col > self._typed(col, cond.value))
             elif cond.op == "gte":
-                clauses.append(col >= cond.value)
+                clauses.append(col >= self._typed(col, cond.value))
             elif cond.op == "lt":
-                clauses.append(col < cond.value)
+                clauses.append(col < self._typed(col, cond.value))
             elif cond.op == "lte":
-                clauses.append(col <= cond.value)
+                clauses.append(col <= self._typed(col, cond.value))
             elif cond.op == "in":
-                clauses.append(col.in_(list(cond.value or ())))
+                clauses.append(col.in_([self._typed(col, v) for v in cond.value or ()]))
         return clauses
+
+    @staticmethod
+    def _typed(col: Any, value: Any) -> Any:
+        """A date/time column's value as a Python date/datetime/time, bound as that type: ``WHERE opened_at >=
+        '2026-10-01'`` arrives as text (DuckDB's ``TIMESTAMP '…'`` too), and Oracle reads a text bound to a DATE
+        with the session's NLS_DATE_FORMAT (ORA-01843) — other engines cast it. A DATE column compared with a
+        moment that isn't midnight keeps the moment (a date would move the bound). Text that isn't a plain
+        date/time, or carries an offset, stays as it was."""
+        if not isinstance(value, str):
+            return value
+        try:
+            kind = col.type.python_type
+        except (NotImplementedError, AttributeError):
+            return value
+        try:
+            if kind is dt.time:
+                return dt.time.fromisoformat(value.strip())
+            if kind not in (dt.datetime, dt.date):
+                return value
+            moment = dt.datetime.fromisoformat(value.strip().replace("T", " ", 1))
+        except ValueError:
+            return value
+        if moment.tzinfo is not None:
+            return value
+        if kind is dt.date and moment.time() == dt.time():
+            return moment.date()
+        return moment
 
     def _portable_like(self, pattern: str):
         """
@@ -223,6 +252,8 @@ class SQLDatabase:
         if name not in self._JDBC:
             raise ValueError(f"no JDBC mapping for {name!r} — add it to SQLDatabase._JDBC")
         template, driver, port = self._JDBC[name]
+        if name == "oracle":
+            template = self._oracle_jdbc(url)
         options = {"url": template.format(host=url.host, port=url.port or port, db=url.database or ""),
                    "driver": driver}
         if url.username:
@@ -230,6 +261,17 @@ class SQLDatabase:
         if url.password:
             options["password"] = str(url.password)
         return options
+
+    @staticmethod
+    def _oracle_jdbc(url: Any) -> str:
+        """Oracle's thin URL as SQLAlchemy reads the connection: ``?service_name=`` → ``@//host:port/service``,
+        a database part (a SID to SQLAlchemy) → ``@host:port:SID``, a host alone (a TNS alias) → ``@alias``."""
+        service = url.query.get("service_name")
+        if service:
+            return "jdbc:oracle:thin:@//{host}:{port}/" + str(service)
+        if url.database:
+            return "jdbc:oracle:thin:@{host}:{port}:{db}"
+        return "jdbc:oracle:thin:@{host}"
 
     def _spark_table(self, table_name: str) -> SparkSource:
         return SparkSource("jdbc", options={**self.jdbc_options(), "dbtable": table_name})
@@ -319,6 +361,21 @@ class SQLDatabase:
         "db_denydatareader", "db_denydatawriter",
     }
 
+    def _user_schemas(self, inspector: Any) -> List[str]:
+        """The schemas holding user data. Oracle lists every database user as a schema — dozens of its own
+        (SYS, XDB, MDSYS…, thousands of views): ``ALL_USERS.ORACLE_MAINTAINED`` (12c+) leaves them out."""
+        names = [s for s in inspector.get_schema_names() if s.lower() not in self._SYSTEM_SCHEMAS]
+        if self.engine.dialect.name != "oracle":
+            return names
+        try:
+            with self.engine.connect() as conn:
+                ours = {r[0] for r in conn.execute(sa.text("SELECT username FROM all_users WHERE oracle_maintained = 'Y'"))}
+        except Exception as exc:  # noqa: BLE001 — before 12c: no such column
+            logger.debug("oracle: all_users.oracle_maintained unavailable (%s); listing every schema", exc)
+            return names
+        maintained = {inspector.dialect.normalize_name(u) for u in ours}
+        return [s for s in names if s not in maintained]
+
     @spark_plan("driver", why="catalog: a small listing")
     @catalog(lists="table")
     def tables(self, schema: Optional[str] = None, limit: Optional[int] = None) -> pd.DataFrame:
@@ -329,9 +386,7 @@ class SQLDatabase:
         """
         inspector = sa.inspect(self.engine)
         default = inspector.default_schema_name
-        schemas = [schema] if schema else [
-            s for s in inspector.get_schema_names() if s.lower() not in self._SYSTEM_SCHEMAS
-        ]
+        schemas = [schema] if schema else self._user_schemas(inspector)
         rows = []
         for sch in schemas:
             for object_type, names in (("table", inspector.get_table_names(schema=sch)),
