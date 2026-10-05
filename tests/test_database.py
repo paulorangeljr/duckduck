@@ -272,3 +272,38 @@ def test_oracle_tables_leave_out_the_schemas_oracle_maintains(monkeypatch):
     assert db._user_schemas(inspector) == ["app", "hr"]
     conn.__enter__.return_value.execute.side_effect = RuntimeError("ORA-00904: invalid identifier")  # before 12c
     assert db._user_schemas(inspector) == ["app", "hr", "xdb", "mdsys"]  # every schema but the generic system ones
+
+
+def test_a_connection_string_takes_its_credentials_from_the_secret():
+    """One form for every engine: the URL in duckduck.json with ``${key}``, the values in the secret — escaped,
+    so a password with ``@ / : %`` stays one password (checked against Oracle with ``p@ss/w:rd%9``)."""
+    import sqlalchemy as sa
+
+    url = "postgresql+psycopg2://${username}:${password}@db:5432/${dbname}"
+    secret = {"username": "app", "password": "p@ss/w:rd%9", "dbname": "sales"}
+    filled = SQLDatabase._filled(url, secret)
+    parsed = sa.engine.make_url(filled)
+    assert (parsed.username, parsed.password, parsed.host, parsed.database) == ("app", "p@ss/w:rd%9", "db", "sales")
+    with pytest.raises(ValueError, match=r"no 'pasword' \(it has: dbname, password, username\)"):
+        SQLDatabase._filled("x://${username}:${pasword}@h", secret)
+    assert SQLDatabase._filled("sqlite:///a.db", {}) == "sqlite:///a.db"
+
+
+def test_auto_register_fills_the_connection_string_from_the_authentication_block(tmp_path):
+    from duckduck import DuckAPI
+
+    db_file = tmp_path / "x.db"
+    duck = DuckAPI()
+    duck.auto_register({"local_db": {"connector": "database", "connection_string": "sqlite:///${path}",
+                                     "authentication": {"type": "local", "path": str(db_file)}}})
+    assert duck.sql("SELECT * FROM local_db_query(sql='SELECT 1 AS ok')").fetchall() == [(1,)]
+
+
+def test_a_connection_string_of_placeholders_isnt_masked_but_one_with_a_password_is():
+    from duckduck.system import mask
+
+    shown = "oracle+oracledb://${username}:${password}@db:1521/?service_name=X"
+    assert mask({"connection_string": shown}) == {"connection_string": shown}
+    for literal in ("oracle+oracledb://app:hunter2@db/?service_name=${svc}",
+                    "mssql+pyodbc://${u}:${p}@h/db?pwd=hunter2", "sqlite:///a.db"):
+        assert mask({"connection_string": literal}) == {"connection_string": "***"}

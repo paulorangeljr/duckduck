@@ -61,14 +61,11 @@
     },
     "oracle": {
       "connector": "database",
+      "connection_string": "oracle+oracledb://${username}:${password}@oracle.minhaempresa.local:1521/?service_name=ORCLPDB1",
       "authentication": {
         "type": "aws",
         "region_name": "us-east-1",
-        "secret_id": "prod/oracle",
-        "drivername": "oracle+oracledb",
-        "query": {
-          "service_name": "ORCLPDB1"
-        }
+        "secret_id": "prod/oracle"
       }
     },
     "servicenow": {

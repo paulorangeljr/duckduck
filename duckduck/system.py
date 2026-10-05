@@ -42,11 +42,20 @@ def is_secret_key(key: Any) -> bool:
     return bool(_SECRETISH.search(key)) and not key.lower().endswith(_NOT_SECRET_SUFFIX)
 
 
+_LITERAL_URL_PASSWORD = re.compile(r"://[^/@]*?:(?!\$\{)[^@/]+@|[?&;]\w*(?:pass|pwd|secret|token|key)\w*=(?!\$\{)", re.I)
+
+
+def _references_only(value: str) -> bool:
+    """A connection string whose credentials are ``${key}`` placeholders (filled from the secret) holds no
+    secret of its own: shown as written. One with a literal ``user:password@`` is still masked."""
+    return "${" in value and not _LITERAL_URL_PASSWORD.search(value)
+
+
 def mask(data: Any) -> Any:
     """Secret values (by key name) → ``"***"``; ``"$secret.<key>"`` references stay (they aren't secrets)."""
     if isinstance(data, dict):
         return {k: (MASK if is_secret_key(k) and isinstance(v, str) and v and not v.startswith("$secret.")
-                    else mask(v)) for k, v in data.items()}
+                    and not _references_only(v) else mask(v)) for k, v in data.items()}
     if isinstance(data, list):
         return [mask(v) for v in data]
     return data

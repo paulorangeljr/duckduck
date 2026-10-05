@@ -52,7 +52,9 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import re
 from typing import Any, Dict, Iterator, List, Optional, Tuple
+from urllib.parse import quote
 
 import pandas as pd
 
@@ -117,7 +119,10 @@ class SQLDatabase:
 
         Accepts either:
 
-        - ``connection_string``: a full SQLAlchemy URL, used as-is.
+        - ``connection_string``: a full SQLAlchemy URL — the same shape for
+          every engine. ``${key}`` in it is filled from the secret, URL-escaped
+          (``oracle+oracledb://${username}:${password}@db:1521/?service_name=X``):
+          the URL in the config, the credentials in the vault.
         - discrete fields: ``drivername`` (required, e.g. ``"mssql+pyodbc"``,
           ``"mysql+pymysql"``, ``"postgresql+psycopg2"``), plus
           ``username``, ``password``, ``host``, ``port``, ``database``,
@@ -130,7 +135,7 @@ class SQLDatabase:
             "connection_string"
         )
         if connection_string:
-            return cls(connection_string, **overrides)
+            return cls(cls._filled(connection_string, secret), **overrides)
 
         if "drivername" not in secret:
             raise ValueError(
@@ -147,6 +152,25 @@ class SQLDatabase:
             query=secret.get("query") or {},
         )
         return cls(url, **overrides)
+
+    _PLACEHOLDER = re.compile(r"\$\{([^}]*)\}")
+
+    @classmethod
+    def _filled(cls, connection_string: str, secret: Dict[str, Any]) -> str:
+        """``${key}`` → the secret's value, escaped for a URL (a password with ``@``, ``/`` or ``:`` stays one
+        password). A key the secret doesn't have is an error naming the keys it has — never sent as written."""
+        connection_string = str(connection_string)
+
+        def value(match: "re.Match[str]") -> str:
+            key = match.group(1).strip()
+            if key not in secret or secret[key] is None:
+                have = ", ".join(sorted(k for k in secret if k != "connection_string")) or "none"
+                raise ValueError(f"connection_string has ${{{key}}}, but the secret has no {key!r} "
+                                 f"(it has: {have}) — add it to the secret, or rename it in the "
+                                 f"authentication block: \"{key}\": \"$secret.<its name>\"")
+            return quote(str(secret[key]), safe="")
+
+        return cls._PLACEHOLDER.sub(value, connection_string)
 
     # ------------------------------------------------------------------
     # Schema reflection
