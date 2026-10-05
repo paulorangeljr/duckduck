@@ -297,6 +297,16 @@ def test_auto_register_fills_the_connection_string_from_the_authentication_block
     duck.auto_register({"local_db": {"connector": "database", "connection_string": "sqlite:///${path}",
                                      "authentication": {"type": "local", "path": str(db_file)}}})
     assert duck.sql("SELECT * FROM local_db_query(sql='SELECT 1 AS ok')").fetchall() == [(1,)]
+    assert db_file.exists()  # the path as written: only user:password@ and ?k=v values are escaped
+
+
+def test_placeholders_are_escaped_only_where_the_url_needs_it():
+    import sqlalchemy as sa
+
+    secret = {"u": "a@b", "p": "p@ss/w:rd", "host": "db.local", "path": "/data/x.db", "token": "t&k=v"}
+    url = sa.engine.make_url(SQLDatabase._filled("postgresql://${u}:${p}@${host}:5432/sales?token=${token}", secret))
+    assert (url.username, url.password, url.host, url.query["token"]) == ("a@b", "p@ss/w:rd", "db.local", "t&k=v")
+    assert SQLDatabase._filled("sqlite:///${path}", secret) == "sqlite:////data/x.db"
 
 
 def test_a_connection_string_of_placeholders_isnt_masked_but_one_with_a_password_is():

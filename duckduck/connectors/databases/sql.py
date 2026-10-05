@@ -157,9 +157,18 @@ class SQLDatabase:
 
     @classmethod
     def _filled(cls, connection_string: str, secret: Dict[str, Any]) -> str:
-        """``${key}`` → the secret's value, escaped for a URL (a password with ``@``, ``/`` or ``:`` stays one
-        password). A key the secret doesn't have is an error naming the keys it has — never sent as written."""
+        """``${key}`` → the secret's value. Escaped where the URL needs it — in ``user:password@`` and in the
+        ``?k=v`` parameters (a password with ``@``, ``/`` or ``:`` stays one password) — and written as it is in
+        the host and the path (``sqlite:///${path}``, a SID). A key the secret doesn't have is an error naming
+        the keys it has — never sent as written."""
         connection_string = str(connection_string)
+        start = connection_string.find("://")
+        userinfo_end = connection_string.find("@", start) if start != -1 else -1
+        params = connection_string.find("?")
+
+        def escaped(at: int) -> bool:
+            in_userinfo = start != -1 and userinfo_end != -1 and start < at < userinfo_end
+            return in_userinfo or (params != -1 and at > params)
 
         def value(match: "re.Match[str]") -> str:
             key = match.group(1).strip()
@@ -168,7 +177,8 @@ class SQLDatabase:
                 raise ValueError(f"connection_string has ${{{key}}}, but the secret has no {key!r} "
                                  f"(it has: {have}) — add it to the secret, or rename it in the "
                                  f"authentication block: \"{key}\": \"$secret.<its name>\"")
-            return quote(str(secret[key]), safe="")
+            text = str(secret[key])
+            return quote(text, safe="") if escaped(match.start()) else text
 
         return cls._PLACEHOLDER.sub(value, connection_string)
 
