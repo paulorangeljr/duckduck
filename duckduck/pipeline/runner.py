@@ -448,6 +448,8 @@ def _execute(spec: PipelineSpec, plan: Plan, started: float, duck: Any, spark: A
         engine.use_batches(spec.batch_rows, run_staging, spec.resume, spec.resume_column,
                            spec.load.columns if spec.load.incremental else ())
     engine.resuming = bool(pending)
+    if hasattr(engine, "parameters"):  # a SparkJob's engine: self.params in transform()
+        engine.parameters = dict(values)
     run = PipelineRun(pipeline=spec.name, run_id=values["run_id"], run_at=values["run_at"], engine=engine.name,
                       plan=plan, dry_run=dry_run, resumed=bool(pending),
                       batch_rows=spec.batch_rows if getattr(engine, "batch_rows", None) else None,

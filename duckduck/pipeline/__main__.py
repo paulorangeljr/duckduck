@@ -25,12 +25,33 @@ def _params(pairs: Optional[List[str]]) -> Dict[str, str]:
     return out
 
 
+def _jobs(args) -> int:
+    """A .py file of SparkJob classes: each (or the --table ones, by class or pipeline name) planned or run."""
+    from .job import jobs_in
+
+    jobs = [cls() for cls in jobs_in(args.pipeline)]
+    if args.table:
+        jobs = [j for j in jobs if type(j).__name__ in args.table or j.settings_dict()["pipeline"] in args.table]
+        if not jobs:
+            raise PipelineError(f"no job named {args.table} in {args.pipeline}")
+    if args.command == "plan":
+        print("\n".join(j.plan(config_path=args.config, params=_params(args.param)).report() for j in jobs))
+        return 0
+    if args.verbose:
+        set_verbose("debug" if args.verbose > 1 else "info")
+    for j in jobs:
+        print(j.run(config_path=args.config, params=_params(args.param), run_id=args.run_id, dry_run=args.dry_run,
+                    resume=False if args.no_resume else None).report())
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m duckduck.pipeline", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     for name, help_ in (("plan", "show what a run would do, without running"), ("run", "run a pipeline file")):
         p = sub.add_parser(name, help=help_)
-        p.add_argument("pipeline", help="the pipeline's JSON file (a pipeline, or a domain of tables)")
+        p.add_argument("pipeline", help="the pipeline's JSON file (a pipeline, or a domain of tables), or a .py "
+                                        "file with SparkJob classes (PySpark transform)")
         p.add_argument("--table", action="append", metavar="NAME", help="only this table of a domain file "
                                                                          "(repeatable; default: every table)")
         p.add_argument("--param", action="append", metavar="NAME=VALUE", help="a value for {{ NAME }}")
@@ -55,6 +76,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                                     "duckduck.json)")
     args = parser.parse_args(argv)
     try:
+        if args.command in ("plan", "run") and args.pipeline.endswith(".py"):
+            return _jobs(args)
         if args.command == "plan":
             domain = Pipelines(config=args.config).domain(args.pipeline)
             print("\n".join(domain.plan(t, params=_params(args.param)).report()

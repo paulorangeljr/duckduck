@@ -2973,8 +2973,66 @@ python -m duckduck.pipeline sip s3://lake/_sip/ --key INC0001234       # one row
 | `python -m duckduck.pipeline plan FILE [--table T] [--config]` | `pipelines.domain(FILE).plan(T).report()` |
 | `python -m duckduck.pipeline run FILE [--table T …] [--config] [--param k=v] [--dry-run]` | `pipelines.domain(FILE).run(T, params=, dry_run=).report()` |
 | `python -m duckduck.pipeline sip STORE [--pipeline] [--key] [--run-id] [--config]` | `pipelines.sip(key=)` / `read_sip(STORE, pipeline=, key=, run_id=, aws=)` |
+| `python -m duckduck.pipeline run|plan jobs.py [--table Job]` | `Job().run(spark=, config_path=)` / `Job().plan(…).report()` (a `SparkJob`) |
 
 `run_pipeline(FILE, duck=, spark=, params=, dry_run=)` / `plan_pipeline(…)` still run one pipeline file directly.
+
+### PySpark instead of SQL: `SparkJob` (the engineer writes only the transformation)
+
+When a step is easier in PySpark than in SQL, write it as a class. The engineer
+writes `transform()`, and that's all; everything around it is the framework's,
+the same code a SQL pipeline runs:
+
+- reading the inputs (lake tables by name, connectors, or a query whose filters
+  reach the source);
+- the incremental load (the input is filtered; the watermark goes into the state);
+- the target (layer, catalog, format, mode, schema evolution, merge, partitions);
+- the audit columns `_loaded_at` / `_load_date` / `_run_id`;
+- the state, finishing a run that failed, and the sip.
+
+```python
+from pyspark.sql import functions as F
+from duckduck.pipeline import SparkJob
+
+class RiskByDepartment(SparkJob):
+    pipeline = "gold_risk_spark"
+    inputs = {"assets": "silver.inventory.assets", "owners": "silver.inventory.owners"}
+    target = {"layer": "gold", "database": "inventory", "table_name": "risk_by_department_spark",
+              "mode": "overwrite"}
+    primary_key = ["department", "os"]
+    parameters = {"min_risk": 50}
+
+    def transform(self, assets, owners):          # each input arrives as a Spark DataFrame, by its name
+        exposed = (assets.filter(F.col("risk") >= int(self.params["min_risk"]))
+                   .join(owners.select("ip", "owner", "department"), "ip", "left"))
+        return (exposed.groupBy(F.coalesce("department", F.lit("unknown")).alias("department"), "os")
+                .agg(F.count("*").alias("hosts"), F.round(F.avg("risk"), 1).alias("avg_risk")))
+
+    def check(self, df):                           # optional: your data rules, before anything is written
+        bad = df.filter(F.col("hosts") <= 0).count()
+        return [f"{bad} empty group(s)"] if bad else []
+```
+
+```bash
+python -m duckduck.pipeline plan examples/pipeline/gold_risk_job.py --config examples/pipeline/duckduck.pipeline.json
+python -m duckduck.pipeline run  examples/pipeline/gold_risk_job.py --config examples/pipeline/duckduck.pipeline.json
+```
+
+Or, from Python: `RiskByDepartment().run(spark=spark, config_path="duckduck.json")`,
+which returns the same `PipelineRun` and report as a pipeline file.
+
+- **What the engineer declares:** `inputs`, `target`, `primary_key`, `load`
+  (`"incremental"` filters the input; `{"step": "<input>"}` picks which),
+  `parameters` (`self.params` in `transform`, with `run_date`, `run_id`…) and
+  `settings`, for any other pipeline-file key (`layer`, `sip`, `state`,
+  `schema_evolution`, `timezone`, `catalog`…). `self.spark` is the session.
+- **Guardrails:**
+  - a class that redefines `run`, `plan`, `spec`… fails as soon as it's defined;
+  - a class without `transform` can't be created;
+  - `transform`'s arguments must be the inputs' names;
+  - the result must be a Spark DataFrame, with no duplicated columns and with
+    the `primary_key` columns, and must pass `check()`. Otherwise the run stops
+    and nothing is written. Don't call `df.write`: the framework writes it.
 
 ### Catalog apart from storage: Glue, Unity Catalog (Azure), Iceberg catalogs
 
