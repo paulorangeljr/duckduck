@@ -22,8 +22,22 @@ the DataFrame ``transform`` returns (``JobEngine``).
 
     RiskByDepartment().run()          # or: python -m duckduck.pipeline run jobs/gold_risk.py
 
-``run``, ``plan``, ``spec`` and the reading/writing behind them can't be overridden (``FINAL``): a class that
-redefines one fails when it's defined. ``check(df)`` is an optional hook for the engineer's own data rules.
+``run``, ``plan``, ``spec``, ``debug`` and the reading/writing behind them can't be overridden (``FINAL``): a class
+that redefines one fails when it's defined. Any other method is the engineer's (helpers ``transform`` calls).
+``check(df)`` is an optional hook for the engineer's own data rules.
+
+``transform`` may be a plain function written outside the class — easier to test and to step through::
+
+    def risk_by_department(assets, owners, params):      # plain DataFrames in, a DataFrame out
+        ...
+
+    class RiskByDepartment(SparkJob):
+        ...
+        transform = risk_by_department
+
+It takes the inputs by name, plus ``params`` (the run's parameters) and ``spark`` (the session) when it declares
+them. ``job.debug()`` runs it on what a run would read and writes nothing; ``job.debug(inputs={"assets": df, …})``
+on DataFrames of your own.
 """
 
 from __future__ import annotations
@@ -39,7 +53,10 @@ from .spec import NAME_RE, PipelineError, load_spec
 from .engines import SparkEngine
 
 #: the framework's part: a subclass that defines one of these fails at once, naming ``transform``
-FINAL = ("run", "plan", "spec", "settings_dict", "_engine", "_frames", "_finish")
+FINAL = ("run", "plan", "spec", "debug", "settings_dict", "_engine", "_frames", "_finish", "_call", "_key",
+         "_pipeline_run", "_inputs")
+#: what ``transform`` may also declare (never an input's name): the run's parameters, the Spark session
+EXTRAS = ("params", "spark")
 #: pipeline-file keys a job gives as attributes (the rest through ``settings``)
 ATTRIBUTES = ("description", "primary_key", "target", "load", "parameters")
 #: keys the job writes itself — ``settings`` can't set them
@@ -59,10 +76,11 @@ class SparkJob(abc.ABC):
     #: the pipeline's name — state, sip and run reports go by it (default: the class name in snake_case)
     pipeline: Optional[str] = None
     description: Optional[str] = None
-    #: ``{name: table}`` — each one a DataFrame argument of ``transform``. A table is a lake table
+    #: tables — ``["silver.cmdb.assets_cmdb_ci"]``: each a DataFrame argument of ``transform`` named like its table
+    #: (``assets_cmdb_ci``) — or ``{argument: table}`` to name them yourself. A table is a lake table
     #: (``silver.inventory.assets`` / ``inventory.assets``), a connector's (``servicenow.incident``), or a query
     #: (``SELECT … FROM silver.x.y WHERE …``) — its filters reach the source as in any pipeline
-    inputs: Dict[str, str] = {}
+    inputs: Any = {}
     #: as in a pipeline file: ``{"layer", "database", "table_name", "mode", "format", "partition_by", …}`` or a path
     target: Any = None
     primary_key: Any = None
@@ -79,12 +97,16 @@ class SparkJob(abc.ABC):
         if taken:
             raise TypeError(f"{cls.__name__} redefines {', '.join(taken)} — reading, saving and the run are the "
                             f"framework's; put your code in transform() (and data rules in check())")
+        fn = cls.__dict__.get("transform")
+        if inspect.isfunction(fn) and _outside(fn, cls):  # transform = a_function: called without self
+            cls.transform = staticmethod(fn)
 
     # ---- what the engineer writes -----------------------------------------------------------------------------
     @abc.abstractmethod
     def transform(self, **inputs: Any) -> Any:
         """The inputs (Spark DataFrames, by their ``inputs`` name) → the table to write (a Spark DataFrame).
-        ``self.spark`` is the session, ``self.params`` the run's parameters (``run_date``, ``run_id``…)."""
+        ``self.spark`` is the session, ``self.params`` the run's parameters (``run_date``, ``run_id``…) — or declare
+        ``params`` / ``spark`` as arguments. May be a plain function: ``transform = my_function``."""
 
     def check(self, df: Any) -> Optional[List[str]]:
         """Optional: the engineer's data rules on the result, before anything is written. Return the problems
@@ -98,14 +120,12 @@ class SparkJob(abc.ABC):
     def settings_dict(self) -> Dict[str, Any]:
         """The pipeline file this job is — its inputs as steps, its result as the last one."""
         name = self.pipeline or _snake(type(self).__name__)
-        if not isinstance(self.inputs, dict) or not self.inputs:
-            raise PipelineError(f"{name}: 'inputs' names what transform() reads — e.g. "
-                                f"{{\"assets\": \"silver.inventory.assets\"}}")
+        inputs = self._inputs(name)
         steps = []
-        for alias, source in self.inputs.items():
-            if not isinstance(alias, str) or not NAME_RE.match(alias) or alias == name:
+        for alias, source in inputs.items():
+            if not isinstance(alias, str) or not NAME_RE.match(alias) or alias == name or alias in EXTRAS:
                 raise PipelineError(f"{name}: input name {alias!r} must be a plain name (letters, digits, _), "
-                                    f"not the pipeline's own name")
+                                    f"not the pipeline's own name nor {' / '.join(EXTRAS)}")
             if not isinstance(source, str) or not source.strip():
                 raise PipelineError(f"{name}: input {alias} is a table (silver.db.table) or a query")
             query = source.strip() if _QUERY.match(source) else (
@@ -116,7 +136,7 @@ class SparkJob(abc.ABC):
         self._check_signature(name)
         # the last step stands for transform(): the engine runs the PySpark, never this SQL (it only names the
         # inputs, so they're read first and the incremental load filters the right one)
-        steps.append(f"CREATE VIEW {name} AS SELECT * FROM {', '.join(self.inputs)}")
+        steps.append(f"CREATE VIEW {name} AS SELECT * FROM {', '.join(inputs)}")
         data: Dict[str, Any] = {"pipeline": name, "engine": "spark", "sql": steps}
         for key in ATTRIBUTES:
             value = getattr(self, key)
@@ -130,16 +150,43 @@ class SparkJob(abc.ABC):
             data["keys"] = {name: self.primary_key}
         return data
 
+    def _inputs(self, name: Optional[str] = None) -> Dict[str, str]:
+        """``inputs`` as ``{argument: table}``: a list of tables gives each the name of its table (its last part:
+        ``silver.cmdb.assets_cmdb_ci`` → ``assets_cmdb_ci``); a dict names them itself."""
+        name = name or self.pipeline or _snake(type(self).__name__)
+        inputs = self.inputs
+        if isinstance(inputs, str):
+            inputs = [inputs]
+        if isinstance(inputs, (list, tuple)):
+            named: Dict[str, str] = {}
+            for table in inputs:
+                if not isinstance(table, str) or not _TABLE.match(table.strip()):
+                    raise PipelineError(f"{name}: a list of inputs holds table names ({table!r} isn't one) — "
+                                        f"give a query a name of its own: {{\"name\": \"SELECT …\"}}")
+                leaf = table.strip().split(".")[-1]
+                if leaf in named:
+                    raise PipelineError(f"{name}: two inputs are tables named {leaf} ({named[leaf]}, {table}) — "
+                                        f"name them: {{\"{leaf}\": \"{named[leaf]}\", \"other\": \"{table}\"}}")
+                named[leaf] = table.strip()
+            inputs = named
+        if not isinstance(inputs, dict) or not inputs:
+            raise PipelineError(f"{name}: 'inputs' names what transform() reads — tables "
+                                f"([\"silver.cmdb.assets_cmdb_ci\"]: the argument is assets_cmdb_ci) or "
+                                f"{{argument: table or query}}")
+        return dict(inputs)
+
     def _check_signature(self, name: str) -> None:
         params = inspect.signature(self.transform).parameters
         if any(p.kind is p.VAR_KEYWORD for p in params.values()):
             return
-        taken = [p for p in params if params[p].kind in (params[p].POSITIONAL_OR_KEYWORD, params[p].KEYWORD_ONLY)]
-        missing = [a for a in self.inputs if a not in taken]
-        extra = [p for p in taken if p not in self.inputs and params[p].default is inspect.Parameter.empty]
+        taken = [p for p in params if params[p].kind in (params[p].POSITIONAL_OR_KEYWORD, params[p].KEYWORD_ONLY)
+                 and p not in EXTRAS]
+        inputs = self._inputs(name)
+        missing = [a for a in inputs if a not in taken]
+        extra = [p for p in taken if p not in inputs and params[p].default is inspect.Parameter.empty]
         if missing or extra:
             raise PipelineError(f"{name}: transform({', '.join(taken)}) doesn't match inputs "
-                                f"({', '.join(self.inputs)}) — each input arrives as the argument of its name")
+                                f"({', '.join(inputs)}) — each input arrives as the argument of its name")
 
     def spec(self, base_dir: Optional[str] = None) -> Any:
         """The ``PipelineSpec`` — relative paths (state, a target path) from the folder of the job's file."""
@@ -165,13 +212,50 @@ class SparkJob(abc.ABC):
             now: Any = None, catalogs: Optional[Dict[str, Any]] = None, resume: Optional[bool] = None) -> Any:
         """Runs it like any pipeline (``run_pipeline``) → ``PipelineRun``. ``dry_run``: transform runs, nothing
         is written."""
+        return self._pipeline_run(spark, duck, config_path, params=params, run_id=run_id, dry_run=dry_run, now=now,
+                                  catalogs=catalogs, resume=resume)[0]
+
+    def _pipeline_run(self, spark: Any, duck: Any, config_path: Optional[str], **kwargs: Any):
         from .runner import _duck, run_pipeline
 
         spec = self.spec()
         duck = _duck(duck, config_path)
-        return run_pipeline(spec, duck=duck, spark=spark, config_path=config_path, params=params, run_id=run_id,
-                            dry_run=dry_run, now=now, engine=self._engine(spark, duck), catalogs=catalogs,
-                            resume=resume)
+        engine = self._engine(spark, duck)
+        return run_pipeline(spec, duck=duck, spark=spark, config_path=config_path, engine=engine, **kwargs), engine
+
+    def debug(self, inputs: Optional[Dict[str, Any]] = None, spark: Any = None, params: Optional[Dict[str, Any]] = None,
+              config_path: Optional[str] = None, duck: Any = None, now: Any = None) -> Any:
+        """``transform`` + the checks a run makes (key columns, ``check()``) → the Spark DataFrame; nothing written,
+        no state changed. ``inputs`` (``{name: DataFrame}``, every input): run on those — no lake, no connector.
+        Without: reads what the next run would (the incremental load included) — a dry run."""
+        if inputs is None:
+            run, engine = self._pipeline_run(spark, duck, config_path, params=params, dry_run=True, now=now)
+            return engine.result
+        name = self.settings_dict()["pipeline"]
+        declared = self._inputs(name)
+        missing = [a for a in declared if a not in inputs]
+        extra = [a for a in inputs if a not in declared]
+        if missing or extra:
+            raise PipelineError(f"{name}: debug(inputs=) takes a DataFrame per input ({', '.join(declared)})"
+                                + (f" — missing {missing}" if missing else "") + (f" — no input {extra}" if extra else ""))
+        from .spec import run_parameters
+
+        if spark is None:
+            spark = next((getattr(df, "sparkSession", None) for df in inputs.values()), None)
+        self.spark, self.params = spark, run_parameters(self.spec(), params, now=now)
+        return self._finish(self._call(dict(inputs)), name, self._key())
+
+    def _key(self) -> List[str]:
+        key = self.primary_key
+        return key if isinstance(key, list) else ([key] if key else [])
+
+    def _call(self, frames: Dict[str, Any]) -> Any:
+        """``transform(**frames)`` + ``params`` / ``spark`` when it declares them."""
+        accepted = inspect.signature(self.transform).parameters
+        for extra, value in (("params", self.params), ("spark", self.spark)):
+            if extra in accepted:
+                frames[extra] = value
+        return self.transform(**frames)
 
     def plan(self, duck: Any = None, config_path: Optional[str] = None, params: Optional[Dict[str, Any]] = None):
         """What a run would read and write (``plan_pipeline``) — nothing runs."""
@@ -191,7 +275,7 @@ class SparkJob(abc.ABC):
         return plan
 
     def _frames(self, spark: Any) -> Dict[str, Any]:
-        return {alias: spark.table(alias) for alias in self.inputs}
+        return {alias: spark.table(alias) for alias in self._inputs()}
 
     def _finish(self, df: Any, name: str, key: List[str]) -> Any:
         """The result checked before it's written: a Spark DataFrame, unique column names, the key's columns,
@@ -224,15 +308,15 @@ class JobEngine(SparkEngine):
         self.job = job
         self.parameters: Dict[str, Any] = {}  # the run's values, set by the runner before the steps run
         self.final = job.settings_dict()["pipeline"]
+        self.result: Any = None  # transform()'s DataFrame once it ran (SparkJob.debug returns it)
 
     def define(self, name: str, sql: str, keep: bool) -> None:
         if name != self.final:
             return super().define(name, sql, keep)
         job = self.job
         job.spark, job.params = self.spark, dict(self.parameters)
-        df = job.transform(**job._frames(self.spark))
-        key = job.primary_key if isinstance(job.primary_key, list) else ([job.primary_key] if job.primary_key else [])
-        df = job._finish(df, name, key)
+        df = job._finish(job._call(job._frames(self.spark)), name, job._key())
+        self.result = df
         old = self._kept.pop(name, None)
         if old is not None:
             old.unpersist()
@@ -242,6 +326,14 @@ class JobEngine(SparkEngine):
         df.createOrReplaceTempView(name)
         if name not in self._views:
             self._views.append(name)
+
+
+def _outside(fn: Any, cls: type) -> bool:
+    """A function written outside the class body (``transform = risk_by_department``) that doesn't take ``self``."""
+    if fn.__qualname__.startswith(cls.__qualname__ + "."):
+        return False
+    first = next(iter(inspect.signature(fn).parameters), None)
+    return first != "self"
 
 
 def jobs_in(path: str) -> List[type]:
@@ -259,4 +351,4 @@ def jobs_in(path: str) -> List[type]:
     return found
 
 
-__all__ = ["FINAL", "JobEngine", "SparkJob", "jobs_in"]
+__all__ = ["EXTRAS", "FINAL", "JobEngine", "SparkJob", "jobs_in"]

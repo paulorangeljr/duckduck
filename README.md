@@ -2994,19 +2994,21 @@ the same code a SQL pipeline runs:
 from pyspark.sql import functions as F
 from duckduck.pipeline import SparkJob
 
+def risk_by_department(assets, owners, params):   # a plain function: DataFrames in, a DataFrame out
+    exposed = (assets.filter(F.col("risk") >= int(params["min_risk"]))
+               .join(owners.select("ip", "owner", "department"), "ip", "left"))
+    return (exposed.groupBy(F.coalesce("department", F.lit("unknown")).alias("department"), "os")
+            .agg(F.count("*").alias("hosts"), F.round(F.avg("risk"), 1).alias("avg_risk")))
+
 class RiskByDepartment(SparkJob):
     pipeline = "gold_risk_spark"
-    inputs = {"assets": "silver.inventory.assets", "owners": "silver.inventory.owners"}
+    inputs = ["silver.inventory.assets", "silver.inventory.owners"]   # arguments: assets, owners
     target = {"layer": "gold", "database": "inventory", "table_name": "risk_by_department_spark",
               "mode": "overwrite"}
     primary_key = ["department", "os"]
     parameters = {"min_risk": 50}
 
-    def transform(self, assets, owners):          # each input arrives as a Spark DataFrame, by its name
-        exposed = (assets.filter(F.col("risk") >= int(self.params["min_risk"]))
-                   .join(owners.select("ip", "owner", "department"), "ip", "left"))
-        return (exposed.groupBy(F.coalesce("department", F.lit("unknown")).alias("department"), "os")
-                .agg(F.count("*").alias("hosts"), F.round(F.avg("risk"), 1).alias("avg_risk")))
+    transform = risk_by_department
 
     def check(self, df):                           # optional: your data rules, before anything is written
         bad = df.filter(F.col("hosts") <= 0).count()
@@ -3021,13 +3023,30 @@ python -m duckduck.pipeline run  examples/pipeline/gold_risk_job.py --config exa
 Or, from Python: `RiskByDepartment().run(spark=spark, config_path="duckduck.json")`,
 which returns the same `PipelineRun` and report as a pipeline file.
 
+- **Inputs by table name:** a list of tables gives each argument the name of its
+  table — `inputs = ["silver.cmdb.assets_cmdb_ci"]` → `transform(assets_cmdb_ci)`.
+  To name an argument yourself, or to read a query, use a dict:
+  `{"asset": "silver.cmdb.assets_cmdb_ci", "open": "SELECT … WHERE state = '1'"}`.
+  Two tables with the same last name in a list fail, asking for the dict.
+- **`transform` outside the class:** `transform = my_function` takes a plain
+  function (no `self`), so it can be imported, unit-tested and stepped through
+  on its own. It gets the inputs by name, plus `params` (the run's parameters)
+  and `spark` (the session) when it declares them; a method can declare them too.
+- **More methods:** only `transform` is required. Any other method or function
+  is yours (helpers `transform` calls, `check`); only the framework's names
+  (`run`, `plan`, `spec`, `debug`…) are locked.
+- **Debugging:** `job.debug(config_path=…)` reads what the next run would
+  (incremental load included), runs `transform` and the checks, and returns the
+  Spark DataFrame — nothing written, no state changed.
+  `job.debug(inputs={"assets": df, "owners": df2})` runs on DataFrames of your own,
+  with no lake and no connector.
 - **What the engineer declares:** `inputs`, `target`, `primary_key`, `load`
   (`"incremental"` filters the input; `{"step": "<input>"}` picks which),
   `parameters` (`self.params` in `transform`, with `run_date`, `run_id`…) and
   `settings`, for any other pipeline-file key (`layer`, `sip`, `state`,
   `schema_evolution`, `timezone`, `catalog`…). `self.spark` is the session.
 - **Guardrails:**
-  - a class that redefines `run`, `plan`, `spec`… fails as soon as it's defined;
+  - a class that redefines `run`, `plan`, `spec`, `debug`… fails as soon as it's defined;
   - a class without `transform` can't be created;
   - `transform`'s arguments must be the inputs' names;
   - the result must be a Spark DataFrame, with no duplicated columns and with
