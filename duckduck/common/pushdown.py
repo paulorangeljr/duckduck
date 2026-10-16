@@ -150,8 +150,29 @@ def conditions_to_sql(conditions: Iterable[Condition], columns: Iterable[str]) -
 BLOCKER_HOOK = "pushdown_blocker"
 
 
+#: A table method's own blocker — the name of a method on its connector — when one connector's tables differ in
+#: what their ``where`` can take (Okta's user search vs. its System Log filter). Set by ``@blocked_by``.
+BLOCKER_ATTR = "__duckduck_blocker__"
+
+
+def blocked_by(method: str) -> Callable:
+    """Declares the connector method that says which conditions this table's ``where`` refuses (instead of the
+    connector-wide ``pushdown_blocker``)."""
+    def mark(fn: Callable) -> Callable:
+        setattr(fn, BLOCKER_ATTR, method)
+        return fn
+
+    return mark
+
+
 def blocker_of(fetch_function: Any) -> Optional[Callable[[Condition], Optional[str]]]:
-    return getattr(getattr(fetch_function, "__self__", None), BLOCKER_HOOK, None)
+    owner = getattr(fetch_function, "__self__", None)
+    if owner is None:
+        return None
+    own = getattr(getattr(fetch_function, "__func__", fetch_function), BLOCKER_ATTR, None)
+    if own:
+        return getattr(owner, own, None)
+    return getattr(owner, BLOCKER_HOOK, None)
 
 
 def assign_conditions(

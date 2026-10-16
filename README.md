@@ -221,6 +221,65 @@ and more go to Airflow as its own filters; works with Airflow 2 and 3
 variables aren't tables — they hold secrets. Authentication: keys or a
 profile in the block, or nothing for the default AWS chain.
 
+## Okta: users, groups, apps and the System Log
+
+The `okta` connector reads Okta's Management API. With an API token (SSWS):
+
+```json
+"okta": {"connector": "okta", "domain": "minhaempresa.okta.com",
+         "authentication": {"type": "aws", "region_name": "us-east-1", "secret_id": "prod/okta/duckduck"}}
+```
+
+The secret holds `{"api_token": "…"}`. With an OAuth 2.0 service app instead, it holds
+`{"client_id": "…", "private_key": "-----BEGIN PRIVATE KEY-----…", "key_id": "…"}`
+(the private key may also be a JWK). `"scopes"` defaults to
+`okta.users.read okta.groups.read okta.apps.read okta.logs.read`. DPoP is used
+when the app requires it: it's detected and handled, nonce included. You can
+also set `"dpop": true` or `false` yourself.
+
+```sql
+-- every user, deprovisioned ones included
+SELECT profile_login, status, lastLogin FROM okta.users
+WHERE profile_department = 'TI' AND status = 'ACTIVE';
+
+-- who is in which group: one request per group, by the join
+SELECT g.profile_name, m.profile_login
+FROM okta.groups g JOIN okta_group_members m ON m.group_id = g.id
+WHERE g.type = 'OKTA_GROUP';
+
+-- failed sign-ins since a moment, newest first
+SELECT published, actor_alternateId, client_ipAddress, outcome_reason FROM okta.logs
+WHERE published >= TIMESTAMPTZ '2026-10-15 00:00:00+00' AND eventType = 'user.session.start'
+  AND outcome_result = 'FAILURE'
+ORDER BY published DESC LIMIT 50;
+```
+
+Write the date as a literal: `now() - INTERVAL 1 DAY` isn't sent to Okta.
+DuckDB still applies it, but over the default 90-day window. The per-id
+tables are joined by their name (`okta_group_members`): the address
+`okta.group_members` asks for its `group_id` up front.
+
+Tables:
+
+- `users`, `groups`, `apps` and `logs` (the System Log);
+- by id: `group_members(group_id)`, `user_groups(user_id)`,
+  `user_factors(user_id)`, `app_users(app_id)` and `app_groups(app_id)`.
+
+What reaches Okta:
+
+- **Users:** the WHERE goes into Okta's `search`. That covers `=`, `LIKE`
+  as a prefix or contains, and date comparisons, on any profile attribute,
+  custom ones included.
+- **Groups:** `search` or `filter`, depending on the conditions.
+- **Apps:** `filter`, or `q` for a name or label prefix.
+- **System Log:** `published` becomes the `since` / `until` window; the
+  other fields go into its `filter`. Without a date, it reads the last 90
+  days (`"log_days"`).
+- **Sorting:** `ORDER BY` a date sorts at Okta for users, groups and the log.
+
+Conditions Okta can't apply stay with DuckDB. `EXPLAIN PUSHDOWN` (or the SQL
+tab) shows which ones went and why.
+
 ## Public APIs: NVD (CVEs) and REST Countries
 
 Two connectors for APIs from [public-apis](https://github.com/public-apis/public-apis):

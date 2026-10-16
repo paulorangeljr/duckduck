@@ -535,7 +535,7 @@ class _captured_log:
 SOURCE_KINDS = {
     "duckduck.connectors.api.sharepoint": "sharepoint", "duckduck.connectors.api.insightvm": "insightvm", "duckduck.connectors.api.servicenow": "servicenow",
     "duckduck.connectors.api.axonius": "axonius", "duckduck.connectors.databases.sql": "database", "duckduck.connectors.lake.glue": "glue", "duckduck.connectors.databases.athena": "athena",
-    "duckduck.connectors.api.airflow": "airflow",
+    "duckduck.connectors.api.airflow": "airflow", "duckduck.connectors.api.okta": "okta",
     "duckduck.connectors.lake.blob_storage": "blob_storage", "duckduck.connectors.databases.adx": "adx", "duckduck.connectors.local.files": "files",
     "duckduck.connectors.local.python_source": "python", "duckduck.semantic.takeover": "dataset", "duckduck.views": "dataset",
 }

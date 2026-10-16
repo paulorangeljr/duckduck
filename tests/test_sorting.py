@@ -26,6 +26,8 @@ NO_SORT = {
     ("restcountries", "countries"): "no sort parameter (sorted by name here)",
     ("airflow", "dags"): "the API sorts DAGs by text fields only (collation)",
     ("airflow", "task_instances"): "Airflow 2's task instance list has no order_by",
+    **{("okta", t): "no sortBy on this endpoint (Okta sorts users and groups only in a search)"
+       for t in ("group_members", "user_groups", "user_factors", "apps", "app_users", "app_groups")},
 }
 
 

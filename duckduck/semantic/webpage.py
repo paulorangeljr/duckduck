@@ -2109,13 +2109,14 @@ const ICONS = {
   blob_storage: '<path d="M4.5 12.5h7a3 3 0 0 0 .4-6A4 4 0 0 0 4.3 7a2.8 2.8 0 0 0 .2 5.5z"/>',
   airflow: '<circle cx="4" cy="4" r="1.8"/><circle cx="12" cy="4" r="1.8"/><circle cx="8" cy="12" r="1.8"/><path d="M5.6 4h4.8M4.9 5.6l2.2 4.8M11.1 5.6l-2.2 4.8"/>',
   adx: '<path d="M2 13.5h12"/><path d="M4 11V8M7 11V4.5M10 11V6.5M13 11V9"/>',
+  okta: '<circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="2.4"/>',
   files: '<path d="M4 1.5h5l3.5 3.5v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-11.5a1 1 0 0 1 1-1z"/><path d="M9 1.5V5h3.5"/>',
   python: '<path d="M5.5 4.5L2 8l3.5 3.5M10.5 4.5L14 8l-3.5 3.5"/>',
   duckdb: '<rect x="2" y="2.5" width="12" height="11" rx="1"/><path d="M2 6h12M6 6v7.5"/>',
   api: '<path d="M6 1.5v3M10 1.5v3M4 4.5h8v3a4 4 0 0 1-8 0zM8 11.5v3"/>',
 };
 const ICON_NAMES = {database: "SQL database", sharepoint: "SharePoint", servicenow: "ServiceNow", insightvm: "InsightVM",
-  axonius: "Axonius", glue: "S3 / Glue", athena: "Amazon Athena", airflow: "Airflow (MWAA)", blob_storage: "Azure Blob Storage", adx: "Azure Data Explorer",
+  axonius: "Axonius", glue: "S3 / Glue", athena: "Amazon Athena", airflow: "Airflow (MWAA)", okta: "Okta", blob_storage: "Azure Blob Storage", adx: "Azure Data Explorer",
   files: "local files", python: "Python module", duckdb: "DuckDB", dataset: "taken-over answer", api: "API"};
 function icon(kind) {
   if (!kind) return "";
@@ -3571,6 +3572,7 @@ const CONNECTOR_INFO = {
   athena: ["Amazon Athena", "SQL run on Athena over S3 — the WHERE and LIMIT go into Athena's query"],
   adx: ["Azure Data Explorer", "Kusto tables and KQL queries"],
   airflow: ["Apache Airflow (MWAA)", "DAGs, runs, task instances and import errors — through AWS, even in a private VPC"],
+  okta: ["Okta", "Users, groups and members, apps and their assignments, MFA factors and the System Log"],
   files: ["Local files", "Every CSV, Parquet or JSON file in a folder"],
   python: ["Python module", "Tables made by your own Python functions"],
   blob_storage: ["Azure Blob Storage", "Parquet, CSV, JSON, Delta or Iceberg in a container"],

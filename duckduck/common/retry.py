@@ -4,7 +4,7 @@ Retries for the HTTP connectors (ServiceNow, InsightVM, Axonius, SharePoint, RES
 Each connector keeps a ``RetryPolicy`` as ``self.retry`` and sends every request through
 ``send(self.retry, component, call, default_timeout)``: a timeout, a dropped connection or an
 answer in ``statuses`` (429 and 5xx by default) is tried again after a wait that doubles each
-time (``backoff`` seconds first, at most ``max_wait``; a ``Retry-After`` header wins). The wait
+time (``backoff`` seconds first, at most ``max_wait``; a ``Retry-After`` header, or Okta's ``X-Rate-Limit-Reset``, wins). The wait
 goes through ``progress.wait``, so a paused or cancelled read doesn't sit it out.
 
 Set per service in duckduck.json (``"retry": {"retries": 5, "timeout": 120}`` or ``false``) and
@@ -112,6 +112,18 @@ def _retryable_error(exc: BaseException) -> Optional[str]:
     return None
 
 
+def _retry_after(headers: Any) -> Optional[str]:
+    """Seconds the server asks to wait: ``Retry-After``, else Okta's ``X-Rate-Limit-Reset`` (the epoch second its
+    rate-limit window starts again)."""
+    if headers.get("Retry-After"):
+        return headers.get("Retry-After")
+    reset = headers.get("X-Rate-Limit-Reset")
+    try:
+        return str(max(0.0, float(reset) - time.time()) + 1) if reset else None
+    except (TypeError, ValueError):
+        return None
+
+
 def send(policy: Optional[RetryPolicy], component: str, call: Callable[[float], Any], default_timeout: float,
          what: str = "", sleep: Callable[[float], None] = time.sleep) -> Any:
     """``call(timeout)`` — a ``requests`` call returning a response — tried again as ``policy`` says. Returns the
@@ -141,7 +153,7 @@ def send(policy: Optional[RetryPolicy], component: str, call: Callable[[float], 
                                    status, tries)
                 return response
             reason = f"HTTP {status}"
-            retry_after = (getattr(response, "headers", None) or {}).get("Retry-After")
+            retry_after = _retry_after(getattr(response, "headers", None) or {})
             url = getattr(getattr(response, "request", None), "url", None) or getattr(response, "url", None)
             if url and not what:
                 what = redact_url(str(url))

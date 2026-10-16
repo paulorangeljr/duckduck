@@ -133,6 +133,15 @@
         "profile_name": "prod-account"
       }
     },
+    "okta": {
+      "connector": "okta",
+      "domain": "minhaempresa.okta.com",
+      "authentication": {
+        "type": "aws",
+        "region_name": "us-east-1",
+        "secret_id": "prod/okta/duckduck"
+      }
+    },
     "s3_data": {
       "connector": "glue",
       "authentication": {

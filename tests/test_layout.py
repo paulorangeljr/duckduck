@@ -28,7 +28,7 @@ def test_connectors_sit_in_a_folder_by_kind():
     kinds = {k: sorted(f[:-3] for f in os.listdir(os.path.join(PACKAGE, "connectors", k))
                        if f.endswith(".py") and f != "__init__.py") for k in ("api", "lake", "databases", "local")}
     assert kinds == {
-        "api": ["airflow", "axonius", "insightvm", "nvd", "restcountries", "servicenow", "sharepoint"],
+        "api": ["airflow", "axonius", "insightvm", "nvd", "okta", "restcountries", "servicenow", "sharepoint"],
         "lake": ["blob_storage", "glue", "lakehouse", "s3layout"],
         "databases": ["adx", "athena", "sql"],
         "local": ["files", "python_source"],

@@ -2509,6 +2509,7 @@ class DuckAPI:
         "duckduck.connectors.lake.glue": "S3 / Glue Data Catalog",
         "duckduck.connectors.databases.athena": "Amazon Athena (SQL on S3)",
         "duckduck.connectors.api.airflow": "Apache Airflow on MWAA (REST API)",
+        "duckduck.connectors.api.okta": "Okta (Management API)",
         "duckduck.connectors.lake.blob_storage": "Azure Blob Storage",
         "duckduck.connectors.databases.adx": "Azure Data Explorer (KQL)",
         "duckduck.connectors.local.files": "Local files",
@@ -2964,14 +2965,16 @@ class DuckAPI:
         report = notes + report
         used = {k for k in list(pushdown.filters) + [c.column for c in extra if c.op == "eq"]
                 if any(k in kw for kw in calls)}
-        if len(calls) == 1 and self._pages_instead(fn_name, calls[0]):
+        # a join's single value on a parameter (fanned) is still a call of its own: page by page would plan the
+        # call again from the WHERE and lose that argument — and the value must come back as a column
+        if len(calls) == 1 and fanned is None and self._pages_instead(fn_name, calls[0]):
             tname, df_cols, kwargs = self._materialize_pages(fn_name, call, explicit, names, parsed, fallback, notes)
             return tname, df_cols, {k for k in used if k in kwargs}
-        if len(calls) == 1:
+        if len(calls) == 1 and fanned is None:
             self._log_call(fn_name, calls[0], report)
             tname, df_cols = self._materialize(fn_name, fn, calls[0], fallback)
             return tname, df_cols, used
-        self._log_call(f"{fn_name} × {len(calls)} calls", calls[0], report)
+        self._log_call(f"{fn_name} × {len(calls)} call{'s' if len(calls) > 1 else ''}", calls[0], report)
         tname, df_cols = self._materialize_calls(fn_name, fn, calls, fallback, fanned)
         return tname, df_cols, used
 

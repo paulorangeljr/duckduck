@@ -110,6 +110,30 @@ def test_a_lookup_join_calls_once_per_value_and_keeps_the_argument_as_a_column()
     assert rows == [("b", "CVE-2"), ("c", "CVE-3")] and sorted(calls) == [2, 3]
 
 
+def test_a_lookup_join_down_to_one_value_still_calls_with_it_even_page_by_page():
+    """One value left: the call is still one of its own — before, a table with a streaming function was planned
+    again page by page and called without its argument."""
+    duck, calls = DuckAPI(), []
+
+    def assets(limit=None):
+        return pd.DataFrame({"id": [1, 2, 3], "host": ["a", "b", "c"]})
+
+    def vulns(asset_id: int, limit=None):
+        calls.append(asset_id)
+        return pd.DataFrame({"cve": [f"CVE-{asset_id}"]})
+
+    def iter_vulns(asset_id: int):
+        calls.append(asset_id)
+        yield pd.DataFrame({"cve": [f"CVE-{asset_id}"]})
+
+    duck.register_api_function("assets", assets)
+    duck.register_api_function("vulns", vulns)
+    duck.register_streaming_function("vulns", iter_vulns)
+    rows = duck.sql("SELECT a.host, v.cve, v.asset_id FROM assets a JOIN vulns v ON v.asset_id = a.id "
+                    "WHERE a.id = 2").fetchall()
+    assert rows == [("b", "CVE-2", 2)] and calls == [2]
+
+
 def test_which_side_is_narrowed_follows_the_join():
     duck, tickets, reads = _duck()
     # RIGHT JOIN: the right side is kept whole, the left one narrowed

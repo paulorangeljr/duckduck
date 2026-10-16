@@ -3,7 +3,7 @@ Central registry of the API wrappers supported by
 ``DuckAPI.auto_register`` (see ``core.py``).
 
 Each entry maps a "type" (``"sharepoint"``, ``"insightvm"``, ``"database"``,
-``"servicenow"``, ``"axonius"``, ``"glue"``, ``"athena"``, ``"airflow"``, ``"blob_storage"``, ``"adx"``,
+``"servicenow"``, ``"axonius"``, ``"okta"``, ``"glue"``, ``"athena"``, ``"airflow"``, ``"blob_storage"``, ``"adx"``,
 ``"files"``, ``"python"``, ``"nvd"``, ``"restcountries"``) to:
 
 - ``factory``          : classmethod that builds the instance from a
@@ -27,6 +27,7 @@ from .databases.sql import SQLDatabase
 from .lake.glue import GlueTable
 from .local.files import LocalFiles
 from .api.nvd import NVD
+from .api.okta import Okta
 from .local.python_source import PythonSource
 from .api.insightvm import InsightVM
 from .api.restcountries import RestCountries
@@ -206,6 +207,29 @@ SERVICE_REGISTRY: Dict[str, ServiceSpec] = {
             "import_errors": "iter_import_errors",
         },
         requires_authentication=False,  # the default AWS credential chain, like the CLI
+    ),
+    "okta": ServiceSpec(
+        factory=Okta.from_secret,
+        tables={
+            "users": "users",
+            "groups": "groups",
+            "group_members": "group_members",
+            "user_groups": "user_groups",
+            "user_factors": "user_factors",
+            "apps": "apps",
+            "app_users": "app_users",
+            "app_groups": "app_groups",
+            "logs": "logs",
+        },
+        streaming_tables={
+            "users": "iter_users",
+            "groups": "iter_groups",
+            "group_members": "iter_group_members",
+            "apps": "iter_apps",
+            "app_users": "iter_app_users",
+            "app_groups": "iter_app_groups",
+            "logs": "iter_logs",
+        },
     ),
     "adx": ServiceSpec(
         factory=DataExplorer.from_secret,

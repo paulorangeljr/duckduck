@@ -15,6 +15,8 @@ from duckduck.common.sparkplan import plan_of
 ONE_READ = {
     ("insightvm", "report_templates"): "one request, no pages",
     ("restcountries", "countries"): "~250 rows, filters applied after one read of the whole list",
+    ("okta", "user_groups"): "one response: the endpoint takes no paging parameters",
+    ("okta", "user_factors"): "one response: a user's enrolled factors",
 }
 
 
