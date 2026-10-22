@@ -371,8 +371,10 @@ def test_a_cell_switched_to_sql_leaves_a_dataframe_for_pyspark(tmp_path, glue_du
             sql_cell = frame.locator(".jp-Cell.duckduck-sql").first
             assert "%%sql" not in sql_cell.locator(".cm-content").inner_text()
             assert sql_cell.locator(".jp-InputPrompt").get_attribute("data-duckduck-df") == "hosts_df"
+            # the next cell is SQL already: the language picked last sticks (and is kept in the notebook)
+            frame.locator(".jp-Cell.jp-mod-active.duckduck-sql").wait_for(timeout=10000)
+            assert frame.locator(".duckduck-langswitch select").input_value() == "sql"
             # another SQL cell, named by hand
-            frame.locator(".duckduck-langswitch select").select_option("sql")
             frame.locator(".jp-Cell.jp-mod-active .cm-content").click()
             page.keyboard.type("SELECT 1 AS one")
             frame.locator(".duckduck-langswitch input").fill("counts")
@@ -385,12 +387,16 @@ def test_a_cell_switched_to_sql_leaves_a_dataframe_for_pyspark(tmp_path, glue_du
             frame.locator(".duckduck-langswitch select").select_option("python")
             frame.locator(".jp-Cell.jp-mod-active .cm-content", has_text='hosts_df = spark.sql("""').wait_for(
                 timeout=10000)
-            assert frame.locator(".jp-Cell.duckduck-sql").count() == 1
-            # and the DataFrame is there for the next PySpark cell
+            # and the DataFrame is there for the next PySpark cell (the one left empty after counts is SQL: back
+            # to PySpark — which then sticks)
+            frame.locator(".jp-Cell").last.locator(".cm-content").click()
+            frame.locator(".duckduck-langswitch select").select_option("python")
+            assert frame.locator(".jp-Cell.duckduck-sql").count() == 1  # only counts' cell is SQL now
             frame.locator(".jp-Cell").last.locator(".cm-content").click()
             page.keyboard.type("hosts_df.where('n > 1').collect()")
             page.keyboard.press("Shift+Enter")
             frame.locator(".jp-OutputArea-output", has_text="Row(os='linux', n=2)").wait_for(timeout=60000)
+            assert "duckduck-sql" not in (frame.locator(".jp-Cell.jp-mod-active").get_attribute("class") or "")
             browser.close()
     finally:
         server.stop()

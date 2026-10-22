@@ -163,10 +163,39 @@ class LanguageSwitch extends Widget {
       }, 150);
     });
     panel.context.ready.then(() => {
+      // the language this notebook's new cells start in: the last one picked, kept in the notebook's metadata
+      const kept = panel.model && panel.model.getMetadata ? panel.model.getMetadata(KEY) : undefined;
+      if (kept && ['python', 'sql', 'duckduck'].includes(kept.cell_language)) {
+        panel.__duckduckMode = kept.cell_language;
+      }
+      panel.model.cells.changed.connect((_, change) => this.newCells(change));
       this.refresh();
       decorate(panel);
     });
     panel.sessionContext.kernelChanged.connect(() => setTimeout(() => decorate(panel), 500));
+  }
+
+  // a new, empty code cell starts in the language picked last (Shift+Enter at the end, b, the + button…)
+  newCells(change) {
+    const mode = this.panel.__duckduckMode;
+    if (change.type !== 'add' || !mode || mode === 'python') {
+      return;
+    }
+    const models = change.newValues || [];
+    setTimeout(() => {  // after whatever added it has filled it (a clicked table, a paste): only empty ones
+      let changed = false;
+      models.forEach(model => {
+        if (model.type !== 'code' || model.sharedModel.getSource().trim() || model.getMetadata(KEY) !== undefined) {
+          return;
+        }
+        model.setMetadata(KEY, convert('', undefined, mode).meta);
+        changed = true;
+      });
+      if (changed) {
+        decorate(this.panel);
+        this.refresh();
+      }
+    }, 0);
   }
 
   refresh() {
@@ -201,6 +230,10 @@ class LanguageSwitch extends Widget {
       setCell(cell, convert(source, meta, mode));
     }
     this.panel.__duckduckMode = mode;
+    const kept = this.panel.model.getMetadata(KEY) || {};
+    if (kept.cell_language !== mode) {
+      this.panel.model.setMetadata(KEY, { ...kept, cell_language: mode });
+    }
     decorate(this.panel);
     this.refresh();
     cell.editor && cell.editor.focus();

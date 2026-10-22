@@ -298,3 +298,54 @@ def test_a_driver_read_can_land_page_by_page_in_parquet(spark, tmp_path):
     assert [r.tag for r in out] == [None, None, None, "t3", "t4", "t5"]  # the empty first page didn't type it INTEGER
     assert "Parquet" in reader.decisions[0]["detail"]
     assert len(os.listdir(next((tmp_path / "stage").iterdir()))) == 2
+
+
+class _Spark35:
+    """A Spark session that says it's 3.5 (Glue 5.0's): the reader then takes the Spark 3 path."""
+
+    version = "3.5.5"
+
+    def __init__(self, real):
+        self._real = real
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_lists_and_structs_reach_spark_3_typed(spark):
+    """Spark 3 takes no Arrow table, and a pandas frame without a schema failed on a column of lists
+    (CANNOT_INFER_TYPE_FOR_FIELD `IPs`, seen in a Glue session): the schema now comes from Arrow."""
+    from duckduck.spark import SparkReader
+
+    duck = DuckAPI()
+    duck.register_api_function("assets", lambda limit=None: [
+        {"hostname": "web", "IPs": ["10.0.0.1", "10.0.0.2"], "os": {"name": "linux"}, "tags": []},
+        {"hostname": "db", "IPs": [], "os": {"name": "windows"}, "tags": []},
+        {"hostname": "ci", "IPs": None, "os": None, "tags": []},
+    ])
+    before = spark.conf.get("spark.sql.execution.arrow.pyspark.enabled", None)
+    df = SparkReader(_Spark35(spark), duck).sql("SELECT * FROM assets ORDER BY hostname")
+    types = dict(df.dtypes)
+    assert types["IPs"] == "array<string>" and types["hostname"] == "string"
+    rows = {r["hostname"]: r for r in df.collect()}
+    assert rows["web"]["IPs"] == ["10.0.0.1", "10.0.0.2"] and rows["db"]["IPs"] == [] and rows["ci"]["IPs"] is None
+    assert spark.conf.get("spark.sql.execution.arrow.pyspark.enabled", None) == before  # put back
+
+
+def test_the_spark_3_path_falls_back_to_rows_when_arrow_cant(spark, monkeypatch):
+    from duckduck import spark as module
+
+    duck = DuckAPI()
+    duck.register_api_function("assets", lambda limit=None: [{"hostname": "web", "IPs": ["a"]}])
+    session = _Spark35(spark)
+    calls = []
+
+    def create(data, schema=None, **kw):
+        calls.append(type(data).__name__)
+        if type(data).__name__ == "DataFrame":
+            raise RuntimeError("sun.misc.Unsafe or java.nio.DirectByteBuffer.<init>(long, int) not available")
+        return spark.createDataFrame(data, schema=schema, **kw)
+
+    session.createDataFrame = create
+    df = module.SparkReader(session, duck).sql("SELECT * FROM assets")
+    assert calls == ["DataFrame", "list"] and df.collect()[0]["IPs"] == ["a"]

@@ -2675,6 +2675,10 @@ reader.decisions                        # how each table was read, and why
 reader.explain("insightvm_assets")      # the plan of one table, without reading it
 ```
 
+On Spark 3 (Glue 5.0 runs 3.5), a table read on the driver goes to Spark with its schema taken from Arrow —
+lists as `array<…>`, structs as `struct<…>` — through Arrow when the session can, else as Python rows; without
+it Spark 3 had to guess each column's type from the values and failed on lists (`CANNOT_INFER_TYPE_FOR_FIELD`).
+
 Each table is read one of three ways:
 
 | Strategy | When | What happens |
@@ -2769,6 +2773,8 @@ python -m duckduck.semantic serve --notebook   # or "notebook": {"enabled": true
   last SQL cell's DataFrame. Switching back to PySpark rewrites the cell as the code it stood for —
   `linux_hosts = spark.sql("""…""")` — and switching that to SQL gives the SQL back. A table clicked in the
   list arrives as SQL when the cell it goes to is an SQL cell (or the switch was last set to SQL).
+  The language picked last sticks: once you pick SQL, new cells (Shift+Enter at the end, `b`, `+`) start as
+  SQL until you pick PySpark again — kept in the notebook, so it holds when reopened.
   What makes a cell SQL is kept in the notebook (the cell's metadata), so it stays SQL when reopened;
   written by hand, `%%sql [name] [--duckduck] [--show N]` on a cell's first line works too.
 - **Without AWS**: `"kernels": ["duckduck_local_pyspark"]` offers *Local PySpark + SQL* — the same kernel

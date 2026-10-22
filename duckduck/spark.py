@@ -42,6 +42,7 @@ import math
 import os
 import pickle
 import re
+import warnings
 import uuid
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
@@ -400,7 +401,59 @@ class SparkReader:
 
     def _spark_frame(self, table: Any):
         major = int(str(self.spark.version).split(".")[0])
-        return self.spark.createDataFrame(table if major >= 4 else table.to_pandas())
+        return self.spark.createDataFrame(table) if major >= 4 else _spark3_frame(self.spark, table)
+
+
+def _plain_arrow_type(t: Any) -> Any:
+    """An Arrow type Spark 3's ``from_arrow_type`` knows: large/view strings and lists as plain ones, nulls as text."""
+    import pyarrow as pa
+
+    if pa.types.is_null(t) or pa.types.is_large_string(t) or str(t) == "string_view":
+        return pa.string()
+    if pa.types.is_large_binary(t):
+        return pa.binary()
+    if pa.types.is_list(t) or pa.types.is_large_list(t) or pa.types.is_fixed_size_list(t):
+        return pa.list_(_plain_arrow_type(t.value_type))
+    if pa.types.is_struct(t):
+        return pa.struct([pa.field(f.name, _plain_arrow_type(f.type)) for f in t])
+    if pa.types.is_map(t):
+        return pa.map_(_plain_arrow_type(t.key_type), _plain_arrow_type(t.item_type))
+    return t
+
+
+def _spark3_frame(spark: Any, table: Any):
+    """A Spark 3 DataFrame (Glue 5.0 runs 3.5) from an Arrow table. Spark 3 takes no Arrow table, and a pandas frame
+    without a schema is typed row by row — lists come out of Arrow as numpy arrays, which it can't type
+    (CANNOT_INFER_TYPE_FOR_FIELD on a column of IP lists). So the schema is Arrow's, given explicitly: Arrow on for
+    the conversion (fast), else plain Python rows — and when a type has no Spark 3 match, nested columns as JSON."""
+    import pyarrow as pa
+    from pyspark.sql.pandas.types import from_arrow_schema
+
+    plain = pa.schema([pa.field(f.name, _plain_arrow_type(f.type)) for f in table.schema])
+    try:
+        table = table.cast(plain)
+        schema = from_arrow_schema(table.schema)
+    except Exception:  # noqa: BLE001 — a type Spark 3 doesn't map: nested columns become JSON text
+        table = _conform(table.to_pandas(), _flat_schema(table))
+        schema = from_arrow_schema(table.schema)
+    key = "spark.sql.execution.arrow.pyspark.enabled"
+    fallback = "spark.sql.execution.arrow.pyspark.fallback.enabled"
+    before = {k: spark.conf.get(k, None) for k in (key, fallback)}
+    try:
+        spark.conf.set(key, "true")
+        spark.conf.set(fallback, "false")  # an Arrow failure lands below, not in Spark's own row-by-row path
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)  # "attempted Arrow optimization…": the rows below answer
+            return spark.createDataFrame(table.to_pandas(), schema=schema)
+    except Exception:  # noqa: BLE001 — Arrow can't take it (an older pyarrow, a nested type): Python rows
+        names = table.column_names
+        return spark.createDataFrame([tuple(row[n] for n in names) for row in table.to_pylist()], schema=schema)
+    finally:
+        for k, v in before.items():
+            if v is None:
+                spark.conf.unset(k)
+            else:
+                spark.conf.set(k, v)
 
 
 def _sql_value(v: Any) -> str:
