@@ -8,25 +8,40 @@
 // and gets back {type: 'duckduck:inserted' | 'duckduck:opened', id, ok, path, error}. JupyterLab tells the page
 // {type: 'duckduck:ready'} once restored and {type: 'duckduck:current', path, kernel} when the notebook changes.
 //
-// The notebook toolbar gets a PySpark / SQL / SQL · duckduck switch for the active cell (convert() in toggle.js):
-// an SQL cell starts with %%sql, which the duckduck kernel runs as df = spark.sql(...). SQL cells are highlighted
-// as SQL and marked with a stripe. A table clicked in the page arrives as SQL ({sql}) when the cell it goes to is
-// an SQL cell, or the switch was last set to SQL.
+// The notebook toolbar gets a PySpark / SQL / SQL · duckduck switch for the active cell (convert() in toggle.js)
+// and, for an SQL cell, the name of the DataFrame it leaves. An SQL cell holds only its SQL; the cell's metadata
+// ("duckduck": {language: "sql", engine, name}) makes it SQL, and the duckduck kernel runs it as
+// name = spark.sql(...). SQL cells are highlighted as SQL and marked "SQL → name". A table clicked in the page
+// arrives as SQL ({sql}) when the cell it goes to is an SQL cell, or the switch was last set to SQL.
 import { INotebookTracker, NotebookActions } from '@jupyterlab/notebook';
 import { Widget } from '@lumino/widgets';
-import { convert, modeOf } from './toggle';
+import { DEFAULT_NAME, KEY, NAME, convert, modeOf, nameOf } from './toggle';
 
 const MODES = [
   ['python', 'PySpark', 'Python code, run in the session'],
-  ['sql', 'SQL', '%%sql: Spark SQL in the session, the result kept as a DataFrame (df = spark.sql(...))'],
-  ['duckduck', 'SQL · duckduck', '%%sql --duckduck: read through duckduck (reader.sql), the result kept as a DataFrame']
+  ['sql', 'SQL', 'Spark SQL in the session, the result kept as a DataFrame (df = spark.sql(...))'],
+  ['duckduck', 'SQL · duckduck', 'read through duckduck (reader.sql), the result kept as a DataFrame']
 ];
+// SQL cells in their own colour (amber, readable in light and dark themes): a tinted editor, an amber edge, and
+// "SQL → df" by the prompt; the change animates when the switch turns a cell into SQL
 const STYLE = `
-.jp-CodeCell.duckduck-sql .jp-InputArea-editor { border-left: 3px solid var(--jp-warn-color1, #e8a33d); }
-.jp-CodeCell.duckduck-sql .cm-content .cm-line:first-child { opacity: 0.6; font-style: italic; }
-.jp-CodeCell.duckduck-sql .jp-InputPrompt::after { content: 'SQL'; display: block; font-size: 9px;
-  color: var(--jp-warn-color1, #e8a33d); font-weight: 600; }
+.jp-CodeCell.duckduck-sql { --duckduck-sql: #d97706; --duckduck-sql-bg: rgba(245, 158, 11, 0.10); }
+[data-jp-theme-light='false'] .jp-CodeCell.duckduck-sql { --duckduck-sql: #fbbf24; --duckduck-sql-bg: rgba(251, 191, 36, 0.12); }
+.jp-CodeCell.duckduck-sql .jp-InputArea-editor { background: var(--duckduck-sql-bg) !important;
+  border: 1px solid var(--duckduck-sql) !important; border-left-width: 4px !important;
+  transition: background-color 0.25s ease, border-color 0.25s ease; }
+.jp-CodeCell.duckduck-sql .jp-InputArea-editor .cm-editor,
+.jp-CodeCell.duckduck-sql .jp-InputArea-editor .cm-gutters { background: transparent !important; }
+.jp-CodeCell.duckduck-sql .jp-InputPrompt { color: var(--duckduck-sql); }
+.jp-CodeCell.duckduck-sql .jp-InputPrompt::after { content: 'SQL → ' attr(data-duckduck-df); display: block;
+  font-size: 9px; color: var(--duckduck-sql); font-weight: 700; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
+.jp-CodeCell .jp-InputArea-editor { transition: background-color 0.25s ease, border-color 0.25s ease; }
+.duckduck-langswitch select.duckduck-on { border-color: #d97706; color: #d97706; font-weight: 600; }
+.duckduck-langswitch { display: flex; align-items: center; gap: 4px; }
 .duckduck-langswitch select { height: 24px; }
+.duckduck-langswitch input { width: 90px; height: 20px; font-family: var(--jp-code-font-family); font-size: 12px; }
+.duckduck-langswitch .duckduck-arrow { color: var(--jp-ui-font-color2); font-size: 12px; }
 `;
 
 function addStyle() {
@@ -39,7 +54,27 @@ function addStyle() {
   document.head.appendChild(style);
 }
 
-// SQL cells: a class and SQL highlighting (the notebook may set the kernel's mime type back: done again on change)
+function metaOf(cell) {
+  return cell.model.getMetadata ? cell.model.getMetadata(KEY) : undefined;
+}
+
+// a cell's source and metadata replaced together
+function setCell(cell, result) {
+  const model = cell.model;
+  model.sharedModel.transact(() => {
+    if (result.meta) {
+      model.setMetadata(KEY, result.meta);
+    } else if (model.getMetadata(KEY) !== undefined) {
+      model.deleteMetadata(KEY);
+    }
+    if (model.sharedModel.getSource() !== result.source) {
+      model.sharedModel.setSource(result.source);
+    }
+  });
+}
+
+// SQL cells: a class, the DataFrame's name by the prompt, SQL highlighting (the notebook may set the kernel's
+// mime type back: done again on change)
 function decorate(panel) {
   const notebook = panel.content;
   const python = notebook.codeMimetype || 'text/x-ipython';
@@ -47,8 +82,14 @@ function decorate(panel) {
     if (cell.model.type !== 'code') {
       return;
     }
-    const sql = modeOf(cell.model.sharedModel.getSource()) !== 'python';
+    const source = cell.model.sharedModel.getSource();
+    const meta = metaOf(cell);
+    const sql = modeOf(source, meta) !== 'python';
     cell.toggleClass('duckduck-sql', sql);
+    const prompt = cell.node.querySelector('.jp-InputPrompt');
+    if (prompt) {
+      prompt.setAttribute('data-duckduck-df', sql ? nameOf(source, meta) : '');
+    }
     const mime = sql ? 'text/x-sql' : python;
     if (cell.model.mimeType !== mime) {
       cell.model.mimeType = mime;
@@ -71,13 +112,31 @@ class LanguageSwitch extends Widget {
       option.title = title;
       select.appendChild(option);
     });
-    node.appendChild(select);
+    const arrow = document.createElement('span');
+    arrow.className = 'duckduck-arrow';
+    arrow.textContent = '→';
+    const name = document.createElement('input');
+    name.type = 'text';
+    name.placeholder = DEFAULT_NAME;
+    name.spellcheck = false;
+    name.title = 'The DataFrame this SQL cell leaves, for the PySpark cells after it';
+    name.setAttribute('aria-label', 'DataFrame name');
+    node.append(select, arrow, name);
     super({ node });
     this.select = select;
+    this.name = name;
+    this.arrow = arrow;
     this.panel = panel;
     this.addClass('jp-HTMLSelect');
     this.addClass('jp-DefaultStyle');
     select.addEventListener('change', () => this.apply(select.value));
+    name.addEventListener('change', () => this.rename(name.value.trim()));
+    name.addEventListener('keydown', event => {
+      if (event.key === 'Enter') {
+        name.blur();
+      }
+      event.stopPropagation(); // typing a name isn't a notebook shortcut
+    });
     const notebook = panel.content;
     notebook.activeCellChanged.connect(this.refresh, this);
     let pending = null;
@@ -98,8 +157,16 @@ class LanguageSwitch extends Widget {
   refresh() {
     const cell = this.panel.content.activeCell;
     const code = cell && cell.model.type === 'code';
+    const source = code ? cell.model.sharedModel.getSource() : '';
+    const mode = code ? modeOf(source, metaOf(cell)) : 'python';
     this.select.disabled = !cell;
-    this.select.value = code ? modeOf(cell.model.sharedModel.getSource()) : 'python';
+    this.select.value = mode;
+    const sql = mode !== 'python';
+    this.select.classList.toggle('duckduck-on', sql);
+    this.name.hidden = this.arrow.hidden = !sql;
+    if (sql && document.activeElement !== this.name) {
+      this.name.value = nameOf(source, metaOf(cell)) || DEFAULT_NAME;
+    }
   }
 
   apply(mode) {
@@ -110,15 +177,37 @@ class LanguageSwitch extends Widget {
     if (notebook.activeCell.model.type !== 'code') {
       NotebookActions.changeCellType(notebook, 'code');
     }
-    const model = notebook.activeCell.model.sharedModel;
-    const now = model.getSource();
-    if (modeOf(now) !== mode) {
-      model.setSource(convert(now, mode));
+    const cell = notebook.activeCell;
+    const source = cell.model.sharedModel.getSource();
+    const meta = metaOf(cell);
+    if (modeOf(source, meta) !== mode) {
+      setCell(cell, convert(source, meta, mode));
     }
     this.panel.__duckduckMode = mode;
     decorate(this.panel);
     this.refresh();
-    notebook.activeCell.editor && notebook.activeCell.editor.focus();
+    cell.editor && cell.editor.focus();
+  }
+
+  rename(value) {
+    const cell = this.panel.content.activeCell;
+    if (!cell || cell.model.type !== 'code') {
+      return;
+    }
+    const source = cell.model.sharedModel.getSource();
+    const meta = metaOf(cell);
+    if (modeOf(source, meta) === 'python') {
+      return;
+    }
+    const name = value || DEFAULT_NAME;
+    if (!NAME.test(name) || name.startsWith('__')) {
+      this.name.value = nameOf(source, meta) || DEFAULT_NAME; // not a Python name: back to what it was
+      return;
+    }
+    const sql = convert(source, meta, modeOf(source, meta)); // a %%sql line moves into the metadata
+    sql.meta.name = name;
+    setCell(cell, sql);
+    decorate(this.panel);
   }
 }
 
@@ -152,7 +241,7 @@ async function insert(app, tracker, code, sql) {
       return true;
     }
     const source = cell.model.sharedModel.getSource();
-    return modeOf(source) === 'python' && /^\s*%|connect\(/.test(source);
+    return modeOf(source, metaOf(cell)) === 'python' && /^\s*%|connect\(/.test(source);
   };
   if (setup(notebook.activeCell) && notebook.widgets.length) {
     notebook.activeCellIndex = notebook.widgets.length - 1;
@@ -161,7 +250,8 @@ async function insert(app, tracker, code, sql) {
   const empty = active && active.model.type === 'code' && active.model.sharedModel.getSource().trim() === '';
   // SQL after an SQL cell, or into an empty cell when the switch was last set to SQL; the page's SQL already
   // names the engine the table needs (Spark SQL for a Glue table, duckduck for the rest)
-  const wanted = active && !empty ? modeOf(active.model.sharedModel.getSource()) : panel.__duckduckMode || 'python';
+  const wanted = active && !empty ? modeOf(active.model.sharedModel.getSource(), metaOf(active))
+    : panel.__duckduckMode || 'python';
   if (!empty) {
     NotebookActions.insertBelow(notebook);
     if (notebook.activeCell && notebook.activeCell.model.type !== 'code') {
@@ -169,7 +259,8 @@ async function insert(app, tracker, code, sql) {
     }
   }
   const cell = notebook.activeCell;
-  cell.model.sharedModel.setSource(sql && wanted !== 'python' ? sql : code);
+  // the page's SQL starts with %%sql [name] [--duckduck]: that line becomes the cell's metadata
+  setCell(cell, sql && wanted !== 'python' ? convert(sql, undefined, undefined) : { source: code, meta: null });
   decorate(panel);
   notebook.mode = 'command';
   if (cell.node && cell.node.scrollIntoView) {

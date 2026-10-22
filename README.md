@@ -2748,24 +2748,26 @@ python -m duckduck.semantic serve --notebook   # or "notebook": {"enabled": true
   reaches it only with a cookie from `POST /api/notebook/open` — an API call, so the app's access token
   (`DUCKDUCK_SERVER_TOKEN`) still applies. Terminals are off, and only `notebook.kernels` are offered.
 - **SQL cells, like Databricks**: the notebook toolbar has a *PySpark / SQL / SQL · duckduck* switch
-  for the active cell. SQL writes `%%sql` on the cell's first line, and the duckduck kernel
-  (*Glue PySpark + SQL (duckduck)* — AWS's Glue PySpark kernel with its `%%sql` replaced) runs it as
+  for the active cell, and next to it, for an SQL cell, the name of the DataFrame it leaves (`df` unless
+  you type another). Pick SQL and write only the SQL — nothing else goes in the cell; it turns amber,
+  shows `SQL → df` by its prompt and is highlighted as SQL. The duckduck kernel
+  (*Glue PySpark + SQL (duckduck)* — AWS's Glue PySpark kernel with its SQL handling replaced) runs it as
   `df = spark.sql(...)`: the result is a DataFrame for the next PySpark cell, and shows as a table.
   ```sql
-  %%sql linux_hosts          -- the DataFrame's name (df when none); _sqldf is always the last one
-  SELECT host, os FROM hosts WHERE os = 'linux'
+  SELECT host, os FROM hosts WHERE os = 'linux'      -- an SQL cell, DataFrame name: linux_hosts
   ```
   ```python
-  linux_hosts.groupBy("os").count().show()     # the next cell, in PySpark
+  linux_hosts.groupBy("os").count().show()           # the next cell, in PySpark
   ```
   The other way round, a DataFrame variable named in the SQL (`hosts` above, made in a PySpark cell)
   becomes a temporary view of that name before the query runs — so SQL reads PySpark's results as tables
   (a variable shadows an unqualified table of the same name; `database.table` still reaches the table).
-  *SQL · duckduck* (`%%sql name --duckduck`) runs `reader.sql(...)` instead, for tables only duckduck reads.
-  Switching back to PySpark rewrites the cell as the code it stands for —
-  `linux_hosts = spark.sql("""…""")` — and switching that to SQL gives the SQL back. `%%sql df --show 20`
-  shows 20 rows (`--show 0`: none). A table clicked in the list arrives as SQL when the cell it goes to is
-  an SQL cell (or the switch was last set to SQL).
+  *SQL · duckduck* runs `reader.sql(...)` instead, for tables only duckduck reads. `_sqldf` is always the
+  last SQL cell's DataFrame. Switching back to PySpark rewrites the cell as the code it stood for —
+  `linux_hosts = spark.sql("""…""")` — and switching that to SQL gives the SQL back. A table clicked in the
+  list arrives as SQL when the cell it goes to is an SQL cell (or the switch was last set to SQL).
+  What makes a cell SQL is kept in the notebook (the cell's metadata), so it stays SQL when reopened;
+  written by hand, `%%sql [name] [--duckduck] [--show N]` on a cell's first line works too.
 - **Without AWS**: `"kernels": ["duckduck_local_pyspark"]` offers *Local PySpark + SQL* — the same kernel
   with the Glue API answered by a local Spark in the kernel's process (needs `pyspark`), for trying
   notebooks out. Outside the web app: `python -m duckduck.notebook.kernel install [--local]` registers

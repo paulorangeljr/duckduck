@@ -358,23 +358,29 @@ def test_a_cell_switched_to_sql_leaves_a_dataframe_for_pyspark(tmp_path, glue_du
                                "['host','os'])")
             page.keyboard.press("Shift+Enter")
             frame.locator(".jp-Cell .jp-InputPrompt", has_text="[1]").first.wait_for(timeout=180000)
-            # the next cell: SQL, over the DataFrame made above
+            # the next cell: SQL, over the DataFrame made above — only the SQL is written, the switch does the rest
             frame.locator(".duckduck-langswitch select").select_option("sql")
+            frame.locator(".duckduck-langswitch input").fill("counts")
+            frame.locator(".duckduck-langswitch input").press("Enter")
             frame.locator(".jp-Cell.jp-mod-active .cm-content").click()
-            page.keyboard.press("Control+End")
             page.keyboard.type("SELECT os, count(*) AS n FROM hosts GROUP BY os ORDER BY os")
+            sql_cell = frame.locator(".jp-Cell.duckduck-sql").first
+            assert "%%sql" not in sql_cell.locator(".cm-content").inner_text()
+            assert sql_cell.locator(".jp-InputPrompt").get_attribute("data-duckduck-df") == "counts"
             page.keyboard.press("Shift+Enter")
             result = frame.locator(".duckduck-sqlres").first
             result.locator("table").wait_for(timeout=120000)
             assert "temp views from DataFrames: hosts" in result.inner_text()
-            assert frame.locator(".jp-Cell.duckduck-sql").count() == 1
+            assert "counts = spark.sql" in result.inner_text()
             # back to PySpark: the cell becomes the code it stood for
-            frame.locator(".jp-Cell.duckduck-sql").first.click()
+            sql_cell.click()
             frame.locator(".duckduck-langswitch select").select_option("python")
-            frame.locator(".jp-Cell.jp-mod-active .cm-content", has_text='df = spark.sql("""').wait_for(timeout=10000)
+            frame.locator(".jp-Cell.jp-mod-active .cm-content", has_text='counts = spark.sql("""').wait_for(
+                timeout=10000)
+            assert frame.locator(".jp-Cell.duckduck-sql").count() == 0
             # and the DataFrame is there for the next PySpark cell
             frame.locator(".jp-Cell").last.locator(".cm-content").click()
-            page.keyboard.type("df.where('n > 1').collect()")
+            page.keyboard.type("counts.where('n > 1').collect()")
             page.keyboard.press("Shift+Enter")
             frame.locator(".jp-OutputArea-output", has_text="Row(os='linux', n=2)").wait_for(timeout=60000)
             browser.close()
@@ -452,6 +458,27 @@ def test_duckduck_sql_cells_need_the_reader():
     scope = {}
     with pytest.raises(NameError, match="connect"):
         exec(sqlcells.session_code("%%sql --duckduck", "SELECT 1"), scope)
+
+
+def test_the_switch_keeps_sql_cells_as_sql_alone_and_the_metadata_makes_them_run_as_sql():
+    meta = {"duckduck": {"language": "sql", "engine": "spark", "name": "counts"}}
+    assert sqlcells.from_metadata("SELECT 1", meta) == "%%sql counts\nSELECT 1"
+    duckduck = {"duckduck": {"language": "sql", "engine": "duckduck", "name": "df", "show": 5}}
+    assert sqlcells.from_metadata("SELECT 1", duckduck) == "%%sql --duckduck --show 5\nSELECT 1"
+    assert sqlcells.from_metadata("%%sql x\nSELECT 1", meta) == "%%sql x\nSELECT 1"  # written by hand: as is
+    assert sqlcells.from_metadata("x = 1", None) == "x = 1"
+    assert sqlcells.from_metadata("x = 1", {"duckduck": {"language": "python"}, "cellId": "a"}) == "x = 1"
+    bad_name = {"duckduck": {"language": "sql", "name": "1; import os"}}
+    assert sqlcells.from_metadata("SELECT 1", bad_name) == "%%sql\nSELECT 1"  # never a name that isn't one
+
+
+def test_the_kernel_reads_the_cells_metadata():
+    pytest.importorskip("aws_glue_interactive_sessions_kernel")
+    import inspect
+
+    from duckduck.notebook.kernel import _kernel_class
+
+    assert "cell_meta" in inspect.signature(_kernel_class().do_execute).parameters  # ipykernel then hands it over
 
 
 def test_the_kernel_sends_session_code_for_sql_and_shows_the_answer_as_a_table():

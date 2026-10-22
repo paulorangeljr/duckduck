@@ -1,16 +1,20 @@
 // A cell's language, and turning it from PySpark into SQL and back (the toolbar's PySpark / SQL switch).
 //
-// An SQL cell starts with  %%sql [name] [--duckduck] [--show N]  — the duckduck kernel runs it as
-// name = spark.sql(...) (reader.sql(...) with --duckduck); name is df when none is written.
-// To PySpark, the cell becomes that code, explicitly:   name = spark.sql("""\n<sql>\n""")\nname.show(20)
+// An SQL cell holds only its SQL; what makes it SQL is the cell's metadata:
+//   "duckduck": {"language": "sql", "engine": "spark" | "duckduck", "name": "df"}
+// JupyterLab sends a cell's metadata with each execution, and the duckduck kernel runs such a cell as
+// name = spark.sql(<the SQL>) (reader.sql with engine duckduck). A cell whose first line is %%sql (the older
+// form, still run as such) counts as SQL too, and loses that line when switched.
+// To PySpark, the cell becomes the code it stood for:   name = spark.sql("""\n<sql>\n""")\nname.show(20)
 // and such a cell (or reader.sql's) goes back to SQL as it was.
 
 export const DEFAULT_NAME = 'df';
+export const KEY = 'duckduck';
 
 const HEADER = /^%%sql\b(.*)$/;
-const NAME = /^[A-Za-z_]\w*$/;
+export const NAME = /^[A-Za-z_]\w*$/;
 
-function firstLine(source) {
+function headerLine(source) {
   const lines = source.split('\n');
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -25,7 +29,7 @@ function firstLine(source) {
 }
 
 export function parseHeader(line) {
-  const out = { name: DEFAULT_NAME, engine: 'sql', flags: [] };
+  const out = { name: DEFAULT_NAME, engine: 'spark', flags: [] };
   const words = (HEADER.exec(line.trim()) || ['', ''])[1].trim().split(/\s+/).filter(Boolean);
   words.forEach((word, i) => {
     if (word === '--duckduck') {
@@ -39,61 +43,94 @@ export function parseHeader(line) {
   return out;
 }
 
-export function header(name, engine, flags) {
-  const parts = ['%%sql'];
-  if (name && name !== DEFAULT_NAME) {
-    parts.push(name);
-  }
-  if (engine === 'duckduck') {
-    parts.push('--duckduck');
-  }
-  return parts.concat(flags || []).join(' ');
+function isSql(meta) {
+  return !!meta && meta.language === 'sql';
 }
 
 // 'python' | 'sql' | 'duckduck'
-export function modeOf(source) {
-  const found = firstLine(source || '');
-  return found ? parseHeader(found.line).engine : 'python';
+export function modeOf(source, meta) {
+  if (isSql(meta)) {
+    return meta.engine === 'duckduck' ? 'duckduck' : 'sql';
+  }
+  const found = headerLine(source || '');
+  if (!found) {
+    return 'python';
+  }
+  return parseHeader(found.line).engine === 'duckduck' ? 'duckduck' : 'sql';
+}
+
+// the DataFrame an SQL cell leaves (null for a PySpark cell)
+export function nameOf(source, meta) {
+  if (isSql(meta)) {
+    return meta.name || DEFAULT_NAME;
+  }
+  const found = headerLine(source || '');
+  return found ? parseHeader(found.line).name : null;
 }
 
 const CALL =
   /^\s*([A-Za-z_]\w*)\s*=\s*(spark|reader)\.sql\(\s*[rR]?("""|''')([\s\S]*?)\3\s*\)[ \t]*(?:#[^\n]*)?(?:\n[ \t]*\1\.show\([^)\n]*\)[ \t]*(?:#[^\n]*)?)?\s*$/;
 
-export function toSql(source, engine) {
-  const text = source || '';
-  const found = firstLine(text);
+function trimmed(text) {
+  return text.replace(/^\n+|\s+$/g, '');
+}
+
+// → {source, meta}: the SQL alone, the language in the metadata. engine: 'sql' | 'duckduck' (undefined: keep
+// what the cell said)
+export function toSql(source, meta, engine) {
+  let text = source || '';
+  let name = isSql(meta) ? meta.name || DEFAULT_NAME : DEFAULT_NAME;
+  let was = isSql(meta) ? meta.engine : undefined;
+  const found = headerLine(text);
   if (found) {
     const h = parseHeader(found.line);
-    found.lines[found.index] = header(h.name, engine, h.flags);
-    return found.lines.join('\n');
+    name = h.name;
+    was = h.engine;
+    found.lines.splice(found.index, 1);
+    text = trimmed(found.lines.join('\n'));
+  } else if (!isSql(meta)) {
+    // drop a leading "# fill in the '<…>' values first" note
+    const body = text.replace(/^# fill in[^\n]*\n/, '');
+    const call = CALL.exec(body);
+    if (call) {
+      name = call[1];
+      was = call[2] === 'reader' ? 'duckduck' : 'spark';
+      text = trimmed(call[4]);
+    }
   }
-  // drop a leading "# fill in the '<…>' values first" note: it's said again as an SQL comment
-  const body = text.replace(/^# fill in[^\n]*\n/, '');
-  const call = CALL.exec(body);
-  if (call) {
-    return header(call[1], engine) + '\n' + call[4].replace(/^\n+|\s+$/g, '');
-  }
-  return header(DEFAULT_NAME, engine) + (text.trim() ? '\n' + text : '\n');
+  const wanted = engine === undefined ? was || 'spark' : engine === 'duckduck' ? 'duckduck' : 'spark';
+  return { source: text, meta: { language: 'sql', engine: wanted, name } };
 }
 
-export function toPython(source) {
-  const text = source || '';
-  const found = firstLine(text);
-  if (!found) {
-    return text;
+// → {source, meta: null}
+export function toPython(source, meta) {
+  let text = source || '';
+  let name = DEFAULT_NAME;
+  let engine = 'spark';
+  let before = '';
+  const found = headerLine(text);
+  if (found) {
+    const h = parseHeader(found.line);
+    name = h.name;
+    engine = h.engine;
+    before = found.lines.slice(0, found.index).join('\n');
+    text = found.lines.slice(found.index + 1).join('\n');
+  } else if (isSql(meta)) {
+    name = meta.name || DEFAULT_NAME;
+    engine = meta.engine === 'duckduck' ? 'duckduck' : 'spark';
+  } else {
+    return { source: text, meta: null };
   }
-  const h = parseHeader(found.line);
-  const before = found.lines.slice(0, found.index).join('\n');
-  const sql = found.lines.slice(found.index + 1).join('\n').replace(/^\n+|\s+$/g, '');
+  const sql = trimmed(text);
   if (!sql) {
-    return before;
+    return { source: before, meta: null };
   }
   const quote = sql.includes('"""') ? "'''" : '"""';
-  const call = h.engine === 'duckduck' ? 'reader' : 'spark';
-  const code = `${h.name} = ${call}.sql(${quote}\n${sql}\n${quote})\n${h.name}.show(20)`;
-  return before ? before + '\n' + code : code;
+  const call = engine === 'duckduck' ? 'reader' : 'spark';
+  const code = `${name} = ${call}.sql(${quote}\n${sql}\n${quote})\n${name}.show(20)`;
+  return { source: before ? before + '\n' + code : code, meta: null };
 }
 
-export function convert(source, mode) {
-  return mode === 'python' ? toPython(source) : toSql(source, mode);
+export function convert(source, meta, mode) {
+  return mode === 'python' ? toPython(source, meta) : toSql(source, meta, mode);
 }

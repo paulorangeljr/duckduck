@@ -2,8 +2,10 @@
 SQL cells in a Glue PySpark notebook: what the duckduck kernel sends the session for a ``%%sql`` cell, and how the
 answer comes back as a table.
 
-A cell whose first line is ``%%sql [name] [--duckduck] [--show N]`` (the notebook toolbar's PySpark / SQL switch
-writes it) runs in the session as
+A cell made SQL by the notebook toolbar's PySpark / SQL switch holds only its SQL; its metadata says so
+(``"duckduck": {"language": "sql", "engine": "spark" | "duckduck", "name": "df"}``, sent with each execution, read by
+``from_metadata``). Written by hand, ``%%sql [name] [--duckduck] [--show N]`` on the first line does the same. It
+runs in the session as
 
     name = spark.sql(<the cell's SQL>)        # --duckduck: reader.sql(…), through duckduck's connectors
     _sqldf = name                             # the last SQL cell's DataFrame, whatever its name
@@ -165,6 +167,26 @@ def render(result: Dict[str, Any]) -> Dict[str, str]:
     return {"text/html": markup, "text/plain": "\n".join(plain)}
 
 
+#: the cell metadata key the notebook's PySpark / SQL switch writes: {"language": "sql", "engine", "name"}
+METADATA_KEY = "duckduck"
+
+
+def from_metadata(code: str, cell_meta: Optional[Dict[str, Any]]) -> str:
+    """A cell made SQL by its metadata (the switch keeps only the SQL in the cell) → the cell as ``%%sql`` code;
+    anything else as it is. JupyterLab sends a cell's metadata with its execution (``cell_meta``)."""
+    options = (cell_meta or {}).get(METADATA_KEY)
+    if not isinstance(options, dict) or options.get("language") != "sql":
+        return code
+    lines = code.splitlines()
+    if any(line.startswith(HEADER) for line in lines[:1]):
+        return code  # written as %%sql already
+    name = options.get("name") if isinstance(options.get("name"), str) and _NAME.match(options["name"]) else None
+    header = header_for(name, "duckduck" if options.get("engine") == "duckduck" else "spark")
+    if isinstance(options.get("show"), int) and options["show"] != DEFAULT_SHOW:
+        header += f" --show {options['show']}"
+    return header + "\n" + code
+
+
 def header_for(name: Optional[str] = None, engine: str = "spark") -> str:
     """The ``%%sql`` line for a DataFrame name and an engine (``spark`` | ``duckduck``)."""
     parts = [HEADER] + ([name] if name and name != DEFAULT_NAME else [])
@@ -173,5 +195,5 @@ def header_for(name: Optional[str] = None, engine: str = "spark") -> str:
     return " ".join(parts)
 
 
-__all__ = ["DEFAULT_NAME", "END", "HEADER", "MARK", "SqlCellError", "header_for", "parse_header", "render",
-           "session_code", "split_cell", "split_output"]
+__all__ = ["DEFAULT_NAME", "END", "HEADER", "MARK", "METADATA_KEY", "SqlCellError", "from_metadata", "header_for",
+           "parse_header", "render", "session_code", "split_cell", "split_output"]

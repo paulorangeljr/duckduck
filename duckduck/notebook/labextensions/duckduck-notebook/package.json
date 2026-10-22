@@ -28,7 +28,7 @@
     "extension": true,
     "outputDir": "../labextensions/duckduck-notebook",
     "_build": {
-      "load": "static/remoteEntry.f18035393e39ec0b89f1.js",
+      "load": "static/remoteEntry.49f15888bc1468898068.js",
       "extension": "./extension"
     }
   }

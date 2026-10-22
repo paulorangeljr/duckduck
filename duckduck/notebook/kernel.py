@@ -2,8 +2,9 @@
 The duckduck Glue PySpark kernel: AWS's Glue PySpark kernel (``aws-glue-sessions``) with SQL cells that leave a
 DataFrame behind.
 
-Everything is the Glue kernel's own (the magics, the session, the statements) but ``%%sql``: where the Glue kernel
-runs ``spark.sql(…).show()``, this one sends ``sqlcells.session_code`` — ``name = spark.sql(…)``, DataFrames named
+Everything is the Glue kernel's own (the magics, the session, the statements) but SQL cells — a cell whose metadata
+says SQL (the notebook's PySpark / SQL switch; ``cell_meta`` → ``sqlcells.from_metadata``) or that starts with
+``%%sql``: where the Glue kernel runs ``spark.sql(…).show()``, this one sends ``sqlcells.session_code`` — ``name = spark.sql(…)``, DataFrames named
 in the SQL as temporary views, ``_sqldf`` — and shows the answer as an HTML table (``sqlcells.render``).
 
 ``DUCKDUCK_GLUE_LOCAL=1`` (the ``duckduck_local_pyspark`` kernel) swaps the Glue API for ``LocalGateway``: the
@@ -173,6 +174,18 @@ def _kernel_class() -> Any:
             if os.environ.get(LOCAL_ENV) == "1":
                 self.kernel_gateway = LocalGateway()
                 self.set_session_id_prefix("local")
+
+        async def do_execute(self, code: str, silent: bool, store_history: bool = True,
+                             user_expressions: Any = None, allow_stdin: bool = False, *,
+                             cell_meta: Optional[Dict[str, Any]] = None, cell_id: Optional[str] = None) -> Any:
+            # an SQL cell holds only its SQL; its metadata (sent with the execution) makes it %%sql
+            if cell_meta is None:  # an ipykernel that doesn't hand it over: the request's own
+                try:
+                    cell_meta = (self.get_parent("shell") or {}).get("metadata")
+                except Exception:  # noqa: BLE001
+                    cell_meta = None
+            return await super().do_execute(sqlcells.from_metadata(code, cell_meta), silent, store_history,
+                                            user_expressions, allow_stdin)
 
         def _handle_sql_code(self, lines: Any) -> Optional[str]:
             try:
