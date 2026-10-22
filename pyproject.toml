@@ -73,6 +73,13 @@ spark = [
     "pyspark>=3.5",
     "pyarrow>=14",
 ]
+notebook = [
+    "jupyterlab>=4.2,<5",
+    "aws-glue-sessions>=1.0",
+    "websockets>=12",
+    "httpx>=0.27",
+    "boto3>=1.28",
+]
 dev = [
     "pytest>=8.0",
     "pytest-mock>=3.14",
@@ -87,3 +94,10 @@ dev = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["duckduck*"]
+exclude = ["duckduck.notebook.labextension-src*"]
+
+[tool.setuptools.package-data]
+"duckduck.notebook" = ["labextensions/**/*"]
+
+[tool.setuptools.exclude-package-data]
+"duckduck.notebook" = ["labextension-src/**/*"]

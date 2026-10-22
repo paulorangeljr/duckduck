@@ -2695,6 +2695,63 @@ Every connector's table methods declare their strategy with
 `@spark_plan(...)` (`duckduck.common.sparkplan`), and a test fails when one doesn't
 — see CLAUDE.md "Spark: choosing the strategy" when adding a connector.
 
+## Notebook tab: PySpark on an AWS Glue interactive session
+
+The web app can embed a JupyterLab running the **AWS Glue interactive sessions** kernel
+(`aws-glue-sessions`): plain PySpark on a Glue session, with duckduck installed in it, and the SQL
+tab's table list beside it — a click on a table adds a cell that reads it.
+
+```bash
+pip install "duckduck[notebook]"          # jupyterlab, aws-glue-sessions, websockets, httpx, boto3
+install-glue-kernels                      # once: registers the glue_pyspark kernel (from aws-glue-sessions)
+
+# the wheel and duckduck.json go to S3, where the Glue session reads them
+python -m duckduck.glue_session publish s3://minhaempresa-artifacts/duckduck/ --config duckduck.json
+
+python -m duckduck.semantic serve --notebook   # or "notebook": {"enabled": true} in duckduck.json
+```
+
+```json
+"notebook": {
+  "enabled": true,
+  "dir": "notebooks",
+  "glue": {
+    "iam_role": "arn:aws:iam::123456789012:role/minhaempresa-glue-notebook",
+    "region": "us-east-1",
+    "connections": ["minhaempresa-vpc"],
+    "artifacts": "s3://minhaempresa-artifacts/duckduck/"
+  }
+}
+```
+
+- **New Glue notebook** writes a notebook into `notebook.dir` that sets up the session — `%iam_role`,
+  `%region`, `%glue_version` (5.0), `%worker_type`, `%number_of_workers`, `%idle_timeout` (30 min: the
+  session and its bill stop after that), `%connections`, `%additional_python_modules <the wheel>`,
+  `%%configure` with `--enable-glue-datacatalog` and `--datalake-formats` — then
+  `duck, reader = connect("s3://…/duckduck.json")`. The session starts when the first code cell runs.
+- **A click on a table** adds a cell after the active one (at the end while the notebook's intro or
+  setup cells are active); nothing runs until you run it. A table of the Glue Data Catalog (a `glue` or
+  `athena` table, or a saved table over one) is read by Spark itself —
+  `proxy_logs = spark.table("security.proxy_logs")`, a WHERE as `.where(…)`; anything else through
+  duckduck — `assets = reader.sql("""SELECT * FROM insightvm.assets LIMIT 100""")`, the same push-down
+  as the SQL tab (see "Reading into Spark").
+- `connect(config)` in the session: the config read (`s3://…` or a path), every service registered
+  (`on_error="warn"`: one that fails to start is named, the rest work), a `SparkReader` over them.
+- **Secrets stay in Secrets Manager**: `publish` refuses a `duckduck.json` with secrets written in it
+  (`--allow-secrets` to upload anyway). With `"authentication": {"type": "aws", …}` the session reads
+  them with its own IAM role — which needs `s3:GetObject` on the artifacts, `secretsmanager:GetSecretValue`
+  on the secrets, and the Glue/S3 permissions of the tables it reads. Glue installs the wheel's
+  dependencies with pip: the session needs a way out to PyPI (a NAT in the connection's VPC) or a mirror.
+- **The kernel runs on the duckduck server**, calling Glue (`CreateSession`, `RunStatement`) with the
+  server's AWS credentials (`notebook.glue.profile` picks a profile) and `iam:PassRole` on the role.
+- **Behind the app**: JupyterLab is a child process on 127.0.0.1 with its own token, started the first
+  time the tab opens; the app proxies `/notebook/…` (HTTP and websockets) and adds the token. The browser
+  reaches it only with a cookie from `POST /api/notebook/open` — an API call, so the app's access token
+  (`DUCKDUCK_SERVER_TOKEN`) still applies. Terminals are off, and only `notebook.kernels` are offered.
+- A small JupyterLab extension (prebuilt, in the package: `duckduck/notebook/labextensions`; source in
+  `labextension-src`) takes the cells from the page. **Open in a new window** gives the whole JupyterLab;
+  clicks on tables only reach the one in the tab.
+
 ## Pipelines: bronze → silver → gold, declared in JSON (`duckduck.pipeline`)
 
 A pipeline is a JSON file: where the SQL is, which engine runs it, the key,

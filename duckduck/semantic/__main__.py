@@ -86,7 +86,8 @@ def cmd_jev_check(args) -> int:
 
 def cmd_serve(args) -> int:
     serve(config_path=args.config, host=args.host, port=args.port, verbose=args.verbose,
-          allow_sql=args.sql, allow_config_edit=args.edit_config, pg_port=args.pg_port, ask=args.ask)
+          allow_sql=args.sql, allow_config_edit=args.edit_config, pg_port=args.pg_port, ask=args.ask,
+          notebook=args.notebook)
     return 0
 
 
@@ -169,6 +170,9 @@ def build_parser() -> argparse.ArgumentParser:
     srv.add_argument("--pg-port", type=int, default=None,
                      help="also serve the tables over the PostgreSQL protocol on this port (e.g. 5433), for SQL "
                           "clients like DBeaver, psql or Power BI; pg_server in duckduck.json sets the rest")
+    srv.add_argument("--notebook", action=argparse.BooleanOptionalAction, default=None,
+                     help="the Notebook tab: JupyterLab with the AWS Glue kernels and the table list beside it; "
+                          "default: notebook.enabled in duckduck.json (off unless set)")
     srv.set_defaults(fn=cmd_serve, python=serve)
 
     rep = sub.add_parser("feedback-report", help="answer rates and what went wrong, from the feedback")

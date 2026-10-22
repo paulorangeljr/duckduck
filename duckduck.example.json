@@ -298,6 +298,22 @@
     "catalog_tables": true,
     "catalog_refresh": 3600
   },
+  "notebook": {
+    "enabled": false,
+    "dir": "notebooks",
+    "kernels": ["glue_pyspark"],
+    "glue": {
+      "iam_role": "arn:aws:iam::123456789012:role/minhaempresa-glue-notebook",
+      "region": "us-east-1",
+      "glue_version": "5.0",
+      "worker_type": "G.1X",
+      "number_of_workers": 2,
+      "idle_timeout": 30,
+      "connections": ["minhaempresa-vpc"],
+      "artifacts": "s3://minhaempresa-artifacts/duckduck/",
+      "datalake_formats": "delta,iceberg"
+    }
+  },
   "semantic": {
     "catalog_path": "semantic_catalog.yaml",
     "default_limit": 1000,

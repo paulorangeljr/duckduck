@@ -44,7 +44,7 @@ nav button[aria-selected="true"] { background: var(--surface-2); color: var(--in
 .user input { width: 140px; }
 main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 60px; }
 /* the SQL tab takes the whole window: a wide editor and results (the other tabs keep a reading width) */
-main.wide, main:has(> #tab-sql:not([hidden])) { max-width: none; padding: 16px 20px 40px; }
+main.wide, main:has(> #tab-sql:not([hidden])), main:has(> #tab-notebook:not([hidden])) { max-width: none; padding: 16px 20px 40px; }
 #tab-sql textarea.editor { min-height: max(220px, 36vh); }
 #tab-sql .sqlres .tablewrap { max-height: max(360px, calc(100vh - 260px)); }
 [hidden] { display: none !important; }
@@ -177,6 +177,14 @@ textarea { width: 100%; min-height: 60px; }
        stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; color: var(--ink-2); }
 .pill .ico, .chip .ico { width: 13px; height: 13px; vertical-align: -2px; margin-right: 3px; }
 .srcrow > span:first-of-type .ico { margin-right: 4px; }
+/* Notebook tab: the SQL tab's table list next to an embedded JupyterLab */
+.nbpane { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; min-height: calc(100vh - 110px); }
+.nbbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.nbbar input { width: 200px; }
+#nbframe { flex: 1; width: 100%; min-height: calc(100vh - 190px); border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+#nbstart { padding: 24px 8px; }
+#nbproblems ul { margin: 4px 0 0 18px; padding: 0; }
+
 /* SQL and Config tabs */
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
 .sqlgrid { display: grid; grid-template-columns: minmax(300px, 340px) minmax(0, 1fr); gap: 14px; align-items: start; }
@@ -624,6 +632,7 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
   <nav role="tablist">
     <button role="tab" data-tab="ask" aria-selected="true">Ask</button>
     <button role="tab" data-tab="sql" aria-selected="false">SQL</button>
+    <button role="tab" data-tab="notebook" aria-selected="false" hidden title="JupyterLab with the AWS Glue PySpark kernel — clicking a table adds a cell that reads it">Notebook</button>
     <button role="tab" data-tab="history" aria-selected="false">History</button>
     <button role="tab" data-tab="dashboard" aria-selected="false">Dashboard</button>
     <button role="tab" data-tab="suggestions" aria-selected="false">Suggestions</button>
@@ -734,6 +743,20 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
       <span class="muted small">🧭→ marks the ones Auto picked</span></div>
     <div id="history"></div></div></section>
   <section id="tab-dashboard" hidden><div id="dashboard"></div></section>
+  <section id="tab-notebook" hidden>
+    <div class="sqlgrid">
+      <div id="nbaside"></div>
+      <div class="card nbpane">
+        <div class="nbbar"><span class="muted small" id="nbcurrent" aria-live="polite">Starting JupyterLab…</span><span class="grow"></span>
+          <input id="nbname" type="text" placeholder="glue-session" aria-label="New notebook's name">
+          <button class="secondary" type="button" id="nbnew" title="A notebook with the Glue session's settings and duckduck's connect() cell, from notebook.glue in duckduck.json">New Glue notebook</button>
+          <a class="linkish small" id="nbpop" href="/notebook/lab" target="_blank" rel="noopener" hidden title="JupyterLab in a window of its own (clicks on tables only reach the one here)">Open in a new window ↗</a></div>
+        <div id="nbproblems" class="muted small" hidden></div>
+        <div id="nbstart" class="muted" hidden></div>
+        <iframe id="nbframe" title="JupyterLab" hidden></iframe>
+      </div>
+    </div>
+  </section>
   <section id="tab-sql" hidden>
     <div class="card" id="sqloff" hidden><h3>The SQL console is off</h3>
       <p class="muted">This server was started with <span class="mono">--no-sql</span>
@@ -1010,10 +1033,12 @@ const user = () => $("#user").value.trim() || null;
 document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => {
   document.querySelectorAll("nav button").forEach(x => x.setAttribute("aria-selected", x === b));
   document.querySelectorAll("main > section").forEach(s => s.hidden = s.id !== "tab-" + b.dataset.tab);
-  document.querySelector("main").classList.toggle("wide", b.dataset.tab === "sql");  // browsers without :has()
+  document.querySelector("main").classList.toggle("wide", b.dataset.tab === "sql" || b.dataset.tab === "notebook");  // browsers without :has()
+  if (b.dataset.tab === "sql" || b.dataset.tab === "notebook") placeTree(b.dataset.tab);
   if (b.dataset.tab !== "config" && location.hash.startsWith("#config/")) history.replaceState(null, "", location.pathname);
   ({history: loadHistory, dashboard: loadDashboard, suggestions: loadSuggestions,
     sql: () => loadTables(),  // never waits on META: an empty list always says why
+    notebook: () => { loadTables(); openNotebook(); },
     config: async () => {  // loaded once, so switching tabs keeps edits
       loadCatalog(); await loadCfgStatus();
       if (CFG) showCfgPage(CFGPAGE); else await loadConfig();
@@ -2336,9 +2361,10 @@ function drawTables() {
     let u = b.dataset.usage;
     if (!/^\s*(select|with|from|show|describe)/i.test(u)) u = `SELECT * FROM ${u}`;
     if (!/\blimit\b/i.test(u)) u += " LIMIT 100";
+    if (TREE_MODE === "notebook") return notebookInsert(u);
     $("#sqltext").value = inLang(u); $("#sqltext").focus();
   });
-  on("[data-preview]", b => previewSql(b.dataset.preview));
+  on("[data-preview]", b => TREE_MODE === "notebook" ? notebookInsert(b.dataset.preview) : previewSql(b.dataset.preview));
   on("[data-editview]", b => editSavedTable(b.dataset.editview));
   on("[data-group]", b => { const g = b.dataset.group; if (COLLAPSED.has(g)) COLLAPSED.delete(g); else COLLAPSED.add(g); keepCollapsed(); drawTables(); });
   on("[data-savetable]", b => saveAsTable(b.dataset.savetable.replace(/\s+limit\s+\d+\s*$/i, "")));
@@ -4155,6 +4181,85 @@ $("#optfilter").addEventListener("input", () => {
   });
 });
 
+// ---- Notebook tab: JupyterLab (AWS Glue PySpark kernel) next to the table list ---------------------
+// The SQL tab's <aside class="tables"> moves between the two tabs (placeTree); in the Notebook tab a click on a
+// table asks /api/notebook/code for a cell (spark.table(...) for a Glue Data Catalog table, else reader.sql(...))
+// and posts it to the duckduck JupyterLab extension in the iframe, which adds it below the active cell.
+let TREE_MODE = "sql";
+const NB = {opened: false, opening: null, ready: false, queue: [], seq: 0, current: null};
+function placeTree(tab) {
+  const aside = document.querySelector("aside.tables");
+  if (!aside) return;
+  TREE_MODE = tab;
+  if (tab === "notebook") $("#nbaside").appendChild(aside);
+  else $("#sqlon").insertBefore(aside, $("#sqlon").firstChild);
+  aside.title = tab === "notebook" ? "Click a table to add a cell that reads it to the open notebook" : "";
+}
+function nbPost(message) {
+  const w = $("#nbframe").contentWindow;
+  if (!w || !NB.ready) { NB.queue.push(message); return; }
+  w.postMessage(message, location.origin);
+}
+function nbProblems(status) {
+  const p = status?.problems || [];
+  $("#nbproblems").hidden = !p.length;
+  $("#nbproblems").innerHTML = p.length ? `<strong>Not ready yet:</strong><ul>${p.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : "";
+}
+function nbCurrent() {
+  const c = NB.current;
+  $("#nbcurrent").textContent = !NB.ready ? "Starting JupyterLab…"
+    : c?.path ? `Clicking a table adds a cell to ${c.path}${c.kernel ? " · " + c.kernel : ""}`
+    : "Open or create a notebook — then clicking a table adds a cell to it";
+}
+function openNotebook() { return NB.opening ||= startNotebook().finally(() => { if (!NB.opened) NB.opening = null; }); }
+async function startNotebook() {
+  $("#nbstart").hidden = false; $("#nbstart").innerHTML = `<span class="spin" aria-hidden="true"></span> Starting JupyterLab…`;
+  try {
+    const status = await api("/api/notebook/open", {});
+    nbProblems(status);
+    NB.opened = true;
+    $("#nbstart").hidden = true; $("#nbframe").hidden = false; $("#nbpop").hidden = false;
+    const first = status.notebooks?.[0];
+    $("#nbframe").src = first ? `/notebook/lab/tree/${encodeURI(first)}` : status.url;
+  } catch (e) {
+    $("#nbstart").innerHTML = `<strong>JupyterLab didn't start.</strong> ${esc(e.message)}`;
+    api("/api/notebook").then(nbProblems).catch(() => {});
+  }
+}
+window.addEventListener("message", (e) => {
+  if (e.origin !== location.origin || e.source !== $("#nbframe").contentWindow) return;
+  const m = e.data || {};
+  if (m.type === "duckduck:ready") {
+    NB.ready = true; nbCurrent();
+    NB.queue.splice(0).forEach(nbPost);
+  } else if (m.type === "duckduck:current") { NB.current = m; nbCurrent(); }
+  else if (m.type === "duckduck:inserted") toast(m.ok ? `Added to ${m.path}` : `Not added: ${m.error}`);
+  else if (m.type === "duckduck:opened" && !m.ok) toast(`Couldn't open it: ${m.error}`);
+});
+// the iframe reloaded (a new page inside it): wait for the extension again
+$("#nbframe").addEventListener("load", () => {
+  NB.ready = false; nbCurrent();
+  setTimeout(() => { if (!NB.ready) $("#nbframe").contentWindow?.postMessage({type: "duckduck:hello"}, location.origin); }, 3000);
+});
+async function notebookInsert(sql) {
+  if (!NB.opened) { toast("JupyterLab isn't open yet"); return; }
+  try {
+    const r = await api("/api/notebook/code", {sql});
+    nbPost({type: "duckduck:insert", id: ++NB.seq, code: r.code});
+    if (!NB.ready) toast("JupyterLab is still loading — the cell goes in once it's up");
+  } catch (e) { toast(e.message); }
+}
+$("#nbnew").addEventListener("click", async () => {
+  try {
+    const r = await api("/api/notebook/new", {name: $("#nbname").value.trim() || null});
+    await openNotebook();  // the iframe needs the cookie JupyterLab's start sets
+    if (!NB.opened) return;
+    if (NB.ready) nbPost({type: "duckduck:open", id: ++NB.seq, path: r.path});
+    else { $("#nbframe").src = r.url; }
+    toast(`Created ${r.path}`);
+  } catch (e) { toast(e.message); }
+});
+
 const ASK_TABS = ["ask", "history", "dashboard", "suggestions"];
 function showFeatures() {
   showReaders();
@@ -4180,6 +4285,7 @@ function showFeatures() {
   const sql = !!META?.features?.sql;  // the tab is always there; off, it says how to turn it on
   $("#sqloff").hidden = sql; $("#sqlon").hidden = !sql;
   document.querySelector('nav button[data-tab="config"]').hidden = !META?.features?.config;
+  document.querySelector('nav button[data-tab="notebook"]').hidden = !META?.features?.notebook;
 }
 $("#setupsql").addEventListener("click", () => openTab("sql"));
 $("#setupconfig").addEventListener("click", goEnable);

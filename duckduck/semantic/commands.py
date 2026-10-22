@@ -27,7 +27,8 @@ in a notebook, build it once and reuse it::
 
 import logging
 import os
-from typing import Any, List, Optional, Union
+import json
+from typing import Any, Dict, List, Optional, Union
 
 from .engine import CatalogUnavailable, SearchResult, SemanticSearch
 from .generation import GenerationResult
@@ -219,6 +220,7 @@ def serve(
     allow_config_edit: bool = False,
     pg_port: Optional[int] = None,
     ask: Optional[bool] = None,
+    notebook: Optional[bool] = None,
 ):
     """
     The web app: ask questions, answer its clarifications, rate the answers,
@@ -247,6 +249,14 @@ def serve(
     tables over the PostgreSQL protocol, so SQL clients (DBeaver, psql,
     Power BI…) connect — the same tables, saved tables and source cache as
     the SQL tab (``duckduck.pgserver``).
+
+    ``notebook`` (or ``notebook.enabled`` in the config; CLI ``--notebook``):
+    the Notebook tab — a JupyterLab started on first use, behind
+    ``/notebook/``, offering the Glue kernels (``aws-glue-sessions``) and the
+    table list beside it: a click adds a cell that reads the table
+    (``duckduck.notebook``, ``duckduck.glue_session``). Whoever opens it runs code
+    with the server's AWS credentials and the session's IAM role — off unless
+    asked for.
     """
     from .admin import SQLConsole
     from .server import create_app, run as run_app
@@ -301,13 +311,14 @@ def serve(
                 "max_age": gen.max_age, "max_tables": gen.max_tables, "sample_rows": gen.sample_rows,
                 "tables_configured": len(gen.tables or [])}
 
+    nb = _notebook_server(cfg.config_file, notebook)
     app = create_app(
         factory_for(duck, cfg), store, catalog_path=cfg.path(cfg.catalog_path),
         learned_shapes_path=cfg.path(cfg.feedback.learned_answer_shapes), min_support=cfg.feedback.min_support,
         token=token if token is not None else os.environ.get("DUCKDUCK_SERVER_TOKEN") or None,
         console=console, config_path=cfg.config_file,
         allow_config_edit=allow_config_edit, rebuild=rebuild,
-        catalog_runner=generate if cfg.config_file else None, catalog_info=catalog_info,
+        catalog_runner=generate if cfg.config_file else None, catalog_info=catalog_info, notebook=nb,
     )
     app.state.pg_server = pg
     if not run:
@@ -319,12 +330,31 @@ def serve(
     print(f"duckduck: http://{host}:{port}  (feedback in {store.path}"
           f"{'' if allow_sql else '; SQL tab off'}{'; config editing on' if allow_config_edit else ''}"
           f"{'; Ask off — ' + app.state.current_search().off if getattr(app.state.current_search(), 'off', None) else ''})")
+    if nb is not None:
+        print(f"duckduck: Notebook tab on (JupyterLab starts when the tab opens; notebooks in {nb.root_dir})"
+              + "".join(f"\n  · {p}" for p in nb.problems()))
     if getattr(app.state.current_search(), "setup", None):  # a first run: the quick link to turn Ask on
         print(f"Ask isn't set up yet (no semantic catalog) — SQL works now; enable Ask at "
               f"http://{host}:{port}/#enable-ask"
               + ("" if allow_config_edit else "  (start with --edit-config to draft the catalog from the page)"))
     run_app(app, host=host, port=port)
     return app
+
+
+def _notebook_server(config_file: Optional[str], notebook: Optional[bool]) -> Any:
+    """The Notebook tab's JupyterLab, when asked for (``notebook=True``) or ``notebook.enabled`` in the config."""
+    data: Dict[str, Any] = {}
+    if config_file and os.path.isfile(config_file):
+        with open(config_file, encoding="utf-8") as fh:
+            data = json.load(fh)
+    block = data.get("notebook") or {}
+    on = notebook if notebook is not None else bool(block.get("enabled"))
+    if not on:
+        return None
+    from ..notebook import NotebookServer
+
+    base = os.path.dirname(os.path.abspath(config_file)) if config_file else os.getcwd()
+    return NotebookServer.from_config(data, base)
 
 
 def _pg_server(duck: Any, config_file: Optional[str], pg_port: Optional[int], console: Any) -> Any:

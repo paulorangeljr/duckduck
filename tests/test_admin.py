@@ -232,7 +232,7 @@ def test_sql_is_on_and_saving_off_by_default(served):
     client = _client(served)
     features = client.get("/api/meta").json()["features"]
     assert features == {"ask": True, "sql": True, "config": True, "config_edit": False, "catalog_generation": False,
-                        "saved_tables": False}
+                        "saved_tables": False, "notebook": False}
     assert client.post("/api/sql", json={"sql": "SELECT 1"}).json()["rows"] == [[1]]
     off = _client(served, allow_sql=False)
     assert off.get("/api/meta").json()["features"]["sql"] is False
@@ -281,3 +281,13 @@ def test_every_semantic_option_has_a_config_page_and_friendly_names():
     assert {o["name"] for o in ref["semantic"]} <= labelled
     for c in ref["connectors"]:
         assert f"  {c['connector']}: [" in PAGE  # a friendly name per connector kind
+
+
+def test_the_notebook_tab_follows_the_config_and_the_flag(served):
+    data = json.loads(served.read_text())
+    data["notebook"] = {"enabled": True, "dir": "nbs", "kernels": ["glue_pyspark"]}
+    served.write_text(json.dumps(data))
+    assert _client(served).get("/api/meta").json()["features"]["notebook"] is True
+    status = _client(served).get("/api/notebook").json()  # nothing started just by asking
+    assert status["running"] is False and status["dir"] == str(served.parent / "nbs")
+    assert _client(served, notebook=False).get("/api/meta").json()["features"]["notebook"] is False

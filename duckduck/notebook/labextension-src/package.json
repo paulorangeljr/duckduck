@@ -1,0 +1,29 @@
+{
+  "name": "duckduck-notebook",
+  "version": "0.1.0",
+  "description": "duckduck's bridge into JupyterLab: the web app's table tree adds cells to the open notebook.",
+  "license": "MIT",
+  "main": "index.js",
+  "files": [
+    "index.js"
+  ],
+  "keywords": [
+    "jupyter",
+    "jupyterlab",
+    "jupyterlab-extension"
+  ],
+  "scripts": {
+    "build": "node node_modules/@jupyterlab/builder/lib/build-labextension.js --core-path \"$(python -c 'import jupyterlab, os; print(os.path.join(os.path.dirname(jupyterlab.__file__), \"staging\"))')\" ."
+  },
+  "dependencies": {
+    "@jupyterlab/application": "^4.0.0",
+    "@jupyterlab/notebook": "^4.0.0"
+  },
+  "devDependencies": {
+    "@jupyterlab/builder": "^4.5.0"
+  },
+  "jupyterlab": {
+    "extension": true,
+    "outputDir": "../labextensions/duckduck-notebook"
+  }
+}

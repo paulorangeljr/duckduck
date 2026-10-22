@@ -787,7 +787,7 @@ def validate_config(data: Any, path: str = "") -> Dict[str, List[str]]:
     if not isinstance(data, dict):
         return {"errors": ["the config must be a JSON object"], "warnings": []}
     known = {"services", "on_error", "ai_providers", "semantic", "views", "kql", "default_database", "sql_cache",
-             "pg_server", "catalogs", "lake", "system_tables"}
+             "pg_server", "catalogs", "lake", "system_tables", "notebook"}
     for key in sorted(set(data) - known):
         warnings.append(f"unknown top-level key {key!r} (known: {', '.join(sorted(known))})")
     if data.get("system_tables") not in (None, True, False):
@@ -857,6 +857,10 @@ def validate_config(data: Any, path: str = "") -> Dict[str, List[str]]:
         from ..pgserver.server import config_problems
 
         errors.extend(config_problems(data["pg_server"]))
+    if "notebook" in data:
+        from ..notebook import notebook_problems
+
+        errors.extend(notebook_problems(data["notebook"]))
     if "sql_cache" in data:
         from ..cache import SourceCache
 

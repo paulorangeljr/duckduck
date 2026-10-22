@@ -78,6 +78,7 @@ def create_app(
     rebuild: Optional[Callable[[], Any]] = None,
     catalog_runner: Optional[Callable[[Any, Any], Any]] = None,
     catalog_info: Optional[Callable[[], Dict[str, Any]]] = None,
+    notebook: Any = None,
 ):
     """
     ``factory`` builds the ``SemanticSearch`` (called again after an accepted
@@ -92,7 +93,9 @@ def create_app(
     tab's *Semantic catalog* card generates with it (as a background job,
     ``catalog_jobs``) — also gated by ``allow_config_edit``, since it
     rewrites the catalog file and spends LLM calls; ``catalog_info()`` →
-    the file, the LLM and the limits it shows.
+    the file, the LLM and the limits it shows. ``notebook``: a
+    ``duckduck.notebook.NotebookServer`` — the Notebook tab (JupyterLab behind
+    ``/notebook/``, see ``duckduck.notebook.mount``); ``None``: no tab.
     """
     try:
         from fastapi import Body, FastAPI, HTTPException, Request
@@ -144,6 +147,12 @@ def create_app(
             raise HTTPException(404, "conversation not found (the server restarted?) — ask again")
         return conv
 
+    if notebook is not None:
+        from ..notebook import mount
+
+        mount(app, notebook, duck=lambda: (state["console"].source if state["console"] is not None
+                                           else state["search"].duck))
+
     @app.get("/", response_class=HTMLResponse)
     def page() -> str:
         return PAGE
@@ -173,7 +182,8 @@ def create_app(
                          "sql": state["console"] is not None, "config": bool(config_path),
                          "config_edit": bool(config_path and allow_config_edit),
                          "catalog_generation": bool(catalog_runner is not None and allow_config_edit),
-                         "saved_tables": bool(state["console"] is not None and config_path and allow_config_edit)},
+                         "saved_tables": bool(state["console"] is not None and config_path and allow_config_edit),
+                         "notebook": notebook is not None},
             "source_icons": {n: search.source_icon(n) for n in cat.sources},
             "unavailable_sources": search.unavailable(),
             "texts": {"ask_anyway": search.texts.t("reply.ask_anyway")},
