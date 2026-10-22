@@ -2748,13 +2748,16 @@ python -m duckduck.semantic serve --notebook   # or "notebook": {"enabled": true
   reaches it only with a cookie from `POST /api/notebook/open` — an API call, so the app's access token
   (`DUCKDUCK_SERVER_TOKEN`) still applies. Terminals are off, and only `notebook.kernels` are offered.
 - **SQL cells, like Databricks**: the notebook toolbar has a *PySpark / SQL / SQL · duckduck* switch
-  for the active cell, and next to it, for an SQL cell, the name of the DataFrame it leaves (`df` unless
-  you type another). Pick SQL and write only the SQL — nothing else goes in the cell; it turns amber,
+  for the active cell, and next to it, for an SQL cell, the name of the DataFrame it leaves. Each SQL
+  cell gets its own: named after the first table it reads (`security.proxy_logs` → `proxy_logs`; an
+  unqualified name, which may be one of your DataFrames, → `hosts_df`, so the result never replaces what
+  it read), else `df_1`, `df_2`…, made unique in the notebook (`proxy_logs_2`) and kept once given; type
+  a name in the field to choose it (empty: automatic again). Pick SQL and write only the SQL — nothing else goes in the cell; it turns amber,
   shows `SQL → df` by its prompt and is highlighted as SQL. The duckduck kernel
   (*Glue PySpark + SQL (duckduck)* — AWS's Glue PySpark kernel with its SQL handling replaced) runs it as
   `df = spark.sql(...)`: the result is a DataFrame for the next PySpark cell, and shows as a table.
   ```sql
-  SELECT host, os FROM hosts WHERE os = 'linux'      -- an SQL cell, DataFrame name: linux_hosts
+  SELECT host, os FROM hosts WHERE os = 'linux'      -- an SQL cell; the name typed in the field: linux_hosts
   ```
   ```python
   linux_hosts.groupBy("os").count().show()           # the next cell, in PySpark

@@ -15,7 +15,7 @@
 // arrives as SQL ({sql}) when the cell it goes to is an SQL cell, or the switch was last set to SQL.
 import { INotebookTracker, NotebookActions } from '@jupyterlab/notebook';
 import { Widget } from '@lumino/widgets';
-import { DEFAULT_NAME, KEY, NAME, convert, modeOf, nameOf } from './toggle';
+import { KEY, NAME, autoNames, convert, isAuto, modeOf, nameOf } from './toggle';
 
 const MODES = [
   ['python', 'PySpark', 'Python code, run in the session'],
@@ -73,11 +73,25 @@ function setCell(cell, result) {
   });
 }
 
-// SQL cells: a class, the DataFrame's name by the prompt, SQL highlighting (the notebook may set the kernel's
-// mime type back: done again on change)
+// automatic DataFrame names (toggle.js autoNames): kept in each SQL cell's metadata, which the kernel reads
+function nameCells(notebook) {
+  const cells = notebook.widgets.filter(cell => cell.model.type === 'code' && modeOf(cell.model.sharedModel.getSource(),
+    metaOf(cell)) !== 'python' && metaOf(cell));
+  const names = autoNames(cells.map(cell => ({ source: cell.model.sharedModel.getSource(), meta: metaOf(cell) })));
+  cells.forEach((cell, i) => {
+    const meta = metaOf(cell);
+    if (isAuto(meta) && (meta.name !== names[i] || meta.auto !== true)) {
+      cell.model.setMetadata(KEY, { ...meta, name: names[i], auto: true });
+    }
+  });
+}
+
+// SQL cells: their names, a class, the DataFrame's name by the prompt, SQL highlighting (the notebook may set the
+// kernel's mime type back: done again on change)
 function decorate(panel) {
   const notebook = panel.content;
   const python = notebook.codeMimetype || 'text/x-ipython';
+  nameCells(notebook);
   notebook.widgets.forEach(cell => {
     if (cell.model.type !== 'code') {
       return;
@@ -117,9 +131,10 @@ class LanguageSwitch extends Widget {
     arrow.textContent = '→';
     const name = document.createElement('input');
     name.type = 'text';
-    name.placeholder = DEFAULT_NAME;
+    name.placeholder = 'automatic';
     name.spellcheck = false;
-    name.title = 'The DataFrame this SQL cell leaves, for the PySpark cells after it';
+    name.title = 'The DataFrame this SQL cell leaves, for the PySpark cells after it — named after its table '
+      + 'until you type a name (empty: automatic again)';
     name.setAttribute('aria-label', 'DataFrame name');
     node.append(select, arrow, name);
     super({ node });
@@ -165,7 +180,9 @@ class LanguageSwitch extends Widget {
     this.select.classList.toggle('duckduck-on', sql);
     this.name.hidden = this.arrow.hidden = !sql;
     if (sql && document.activeElement !== this.name) {
-      this.name.value = nameOf(source, metaOf(cell)) || DEFAULT_NAME;
+      const meta = metaOf(cell);
+      this.name.value = nameOf(source, meta) || '';
+      this.name.style.fontStyle = isAuto(meta) ? 'italic' : 'normal';
     }
   }
 
@@ -199,15 +216,16 @@ class LanguageSwitch extends Widget {
     if (modeOf(source, meta) === 'python') {
       return;
     }
-    const name = value || DEFAULT_NAME;
-    if (!NAME.test(name) || name.startsWith('__')) {
-      this.name.value = nameOf(source, meta) || DEFAULT_NAME; // not a Python name: back to what it was
+    if (value && (!NAME.test(value) || value.startsWith('__'))) {
+      this.name.value = nameOf(source, meta) || ''; // not a Python name: back to what it was
       return;
     }
     const sql = convert(source, meta, modeOf(source, meta)); // a %%sql line moves into the metadata
-    sql.meta.name = name;
+    sql.meta.name = value || null; // empty: automatic again
+    sql.meta.auto = !value;
     setCell(cell, sql);
     decorate(this.panel);
+    this.refresh();
   }
 }
 
@@ -260,7 +278,12 @@ async function insert(app, tracker, code, sql) {
   }
   const cell = notebook.activeCell;
   // the page's SQL starts with %%sql [name] [--duckduck]: that line becomes the cell's metadata
-  setCell(cell, sql && wanted !== 'python' ? convert(sql, undefined, undefined) : { source: code, meta: null });
+  let result = { source: code, meta: null };
+  if (sql && wanted !== 'python') {
+    result = convert(sql, undefined, undefined);
+    result.meta.auto = true; // named after its table, like a typed one
+  }
+  setCell(cell, result);
   decorate(panel);
   notebook.mode = 'command';
   if (cell.node && cell.node.scrollIntoView) {
@@ -300,6 +323,13 @@ const plugin = {
       }
     });
     addStyle();
+    // names settled just before a cell runs: JupyterLab emits this synchronously, then reads the cell's metadata
+    // for the execute request — so a name the debounced decorate() hasn't caught up with yet is still right
+    NotebookActions.executionScheduled.connect((_, args) => {
+      if (args && args.notebook) {
+        nameCells(args.notebook);
+      }
+    });
     app.docRegistry.addWidgetExtension('Notebook', {
       createNew: panel => {
         const widget = new LanguageSwitch(panel);

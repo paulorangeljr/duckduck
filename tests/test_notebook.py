@@ -358,29 +358,37 @@ def test_a_cell_switched_to_sql_leaves_a_dataframe_for_pyspark(tmp_path, glue_du
                                "['host','os'])")
             page.keyboard.press("Shift+Enter")
             frame.locator(".jp-Cell .jp-InputPrompt", has_text="[1]").first.wait_for(timeout=180000)
-            # the next cell: SQL, over the DataFrame made above — only the SQL is written, the switch does the rest
+            # the next cell: SQL, over the DataFrame made above — only the SQL is written, and run at once: its
+            # DataFrame is named after the table it reads (hosts → hosts_df, never hosts itself)
             frame.locator(".duckduck-langswitch select").select_option("sql")
-            frame.locator(".duckduck-langswitch input").fill("counts")
-            frame.locator(".duckduck-langswitch input").press("Enter")
             frame.locator(".jp-Cell.jp-mod-active .cm-content").click()
             page.keyboard.type("SELECT os, count(*) AS n FROM hosts GROUP BY os ORDER BY os")
-            sql_cell = frame.locator(".jp-Cell.duckduck-sql").first
-            assert "%%sql" not in sql_cell.locator(".cm-content").inner_text()
-            assert sql_cell.locator(".jp-InputPrompt").get_attribute("data-duckduck-df") == "counts"
             page.keyboard.press("Shift+Enter")
             result = frame.locator(".duckduck-sqlres").first
             result.locator("table").wait_for(timeout=120000)
+            assert "hosts_df = spark.sql" in result.inner_text()
             assert "temp views from DataFrames: hosts" in result.inner_text()
-            assert "counts = spark.sql" in result.inner_text()
+            sql_cell = frame.locator(".jp-Cell.duckduck-sql").first
+            assert "%%sql" not in sql_cell.locator(".cm-content").inner_text()
+            assert sql_cell.locator(".jp-InputPrompt").get_attribute("data-duckduck-df") == "hosts_df"
+            # another SQL cell, named by hand
+            frame.locator(".duckduck-langswitch select").select_option("sql")
+            frame.locator(".jp-Cell.jp-mod-active .cm-content").click()
+            page.keyboard.type("SELECT 1 AS one")
+            frame.locator(".duckduck-langswitch input").fill("counts")
+            frame.locator(".duckduck-langswitch input").press("Enter")
+            frame.locator(".jp-Cell.jp-mod-active .cm-content").click()
+            page.keyboard.press("Shift+Enter")
+            frame.locator(".duckduck-sqlres", has_text="counts = spark.sql").wait_for(timeout=60000)
             # back to PySpark: the cell becomes the code it stood for
             sql_cell.click()
             frame.locator(".duckduck-langswitch select").select_option("python")
-            frame.locator(".jp-Cell.jp-mod-active .cm-content", has_text='counts = spark.sql("""').wait_for(
+            frame.locator(".jp-Cell.jp-mod-active .cm-content", has_text='hosts_df = spark.sql("""').wait_for(
                 timeout=10000)
-            assert frame.locator(".jp-Cell.duckduck-sql").count() == 0
+            assert frame.locator(".jp-Cell.duckduck-sql").count() == 1
             # and the DataFrame is there for the next PySpark cell
             frame.locator(".jp-Cell").last.locator(".cm-content").click()
-            page.keyboard.type("counts.where('n > 1').collect()")
+            page.keyboard.type("hosts_df.where('n > 1').collect()")
             page.keyboard.press("Shift+Enter")
             frame.locator(".jp-OutputArea-output", has_text="Row(os='linux', n=2)").wait_for(timeout=60000)
             browser.close()
@@ -547,3 +555,15 @@ def spark():
     session.sparkContext.setLogLevel("ERROR")
     yield session
     session.stop()
+
+
+def test_the_switch_conversions_and_automatic_names_in_javascript():
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("no node")
+    folder = os.path.join(os.path.dirname(__file__), "..", "duckduck", "notebook", "labextension-src")
+    done = subprocess.run([node, "toggle.test.mjs"], cwd=folder, capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0 and done.stdout.strip() == "ok", done.stderr
