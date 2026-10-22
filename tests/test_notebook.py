@@ -47,7 +47,7 @@ def test_magics_and_template_install_the_published_wheel_and_connect_to_its_conf
             "polars==1.30") in text
     nb = notebook_template(settings, version="9.9.9")
     sources = ["".join(c["source"]) for c in nb["cells"]]
-    assert nb["metadata"]["kernelspec"]["name"] == "glue_pyspark"
+    assert nb["metadata"]["kernelspec"]["name"] == "duckduck_glue_pyspark"  # Glue's kernel + SQL cells
     configure = next(s for s in sources if s.startswith("%%configure"))
     assert json.loads(configure.split("\n", 1)[1]) == {"--enable-glue-datacatalog": "true",
                                                        "--datalake-formats": "delta,iceberg"}
@@ -185,7 +185,7 @@ def test_new_notebook_writes_the_template_and_never_overwrites(tmp_path):
 def test_from_config_puts_notebooks_next_to_the_config(tmp_path):
     server = NotebookServer.from_config({"notebook": {"dir": "nbs", "glue": {"region": "eu-west-1"}}}, str(tmp_path))
     assert server.root_dir == str(tmp_path / "nbs") and server.glue["region"] == "eu-west-1"
-    assert server.kernels == ["glue_pyspark"]
+    assert server.kernels == ["duckduck_glue_pyspark"]
     with pytest.raises(NotebookError, match="unknown key"):
         NotebookServer.from_config({"notebook": {"port": 1}}, str(tmp_path))
 
@@ -311,3 +311,212 @@ def test_clicking_a_table_adds_a_cell_in_jupyterlab(jupyter, glue_duck):
             browser.close()
     finally:
         web.should_exit = True
+
+
+
+@pytest.mark.skipif(os.environ.get("DUCKDUCK_BROWSER_TESTS") != "1", reason="browser tests are off — set "
+                    "DUCKDUCK_BROWSER_TESTS=1 (needs Playwright's Chromium and pyspark)")
+def test_a_cell_switched_to_sql_leaves_a_dataframe_for_pyspark(tmp_path, glue_duck):
+    """The toolbar switch, the duckduck kernel and the session together — on the local-Spark kernel (no AWS)."""
+    import glob
+    import socket
+
+    pytest.importorskip("pyspark")
+    pytest.importorskip("aws_glue_interactive_sessions_kernel")
+    import uvicorn
+    from playwright.sync_api import sync_playwright
+
+    from duckduck.semantic.admin import SQLConsole
+    from duckduck.semantic.engine import SemanticSearch
+    from duckduck.semantic.server import create_app
+
+    server = NotebookServer(str(tmp_path / "nbs"), kernels=["duckduck_local_pyspark"])
+    app = create_app(lambda: SemanticSearch.turned_off(glue_duck, "not needed here"), store=None,
+                     console=SQLConsole(glue_duck), notebook=server)
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    web = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    threading.Thread(target=web.run, daemon=True).start()
+    while not web.started:
+        time.sleep(0.05)
+    chrome = (glob.glob("/opt/pw-browsers/chromium-*/chrome-linux*/chrome") or [None])[0]
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(executable_path=chrome) if chrome else p.chromium.launch()
+            page = browser.new_page(viewport={"width": 1500, "height": 1000})
+            page.goto(f"http://127.0.0.1:{port}/")
+            page.click('nav button[data-tab="notebook"]')
+            page.fill("#nbname", "sqlmode")
+            page.click("#nbnew")
+            page.wait_for_function("document.querySelector('#nbcurrent').textContent.includes('sqlmode')",
+                                   timeout=90000)
+            frame = page.frame_locator("#nbframe")
+            frame.locator(".jp-StatusBar-TextItem", has_text="| Idle").first.wait_for(timeout=90000)
+            frame.locator(".jp-Notebook .jp-Cell").last.locator(".cm-content").click()
+            page.keyboard.type("hosts = spark.createDataFrame([('web','linux'),('db','windows'),('ci','linux')], "
+                               "['host','os'])")
+            page.keyboard.press("Shift+Enter")
+            frame.locator(".jp-Cell .jp-InputPrompt", has_text="[1]").first.wait_for(timeout=180000)
+            # the next cell: SQL, over the DataFrame made above
+            frame.locator(".duckduck-langswitch select").select_option("sql")
+            frame.locator(".jp-Cell.jp-mod-active .cm-content").click()
+            page.keyboard.press("Control+End")
+            page.keyboard.type("SELECT os, count(*) AS n FROM hosts GROUP BY os ORDER BY os")
+            page.keyboard.press("Shift+Enter")
+            result = frame.locator(".duckduck-sqlres").first
+            result.locator("table").wait_for(timeout=120000)
+            assert "temp views from DataFrames: hosts" in result.inner_text()
+            assert frame.locator(".jp-Cell.duckduck-sql").count() == 1
+            # back to PySpark: the cell becomes the code it stood for
+            frame.locator(".jp-Cell.duckduck-sql").first.click()
+            frame.locator(".duckduck-langswitch select").select_option("python")
+            frame.locator(".jp-Cell.jp-mod-active .cm-content", has_text='df = spark.sql("""').wait_for(timeout=10000)
+            # and the DataFrame is there for the next PySpark cell
+            frame.locator(".jp-Cell").last.locator(".cm-content").click()
+            page.keyboard.type("df.where('n > 1').collect()")
+            page.keyboard.press("Shift+Enter")
+            frame.locator(".jp-OutputArea-output", has_text="Row(os='linux', n=2)").wait_for(timeout=60000)
+            browser.close()
+    finally:
+        server.stop()
+        web.should_exit = True
+
+# ---- SQL cells: %%sql → df = spark.sql(...), and back ----------------------------------------------------------------
+
+from duckduck.notebook import sqlcells  # noqa: E402
+
+
+def test_sql_header_names_the_dataframe_and_the_engine():
+    assert sqlcells.parse_header("%%sql") == {"name": "df", "engine": "spark", "show": 100}
+    assert sqlcells.parse_header("%%sql assets --duckduck --show 5") == {"name": "assets", "engine": "duckduck",
+                                                                         "show": 5}
+    for bad in ("%%sql a b", "%%sql --show", "%%sql __x"):
+        with pytest.raises(sqlcells.SqlCellError):
+            sqlcells.parse_header(bad)
+    assert sqlcells.split_cell(["# a note", "%%sql x", "SELECT 1"]) == ("%%sql x", "SELECT 1")
+    assert sqlcells.header_for("df", "duckduck") == "%%sql --duckduck"
+
+
+class _Schema:
+    def __init__(self, cols):
+        self.fields = [type("F", (), {"name": c, "dataType": type("T", (), {"simpleString": lambda s: "string"})()})()
+                       for c in cols]
+
+
+def test_session_code_leaves_the_dataframe_and_reads_dataframes_as_views():
+    """The code the session runs, on a stand-in for spark (the real thing: test_sql_cells_on_spark)."""
+    pytest.importorskip("pyspark")
+    from pyspark.sql import DataFrame
+
+    made = []
+
+    class Result:
+        schema = _Schema(["os", "n"])
+
+        def limit(self, n):
+            return self
+
+        def collect(self):
+            return [("linux", 2), ("windows", None)]
+
+    class Spark:
+        def sql(self, query):
+            made.append(query)
+            return Result()
+
+    hosts = object.__new__(DataFrame)
+    views = []
+    hosts.createOrReplaceTempView = views.append
+    scope = {"spark": Spark(), "hosts": hosts, "other": hosts}
+    import contextlib
+    import io
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        exec(sqlcells.session_code("%%sql counts", "SELECT os, count(*) n FROM hosts GROUP BY os;"), scope)
+    assert made == ["SELECT os, count(*) n FROM hosts GROUP BY os"]
+    assert views == ["hosts"]  # named in the SQL; `other` isn't
+    assert scope["counts"] is scope["_sqldf"]
+    (_, before), (kind, result), (_, after) = sqlcells.split_output("hello\n" + out.getvalue())
+    assert (before, kind, after) == ("hello\n", "result", "")
+    assert result["rows"] == [["linux", 2], ["windows", None]] and result["views"] == ["hosts"]
+    shown = sqlcells.render(result)
+    assert "<th" in shown["text/html"] and "counts</code> = spark.sql" in shown["text/html"]
+    assert "linux\t2" in shown["text/plain"]
+    with pytest.raises(sqlcells.SqlCellError):
+        sqlcells.session_code("%%sql", "  ")
+
+
+def test_duckduck_sql_cells_need_the_reader():
+    scope = {}
+    with pytest.raises(NameError, match="connect"):
+        exec(sqlcells.session_code("%%sql --duckduck", "SELECT 1"), scope)
+
+
+def test_the_kernel_sends_session_code_for_sql_and_shows_the_answer_as_a_table():
+    pytest.importorskip("aws_glue_interactive_sessions_kernel")
+    from duckduck.notebook.kernel import _kernel_class
+
+    kernel = _kernel_class()
+    sent, errors = [], []
+    fake = type("K", (), {"iopub_socket": None, "_send_error_output": lambda self, m: errors.append(m),
+                          "send_response": lambda self, sock, kind, content: sent.append((kind, content))})()
+    code = kernel._handle_sql_code(fake, ["%%sql hosts", "SELECT 1"])
+    assert "__duckduck_sql('SELECT 1', 'hosts', 'spark', 100)" in code
+    assert kernel._handle_sql_code(fake, ["%%sql a b", "SELECT 1"]) is None and "doesn't take" in errors[0]
+    payload = sqlcells.MARK + json.dumps({"name": "df", "columns": [["x", "int"]], "rows": [[1]], "show": 100,
+                                          "more": False, "views": []}) + sqlcells.END
+    kernel._send_output(fake, payload)
+    assert sent[0][0] == "display_data" and "text/html" in sent[0][1]["data"]
+
+
+def test_glue_tables_and_others_come_as_sql_cells_too(glue_duck):
+    glue = pyspark_code(glue_duck, "SELECT * FROM s3_data.security.proxy_logs WHERE status = 403 LIMIT 100")
+    assert glue["sql"] == "%%sql proxy_logs\nSELECT * FROM security.proxy_logs\nWHERE status = 403"
+    other = pyspark_code(glue_duck, "SELECT * FROM assets LIMIT 100")
+    assert other["sql"] == "%%sql assets --duckduck\nSELECT * FROM assets LIMIT 100"
+
+
+def test_the_local_gateway_answers_like_a_glue_session():
+    from duckduck.notebook.kernel import LocalGateway
+
+    gateway = LocalGateway()
+    gateway.namespace["spark"] = None  # no session needed for plain Python
+    first = gateway.run_statement("s", "x = 6\nx * 7")["Id"]
+    assert gateway.get_statement("s", first)["Statement"]["Output"]["Data"]["TextPlain"] == "42\n"
+    failed = gateway.get_statement("s", gateway.run_statement("s", "1/0")["Id"])["Statement"]["Output"]
+    assert failed["Status"] == "error" and failed["ErrorName"] == "ZeroDivisionError"
+
+
+def test_sql_cells_on_spark(spark):
+    """The session code on a real Spark: a DataFrame variable read as a table, the answer left as a DataFrame."""
+    import contextlib
+    import io
+
+    scope = {"spark": spark, "hosts": spark.createDataFrame([("web", "linux"), ("db", "windows"), ("ci", "linux")],
+                                                            ["host", "os"])}
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        exec(sqlcells.session_code("%%sql --show 1", "SELECT os, count(*) AS n FROM hosts GROUP BY os ORDER BY os"),
+             scope)
+    assert [tuple(r) for r in scope["df"].collect()] == [("linux", 2), ("windows", 1)]
+    result = next(v for k, v in sqlcells.split_output(out.getvalue()) if k == "result")
+    assert result["columns"] == [["os", "string"], ["n", "bigint"]] and result["rows"] == [["linux", 2]]
+    assert result["more"] is True
+
+
+@pytest.fixture(scope="module")
+def spark():
+    pytest.importorskip("pyspark")
+    from pyspark.sql import SparkSession
+
+    try:
+        session = (SparkSession.builder.master("local[1]").appName("duckduck-notebook-tests")
+                   .config("spark.ui.enabled", "false").config("spark.ui.showConsoleProgress", "false")
+                   .config("spark.sql.shuffle.partitions", "2").getOrCreate())
+    except Exception as exc:  # no Java, …
+        pytest.skip(f"no local Spark: {exc}")
+    session.sparkContext.setLogLevel("ERROR")
+    yield session
+    session.stop()

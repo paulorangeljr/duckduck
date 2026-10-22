@@ -2703,7 +2703,6 @@ tab's table list beside it — a click on a table adds a cell that reads it.
 
 ```bash
 pip install "duckduck[notebook]"          # jupyterlab, aws-glue-sessions, websockets, httpx, boto3
-install-glue-kernels                      # once: registers the glue_pyspark kernel (from aws-glue-sessions)
 
 # the wheel and duckduck.json go to S3, where the Glue session reads them
 python -m duckduck.glue_session publish s3://minhaempresa-artifacts/duckduck/ --config duckduck.json
@@ -2748,6 +2747,29 @@ python -m duckduck.semantic serve --notebook   # or "notebook": {"enabled": true
   time the tab opens; the app proxies `/notebook/…` (HTTP and websockets) and adds the token. The browser
   reaches it only with a cookie from `POST /api/notebook/open` — an API call, so the app's access token
   (`DUCKDUCK_SERVER_TOKEN`) still applies. Terminals are off, and only `notebook.kernels` are offered.
+- **SQL cells, like Databricks**: the notebook toolbar has a *PySpark / SQL / SQL · duckduck* switch
+  for the active cell. SQL writes `%%sql` on the cell's first line, and the duckduck kernel
+  (*Glue PySpark + SQL (duckduck)* — AWS's Glue PySpark kernel with its `%%sql` replaced) runs it as
+  `df = spark.sql(...)`: the result is a DataFrame for the next PySpark cell, and shows as a table.
+  ```sql
+  %%sql linux_hosts          -- the DataFrame's name (df when none); _sqldf is always the last one
+  SELECT host, os FROM hosts WHERE os = 'linux'
+  ```
+  ```python
+  linux_hosts.groupBy("os").count().show()     # the next cell, in PySpark
+  ```
+  The other way round, a DataFrame variable named in the SQL (`hosts` above, made in a PySpark cell)
+  becomes a temporary view of that name before the query runs — so SQL reads PySpark's results as tables
+  (a variable shadows an unqualified table of the same name; `database.table` still reaches the table).
+  *SQL · duckduck* (`%%sql name --duckduck`) runs `reader.sql(...)` instead, for tables only duckduck reads.
+  Switching back to PySpark rewrites the cell as the code it stands for —
+  `linux_hosts = spark.sql("""…""")` — and switching that to SQL gives the SQL back. `%%sql df --show 20`
+  shows 20 rows (`--show 0`: none). A table clicked in the list arrives as SQL when the cell it goes to is
+  an SQL cell (or the switch was last set to SQL).
+- **Without AWS**: `"kernels": ["duckduck_local_pyspark"]` offers *Local PySpark + SQL* — the same kernel
+  with the Glue API answered by a local Spark in the kernel's process (needs `pyspark`), for trying
+  notebooks out. Outside the web app: `python -m duckduck.notebook.kernel install [--local]` registers
+  the kernels with your Jupyter.
 - A small JupyterLab extension (prebuilt, in the package: `duckduck/notebook/labextensions`; source in
   `labextension-src`) takes the cells from the page. **Open in a new window** gives the whole JupyterLab;
   clicks on tables only reach the one in the tab.

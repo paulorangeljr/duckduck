@@ -264,7 +264,7 @@ def magics(settings: Dict[str, Any], version: Optional[str] = None) -> str:
     return "\n".join(lines)
 
 
-def notebook_template(settings: Dict[str, Any], kernel: str = "glue_pyspark", version: Optional[str] = None,
+def notebook_template(settings: Dict[str, Any], kernel: str = "duckduck_glue_pyspark", version: Optional[str] = None,
                       config_uri: Optional[str] = None) -> Dict[str, Any]:
     """A notebook ready to start a Glue session with duckduck in it (nbformat 4)."""
     if config_uri is None and settings.get("artifacts"):
@@ -277,7 +277,11 @@ def notebook_template(settings: Dict[str, Any], kernel: str = "glue_pyspark", ve
              "The first cell sets up the Glue interactive session; the session starts when the first code cell "
              "runs, and stops after the idle timeout. Then `reader.sql(...)` reads any duckduck table as a Spark "
              "DataFrame, and plain PySpark (`spark.table(...)`) works next to it.\n\n"
-             "Click a table in the list on the left to add a cell that reads it.")
+             "Click a table in the list on the left to add a cell that reads it.\n\n"
+             "**SQL cells**: the toolbar's *PySpark / SQL* switch turns a cell into SQL (`%%sql` on its first line). "
+             "It runs as `df = spark.sql(...)` — `%%sql name` keeps it under another name, `_sqldf` is always the "
+             "last one — so the next PySpark cell goes on from the DataFrame. A DataFrame variable named in the SQL "
+             "is read as a table. *SQL · duckduck* reads through duckduck instead (`reader.sql`).")
     if missing:
         intro += (f"\n\n**Set {' and '.join('`notebook.glue.' + k + '`' for k in missing)} in duckduck.json** "
                   "(or edit the cell below).")
@@ -290,7 +294,9 @@ def notebook_template(settings: Dict[str, Any], kernel: str = "glue_pyspark", ve
         _cell("code", connect_src),
         _cell("code", ""),
     ]
-    display = {"glue_pyspark": "Glue PySpark", "glue_spark": "Glue Spark"}.get(kernel, kernel)
+    display = {"glue_pyspark": "Glue PySpark", "glue_spark": "Glue Spark",
+               "duckduck_glue_pyspark": "Glue PySpark + SQL (duckduck)",
+               "duckduck_local_pyspark": "Local PySpark + SQL (duckduck)"}.get(kernel, kernel)
     language = {"glue_spark": "scala"}.get(kernel, "python")
     return {"nbformat": 4, "nbformat_minor": 5, "cells": cells,
             "metadata": {"kernelspec": {"name": kernel, "display_name": display, "language": language},
@@ -385,13 +391,15 @@ def pyspark_code(duck: Any, sql: str) -> Dict[str, str]:
         if where:
             code += f'.where("""{where.strip()}""")'
         code += f"  # read by Spark from the Glue Data Catalog\n{var}.show(20)"
-        return {"code": code, "how": "spark.table"}
+        sql_cell = f"%%sql {var}\nSELECT * FROM {table}" + (f"\nWHERE {where.strip()}" if where else "")
+        return {"code": code, "how": "spark.table", "sql": sql_cell}
     text = sql.replace('"""', '\\"\\"\\"')
     note = f"  # LIMIT {limit.group(1)}: a first look — take it out to read every row" if limit else ""
     fill = "# fill in the '<…>' values first\n" if re.search(r"'<[^'>]+>'", sql) else ""
     code = (fill + f'{var} = reader.sql("""\n{text}\n""")' + note
             + f"\n{var}.show(20)  # read through duckduck: the push-down of the SQL tab")
-    return {"code": code, "how": "reader.sql"}
+    sql_cell = (f"%%sql {var} --duckduck\n" + ("-- fill in the '<…>' values first\n" if fill else "") + sql)
+    return {"code": code, "how": "reader.sql", "sql": sql_cell}
 
 
 def main(argv: Optional[List[str]] = None) -> int:

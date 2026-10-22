@@ -4245,7 +4245,7 @@ async function notebookInsert(sql) {
   if (!NB.opened) { toast("JupyterLab isn't open yet"); return; }
   try {
     const r = await api("/api/notebook/code", {sql});
-    nbPost({type: "duckduck:insert", id: ++NB.seq, code: r.code});
+    nbPost({type: "duckduck:insert", id: ++NB.seq, code: r.code, sql: r.sql});  // sql: for an SQL cell
     if (!NB.ready) toast("JupyterLab is still loading — the cell goes in once it's up");
   } catch (e) { toast(e.message); }
 }
@@ -4254,8 +4254,11 @@ $("#nbnew").addEventListener("click", async () => {
     const r = await api("/api/notebook/new", {name: $("#nbname").value.trim() || null});
     await openNotebook();  // the iframe needs the cookie JupyterLab's start sets
     if (!NB.opened) return;
+    const target = `/notebook/lab/tree/${encodeURI(r.path)}`;
     if (NB.ready) nbPost({type: "duckduck:open", id: ++NB.seq, path: r.path});
-    else { $("#nbframe").src = r.url; }
+    // still loading: it may already be loading this one (the newest notebook) — loading it again would drop
+    // the JupyterLab that is starting
+    else if (!$("#nbframe").src.endsWith(target)) $("#nbframe").src = target;
     toast(`Created ${r.path}`);
   } catch (e) { toast(e.message); }
 });

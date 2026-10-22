@@ -5,7 +5,8 @@
   "license": "MIT",
   "main": "index.js",
   "files": [
-    "index.js"
+    "index.js",
+    "toggle.js"
   ],
   "keywords": [
     "jupyter",
@@ -17,7 +18,8 @@
   },
   "dependencies": {
     "@jupyterlab/application": "^4.0.0",
-    "@jupyterlab/notebook": "^4.0.0"
+    "@jupyterlab/notebook": "^4.0.0",
+    "@lumino/widgets": "^2.0.0"
   },
   "devDependencies": {
     "@jupyterlab/builder": "^4.5.0"
@@ -26,7 +28,7 @@
     "extension": true,
     "outputDir": "../labextensions/duckduck-notebook",
     "_build": {
-      "load": "static/remoteEntry.cc2415607546b93d2ac4.js",
+      "load": "static/remoteEntry.f18035393e39ec0b89f1.js",
       "extension": "./extension"
     }
   }

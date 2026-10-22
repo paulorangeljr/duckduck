@@ -34,7 +34,7 @@ logger = get_logger("notebook")
 
 PREFIX = "/notebook"
 COOKIE = "duckduck_notebook"
-DEFAULT_KERNELS = ("glue_pyspark",)  # the cells the page adds are Python; glue_spark (Scala) can be listed too
+DEFAULT_KERNELS = ("duckduck_glue_pyspark",)  # the Glue PySpark kernel + SQL cells (kernel.py); glue_pyspark works too
 NOTEBOOK_KEYS = frozenset({"enabled", "dir", "kernels", "glue"})
 #: where JupyterLab finds the prebuilt extension (``labextensions/duckduck-notebook``, built from ``labextension-src``)
 LABEXTENSIONS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "labextensions")
@@ -117,12 +117,15 @@ class NotebookServer:
         return self.process is not None and self.process.poll() is None
 
     def available_kernels(self) -> Dict[str, str]:
-        """Installed kernels by name → where (only the ones this server offers matter)."""
+        """Installed kernels by name → where (only the ones this server offers matter) — duckduck's own (``kernel.py``)
+        whenever their packages are installed: JupyterLab gets their specs from this server."""
+        from .kernel import kernel_specs
+
         try:
             from jupyter_client.kernelspec import KernelSpecManager
         except ImportError:
             return {}
-        return KernelSpecManager().find_kernel_specs()
+        return {**KernelSpecManager().find_kernel_specs(), **{name: "duckduck" for name in kernel_specs()}}
 
     def problems(self) -> List[str]:
         out = []
@@ -134,13 +137,13 @@ class NotebookServer:
         found = self.available_kernels()
         offered = [k for k in self.kernels if k in found]
         if not offered:
-            glue = any(k.startswith("glue_") for k in self.kernels)
+            glue = any("glue_" in k for k in self.kernels)
             out.append(f"none of the kernels {self.kernels} is installed"
-                       + (" — pip install aws-glue-sessions, then run install-glue-kernels" if glue else ""))
+                       + (' — pip install "duckduck[notebook]" (aws-glue-sessions)' if glue else ""))
         if not os.path.isfile(os.path.join(LABEXTENSIONS, "duckduck-notebook", "package.json")):
             out.append("the duckduck JupyterLab extension isn't built (duckduck/notebook/labextensions: npm install && npm run build in labextension-src) — "
                        "clicking a table can't add a cell")
-        if any(k.startswith("glue_") for k in self.kernels):
+        if any("glue_" in k for k in self.kernels):
             if not self.glue.get("iam_role"):
                 out.append("notebook.glue.iam_role isn't set — each notebook has to set %iam_role itself")
             if not self.glue.get("artifacts"):
@@ -165,6 +168,10 @@ class NotebookServer:
         path = os.path.join(folder, "jupyter_server_config.json")
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(config, fh)
+        # duckduck's kernels: their specs in a data folder of this server's own (JUPYTER_PATH)
+        from .kernel import write_kernel_specs
+
+        write_kernel_specs(os.path.join(folder, "data", "kernels"))
         # no "news from Jupyter?" prompt inside the app: a page config in this config dir turns it off
         os.makedirs(os.path.join(folder, "labconfig"), exist_ok=True)
         with open(os.path.join(folder, "labconfig", "page_config.json"), "w", encoding="utf-8") as fh:
@@ -185,8 +192,9 @@ class NotebookServer:
             self.port = _free_port()
             config = self._config_file()
             self._log = tempfile.NamedTemporaryFile(prefix="duckduck-jupyter-", suffix=".log", delete=False)
-            env = {**os.environ, "JUPYTER_CONFIG_DIR": os.path.dirname(config),
-                   "JUPYTER_PLATFORM_DIRS": "1"}
+            data = os.path.join(os.path.dirname(config), "data")
+            env = {**os.environ, "JUPYTER_CONFIG_DIR": os.path.dirname(config), "JUPYTER_PLATFORM_DIRS": "1",
+                   "JUPYTER_PATH": os.pathsep.join(p for p in (data, os.environ.get("JUPYTER_PATH")) if p)}
             self.process = subprocess.Popen(
                 [sys.executable, "-m", "jupyterlab", f"--config={config}"],
                 stdout=self._log, stderr=subprocess.STDOUT, cwd=self.root_dir, env=env)

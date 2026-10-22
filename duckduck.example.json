@@ -301,7 +301,7 @@
   "notebook": {
     "enabled": false,
     "dir": "notebooks",
-    "kernels": ["glue_pyspark"],
+    "kernels": ["duckduck_glue_pyspark"],
     "glue": {
       "iam_role": "arn:aws:iam::123456789012:role/minhaempresa-glue-notebook",
       "region": "us-east-1",
