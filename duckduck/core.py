@@ -2178,8 +2178,8 @@ class DuckAPI:
         def register(columns: List[str]) -> tuple:
             self._table_counter += 1
             table_name = f"_api_{fn_name}_{self._table_counter}"
-            if staged.files:  # the batches as one Arrow dataset: local or s3://…, read a piece at a time
-                self.conn.register(table_name, staged.dataset())
+            if staged.files:  # the batches streamed a piece at a time (native read_parquet for local files)
+                staged.register_in(self.conn, table_name)
                 listed = [d[0] for d in self.conn.sql(f'SELECT * FROM "{table_name}" LIMIT 0').description]
             else:
                 listed = columns or list(fallback_columns or []) or [self.EMPTY_PLACEHOLDER_COLUMN]

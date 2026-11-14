@@ -410,3 +410,79 @@ def test_a_page_bigger_than_batch_rows_makes_several_files_cut_where_the_value_c
         last = duckdb.sql(f"SELECT max(n) FROM '{f}'").fetchone()[0]
         assert all(duckdb.sql(f"SELECT count(*) FROM '{g}' WHERE n = {last}").fetchone()[0] == 0
                    for g in files if g > f)
+
+
+# ---------------------------------------------------------------------------
+# Bounded memory: native reads, DuckDB memory_limit / temp_directory, and the
+# container autotune (Lambda / Azure Functions) — run_pipeline must stay within
+# a fixed budget instead of sizing itself to the host's RAM.
+# ---------------------------------------------------------------------------
+
+
+def test_staged_batches_are_read_with_duckdbs_native_reader(tmp_path):
+    """Local batches are queried through ``read_parquet`` (a view), not a registered pyarrow dataset —
+    that reader streams a row group at a time and honours ``memory_limit``; registering the dataset makes
+    DuckDB pull the whole scan into Arrow first."""
+    import pyarrow as pa
+
+    staged = batches.Batching(rows=4, folder=str(tmp_path / "b")).source("items", ("items", (), [], "*"))
+    staged.write(pa.table({"n": [0, 1, 2, 3], "v": ["a", "b", "c", "d"]}))
+    staged.write(pa.table({"n": [4, 5], "v": ["e", "f"]}))
+    con = duckdb.connect()
+    staged.register_in(con, "src")
+    kind = con.execute("SELECT table_type FROM information_schema.tables WHERE table_name = 'src'").fetchone()
+    assert kind and "VIEW" in kind[0].upper()  # a native read_parquet view, not a registered object
+    assert con.execute("SELECT count(*), max(n) FROM src").fetchone() == (6, 5)
+
+
+def test_batched_run_sets_duckdbs_memory_limit_and_a_temp_directory(tmp_path):
+    captured = {}
+    original = runner.make_engine
+
+    def spy(*a, **k):
+        engine = original(*a, **k)
+        captured["memory_limit"] = engine.conn.execute("SELECT current_setting('memory_limit')").fetchone()[0]
+        captured["temp_directory"] = engine.conn.execute("SELECT current_setting('temp_directory')").fetchone()[0]
+        return engine
+
+    runner.make_engine = spy
+    try:
+        run_pipeline(spec(tmp_path, batch_rows=4, memory_limit="512MB"), duck=duck_of(Paged()), now=NOW)
+    finally:
+        runner.make_engine = original
+    assert captured["memory_limit"] in ("512.0 MiB", "488.3 MiB") or captured["memory_limit"].endswith("MiB")
+    assert captured["temp_directory"]  # DuckDB can spill joins / sorts / the write to disk
+
+
+def test_a_memory_limited_container_turns_on_batches_and_a_memory_limit(tmp_path, monkeypatch):
+    """With a small container limit (set via the override env var) a plain pipeline — no batch_rows, no
+    memory_limit — reads in batches and caps DuckDB by itself, so it fits the function instead of the host."""
+    monkeypatch.setenv("DUCKDUCK_CONTAINER_MEMORY", str(1024 * 1024 * 1024))  # a 1 GB function
+    seen = {}
+    original = runner.make_engine
+
+    def spy(engine, duck=None, spark=None, **batching):
+        seen.update(batching)
+        return original(engine, duck=duck, spark=spark, **batching)
+
+    monkeypatch.setattr(runner, "make_engine", spy)
+    run = run_pipeline(spec(tmp_path), duck=duck_of(Paged()), now=NOW)  # nothing tuned by the file
+    assert seen.get("batch_rows") == runner.DEFAULT_CONTAINER_BATCH_ROWS
+    assert seen.get("memory_limit") == "512MB"  # half of the 1 GB budget
+    assert written(tmp_path) == sorted(r["v"] for r in Paged().data)  # and it still produced the right rows
+
+
+def test_no_container_limit_leaves_a_plain_run_in_memory(tmp_path, monkeypatch):
+    """A huge 'limit' (a dev box in a generous cgroup) is left to DuckDB's own sizing — batching stays off
+    unless the file asks for it, so ordinary runs and their tests are unchanged."""
+    monkeypatch.setenv("DUCKDUCK_CONTAINER_MEMORY", str(64 * 1024 * 1024 * 1024))  # 64 GB: not a function
+    seen = {}
+    original = runner.make_engine
+
+    def spy(engine, duck=None, spark=None, **batching):
+        seen.update(batching)
+        return original(engine, duck=duck, spark=spark, **batching)
+
+    monkeypatch.setattr(runner, "make_engine", spy)
+    run_pipeline(spec(tmp_path), duck=duck_of(Paged()), now=NOW)
+    assert "batch_rows" not in seen and seen.get("memory_limit") is None

@@ -38,6 +38,11 @@ from .spec import PipelineError
 logger = logging.getLogger("duckduck.pipeline")
 
 READ_ENGINES = ("duckdb", "athena")
+
+#: rows per batch when streaming a lake table (``stream`` / page-by-page reads). Small enough that a wide row
+#: (a CMDB asset: lists, nested objects, long text) doesn't make a 100k-row pandas frame of hundreds of MB — the
+#: point of streaming is a bounded footprint on Lambda / Azure Functions.
+STREAM_ROWS = 20_000
 ATHENA_KEYS = {"workgroup", "output_location", "region", "catalog", "results", "reuse_minutes", "timeout"}
 _PREFIX = "_lake_"
 
@@ -172,8 +177,9 @@ class LakeTable:
     __module__ = __name__
 
     def __init__(self, info: Any, how: str, account: Any = None, catalog: Any = None, athena: Any = None,
-                 address: str = ""):
+                 address: str = "", memory_limit: Optional[str] = None):
         self.info, self.how, self.account, self.catalog, self.athena = info, how, account, catalog, athena
+        self.memory_limit = memory_limit
         self.address = address or info.full_name
         self.base_url = info.location  # what list_tables() shows as the endpoint
         #: Athena writes IN lists; the files' DuckDB scan takes everything conditions_to_sql writes
@@ -208,8 +214,8 @@ class LakeTable:
                 return
             con, rel = self._relation(where, None)
             try:
-                reader = rel.to_arrow_reader(100_000) if hasattr(rel, "to_arrow_reader") \
-                    else rel.fetch_record_batch(100_000)
+                reader = rel.to_arrow_reader(STREAM_ROWS) if hasattr(rel, "to_arrow_reader") \
+                    else rel.fetch_record_batch(STREAM_ROWS)
                 empty = True
                 for batch in reader:
                     if batch.num_rows:
@@ -229,16 +235,59 @@ class LakeTable:
     def _relation(self, where: Optional[List[Condition]], limit: Optional[int]):
         import duckdb
 
-        data, casts = self._data()
         con = duckdb.connect()
-        con.register("lake_table", data)
-        names = list(data.schema.names)
+        if self.memory_limit:
+            try:
+                con.execute(f"SET memory_limit = '{self.memory_limit}'")
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("couldn't set the lake reader's memory_limit: %s", exc)
+        native, casts = self._native()
+        if native is not None:  # local Parquet: DuckDB's own reader streams it (never the whole table in memory)
+            files, hive = native
+            listed = ", ".join("'" + f.replace("'", "''") + "'" for f in files)
+            hive_opt = ", hive_partitioning=true" if hive else ""
+            con.execute(f"CREATE VIEW lake_table AS SELECT * FROM read_parquet([{listed}], "
+                        f"union_by_name=true{hive_opt})")
+        else:  # Delta / Iceberg / object store: a pyarrow dataset (or table), DuckDB on top
+            data, casts = self._data()
+            con.register("lake_table", data)
+        names = [d[0] for d in con.execute("SELECT * FROM lake_table LIMIT 0").description]
         cols = ", ".join(f'CAST("{c}" AS {casts[c]}) AS "{c}"' if c in casts else f'"{c}"' for c in names)
         con.execute(f"CREATE VIEW t AS SELECT {cols} FROM lake_table")
         cond = conditions_to_sql(where or [], names)
         sql = "SELECT * FROM t" + (f" WHERE {cond}" if cond else "") + (f" LIMIT {int(limit)}" if limit else "")
         logger.info("  lake %s: %s", self.address, sql.replace("SELECT * FROM t", f"read {self.info.location}"))
         return con, con.sql(sql)
+
+    def _native(self) -> Tuple[Optional[Tuple[List[str], bool]], Dict[str, str]]:
+        """For a local Parquet table, ``((files, has_hive_partitions), casts)`` so DuckDB reads it with its own
+        streaming reader; otherwise ``(None, {})`` and ``_data`` is used (Delta, Iceberg, object store)."""
+        import pyarrow.fs as pafs
+
+        from .sip import _filesystem
+
+        info = self.info
+        if info.format != "parquet":
+            return None, {}
+        fs, base = _filesystem(info.location)
+        if not isinstance(fs, pafs.LocalFileSystem):
+            return None, {}
+        base = base.rstrip("/")
+        selector = pafs.FileSelector(base, recursive=True, allow_not_found=True)
+        files = [i.path for i in fs.get_file_info(selector)
+                 if i.type == pafs.FileType.File and i.size and _is_data(i.path[len(base) + 1:])]
+        if not files:
+            return None, {}  # no files: _data shapes an empty table with the right columns
+        keys = [k.name for k in info.partition_keys]
+        if not keys:
+            first = files[0][len(base) + 1:].split("/")[:-1]
+            keys = [p.split("=", 1)[0] for p in first if "=" in p]
+        from ..connectors.lake.s3layout import duck_type
+
+        types = {k.name: k.type for k in info.partition_keys}
+        casts = {k: duck_type(types[k]) if k in types else ("DATE" if k == "_load_date" else "VARCHAR") for k in keys}
+        casts = {k: v for k, v in casts.items() if v != "VARCHAR"}
+        return (files, bool(keys)), casts
 
     def _data(self) -> Tuple[Any, Dict[str, str]]:
         """A pyarrow dataset (or table) of the table, and the DuckDB types its partition columns are cast to."""
@@ -312,10 +361,11 @@ class LakeReads:
     """The lake tables a run reads: found in its views' SQL, registered in its DuckAPI, unregistered after."""
 
     def __init__(self, lake: Dict[str, Any], duck: Any, catalog_of: Any, account: Any = None,
-                 read_engine: Optional[str] = None):
+                 read_engine: Optional[str] = None, memory_limit: Optional[str] = None):
         self.duck, self.catalog_of, self.account = duck, catalog_of, account
         self.lake = lake or {}
         self.how = read_engine or self.lake.get("read_engine") or "duckdb"
+        self.memory_limit = memory_limit
         self.tables: Dict[str, LakeTable] = {}  # function name → its table
         self._athena = None
 
@@ -358,7 +408,7 @@ class LakeReads:
             if self._athena is None:
                 self._athena = _athena_of(self.lake, self.account)
         address = ".".join(p for p in parts if p)
-        table = LakeTable(info, how, self.account, catalog, self._athena, address)
+        table = LakeTable(info, how, self.account, catalog, self._athena, address, self.memory_limit)
         self.duck.register_api_function(name, table)
         self.duck.register_streaming_function(name, table.stream)
         self.tables[name] = table

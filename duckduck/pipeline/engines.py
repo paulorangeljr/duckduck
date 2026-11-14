@@ -68,50 +68,83 @@ def _under(location: str, *parts: str) -> str:
     return os.path.join(location, *parts)
 
 
+def _is_local(fs: Any) -> bool:
+    import pyarrow.fs as pafs
+
+    return isinstance(fs, pafs.LocalFileSystem)
+
+
 def _quoted_path(path: str) -> str:
     return "'" + path.replace("'", "''") + "'"
+
+
+#: bound the write so pyarrow never buffers a whole ~1M-row group in memory (the default): one group / file at
+#: a time, streamed from DuckDB in batches of this size. Small enough for a 512 MB container, big enough that a
+#: partitioned write doesn't make thousands of tiny files.
+WRITE_ROWS_PER_GROUP = 20_000
+WRITE_ROWS_PER_FILE = 1_000_000
+READER_BATCH = 20_000
 
 
 class DuckEngine:
     name = "duckdb"
 
     def __init__(self, duck: Any, batch_rows: Optional[int] = None, staging: Optional[str] = None,
-                 resume: bool = True, resume_column: Optional[str] = None, load_columns: Any = ()):
+                 resume: bool = True, resume_column: Optional[str] = None, load_columns: Any = (),
+                 memory_limit: Optional[str] = None):
         """``batch_rows``: read every source that pages in batches of that many rows written to Parquet under
         ``staging`` (this run's folder), and keep kept views there too — memory holds a batch, never a table.
         ``resume`` / ``resume_column`` / ``load_columns``: how a failed attempt's batches are picked up
-        (``duckduck.common.batches``)."""
+        (``duckduck.common.batches``). ``memory_limit`` caps DuckDB's own buffers (joins, sorts, aggregates,
+        the write) so they spill to ``temp_directory`` instead of growing without bound — set it on a container
+        with a fixed budget (Lambda, Azure Functions): ``"512MB"``, ``"1GB"``."""
         self.duck = duck
         self.conn = duck.conn
         self._made: Dict[str, str] = {}  # name → "table" | "view"
         self.resuming = False  # set by the runner when this run is a failed run's next attempt
         self.notes: List[str] = []  # what each batched read did (staged / reused / resumed / restarted)
-        self.use_batches(batch_rows, staging, resume, resume_column, load_columns)
+        self._owned_tmp: Optional[str] = None  # a temp spill folder this engine made (removed on close)
+        self._reset_memory = False  # whether close() puts DuckDB's memory_limit back
+        self.use_batches(batch_rows, staging, resume, resume_column, load_columns, memory_limit)
 
     def use_batches(self, batch_rows: Optional[int], staging: Optional[str], resume: bool = True,
-                    resume_column: Optional[str] = None, load_columns: Any = ()) -> None:
+                    resume_column: Optional[str] = None, load_columns: Any = (),
+                    memory_limit: Optional[str] = None) -> None:
+        import os
+        import tempfile
+
         self.batch_rows = batch_rows
         self.staging = staging
         self.resume = resume
         self.resume_column = resume_column
         self.load_columns = tuple(load_columns or ())
+        self.memory_limit = memory_limit
         self._spill: Optional[str] = None
-        if batch_rows:
-            if not staging:
-                raise PipelineError("batch_rows needs a staging folder for the batches")
-            import os
-            import tempfile
-
-            # DuckDB spills joins, sorts and aggregates to local disk (never the object store): the staging
-            # folder when it's local, else a temp folder of this machine
-            spill = os.path.join(staging, "duckdb_tmp") if "://" not in staging else \
-                tempfile.mkdtemp(prefix="duckduck-spill-")
+        if batch_rows and not staging:
+            raise PipelineError("batch_rows needs a staging folder for the batches")
+        # When batching or capping memory, DuckDB must have somewhere local to spill joins, sorts, aggregates
+        # and the write once it passes memory_limit (never the object store): the staging folder when it's
+        # local, else a temp folder of this machine this engine makes and removes on close. On Lambda / Azure
+        # Functions only /tmp is writable, which is what tempfile uses. Without either, DuckDB keeps its own
+        # default temp (``.tmp``) — an ordinary in-memory run needs no spill folder of ours.
+        if batch_rows or memory_limit:
+            if staging and "://" not in staging:
+                spill = os.path.join(staging, "duckdb_tmp")
+            else:
+                spill = tempfile.mkdtemp(prefix="duckduck-spill-")
+                self._owned_tmp = spill
             os.makedirs(spill, exist_ok=True)
-            self._spill = spill if "://" in staging else None
+            self._spill = spill if (batch_rows and staging and "://" in staging) else None
             try:
                 self.conn.execute(f"SET temp_directory = {_quoted_path(spill)}")
             except Exception as exc:  # noqa: BLE001
                 logger.debug("couldn't set DuckDB's temp_directory: %s", exc)
+        if memory_limit:
+            try:
+                self.conn.execute(f"SET memory_limit = {_quoted_path(str(memory_limit))}")
+                self._reset_memory = True
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("couldn't set DuckDB's memory_limit to %r: %s", memory_limit, exc)
 
     def _drop(self, name: str) -> None:
         kind = self._made.pop(name, None)
@@ -150,11 +183,15 @@ class DuckEngine:
             try:
                 ds.write_dataset(self._reader("SELECT * FROM __duckduck_pipeline_rel", [0]), base, filesystem=fs,
                                  format="parquet", basename_template="part-{i}.parquet",
+                                 max_rows_per_group=WRITE_ROWS_PER_GROUP, max_rows_per_file=WRITE_ROWS_PER_FILE,
                                  existing_data_behavior="delete_matching")
             finally:
                 self.conn.execute("DROP VIEW IF EXISTS __duckduck_pipeline_rel")
-            self.conn.register(name, ds.dataset(base, filesystem=fs, format="parquet"))
-            self._made[name] = "registered"
+            from ..common.batches import register_parquet
+
+            files = _files_under(fs, base)
+            register_parquet(self.conn, name, fs, files)  # native read_parquet for local, else a pyarrow dataset
+            self._made[name] = "view" if _is_local(fs) else "registered"
         elif keep:
             rel.create_view("__duckduck_pipeline_rel", replace=True)
             self.conn.execute(f"CREATE OR REPLACE TABLE {ident(name)} AS SELECT * FROM __duckduck_pipeline_rel")
@@ -195,7 +232,8 @@ class DuckEngine:
     def _reader(self, sql: str, counter: List[int]):
         result = self.conn.execute(sql)
         reader = getattr(result, "to_arrow_reader", None) or result.fetch_record_batch  # the newer name first
-        return _counting(reader(100_000), counter)
+        size = min(READER_BATCH, self.batch_rows) if self.batch_rows else READER_BATCH
+        return _counting(reader(size), counter)
 
     def write(self, target: Target, key: List[str], run_id: str) -> Dict[str, Any]:
         if target.table:
@@ -225,10 +263,9 @@ class DuckEngine:
                             len(mine), run_id)
         sql = f"SELECT * FROM {ident(target.view)}"
         if target.mode == "merge" and old:
-            partitioning = ds.partitioning(flavor="hive") if target.partition_by else None
-            existing = ds.dataset(old, filesystem=fs, format="parquet", partitioning=partitioning,
-                                  partition_base_dir=base)
-            self.conn.register("__duckduck_pipeline_old", existing)
+            from ..common.batches import register_parquet
+
+            register_parquet(self.conn, "__duckduck_pipeline_old", fs, old, hive=bool(target.partition_by))
             same = " AND ".join(f"n.{ident(k)} IS NOT DISTINCT FROM o.{ident(k)}" for k in key)
             sql = (f"SELECT * FROM __duckduck_pipeline_old o WHERE NOT EXISTS (SELECT 1 FROM {ident(target.view)} n "
                    f"WHERE {same}) UNION ALL BY NAME SELECT * FROM {ident(target.view)}")
@@ -239,12 +276,17 @@ class DuckEngine:
                 self._reader(sql, counter), base, filesystem=fs, format="parquet",
                 partitioning=target.partition_by or None, partitioning_flavor="hive" if target.partition_by else None,
                 basename_template=f"part-{run_id}-{{i}}.parquet",
+                max_rows_per_group=WRITE_ROWS_PER_GROUP, max_rows_per_file=WRITE_ROWS_PER_FILE,
                 existing_data_behavior="delete_matching" if target.mode == "overwrite_partitions"
                 else "overwrite_or_ignore",
                 file_visitor=lambda f: written.append(f.path))
         finally:
             if target.mode == "merge" and old:
-                self.conn.unregister("__duckduck_pipeline_old")
+                self.conn.execute("DROP VIEW IF EXISTS __duckduck_pipeline_old")
+                try:
+                    self.conn.unregister("__duckduck_pipeline_old")
+                except Exception:  # noqa: BLE001 — it was a native-read view, already dropped
+                    pass
         removed = [f for f in old if f not in set(written)]
         for f in removed:  # overwrite / merge: the new files are in place, the old ones go
             fs.delete_file(f)
@@ -317,15 +359,20 @@ class DuckEngine:
                 self._drop(name)
             except Exception:  # noqa: BLE001
                 pass
-        if self.batch_rows:
-            try:  # the run's staging goes away after it: DuckDB's spill folder back to its own
-                self.conn.execute("RESET temp_directory")
+        try:  # the run's staging / temp folder goes away after it: DuckDB's spill folder back to its own
+            self.conn.execute("RESET temp_directory")
+        except Exception:  # noqa: BLE001
+            pass
+        if self._reset_memory:
+            try:
+                self.conn.execute("RESET memory_limit")
             except Exception:  # noqa: BLE001
                 pass
-            if self._spill:
-                import shutil
+        import shutil
 
-                shutil.rmtree(self._spill, ignore_errors=True)
+        for folder in (self._spill, self._owned_tmp):  # the s3 spill folder and any temp folder this engine made
+            if folder:
+                shutil.rmtree(folder, ignore_errors=True)
 
 
 class SparkEngine:

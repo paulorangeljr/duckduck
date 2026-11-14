@@ -24,7 +24,7 @@ from typing import Any, Dict, Optional
 
 from .spec import PipelineError, PipelineSpec
 
-LAKE_KEYS = {"catalog", "layers", "state", "sip_store", "aws", "read_engine", "ingestion_layers", "athena", "staging"}
+LAKE_KEYS = {"catalog", "layers", "state", "sip_store", "aws", "read_engine", "ingestion_layers", "athena", "staging", "memory_limit"}
 
 
 def _find_config(start: Optional[str] = None) -> Optional[str]:
@@ -120,6 +120,8 @@ def with_settings(spec: PipelineSpec, lake: Dict[str, Any]) -> PipelineSpec:
         spec.state = lake["state"]
     if not spec.staging and lake.get("staging"):
         spec.staging = lake["staging"]
+    if not spec.memory_limit and lake.get("memory_limit"):
+        spec.memory_limit = lake["memory_limit"]
     if spec.sip.enabled and not spec.sip.store and lake.get("sip_store"):
         spec.sip.store = lake["sip_store"]
     if spec.load.incremental and not spec.state:

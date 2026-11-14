@@ -229,6 +229,8 @@
     },
     "state": "s3://my-raw-layer/_duckduck/state",
     "sip_store": "s3://my-raw-layer/_duckduck/sip",
+    "staging": "s3://my-raw-layer/_duckduck/staging",
+    "memory_limit": "2GB",
     "aws": {
       "profile": "data-prod",
       "region": "us-east-1"
@@ -301,7 +303,9 @@
   "notebook": {
     "enabled": false,
     "dir": "notebooks",
-    "kernels": ["duckduck_glue_pyspark"],
+    "kernels": [
+      "duckduck_glue_pyspark"
+    ],
     "glue": {
       "iam_role": "arn:aws:iam::123456789012:role/minhaempresa-glue-notebook",
       "region": "us-east-1",
@@ -309,7 +313,9 @@
       "worker_type": "G.1X",
       "number_of_workers": 2,
       "idle_timeout": 30,
-      "connections": ["minhaempresa-vpc"],
+      "connections": [
+        "minhaempresa-vpc"
+      ],
       "artifacts": "s3://minhaempresa-artifacts/duckduck/",
       "datalake_formats": "delta,iceberg"
     }

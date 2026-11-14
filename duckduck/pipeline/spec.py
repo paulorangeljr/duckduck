@@ -37,7 +37,7 @@ MODES = ("append", "overwrite", "overwrite_partitions", "merge")
 FORMATS = ("parquet", "delta", "iceberg")
 SOURCES = ("notebook", "sql_file", "sql")
 KEYS = {"pipeline", "description", "engine", "primary_key", "keys", "sip", "target", "targets", "output",
-        "parameters", "catalogs", "catalog", "schema_evolution", "state", "load", "timezone", "audit_columns", "layer", "aws", "read_engine", "virtualized_table", "page_size", "max_parallel", "retry", "batch_rows", "staging", "resume", *SOURCES}
+        "parameters", "catalogs", "catalog", "schema_evolution", "state", "load", "timezone", "audit_columns", "layer", "aws", "read_engine", "virtualized_table", "page_size", "max_parallel", "retry", "batch_rows", "staging", "resume", "memory_limit", *SOURCES}
 SIP_KEYS = {"enabled", "rate", "max_rows", "watch", "columns", "mask", "store", "stages", "null_keys"}
 TARGET_KEYS = {"path", "table", "format", "mode", "partition_by", "key", "unique", "storage_options", "catalog",
                "schema", "schema_evolution", "layer", "database", "table_name"}
@@ -158,6 +158,7 @@ class PipelineSpec:
     staging: Optional[str] = None  # where the batches go: a folder or s3://… (default: {state}/_staging, else temp)
     resume: bool = True  # a failed run's next attempt is the same run, picking up its batches and written targets
     resume_column: Optional[str] = None  # the column a batched read sorts by and resumes after
+    memory_limit: Optional[str] = None  # cap DuckDB's buffers so they spill to temp (e.g. "512MB", "1GB")
 
     def resolve(self, value: str) -> str:
         """A local path relative to the pipeline file."""
@@ -267,6 +268,12 @@ def load_spec(source: Union[str, os.PathLike, Dict[str, Any]], base_dir: Optiona
             raise PipelineError("'staging' is where the batches go: a folder (\"/data/staging\") or "
                                 "\"s3://bucket/staging\"")
         spec.staging = staging
+    memory_limit = data.get("memory_limit")
+    if memory_limit is not None:
+        if not isinstance(memory_limit, str) or not memory_limit.strip():
+            raise PipelineError("'memory_limit' caps DuckDB's memory so it spills to disk: a string like "
+                                "\"512MB\", \"1GB\" or \"80%\"")
+        spec.memory_limit = memory_limit.strip()
     resume = data.get("resume", True)
     if isinstance(resume, dict):
         unknown = sorted(set(resume) - {"enabled", "column"})

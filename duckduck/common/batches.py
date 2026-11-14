@@ -205,6 +205,19 @@ class StagedSource:
         schema = unified_schema([pq.read_schema(f, filesystem=self.fs) for f in self.files])
         return ds.dataset(self.files, schema=schema, filesystem=self.fs, format="parquet")
 
+    def register_in(self, con: Any, name: str) -> None:
+        """Make the batches queryable as ``name`` in a DuckDB connection, streaming (see
+        ``register_parquet``): local files through DuckDB's native ``read_parquet``, object-store
+        files as a pyarrow dataset with the batches' unified schema."""
+        import pyarrow.fs as pafs
+
+        if isinstance(self.fs, pafs.LocalFileSystem):
+            listed = ", ".join("'" + f.replace("'", "''") + "'" for f in self.files)
+            con.execute(f'CREATE OR REPLACE TEMP VIEW "{name}" AS '
+                        f"SELECT * FROM read_parquet([{listed}], union_by_name=true)")
+        else:
+            con.register(name, self.dataset())
+
     def finish(self, columns: Optional[List[str]] = None) -> None:
         self.done = True
         if columns and not self.files:
@@ -222,6 +235,35 @@ class StagedSource:
             f.write(json.dumps(data, indent=1, default=str).encode("utf-8"))
         self.fs.move(target + ".tmp", target)
 
+
+
+def register_parquet(con: Any, name: str, fs: Any, files: Sequence[str], *, hive: bool = False,
+                     schema: Any = None) -> None:
+    """Make ``files`` queryable as ``name`` in a DuckDB connection.
+
+    Local files go through DuckDB's **native** ``read_parquet`` reader, which
+    streams a row group at a time and honours ``memory_limit`` — registering
+    them as a pyarrow dataset instead makes DuckDB pull the whole scan into
+    Arrow first (megabytes per wide row × every file). Object-store files
+    (``s3://``…) keep the pyarrow path, since DuckDB's own reader would need
+    its httpfs credentials rather than the lake's account.
+    """
+    import pyarrow.dataset as ds
+    import pyarrow.fs as pafs
+
+    if isinstance(fs, pafs.LocalFileSystem):
+        listed = ", ".join("'" + f.replace("'", "''") + "'" for f in files)
+        hive_opt = ", hive_partitioning=true" if hive else ""
+        con.execute(f'CREATE OR REPLACE TEMP VIEW "{name}" AS '
+                    f"SELECT * FROM read_parquet([{listed}], union_by_name=true{hive_opt})")
+        return
+    part = ds.partitioning(flavor="hive") if hive else None
+    kwargs: Dict[str, Any] = {"format": "parquet", "filesystem": fs}
+    if schema is not None:
+        kwargs["schema"] = schema
+    if part is not None:
+        kwargs["partitioning"] = part
+    con.register(name, ds.dataset(list(files), **kwargs))
 
 def delete(location: str, filesystem: Callable[[str], Tuple[Any, str]] = local_filesystem) -> None:
     """Removes a staging folder (a run's, once it succeeded) — local or ``s3://…``; never fails."""

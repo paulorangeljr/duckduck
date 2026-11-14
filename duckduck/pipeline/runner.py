@@ -262,7 +262,8 @@ def run_pipeline(source: Union[str, os.PathLike, Dict[str, Any], PipelineSpec], 
                  config_path: Optional[str] = None, params: Optional[Dict[str, Any]] = None,
                  run_id: Optional[str] = None, dry_run: bool = False, now: Optional[dt.datetime] = None,
                  engine: Any = None, catalogs: Optional[Dict[str, Any]] = None, batch_rows: Optional[int] = None,
-                 staging: Optional[str] = None, resume: Optional[bool] = None) -> PipelineRun:
+                 staging: Optional[str] = None, resume: Optional[bool] = None,
+                 memory_limit: Optional[str] = None) -> PipelineRun:
     """
     Runs a pipeline file. ``duck``: the DuckAPI its SQL reads through (default:
     one ``auto_register``ed from ``config_path`` / ``DUCKDUCK_CONFIG`` /
@@ -290,6 +291,8 @@ def run_pipeline(source: Union[str, os.PathLike, Dict[str, Any], PipelineSpec], 
         spec.staging = os.fspath(staging)
     if resume is not None:
         spec.resume = bool(resume)
+    if memory_limit is not None:
+        spec.memory_limit = str(memory_limit)
     account = aws.account_of(spec.aws, duck)  # the lake's AWS account: files, state, sip, a Glue catalog
     with aws.using(account):
         run = _run(spec, started, duck, spark, config_path, params, run_id, dry_run, now, engine, catalogs)
@@ -321,7 +324,7 @@ def _run(spec: PipelineSpec, started: float, duck: Any, spark: Any, config_path:
     plan = build_plan(spec, statements, reserved=getattr(duck, "functions", ()))
     check_sources(spec, plan, duck)
     catalog_of = catalog_lookup(spec, duck, catalogs)
-    reads = LakeReads(spec.lake, duck, catalog_of, aws.current(), spec.read_engine)
+    reads = LakeReads(spec.lake, duck, catalog_of, aws.current(), spec.read_engine, spec.memory_limit)
     restore = page_sizes(spec, duck)
     try:
         for name in plan.needed:  # FROM inventory.assets / raw.inventory.assets: the lake's own tables
@@ -425,6 +428,43 @@ def put_back(restore: List[Tuple[Any, str, Any]]) -> None:
             setattr(instance, attribute, before)
 
 
+#: how many rows a batch holds when a memory-limited container turns batching on by itself (``batch_rows``
+#: unset). Small enough that a wide row stays well within a modest function's memory, big enough to keep the
+#: file count and per-file overhead down; set ``"batch_rows"`` to choose another size.
+DEFAULT_CONTAINER_BATCH_ROWS = 50_000
+#: the share of the container's memory DuckDB may use for its own buffers (joins, sorts, aggregates, the write);
+#: the rest is for Python, pandas and pyarrow, and for the OS. Past it DuckDB spills to ``temp_directory``.
+CONTAINER_MEMORY_SHARE = 0.5
+#: only tune for a limit this small or smaller — a real function's budget (AWS Lambda, Azure Functions
+#: Consumption/Premium). A larger cgroup limit (a big pod, a dev box in a generous cgroup) is left to DuckDB's
+#: own sizing; force tuning there by setting ``"batch_rows"`` / ``"memory_limit"`` or ``DUCKDUCK_CONTAINER_MEMORY``.
+AUTOTUNE_MAX_BYTES = 6 * 1024 ** 3
+
+
+def _autotune_for_container(spec: PipelineSpec, dry_run: bool) -> None:
+    """On a memory-limited container (Lambda, Azure Functions, a cgroup-capped pod) the duckdb engine fits
+    itself to that limit instead of the host's RAM: DuckDB is told a ``memory_limit`` so its operators spill
+    to disk, and sources are read in batches on disk so a big table never lands in memory whole. Does nothing
+    on a normal machine (no container limit) or for the Spark engine, and never overrides what the file set."""
+    if spec.engine == "spark":
+        return
+    from ..common.resources import container_memory_bytes, human_bytes
+
+    limit = container_memory_bytes()
+    if limit is None or limit > AUTOTUNE_MAX_BYTES:
+        return
+    if spec.memory_limit is None:
+        spec.memory_limit = human_bytes(int(limit * CONTAINER_MEMORY_SHARE))
+        logger.info("%s: this container is limited to %s — DuckDB memory_limit=%s so it spills to disk instead "
+                    "of being killed (set \"memory_limit\" to override)", spec.name, human_bytes(limit),
+                    spec.memory_limit)
+    if spec.batch_rows is None and not dry_run:
+        spec.batch_rows = DEFAULT_CONTAINER_BATCH_ROWS
+        logger.info("%s: reading sources in batches of %s rows on disk to stay within the container's memory "
+                    "(set \"batch_rows\" to change the size, \"staging\" for where they go)", spec.name,
+                    f"{spec.batch_rows:,}")
+
+
 def _execute(spec: PipelineSpec, plan: Plan, started: float, duck: Any, spark: Any, params: Optional[Dict[str, Any]],
              values: Dict[str, Any], state: Dict[str, Any], dry_run: bool, now: dt.datetime, engine: Any,
              catalog_of: Any, pending: Optional[Dict[str, Any]] = None) -> PipelineRun:
@@ -436,17 +476,21 @@ def _execute(spec: PipelineSpec, plan: Plan, started: float, duck: Any, spark: A
                                             ("_load_date", f"DATE '{values['run_date']}'"),
                                             ("_run_id", "'" + str(values["run_id"]).replace("'", "''") + "'"))
              if name in spec.audit_columns}
+    _autotune_for_container(spec, dry_run)
     run_staging = staging_folder(spec, values["run_id"]) if spec.batch_rows else None
+    load_cols = spec.load.columns if spec.load.incremental else ()
     if engine is None:
         batching = {}
-        if spec.batch_rows and spec.engine != "spark":
-            batching = {"batch_rows": spec.batch_rows, "staging": run_staging, "resume": spec.resume,
-                        "resume_column": spec.resume_column, "load_columns": spec.load.columns
-                        if spec.load.incremental else ()}
+        if spec.engine != "spark":  # the duckdb engine: memory_limit always, batches when asked for
+            batching = {"memory_limit": spec.memory_limit}
+            if spec.batch_rows:
+                batching.update(batch_rows=spec.batch_rows, staging=run_staging, resume=spec.resume,
+                                resume_column=spec.resume_column, load_columns=load_cols)
         engine = make_engine(spec.engine, duck=duck, spark=spark, **batching)
-    elif spec.batch_rows and getattr(engine, "batch_rows", "no") is None:  # a DuckEngine given without batches
-        engine.use_batches(spec.batch_rows, run_staging, spec.resume, spec.resume_column,
-                           spec.load.columns if spec.load.incremental else ())
+    elif getattr(engine, "batch_rows", "no") is None and (spec.batch_rows or spec.memory_limit):
+        # a DuckEngine given without batching: apply this run's batch / memory settings
+        engine.use_batches(spec.batch_rows, run_staging, spec.resume, spec.resume_column, load_cols,
+                           spec.memory_limit)
     engine.resuming = bool(pending)
     if hasattr(engine, "parameters"):  # a SparkJob's engine: self.params in transform()
         engine.parameters = dict(values)
