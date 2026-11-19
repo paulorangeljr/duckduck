@@ -2793,6 +2793,8 @@ class DuckAPI:
                     logger.warning("⚠ %s", line)
 
     def _sql(self, query: str):
+        from . import addresses
+
         if self._LIST_TABLES_RE.match(query):
             self.conn.register("_duckduck_tables", self.list_tables())
             return self.conn.sql("SELECT * FROM _duckduck_tables")
@@ -2823,25 +2825,37 @@ class DuckAPI:
             edges = [e for e in edges if e.probe in refs and e.build in refs]
             on_conditions = [c for c in on_conditions if c.table in refs]
         single_select = isinstance(parsed, exp.Select) and len(list(parsed.find_all(exp.Select))) == 1
+        # Which registered functions the query actually reads as tables — from the parse, so a CTE or a column
+        # that happens to share a function's name (WITH users AS …, SELECT events FROM …) is left alone, and a
+        # function named inside a string or a comment is never called. None → couldn't parse: fall back to every
+        # function (the old text-only behaviour).
+        rewrite_names = self._function_table_names(parsed)
+        function_items = [(n, f) for n, f in self.functions.items()
+                          if rewrite_names is None or n in rewrite_names]
         read: Dict[str, Tuple[str, List[str]]] = {}  # a table's ref → (its temp table, its columns)
         force = False
         while True:
             waited = progressed = False
-            for fn_name, fn in list(self.functions.items()):
+            for fn_name, fn in function_items:
                 patterns = (
+                    # a call `fn(args)`; and `fn` as a bare table after FROM / JOIN / a comma (an implicit join).
+                    # Searched on a string-and-comment-masked copy so `)` inside a string ends no call and a
+                    # function name inside a literal or a comment is never matched; argument text and spans are
+                    # read back from the real query (``_masked`` keeps every offset).
                     (False, re.compile(rf"\b{re.escape(fn_name)}\s*\((.*?)\)", flags=re.IGNORECASE | re.DOTALL)),
-                    (True, re.compile(rf"\b(FROM|JOIN)\s+{re.escape(fn_name)}\b(?!\s*\()", flags=re.IGNORECASE)),
+                    (True, re.compile(rf'(\bFROM\b|\bJOIN\b|,)\s+(?:"{re.escape(fn_name)}"|{re.escape(fn_name)}\b)'
+                                      r"(?!\s*\()", flags=re.IGNORECASE)),
                 )
                 for bare, pattern in patterns:
                     pos = 0
-                    while m := pattern.search(rewritten, pos):
+                    while m := pattern.search(addresses._masked(rewritten), pos):
                         names = {fn_name, self._alias_at(rewritten, m.end())} - {None}
                         if not force and any(e.probe in names and e.build not in read and e.build not in names
                                              for e in edges):
                             waited = True  # the other side of its join isn't read yet: after it
                             pos = m.end()
                             continue
-                        explicit = {} if bare else self._parse_kwargs(m.group(1))
+                        explicit = {} if bare else self._parse_kwargs(rewritten[m.start(1):m.end(1)])
                         tname, df_cols, used = self._read_source(fn_name, fn, pushdown, explicit, names, parsed,
                                                                  edges, on_conditions, read, single_select)
                         sources += 1
@@ -2934,14 +2948,30 @@ class DuckAPI:
 
     def _function_refs(self, parsed: exp.Expression) -> set:
         """The refs (alias, else name) of the tables in the query that are registered functions."""
+        cte_names = {c.alias.lower() for c in parsed.find_all(exp.CTE) if c.alias}
         refs = set()
         for t in parsed.find_all(exp.Table):
             name = (t.this.name if isinstance(t.this, exp.Anonymous) else t.name).lower()
-            if name in self.functions:
+            if name in self.functions and name not in cte_names:
                 ref = _table_ref(t)
                 if ref:
                     refs.add(ref)
         return refs
+
+    def _function_table_names(self, parsed: Optional[exp.Expression]) -> Optional[set]:
+        """The registered-function names the query reads as tables, lowercased — a `FROM fn` / `JOIN fn` /
+        `, fn` or a call `fn(args)`, taken from the parse so a CTE or a column of the same name, or the name
+        inside a string or comment, is never mistaken for the function. ``None`` when the query didn't parse
+        (the rewrite then falls back to trying every registered function, as before)."""
+        if parsed is None:
+            return None
+        cte_names = {c.alias.lower() for c in parsed.find_all(exp.CTE) if c.alias}
+        names = set()
+        for t in parsed.find_all(exp.Table):
+            name = (t.this.name if isinstance(t.this, exp.Anonymous) else t.name).lower()
+            if name in self.functions and name not in cte_names:
+                names.add(name)
+        return names
 
     def _read_source(self, fn_name: str, fn: Any, pushdown: PushDownContext, explicit: Dict[str, Any],
                      names: set, parsed: Optional[exp.Expression], edges: List[JoinEdge],

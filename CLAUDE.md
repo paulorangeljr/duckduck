@@ -132,12 +132,12 @@ Every planned call is collected as data while `sql()` runs (`_PUSHDOWN_LOG` Cont
 
 ### SQL rewriting
 
-`DuckAPI.sql()` iterates registered functions and rewrites the query with two regex passes per function:
+`DuckAPI.sql()` rewrites the query with two regex passes per function, but **only for the names the parse says are really tables** (`_function_table_names`: a registered function that appears as an `exp.Table`, excluding `WITH` names — so a CTE or a column sharing a function's name, `WITH users AS …` / `SELECT events FROM …`, is left alone; `None` when the query didn't parse → fall back to trying every function, the old behaviour):
 
-1. `func(kwargs)` — replaces the entire call expression with the temp table name.
-2. `FROM/JOIN func` (no parens) — replaces the bare name after the keyword.
+1. `func(kwargs)` — replaces the whole call expression with the temp table name.
+2. `FROM func` / `JOIN func` / `, func` (no parens; a comma covers an implicit join `FROM a, b`; the name may be double-quoted, `FROM "users"`) — replaces the bare name, keeping `AS func` when no alias follows.
 
-Temp table names are `_api_{fn_name}_{counter}`, unique per materialisation.
+Both passes `search` a **string-and-comment-masked copy** (`addresses._masked`, which keeps every offset): a `)` inside a string ends no call, and a function name inside a literal (`WHERE x = 'events(1)'`) or a comment (`-- join events`) is never matched or called. Argument text is read back from the real query by the match's span. `_function_refs` (join planning) excludes CTE names the same way. Temp table names are `_api_{fn_name}_{counter}`, unique per materialisation. Tests: `tests/test_query_rewrite.py`.
 
 ### Addresses: `connector.table` / `connector.database.table` (`duckduck/addresses.py`)
 
