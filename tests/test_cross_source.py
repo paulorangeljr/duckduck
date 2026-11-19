@@ -72,7 +72,19 @@ def test_an_implicit_comma_join_across_two_addressed_sources(tmp_path):
 
 
 def test_a_cte_over_one_source_joined_to_the_other(tmp_path):
-    duck, _ = _cross(tmp_path)
+    duck, fake = _cross(tmp_path)
     df = duck.sql("WITH gold AS (SELECT * FROM sqldb.customers WHERE tier = 'gold') "
                   "SELECT g.name, e.n FROM gold g JOIN athena.logs.events e ON g.name = e.host").df()
     assert list(df["name"]) == ["a"]  # gold a/c, only a has an event
+    # the join key is traced through the CTE to the source: Athena is read for the gold names only, not whole
+    sql = fake.started[-1]["QueryString"]
+    assert '"host" IN (' in sql and "'a'" in sql and "'c'" in sql and "'b'" not in sql  # silver b never sent
+
+
+def test_a_subquery_in_from_over_one_source_joined_to_the_other(tmp_path):
+    duck, fake = _cross(tmp_path)
+    df = duck.sql("SELECT g.name, e.n FROM (SELECT * FROM sqldb.customers WHERE tier = 'gold') g "
+                  "JOIN athena.logs.events e ON g.name = e.host").df()
+    assert list(df["name"]) == ["a"]
+    sql = fake.started[-1]["QueryString"]
+    assert '"host" IN (' in sql and "'a'" in sql and "'c'" in sql and "'b'" not in sql

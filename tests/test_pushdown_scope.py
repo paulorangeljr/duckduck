@@ -21,7 +21,8 @@ def _duck():
 
     def inc(host: Optional[str] = None, limit=None):
         calls.append(("inc", host, limit))
-        return pd.DataFrame({"host": ["a", "c"], "number": ["INC1", "INC2"]})
+        df = pd.DataFrame({"host": ["a", "c"], "number": ["INC1", "INC2"]})
+        return df[df["host"] == host] if host is not None else df  # a col-param source filters by its argument
 
     duck = DuckAPI()
     duck.register_api_function("proxy", proxy)
@@ -52,7 +53,9 @@ def test_each_side_of_a_join_gets_its_own_filter():
     duck, calls = _duck()
     out = duck.sql("SELECT * FROM (SELECT * FROM proxy WHERE Host = 'a') AS L "
                    "JOIN (SELECT host, number FROM inc) AS R ON L.Host = R.host").df()
-    assert ("proxy", [("host", "eq", "a")], None) in calls and ("inc", None, None) in calls
+    assert ("proxy", [("host", "eq", "a")], None) in calls
+    inc_calls = [c for c in calls if c[0] == "inc"]  # the subquery's join key reaches inc — narrowed, not whole
+    assert inc_calls and all(c[1] is not None for c in inc_calls)
     assert out["number"].tolist() == ["INC1"]
 
 
@@ -76,7 +79,9 @@ def test_a_where_on_a_select_star_passes_through():
 def test_a_cte_is_scoped_too():
     duck, calls = _duck()
     out = duck.sql("WITH x AS (SELECT * FROM proxy WHERE Host = 'b') SELECT * FROM x JOIN inc AS i ON x.Host = i.host").df()
-    assert calls[0] == ("proxy", [("host", "eq", "b")], None) and ("inc", None, None) in calls and out.empty
+    assert calls[0] == ("proxy", [("host", "eq", "b")], None) and out.empty
+    inc_calls = [c for c in calls if c[0] == "inc"]  # the CTE's key reaches inc — narrowed, not read whole
+    assert inc_calls and all(c[1] is not None for c in inc_calls)
 
 
 def test_through_a_projection_of_the_source_s_columns():

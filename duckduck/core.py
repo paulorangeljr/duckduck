@@ -306,7 +306,7 @@ def _passes_through(node: exp.Expression) -> Optional[Tuple[exp.Select, Callable
     each of its names is in the source (``x`` → ``a``; ``y`` → None: computed).
     None for anything else (aggregates, DISTINCT, LIMIT, ORDER…: the rows aren't the source's).
     """
-    inner = node.this if isinstance(node, exp.Subquery) else None
+    inner = node if isinstance(node, exp.Select) else (node.this if isinstance(node, exp.Subquery) else None)
     if not isinstance(inner, exp.Select) or len(_sources_of(inner)) != 1:
         return None
     for arg in ("group", "distinct", "having", "limit", "offset", "qualify", "order", "joins", "with"):
@@ -525,6 +525,16 @@ def _table_ref(node: Any) -> Optional[str]:
     return name.lower() or None
 
 
+def _join_ref(node: Any) -> Optional[str]:
+    """A join source's ref — a table's (``_table_ref``) or a subquery's alias (``FROM (SELECT …) g`` → ``g``),
+    so a join onto a derived table gets an edge the planner can resolve to the source it reads."""
+    ref = _table_ref(node)
+    if ref:
+        return ref
+    alias = getattr(node, "alias", None)
+    return alias.lower() if alias else None
+
+
 def _conjuncts(node: Optional[exp.Expression]) -> List[exp.Expression]:
     if node is None:
         return []
@@ -560,9 +570,9 @@ def _join_plan(parsed: Optional[exp.Expression]) -> Tuple[List[JoinEdge], List[C
             counts[ref] = counts.get(ref, 0) + 1
     for select in parsed.find_all(exp.Select):
         frm = select.args.get("from_") or select.args.get("from")
-        left = [_table_ref(frm.this)] if frm is not None and _table_ref(frm.this) else []
+        left = [_join_ref(frm.this)] if frm is not None and _join_ref(frm.this) else []
         for join in select.args.get("joins") or []:
-            jref = _table_ref(join.this)
+            jref = _join_ref(join.this)
             side = (join.args.get("side") or "").upper()
             kind = (join.args.get("kind") or "").upper()
             if jref is None:
@@ -2831,7 +2841,7 @@ class DuckAPI:
         if self.join_pushdown and parsed is not None:
             refs = self._function_refs(parsed)
             edges, on_conditions = _join_plan(parsed)
-            edges = [e for e in edges if e.probe in refs and e.build in refs]
+            edges = self._resolve_edges(parsed, edges, refs)
             on_conditions = [c for c in on_conditions if c.table in refs]
         single_select = isinstance(parsed, exp.Select) and len(list(parsed.find_all(exp.Select))) == 1
         # Which registered functions the query actually reads as tables — from the parse, so a CTE or a column
@@ -2966,6 +2976,49 @@ class DuckAPI:
                 if ref:
                     refs.add(ref)
         return refs
+
+    def _resolve_edges(self, parsed: exp.Expression, edges: List[JoinEdge], refs: set) -> List[JoinEdge]:
+        """A join edge whose side is a pass-through CTE or subquery (``WITH g AS (SELECT * FROM src …) …
+        JOIN g``, or ``FROM (SELECT … FROM src) g``) is rewritten to the registered source it reads, with the
+        join column traced to the source's column — so the key still reaches the source as an ``IN`` instead
+        of the probe being read whole. A side that can't be traced to a source (an aggregate, a computed key,
+        several sources) drops the edge, as before. ``source_column`` keeps it safe: only a column that is the
+        source's own is followed, never a computed one."""
+        # ref (the alias, else name, used in FROM/JOIN) → the SELECT it stands for, for a CTE or a subquery:
+        # `FROM gold g` → g maps to the body of `WITH gold AS (…)`; `FROM (SELECT …) s` → s maps to that SELECT.
+        cte_body = {c.alias.lower(): c.this for c in parsed.find_all(exp.CTE) if c.alias}
+        derived: Dict[str, exp.Select] = {}
+        for t in parsed.find_all(exp.Table):
+            nm = (t.this.name if isinstance(t.this, exp.Anonymous) else t.name).lower()
+            ref = _table_ref(t)
+            if ref and nm in cte_body:
+                derived[ref] = cte_body[nm]
+        for sq in parsed.find_all(exp.Subquery):
+            if sq.alias and isinstance(sq.this, exp.Select):
+                derived.setdefault(sq.alias.lower(), sq.this)
+
+        def resolve(ref: str, column: str, depth: int = 0) -> Optional[Tuple[str, str]]:
+            if ref in refs:
+                return ref, column
+            if depth >= 20 or ref not in derived:
+                return None
+            through = _passes_through(derived[ref])
+            if through is None:
+                return None
+            inner, source_column = through
+            mapped = source_column(column)
+            if mapped is None:
+                return None
+            src = _sources_of(inner)[0]
+            src_ref = (getattr(src, "alias", "") or "").lower() or _table_ref(src)
+            return resolve(src_ref, mapped, depth + 1) if src_ref else None
+
+        out: List[JoinEdge] = []
+        for e in edges:
+            probe, build = resolve(e.probe, e.probe_column), resolve(e.build, e.build_column)
+            if probe and build and probe[0] != build[0]:
+                out.append(JoinEdge(probe[0], probe[1], build[0], build[1], e.join))
+        return out
 
     def _function_table_names(self, parsed: Optional[exp.Expression]) -> Optional[set]:
         """The registered-function names the query reads as tables, lowercased — a `FROM fn` / `JOIN fn` /
