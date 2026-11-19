@@ -31,6 +31,11 @@ the shapes you couldn't verify in one place.
   server takes arbitrary conditions (plus `pushdown_blocker` for what it can't; declare `WHERE_OPS` with `"in"` and
   an `IN_MAX` per request when it can take a list of values — that's what narrows it in a JOIN); `limit: Optional[int] = None`
   last. Return a `pd.DataFrame` (`pd.json_normalize(..., sep="_")`).
+- **Push-down — required** (`tests/test_pushdown_contract.py`): every table must narrow its read, so a WHERE or
+  a join key never reads it whole. Give each table a `where` param or the column-filter params it can push; a
+  `where` connector's class **must** declare `WHERE_OPS` with `"in"` (so a join key arrives as `col IN (…)` — a
+  cross-source join reads the whole probe table without it). A fixed listing whose source has no filter at all
+  goes in the test's `NO_PUSHDOWN` with the reason. The test fails for a new table that does neither.
 - Log HTTP with `instrument_session(self.session)`; report pages with `PageProgress`.
 - **Retries**: an HTTP connector keeps `self.retry = RetryPolicy()` (`duckduck.common.retry`) and sends every request
   through `send(self.retry, "<name>", lambda timeout: self.session.get(..., timeout=timeout), <default timeout>,
