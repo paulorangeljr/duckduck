@@ -31,6 +31,14 @@ _REF = re.compile(
     rf"\b(from|join)(\s+)({_IDENT}(?:\s*\.\s*{_IDENT}){{1,4}})(?![A-Za-z0-9_$\"]|\s*[.(])",
     re.IGNORECASE,
 )
+#: like ``_REF`` but also after a comma (an implicit join: ``FROM a, svc.db.table``). Only ``resolve_addresses``
+#: uses it — there a dotted name whose first part isn't a service resolves to None and is left alone, so a
+#: qualified column ``a.b`` after a comma is safe; ``lakeread`` keeps ``_REF`` (it treats any ``db.table`` as a
+#: lake table and would raise on such a column).
+_REF_OR_COMMA = re.compile(
+    rf"(\bfrom\b|\bjoin\b|,)(\s+)({_IDENT}(?:\s*\.\s*{_IDENT}){{1,4}})(?![A-Za-z0-9_$\"]|\s*[.(])",
+    re.IGNORECASE,
+)
 _PLAIN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 #: services that aren't connectors: no address of their own
 _NOT_SERVICES = {"saved tables", "taken over"}
@@ -249,7 +257,7 @@ def resolve_addresses(duck: Any, query: str) -> str:
         return query
     masked = _masked(query)
     edits: List[Tuple[int, int, str]] = []
-    for m in _REF.finditer(masked):
+    for m in _REF_OR_COMMA.finditer(masked):
         parts = _parts(m.group(3))
         found = resolve(duck, parts)
         if found is None:

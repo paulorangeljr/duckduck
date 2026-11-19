@@ -576,7 +576,16 @@ def _join_plan(parsed: Optional[exp.Expression]) -> Tuple[List[JoinEdge], List[C
             using = join.args.get("using") or []
             if using and len(left) == 1:
                 pairs += [(u.name.lower(), left[0], u.name.lower(), "") for u in using if isinstance(u, exp.Identifier)]
-            for cond in _conjuncts(join.args.get("on")):
+            # an implicit (comma) join — `FROM a, b WHERE a.x = b.y` — has no ON/USING; its equi-join predicate
+            # lives in the WHERE, so narrow from the column=column equalities there (the row filters still push
+            # the normal way through scoped push-down — only the join keys are read from the WHERE here)
+            equi_from = _conjuncts(join.args.get("on"))
+            if join.args.get("on") is None and not using:
+                where = select.args.get("where")
+                equi_from = [c for c in _conjuncts(where.this if where is not None else None)
+                             if isinstance(c, exp.EQ) and isinstance(c.this, exp.Column)
+                             and isinstance(c.expression, exp.Column)]
+            for cond in equi_from:
                 if isinstance(cond, exp.EQ) and isinstance(cond.this, exp.Column) and \
                         isinstance(cond.expression, exp.Column):
                     a, b = cond.this, cond.expression

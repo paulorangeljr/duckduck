@@ -212,3 +212,14 @@ def test_a_sql_database_gets_a_real_in(tmp_path):
     assert (condition.column, condition.op, sorted(condition.value)) == ("id", "in", [1, 3])  # 1.0/3.0 → ints
     clause = db._where_clauses(db._reflect("customers"), [condition])[0]
     assert "IN" in str(clause)
+
+
+def test_an_implicit_comma_join_narrows_from_the_where_equality():
+    """`FROM a, b WHERE a.k = b.k` is an inner join whose key equality lives in the WHERE — the keys must still
+    reach the narrowed side, not be read whole (the user's rule: push down whenever possible)."""
+    duck, tickets, _ = _duck()
+    rows = duck.sql("SELECT s3.name, sn.number FROM s3_files s3, sn_table sn "
+                    "WHERE sn.sys_id = s3.sn_id AND sn.table_name = 'incident' AND s3.name = 'x'").fetchall()
+    assert sorted(rows) == [("x", "I1"), ("x", "I3")]
+    ins = [sorted(c.value) for call in tickets.calls for c in _ins(call)]
+    assert [v for chunk in ins for v in chunk] and set(v for chunk in ins for v in chunk) == {"a", "c"}
