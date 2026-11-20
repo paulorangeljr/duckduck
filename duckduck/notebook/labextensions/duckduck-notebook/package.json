@@ -19,6 +19,7 @@
   "dependencies": {
     "@jupyterlab/application": "^4.0.0",
     "@jupyterlab/notebook": "^4.0.0",
+    "@jupyterlab/ui-components": "^4.0.0",
     "@lumino/widgets": "^2.0.0"
   },
   "devDependencies": {
@@ -28,7 +29,7 @@
     "extension": true,
     "outputDir": "../labextensions/duckduck-notebook",
     "_build": {
-      "load": "static/remoteEntry.d5cf415ece14a9aa5011.js",
+      "load": "static/remoteEntry.70e0864a57234318f41b.js",
       "extension": "./extension"
     }
   }

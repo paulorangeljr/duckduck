@@ -14,6 +14,7 @@
 // name = spark.sql(...). SQL cells are highlighted as SQL and marked "SQL → name". A table clicked in the page
 // arrives as SQL ({sql}) when the cell it goes to is an SQL cell, or the switch was last set to SQL.
 import { INotebookTracker, NotebookActions } from '@jupyterlab/notebook';
+import { LabIcon } from '@jupyterlab/ui-components';
 import { Widget } from '@lumino/widgets';
 import { KEY, NAME, autoNames, convert, isAuto, modeOf, nameOf } from './toggle';
 
@@ -42,6 +43,23 @@ const STYLE = `
 .duckduck-langswitch select { height: 24px; }
 .duckduck-langswitch input { width: 90px; height: 20px; font-family: var(--jp-code-font-family); font-size: 12px; }
 .duckduck-langswitch .duckduck-arrow { color: var(--jp-ui-font-color2); font-size: 12px; }
+.duckduck-tables-panel { display: flex; flex-direction: column; min-width: 240px; overflow: hidden;
+  background: var(--jp-layout-color1); color: var(--jp-ui-font-color1); }
+.duckduck-tp-head { font-size: var(--jp-ui-font-size0); font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--jp-ui-font-color2); padding: 8px 12px 4px; }
+.duckduck-tp-search { margin: 0 10px 6px; padding: 4px 6px; font-size: var(--jp-ui-font-size1);
+  background: var(--jp-input-background); color: var(--jp-ui-font-color1);
+  border: 1px solid var(--jp-border-color2); border-radius: 3px; }
+.duckduck-tp-search:focus { outline: none; border-color: var(--jp-brand-color1); }
+.duckduck-tp-empty { padding: 8px 12px; color: var(--jp-ui-font-color2); font-size: var(--jp-ui-font-size0); }
+.duckduck-tp-list { flex: 1; overflow: auto; padding-bottom: 8px; }
+.duckduck-tp-group { padding: 6px 12px 2px; font-size: var(--jp-ui-font-size0); font-weight: 600;
+  color: var(--jp-ui-font-color2); position: sticky; top: 0; background: var(--jp-layout-color1); }
+.duckduck-tp-row { display: block; width: 100%; text-align: left; border: 0; background: transparent;
+  color: var(--jp-ui-font-color1); font-size: var(--jp-ui-font-size1); padding: 3px 12px 3px 18px; cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.duckduck-tp-row:hover { background: var(--jp-layout-color2); }
+.duckduck-tp-kind { color: var(--jp-ui-font-color3); font-size: var(--jp-ui-font-size0); }
 `;
 
 function addStyle() {
@@ -52,6 +70,94 @@ function addStyle() {
   style.id = 'duckduck-notebook-style';
   style.textContent = STYLE;
   document.head.appendChild(style);
+}
+
+// the "Tables" panel in JupyterLab's own left sidebar — the duckduck catalog, inside the IDE instead of a second
+// list beside it. The page (window.parent) sends the tables (duckduck:tables) and inserts the one clicked
+// (duckduck:use-table → the page's notebookInsert); works only embedded in the duckduck app (it has the catalog).
+const tablesIcon = new LabIcon({
+  name: 'duckduck:tables',
+  svgstr: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
+    + '<g class="jp-icon3" fill="#616161"><path d="M2 3h12v2H2zM2 7h12v2H2zM2 11h12v2H2z"/></g></svg>'
+});
+
+function escText(s) {
+  return String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+}
+function escAttr(s) {
+  return escText(s).replace(/"/g, '&quot;');
+}
+
+class TablesPanel extends Widget {
+  constructor() {
+    super();
+    this.id = 'duckduck-tables';
+    this.title.caption = 'duckduck — tables';
+    this.title.icon = tablesIcon;
+    this.addClass('duckduck-tables-panel');
+    this.tables = [];
+    this.filter = '';
+    const head = document.createElement('div');
+    head.className = 'duckduck-tp-head';
+    head.textContent = 'Tables';
+    const search = document.createElement('input');
+    search.type = 'search';
+    search.placeholder = 'Filter tables';
+    search.className = 'duckduck-tp-search';
+    search.addEventListener('input', () => {
+      this.filter = search.value.trim().toLowerCase();
+      this.renderList();
+    });
+    this.empty = document.createElement('div');
+    this.empty.className = 'duckduck-tp-empty';
+    this.empty.textContent = 'Open the Notebook tab in the duckduck app to see your tables here.';
+    this.list = document.createElement('div');
+    this.list.className = 'duckduck-tp-list';
+    this.list.addEventListener('click', event => {
+      const row = event.target.closest('[data-sql]');
+      if (row) {
+        post({ type: 'duckduck:use-table', sql: row.getAttribute('data-sql') });
+      }
+    });
+    this.node.append(head, search, this.empty, this.list);
+    post({ type: 'duckduck:tables?' });
+  }
+
+  setTables(tables) {
+    this.tables = Array.isArray(tables) ? tables : [];
+    this.renderList();
+  }
+
+  renderList() {
+    this.empty.style.display = this.tables.length ? 'none' : '';
+    const f = this.filter;
+    const shown = this.tables.filter(
+      t => !f || `${t.name || ''} ${t.label || ''} ${t.service || ''}`.toLowerCase().includes(f)
+    );
+    const groups = {};
+    shown.forEach(t => {
+      (groups[t.service || 'other'] = groups[t.service || 'other'] || []).push(t);
+    });
+    const html = Object.keys(groups)
+      .sort()
+      .map(svc =>
+        `<div class="duckduck-tp-group">${escText(svc)}</div>` +
+        groups[svc]
+          .map(t =>
+            `<button type="button" class="duckduck-tp-row" data-sql="${escAttr(t.sql)}" ` +
+            `title="${escAttr(t.sql)}">${escText(t.label || t.name)}` +
+            (t.kind && t.kind !== 'table' ? ` <span class="duckduck-tp-kind">${escText(t.kind)}</span>` : '') +
+            '</button>'
+          )
+          .join('')
+      )
+      .join('');
+    this.list.innerHTML = html || (f && this.tables.length ? '<div class="duckduck-tp-empty">Nothing matches.</div>' : '');
+  }
+
+  onAfterShow() {
+    post({ type: 'duckduck:tables?' });  // in case the catalog changed while the panel was hidden
+  }
 }
 
 function metaOf(cell) {
@@ -331,6 +437,9 @@ const plugin = {
   autoStart: true,
   requires: [INotebookTracker],
   activate: (app, tracker) => {
+    // the duckduck catalog, as a panel in JupyterLab's own left sidebar (not a second list beside the IDE)
+    const tablesPanel = new TablesPanel();
+    app.shell.add(tablesPanel, 'left', { rank: 1000 });
     window.addEventListener('message', async event => {
       if (event.origin !== window.location.origin || event.source !== window.parent) {
         return;
@@ -350,6 +459,8 @@ const plugin = {
         } catch (err) {
           post({ type: 'duckduck:opened', id: data.id, ok: false, error: String(err.message || err) });
         }
+      } else if (data.type === 'duckduck:tables' && Array.isArray(data.tables)) {
+        tablesPanel.setTables(data.tables);
       } else if (data.type === 'duckduck:hello') {
         post({ type: 'duckduck:ready' });
         post(current(tracker));

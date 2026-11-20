@@ -297,17 +297,17 @@ def test_clicking_a_table_adds_a_cell_in_jupyterlab(jupyter, glue_duck):
             page = browser.new_page(viewport={"width": 1500, "height": 900})
             page.goto(f"http://127.0.0.1:{port}/")
             page.click('nav button[data-tab="notebook"]')
-            page.wait_for_selector("#nbaside aside.tables")  # the table list moved next to JupyterLab
             page.fill("#nbname", "browser")
             page.click("#nbnew")
             page.wait_for_function("document.querySelector('#nbcurrent').textContent.includes('browser')",
                                    timeout=90000)
-            page.click('[data-db="cmdb|duckdefault"]')  # databases start closed
-            page.locator("#tablelist .titem", has_text="assets").first.click()
+            # the duckduck catalog is now a panel in JupyterLab's own left sidebar — open it and click a table
             frame = page.frame_locator("#nbframe")
+            frame.locator('.lm-TabBar-tab[data-id="duckduck-tables"]').click()
+            frame.locator(".duckduck-tp-row", has_text="assets").first.click()
             frame.locator(".jp-Cell .cm-content", has_text='reader.sql("""').first.wait_for(timeout=30000)
             page.click('nav button[data-tab="sql"]')
-            assert page.locator("#sqlon aside.tables").count() == 1  # and back
+            assert page.locator("#sqlon aside.tables").count() == 1  # the catalog lives in the SQL tab
             browser.close()
     finally:
         web.should_exit = True

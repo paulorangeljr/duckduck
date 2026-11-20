@@ -178,7 +178,8 @@ textarea { width: 100%; min-height: 60px; }
 .pill .ico, .chip .ico { width: 13px; height: 13px; vertical-align: -2px; margin-right: 3px; }
 .srcrow > span:first-of-type .ico { margin-right: 4px; }
 /* Notebook tab: the SQL tab's table list next to an embedded JupyterLab */
-.nbpane { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; min-height: calc(100vh - 110px); }
+.nbpane { display: flex; flex-direction: column; gap: 8px; padding: 6px 0 0; min-height: calc(100vh - 110px);
+  background: transparent; border: 0; box-shadow: none; }
 .nbbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .nbbar input { width: 200px; }
 #nbframe { flex: 1; width: 100%; min-height: calc(100vh - 190px); border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
@@ -744,18 +745,15 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
     <div id="history"></div></div></section>
   <section id="tab-dashboard" hidden><div id="dashboard"></div></section>
   <section id="tab-notebook" hidden>
-    <div class="sqlgrid">
-      <div id="nbaside"></div>
       <div class="card nbpane">
         <div class="nbbar"><span class="muted small" id="nbcurrent" aria-live="polite">Starting JupyterLab…</span><span class="grow"></span>
           <input id="nbname" type="text" placeholder="name" aria-label="New notebook's name">
           <button class="secondary" type="button" id="nbnew" title="A new notebook for the configured kernel — the local DuckDB kernel (duck is ready, switch a cell to SQL) by default, or Glue when that's the kernel">New notebook</button>
-          <a class="linkish small" id="nbpop" href="/notebook/lab" target="_blank" rel="noopener" hidden title="JupyterLab in a window of its own (clicks on tables only reach the one here)">Open in a new window ↗</a></div>
+          <a class="linkish small" id="nbpop" href="/notebook/lab" target="_blank" rel="noopener" hidden title="JupyterLab in a window of its own (the Tables panel there adds cells to it)">Open in a new window ↗</a></div>
         <div id="nbproblems" class="muted small" hidden></div>
         <div id="nbstart" class="muted" hidden></div>
         <iframe id="nbframe" title="JupyterLab" hidden></iframe>
       </div>
-    </div>
   </section>
   <section id="tab-sql" hidden>
     <div class="card" id="sqloff" hidden><h3>The SQL console is off</h3>
@@ -2161,7 +2159,7 @@ function groupsOf() { return [...new Set(TABLES.map(t => t.service || "other"))]
 async function loadTables() {
   loadConnections();
   if (!KQL) loadKql();
-  try { TABLES = await api("/api/tables"); drawTables(); }
+  try { TABLES = await api("/api/tables"); drawTables(); nbPushTables(); }
   catch (err) { TABLES = []; $("#tablelist").innerHTML = `<p class="error small">${esc(err.message)}</p>`; }
   EXPANDED.forEach(svc => loadNested(svc, false));
 }
@@ -4188,18 +4186,27 @@ $("#optfilter").addEventListener("input", () => {
 let TREE_MODE = "sql";
 const NB = {opened: false, opening: null, ready: false, queue: [], seq: 0, current: null};
 function placeTree(tab) {
+  // the catalog lives in the SQL tab; in the Notebook tab it's the "Tables" panel inside JupyterLab's own left
+  // sidebar instead (the duckduck labextension), fed by nbTables() over postMessage — so no page-in-a-page catalog
   const aside = document.querySelector("aside.tables");
   if (!aside) return;
-  TREE_MODE = tab;
-  if (tab === "notebook") $("#nbaside").appendChild(aside);
-  else $("#sqlon").insertBefore(aside, $("#sqlon").firstChild);
-  aside.title = tab === "notebook" ? "Click a table to add a cell that reads it to the open notebook" : "";
+  TREE_MODE = "sql";
+  if (aside.parentElement !== $("#sqlon")) $("#sqlon").insertBefore(aside, $("#sqlon").firstChild);
 }
 function nbPost(message) {
   const w = $("#nbframe").contentWindow;
   if (!w || !NB.ready) { NB.queue.push(message); return; }
   w.postMessage(message, location.origin);
 }
+// the catalog the "Tables" panel inside JupyterLab shows (the duckduck labextension renders it and sends back
+// duckduck:use-table to insert one) — the same tables as the SQL tab's tree, flattened to what the panel needs
+function nbTables() {
+  return TABLES.map(t => ({
+    name: t.saved_name || t.name, label: t.saved_name || t.address || t.name, kind: t.kind || "table",
+    service: t.service || "other", saved: !!t.saved,
+    sql: t.usage || ("SELECT * FROM " + (t.saved_name || t.name) + " LIMIT 100")}));
+}
+function nbPushTables() { nbPost({type: "duckduck:tables", tables: nbTables()}); }
 function nbProblems(status) {
   const p = status?.problems || [];
   $("#nbproblems").hidden = !p.length;
@@ -4208,8 +4215,8 @@ function nbProblems(status) {
 function nbCurrent() {
   const c = NB.current;
   $("#nbcurrent").textContent = !NB.ready ? "Starting JupyterLab…"
-    : c?.path ? `Clicking a table adds a cell to ${c.path}${c.kernel ? " · " + c.kernel : ""}`
-    : "Open or create a notebook — then clicking a table adds a cell to it";
+    : c?.path ? `Tables (left sidebar) add a cell to ${c.path}${c.kernel ? " · " + c.kernel : ""}`
+    : "Open or create a notebook — then a table from the Tables sidebar adds a cell to it";
 }
 function openNotebook() { return NB.opening ||= startNotebook().finally(() => { if (!NB.opened) NB.opening = null; }); }
 async function startNotebook() {
@@ -4232,7 +4239,10 @@ window.addEventListener("message", (e) => {
   if (m.type === "duckduck:ready") {
     NB.ready = true; nbCurrent();
     NB.queue.splice(0).forEach(nbPost);
+    nbPushTables();  // the panel inside JupyterLab gets the catalog as soon as it is up
   } else if (m.type === "duckduck:current") { NB.current = m; nbCurrent(); }
+  else if (m.type === "duckduck:tables?") nbPushTables();  // the panel asked for the catalog
+  else if (m.type === "duckduck:use-table" && typeof m.sql === "string") notebookInsert(m.sql);  // a table clicked in the panel
   else if (m.type === "duckduck:inserted") toast(m.ok ? `Added to ${m.path}` : `Not added: ${m.error}`);
   else if (m.type === "duckduck:opened" && !m.ok) toast(`Couldn't open it: ${m.error}`);
 });
