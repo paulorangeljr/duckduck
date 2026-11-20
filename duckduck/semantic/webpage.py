@@ -632,7 +632,7 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
   <nav role="tablist">
     <button role="tab" data-tab="ask" aria-selected="true">Ask</button>
     <button role="tab" data-tab="sql" aria-selected="false">SQL</button>
-    <button role="tab" data-tab="notebook" aria-selected="false" hidden title="JupyterLab with the AWS Glue PySpark kernel — clicking a table adds a cell that reads it">Notebook</button>
+    <button role="tab" data-tab="notebook" aria-selected="false" hidden title="JupyterLab — a cell can run SQL (duck.sql, like the SQL tab) and keep its result as a DataFrame; clicking a table adds a cell that reads it">Notebook</button>
     <button role="tab" data-tab="history" aria-selected="false">History</button>
     <button role="tab" data-tab="dashboard" aria-selected="false">Dashboard</button>
     <button role="tab" data-tab="suggestions" aria-selected="false">Suggestions</button>
@@ -748,8 +748,8 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
       <div id="nbaside"></div>
       <div class="card nbpane">
         <div class="nbbar"><span class="muted small" id="nbcurrent" aria-live="polite">Starting JupyterLab…</span><span class="grow"></span>
-          <input id="nbname" type="text" placeholder="glue-session" aria-label="New notebook's name">
-          <button class="secondary" type="button" id="nbnew" title="A notebook with the Glue session's settings and duckduck's connect() cell, from notebook.glue in duckduck.json">New Glue notebook</button>
+          <input id="nbname" type="text" placeholder="name" aria-label="New notebook's name">
+          <button class="secondary" type="button" id="nbnew" title="A new notebook for the configured kernel — the local DuckDB kernel (duck is ready, switch a cell to SQL) by default, or Glue when that's the kernel">New notebook</button>
           <a class="linkish small" id="nbpop" href="/notebook/lab" target="_blank" rel="noopener" hidden title="JupyterLab in a window of its own (clicks on tables only reach the one here)">Open in a new window ↗</a></div>
         <div id="nbproblems" class="muted small" hidden></div>
         <div id="nbstart" class="muted" hidden></div>
@@ -4181,7 +4181,7 @@ $("#optfilter").addEventListener("input", () => {
   });
 });
 
-// ---- Notebook tab: JupyterLab (AWS Glue PySpark kernel) next to the table list ---------------------
+// ---- Notebook tab: JupyterLab (local DuckDB kernel by default, or Glue) next to the table list ---------------------
 // The SQL tab's <aside class="tables"> moves between the two tabs (placeTree); in the Notebook tab a click on a
 // table asks /api/notebook/code for a cell (spark.table(...) for a Glue Data Catalog table, else reader.sql(...))
 // and posts it to the duckduck JupyterLab extension in the iframe, which adds it below the active cell.

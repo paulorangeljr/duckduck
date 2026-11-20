@@ -354,7 +354,7 @@ def _notebook_server(config_file: Optional[str], notebook: Optional[bool]) -> An
     from ..notebook import NotebookServer
 
     base = os.path.dirname(os.path.abspath(config_file)) if config_file else os.getcwd()
-    return NotebookServer.from_config(data, base)
+    return NotebookServer.from_config(data, base, config_path=config_file)
 
 
 def _pg_server(duck: Any, config_file: Optional[str], pg_port: Optional[int], console: Any) -> Any:

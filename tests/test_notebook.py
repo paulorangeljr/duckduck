@@ -185,7 +185,7 @@ def test_new_notebook_writes_the_template_and_never_overwrites(tmp_path):
 def test_from_config_puts_notebooks_next_to_the_config(tmp_path):
     server = NotebookServer.from_config({"notebook": {"dir": "nbs", "glue": {"region": "eu-west-1"}}}, str(tmp_path))
     assert server.root_dir == str(tmp_path / "nbs") and server.glue["region"] == "eu-west-1"
-    assert server.kernels == ["duckduck_glue_pyspark"]
+    assert server.kernels == ["duckduck_local", "duckduck_glue_pyspark"]  # local DuckDB first, then Glue
     with pytest.raises(NotebookError, match="unknown key"):
         NotebookServer.from_config({"notebook": {"port": 1}}, str(tmp_path))
 
@@ -469,6 +469,7 @@ def test_session_code_leaves_the_dataframe_and_reads_dataframes_as_views():
 
 
 def test_duckduck_sql_cells_need_the_reader():
+    pytest.importorskip("pyspark")  # the Spark session code imports pyspark before reaching the reader check
     scope = {}
     with pytest.raises(NameError, match="connect"):
         exec(sqlcells.session_code("%%sql --duckduck", "SELECT 1"), scope)
@@ -528,6 +529,125 @@ def test_the_local_gateway_answers_like_a_glue_session():
     assert gateway.get_statement("s", first)["Statement"]["Output"]["Data"]["TextPlain"] == "42\n"
     failed = gateway.get_statement("s", gateway.run_statement("s", "1/0")["Id"])["Statement"]["Output"]
     assert failed["Status"] == "error" and failed["ErrorName"] == "ZeroDivisionError"
+
+
+# ---- the local DuckDB kernel: SQL cells run like the SQL tab (duck.sql), no Spark ------------------------------------
+
+from duckduck.notebook import kernel as nbkernel  # noqa: E402
+
+
+class _FakeRelation:
+    def __init__(self, frame):
+        self._frame = frame
+
+    def df(self):
+        return self._frame
+
+
+class _FakeDuck:
+    """A stand-in for a DuckAPI: records the SQL, hands back a frame, remembers registered views (like the Spark
+    session fake above, so run_local is tested without ipykernel)."""
+
+    def __init__(self, frame, functions=None):
+        self._frame = frame
+        self.functions = functions or {}
+        self.queries = []
+
+        class _Conn:
+            def __init__(self):
+                self.registered = {}
+
+            def register(self, name, df):
+                self.registered[name] = df
+
+        self.conn = _Conn()
+
+    def sql(self, query):
+        self.queries.append(query)
+        return _FakeRelation(self._frame)
+
+
+def test_frame_result_and_render_for_the_local_duckdb_kernel():
+    import pandas as pd
+
+    frame = pd.DataFrame({"os": ["linux", "windows"], "n": [2, None]})
+    result = sqlcells.frame_result(frame, {"name": "counts", "show": 100})
+    assert result["engine"] == "duckdb" and [c[0] for c in result["columns"]] == ["os", "n"]
+    assert result["rows"] == [["linux", 2.0], ["windows", None]]  # a NaN count becomes null, not NaN
+    shown = sqlcells.render(result)
+    assert "counts</code> = duck.sql" in shown["text/html"] and "<th" in shown["text/html"]
+    nothing = sqlcells.frame_result(frame, {"name": "df", "show": 0})
+    assert nothing["rows"] == [] and nothing["more"] is False
+
+
+def test_run_local_runs_duck_sql_and_keeps_the_dataframe():
+    import pandas as pd
+
+    out = pd.DataFrame({"x": [1]})
+    duck = _FakeDuck(out)
+    ns = {}
+    result = nbkernel.run_local(duck, ns, "%%sql hosts", "SELECT 1;")
+    assert duck.queries == ["SELECT 1"]  # the trailing ; is stripped
+    assert ns["hosts"] is out and ns["_sqldf"] is out
+    assert result["name"] == "hosts" and result["engine"] == "duckdb"
+
+
+def test_run_local_reads_a_session_dataframe_as_a_table():
+    import pandas as pd
+
+    prior = pd.DataFrame({"a": [1]})
+    duck = _FakeDuck(pd.DataFrame({"a": [1]}), functions={"assets": object()})
+    ns = {"prior": prior, "other": pd.DataFrame({"z": [9]}), "assets": pd.DataFrame({"a": [2]}), "duck": duck}
+    result = nbkernel.run_local(duck, ns, "%%sql j --duckduck", "SELECT * FROM prior JOIN assets USING (a)")
+    # `prior` is named and registered; `other` isn't named; `assets` is a duckduck table, not shadowed by the frame
+    assert duck.conn.registered == {"prior": prior} and result["views"] == ["prior"]
+
+
+def test_run_local_ignores_a_name_inside_a_string_or_comment():
+    import pandas as pd
+
+    prior = pd.DataFrame({"a": [1]})
+    duck = _FakeDuck(pd.DataFrame({"a": [1]}))
+    ns = {"prior": prior, "duck": duck}
+    nbkernel.run_local(duck, ns, "%%sql j", "SELECT 'prior' AS a -- prior\nFROM (SELECT 1 AS a)")
+    assert duck.conn.registered == {}  # the only mentions of `prior` are a literal and a comment
+
+
+def test_run_local_needs_sql_and_a_duck():
+    import pandas as pd
+
+    with pytest.raises(sqlcells.SqlCellError):
+        nbkernel.run_local(_FakeDuck(pd.DataFrame()), {}, "%%sql", "   ")
+    with pytest.raises(NameError, match="duck"):
+        nbkernel.run_local(None, {}, "%%sql", "SELECT 1")
+
+
+def test_the_local_kernel_is_offered_and_has_a_python_template():
+    import importlib.util
+
+    tmpl = nbkernel.local_notebook_template()
+    assert tmpl["metadata"]["kernelspec"]["name"] == "duckduck_local"
+    assert tmpl["metadata"]["kernelspec"]["language"] == "python"
+    sql_cell = tmpl["cells"][1]
+    assert sql_cell["metadata"]["duckduck"]["language"] == "sql"
+    assert "SHOW TABLES" in "".join(sql_cell["source"])
+    if importlib.util.find_spec("ipykernel"):  # offered whenever ipykernel is installed — no AWS, no Spark
+        assert "duckduck_local" in nbkernel.kernel_specs()
+
+
+def test_new_notebook_uses_the_local_template_for_the_duckdb_kernel(tmp_path):
+    server = NotebookServer(str(tmp_path / "nb"), kernels=["duckduck_local"])
+    path = server.new_notebook()  # the local kernel's default name and template
+    assert path == "duckduck.ipynb"
+    nb = json.loads((tmp_path / "nb" / path).read_text())
+    assert nb["metadata"]["kernelspec"]["name"] == "duckduck_local"
+    assert any(c.get("metadata", {}).get("duckduck", {}).get("language") == "sql" for c in nb["cells"])
+
+
+def test_from_config_passes_the_config_path_for_the_local_kernels_duck(tmp_path):
+    server = NotebookServer.from_config({"notebook": {"dir": "nbs"}}, str(tmp_path),
+                                        config_path=str(tmp_path / "duckduck.json"))
+    assert server.config_path == str(tmp_path / "duckduck.json")
 
 
 def test_sql_cells_on_spark(spark):

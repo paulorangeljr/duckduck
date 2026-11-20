@@ -1,30 +1,35 @@
 """
-The duckduck Glue PySpark kernel: AWS's Glue PySpark kernel (``aws-glue-sessions``) with SQL cells that leave a
-DataFrame behind.
+duckduck's notebook kernels: a cell switched to SQL in the toolbar (or one starting with ``%%sql``) runs as SQL and
+leaves its result as a DataFrame; everything else is ordinary code.
 
-Everything is the Glue kernel's own (the magics, the session, the statements) but SQL cells — a cell whose metadata
-says SQL (the notebook's PySpark / SQL switch; ``cell_meta`` → ``sqlcells.from_metadata``) or that starts with
-``%%sql``: where the Glue kernel runs ``spark.sql(…).show()``, this one sends ``sqlcells.session_code`` — ``name = spark.sql(…)``, DataFrames named
-in the SQL as temporary views, ``_sqldf`` — and shows the answer as an HTML table (``sqlcells.render``).
+- ``duckduck_local`` — **a plain local kernel, no Spark and no AWS, like the SQL tab**: an IPython kernel with
+  ``duck`` (a ``DuckAPI`` with your connectors already registered) ready in it. An SQL cell runs
+  ``name = duck.sql(<the SQL>).df()`` — the same push-down as the SQL tab — and the answer is shown as an HTML
+  table (``sqlcells.frame_result`` → ``sqlcells.render``). The DataFrame is kept under its name (``_sqldf`` is
+  always the last one), and a pandas DataFrame named in the SQL is read as a table. This is the default kernel.
+- ``duckduck_glue_pyspark`` — AWS's Glue PySpark kernel (``aws-glue-sessions``) with the same SQL cells, but each
+  runs in a Glue interactive session: ``name = spark.sql(…)`` (``reader.sql`` for *SQL · duckduck*). SQL cells are
+  turned into the code the session runs (``sqlcells.session_code``, printed back as ``MARK…END``).
+  ``DUCKDUCK_GLUE_LOCAL=1`` (the ``duckduck_local_pyspark`` kernel) swaps the Glue API for ``LocalGateway``: the
+  statements run on a local Spark in the kernel's own process. For trying notebooks without AWS, and for the tests.
 
-``DUCKDUCK_GLUE_LOCAL=1`` (the ``duckduck_local_pyspark`` kernel) swaps the Glue API for ``LocalGateway``: the
-statements run on a local Spark in the kernel's own process. For trying notebooks without AWS, and for the tests.
-
-    python -m duckduck.notebook.kernel install [--user] [--local]   # register it with Jupyter outside the web app
+    python -m duckduck.notebook.kernel install [--user] [--local]   # register them with Jupyter outside the web app
 """
 
 import contextlib
 import io
 import os
+import re
 import sys
 import threading
 import traceback
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from . import sqlcells
 
 KERNEL = "duckduck_glue_pyspark"
 LOCAL_KERNEL = "duckduck_local_pyspark"
+LOCAL_DUCK_KERNEL = "duckduck_local"
 LOCAL_ENV = "DUCKDUCK_GLUE_LOCAL"
 
 
@@ -34,6 +39,10 @@ def kernel_specs() -> Dict[str, Dict[str, Any]]:
 
     argv = [sys.executable, "-m", "duckduck.notebook.kernel", "-f", "{connection_file}"]
     specs: Dict[str, Dict[str, Any]] = {}
+    if importlib.util.find_spec("ipykernel"):  # the local DuckDB kernel needs nothing but ipykernel + duckduck
+        specs[LOCAL_DUCK_KERNEL] = {
+            "argv": [sys.executable, "-m", "duckduck.notebook.kernel", "--duckdb", "-f", "{connection_file}"],
+            "display_name": "DuckDB + SQL (duckduck)", "language": "python", "metadata": {"debugger": True}}
     if importlib.util.find_spec("aws_glue_interactive_sessions_kernel"):
         specs[KERNEL] = {"argv": argv, "display_name": "Glue PySpark + SQL (duckduck)", "language": "python",
                          "metadata": {"debugger": False}}
@@ -209,6 +218,150 @@ def _kernel_class() -> Any:
     return DuckduckGlueKernel
 
 
+# ---- the local DuckDB kernel: SQL cells run like the SQL tab (duck.sql), no Spark -------------------------------
+
+def _mask_strings(sql: str) -> str:
+    """``sql`` with string literals and comments blanked (same length), so a name inside one isn't matched."""
+    for pattern, flags in ((r"'(?:[^']|'')*'", 0), (r'"(?:[^"]|"")*"', 0), (r"--[^\n]*", 0), (r"/\*.*?\*/", re.S)):
+        sql = re.sub(pattern, lambda m: " " * len(m.group(0)), sql, flags=flags)
+    return sql
+
+
+def _register_frames(duck: Any, user_ns: Dict[str, Any], query: str) -> List[str]:
+    """Each pandas DataFrame in the session named in ``query`` (and not a duckduck table) registered as a DuckDB
+    view, so an SQL cell reads on from a previous cell's DataFrame — the local counterpart of Spark temp views."""
+    conn = getattr(duck, "conn", None)
+    if conn is None:
+        return []
+    try:
+        import pandas as pd
+    except Exception:  # noqa: BLE001 — pandas always present with duckduck, but never fail the query over it
+        return []
+    functions = getattr(duck, "functions", None) or {}
+    masked = _mask_strings(query)
+    views: List[str] = []
+    for var, value in list(user_ns.items()):
+        if (isinstance(var, str) and var.isidentifier() and not var.startswith("_") and var not in functions
+                and isinstance(value, pd.DataFrame)
+                and re.search(r"(?<![\w.`])" + re.escape(var) + r"(?![\w`])", masked)):
+            try:
+                conn.register(var, value)
+                views.append(var)
+            except Exception:  # noqa: BLE001 — a name DuckDB won't take: leave it to the query
+                pass
+    return views
+
+
+def run_local(duck: Any, user_ns: Dict[str, Any], header: str, sql: str) -> Dict[str, Any]:
+    """Run one ``%%sql`` cell on a local ``DuckAPI``: ``name = duck.sql(<sql>).df()``, the DataFrame kept in
+    ``user_ns`` under its name and ``_sqldf``. Returns the result dict ``sqlcells.render`` shows. Pure (no
+    ipykernel), so it is tested on a stand-in ``duck`` the way the Spark session code is."""
+    options = sqlcells.parse_header(header)
+    query = (sql or "").strip().rstrip(";").strip()
+    if not query:
+        raise sqlcells.SqlCellError("the cell has no SQL after %%sql")
+    if duck is None:
+        raise NameError("duck isn't defined: this kernel sets it up automatically — restart the kernel, or run "
+                        "duck = DuckAPI().auto_register()")
+    views = _register_frames(duck, user_ns, query)
+    frame = duck.sql(query).df()
+    user_ns[options["name"]] = frame
+    user_ns["_sqldf"] = frame
+    options["views"] = views
+    return sqlcells.frame_result(frame, options)
+
+
+def _bootstrap_duck(shell: Any) -> None:
+    """Put a ready ``duck`` (a ``DuckAPI`` with the config's connectors, ``DUCKDUCK_CONFIG``) in the kernel's
+    namespace — so an SQL cell works at once, like the SQL tab. A config that doesn't load leaves an empty
+    ``duck`` the user can register by hand; it never stops the kernel from starting."""
+    try:
+        from .. import DuckAPI
+    except Exception as exc:  # noqa: BLE001
+        print(f"duckduck couldn't be imported ({exc}); `duck` isn't set up", file=sys.stderr)
+        return
+    shell.user_ns.setdefault("DuckAPI", DuckAPI)
+    duck = DuckAPI()
+    try:
+        duck.auto_register(config_path=os.environ.get("DUCKDUCK_CONFIG"), on_error="warn")
+    except Exception as exc:  # noqa: BLE001 — no config found, a bad file: duck is still usable
+        print(f"duckduck: no services registered yet ({exc}). Set DUCKDUCK_CONFIG, or run "
+              "duck.auto_register(services=...).", file=sys.stderr)
+    shell.user_ns["duck"] = duck
+
+
+def _install_sql_magic(shell: Any, duck_getter: Any) -> None:
+    """Register the ``%%sql`` cell magic on an IPython shell: run the cell with ``run_local`` and show the table."""
+    def duckduck_sql(line: str, cell: str) -> None:
+        from IPython.display import publish_display_data
+
+        header = (sqlcells.HEADER + (" " + line if line.strip() else "")).strip()
+        try:
+            result = run_local(duck_getter(), shell.user_ns, header, cell)
+        except sqlcells.SqlCellError as exc:
+            print(str(exc), file=sys.stderr)
+            return
+        publish_display_data(sqlcells.render(result))
+
+    shell.register_magic_function(duckduck_sql, "cell", "sql")
+
+
+def _local_kernel_class() -> Any:
+    from ipykernel.ipkernel import IPythonKernel
+
+    class DuckduckLocalKernel(IPythonKernel):
+        """A local IPython kernel with duckduck: SQL cells run ``duck.sql(…).df()`` and show the table."""
+
+        implementation = "duckduck local DuckDB"
+        banner = ("duckduck — local DuckDB. `duck` is ready (a DuckAPI with your connectors); switch a cell to SQL "
+                  "in the toolbar to query it with duck.sql, exactly like the SQL tab.")
+
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            _bootstrap_duck(self.shell)
+            _install_sql_magic(self.shell, lambda: self.shell.user_ns.get("duck"))
+
+        async def do_execute(self, code: str, silent: bool, store_history: bool = True,
+                             user_expressions: Any = None, allow_stdin: bool = False, *,
+                             cell_meta: Optional[Dict[str, Any]] = None, cell_id: Optional[str] = None) -> Any:
+            # an SQL cell holds only its SQL; its metadata (sent with the execution) turns it into %%sql code
+            if cell_meta is None:
+                try:
+                    cell_meta = (self.get_parent("shell") or {}).get("metadata")
+                except Exception:  # noqa: BLE001
+                    cell_meta = None
+            return await super().do_execute(sqlcells.from_metadata(code, cell_meta), silent, store_history,
+                                            user_expressions, allow_stdin)
+
+    return DuckduckLocalKernel
+
+
+def local_notebook_template(kernel: str = LOCAL_DUCK_KERNEL) -> Dict[str, Any]:
+    """A notebook for the local DuckDB kernel (nbformat 4): an intro, an SQL cell listing the tables, an empty cell."""
+    def cell(kind: str, src: str, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        out: Dict[str, Any] = {"cell_type": kind, "metadata": meta or {}, "source": src.splitlines(keepends=True) or [""]}
+        if kind == "code":
+            out.update({"execution_count": None, "outputs": []})
+        return out
+
+    intro = ("# duckduck — local DuckDB\n\n"
+             "This notebook runs **locally**, with no Spark and no AWS. `duck` is a duckduck `DuckAPI` with your "
+             "connectors already registered — query it just like the SQL tab.\n\n"
+             "**SQL cells**: the toolbar's language switch turns a cell into SQL. It runs as "
+             "`df = duck.sql(...).df()` (the same push-down as the SQL tab) and keeps the result as a pandas "
+             "DataFrame — `%%sql name` names it, `_sqldf` is always the last one — so the next Python cell goes on "
+             "from it. A DataFrame from an earlier cell, named in the SQL, is read as a table.\n\n"
+             "Click a table in the list on the left to add a cell that reads it.")
+    cells = [cell("markdown", intro),
+             cell("code", "SHOW TABLES",
+                  {"duckduck": {"language": "sql", "engine": "duckduck", "name": "tables", "auto": False}}),
+             cell("code", "")]
+    return {"nbformat": 4, "nbformat_minor": 5, "cells": cells,
+            "metadata": {"kernelspec": {"name": kernel, "display_name": "DuckDB + SQL (duckduck)",
+                                        "language": "python"},
+                         "language_info": {"name": "python"}, "duckduck": {"cell_language": "python"}}}
+
+
 def install(user: bool = True, prefix: Optional[str] = None, local: bool = False) -> Dict[str, str]:
     """Registers the kernel(s) with Jupyter (``jupyter kernelspec``) → {name: where}."""
     import tempfile
@@ -240,11 +393,14 @@ def main(argv: Optional[list] = None) -> None:
         return
     from ipykernel.kernelapp import IPKernelApp
 
-    IPKernelApp.launch_instance(kernel_class=_kernel_class())
+    local_duckdb = "--duckdb" in argv  # the local DuckDB kernel's spec passes it; ipykernel never should see it
+    argv = [a for a in argv if a != "--duckdb"]
+    IPKernelApp.launch_instance(argv=argv, kernel_class=_local_kernel_class() if local_duckdb else _kernel_class())
 
 
 if __name__ == "__main__":
     main()
 
 
-__all__ = ["KERNEL", "LOCAL_KERNEL", "LocalGateway", "install", "kernel_specs", "write_kernel_specs"]
+__all__ = ["KERNEL", "LOCAL_DUCK_KERNEL", "LOCAL_KERNEL", "LocalGateway", "install", "kernel_specs",
+           "local_notebook_template", "run_local", "write_kernel_specs"]

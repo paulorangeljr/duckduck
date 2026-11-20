@@ -142,7 +142,7 @@ def _value(v: Any) -> str:
 def render(result: Dict[str, Any]) -> Dict[str, str]:
     """One SQL cell's answer → ``{"text/html": …, "text/plain": …}``."""
     name, columns, rows = result.get("name", DEFAULT_NAME), result.get("columns") or [], result.get("rows") or []
-    via = "reader.sql" if result.get("engine") == "duckduck" else "spark.sql"
+    via = {"duckduck": "reader.sql", "duckdb": "duck.sql"}.get(result.get("engine"), "spark.sql")
     note = [f"<code>{html.escape(name)}</code> = {via}(…)" + ("" if name == "_sqldf" else " · also <code>_sqldf</code>")]
     if result.get("views"):
         note.append("temp views from DataFrames: " + ", ".join(f"<code>{html.escape(v)}</code>" for v in result["views"]))
@@ -195,5 +195,58 @@ def header_for(name: Optional[str] = None, engine: str = "spark") -> str:
     return " ".join(parts)
 
 
-__all__ = ["DEFAULT_NAME", "END", "HEADER", "MARK", "METADATA_KEY", "SqlCellError", "from_metadata", "header_for",
-           "parse_header", "render", "session_code", "split_cell", "split_output"]
+def _frame_cell(value: Any) -> Any:
+    """One pandas value coerced for the result JSON: scalars kept, NaN/NaT → None, dict/list/array → JSON text."""
+    import json as _json
+
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return None if isinstance(value, float) and value != value else value  # NaN
+    if isinstance(value, str):
+        return value[:2000]
+    try:
+        import numpy as _np
+
+        if isinstance(value, _np.generic):
+            value = value.item()
+            if isinstance(value, float) and value != value:
+                return None
+            if isinstance(value, (bool, int, float)):
+                return value
+            if isinstance(value, str):
+                return value[:2000]
+        elif isinstance(value, _np.ndarray):
+            value = value.tolist()
+    except Exception:  # noqa: BLE001 — numpy optional / an odd value
+        pass
+    if isinstance(value, (dict, list, tuple)):
+        return _json.dumps(value, default=str)[:2000]
+    try:
+        import pandas as _pd
+
+        if _pd.isna(value):  # a scalar NaT / NA
+            return None
+    except Exception:  # noqa: BLE001 — not a scalar pandas can test, or pandas missing
+        pass
+    return str(value)[:2000]
+
+
+def frame_result(frame: Any, options: Dict[str, Any]) -> Dict[str, Any]:
+    """A pandas DataFrame + a parsed ``%%sql`` header → the dict ``render`` shows. This is the local DuckDB
+    kernel's counterpart of the Spark session's printed ``MARK…END`` (``engine`` ``"duckdb"`` → ``duck.sql``)."""
+    name = options.get("name") or DEFAULT_NAME
+    show = int(options.get("show", DEFAULT_SHOW))
+    columns = [[str(c), str(dt)] for c, dt in zip(list(frame.columns), list(frame.dtypes))]
+    rows: List[List[Any]] = []
+    if show and columns:
+        head = frame.head(show + 1)
+        rows = [[_frame_cell(v) for v in row] for row in head.itertuples(index=False, name=None)]
+    return {"name": name, "engine": "duckdb", "columns": columns, "rows": rows[:show],
+            "more": len(rows) > show, "show": show, "views": list(options.get("views") or [])}
+
+
+__all__ = ["DEFAULT_NAME", "END", "HEADER", "MARK", "METADATA_KEY", "SqlCellError", "frame_result", "from_metadata",
+           "header_for", "parse_header", "render", "session_code", "split_cell", "split_output"]

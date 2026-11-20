@@ -34,7 +34,9 @@ logger = get_logger("notebook")
 
 PREFIX = "/notebook"
 COOKIE = "duckduck_notebook"
-DEFAULT_KERNELS = ("duckduck_glue_pyspark",)  # the Glue PySpark kernel + SQL cells (kernel.py); glue_pyspark works too
+#: the kernels offered by default (kernel.py): the local DuckDB one first — no Spark, no AWS, like the SQL tab —
+#: then the Glue PySpark one. ``notebook.kernels`` in duckduck.json overrides this.
+DEFAULT_KERNELS = ("duckduck_local", "duckduck_glue_pyspark")
 NOTEBOOK_KEYS = frozenset({"enabled", "dir", "kernels", "glue"})
 #: where JupyterLab finds the prebuilt extension (``labextensions/duckduck-notebook``, built from ``labextension-src``)
 LABEXTENSIONS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "labextensions")
@@ -81,11 +83,14 @@ class NotebookServer:
     """One JupyterLab for the app (see the module docstring)."""
 
     def __init__(self, root_dir: str, kernels: Optional[List[str]] = None, glue: Optional[Dict[str, Any]] = None,
-                 startup_timeout: float = 60.0):
+                 startup_timeout: float = 60.0, config_path: Optional[str] = None):
         self.root_dir = os.path.abspath(root_dir)
         self.kernels = list(kernels or DEFAULT_KERNELS)
         self.glue = dict(glue or {})
         self.startup_timeout = startup_timeout
+        #: duckduck.json, passed to the child JupyterLab as DUCKDUCK_CONFIG so the local DuckDB kernel's `duck`
+        #: registers the same connectors as the SQL tab
+        self.config_path = os.path.abspath(config_path) if config_path else None
         self.token = secrets.token_hex(24)  # Jupyter's own: only the proxy sends it
         self.cookie = secrets.token_urlsafe(32)  # what the browser shows the proxy
         self.port: Optional[int] = None
@@ -94,7 +99,8 @@ class NotebookServer:
         self._log: Optional[Any] = None
 
     @classmethod
-    def from_config(cls, config: Dict[str, Any], base_dir: str) -> "NotebookServer":
+    def from_config(cls, config: Dict[str, Any], base_dir: str,
+                    config_path: Optional[str] = None) -> "NotebookServer":
         block = (config or {}).get("notebook") or {}
         problems = notebook_problems(block)
         if problems:
@@ -104,7 +110,7 @@ class NotebookServer:
         folder = block.get("dir") or "notebooks"
         if not os.path.isabs(folder):
             folder = os.path.join(base_dir, folder)
-        return cls(folder, block.get("kernels"), glue_settings(config))
+        return cls(folder, block.get("kernels"), glue_settings(config), config_path=config_path)
 
     # ---- the process --------------------------------------------------------------------------------------------
 
@@ -195,6 +201,8 @@ class NotebookServer:
             data = os.path.join(os.path.dirname(config), "data")
             env = {**os.environ, "JUPYTER_CONFIG_DIR": os.path.dirname(config), "JUPYTER_PLATFORM_DIRS": "1",
                    "JUPYTER_PATH": os.pathsep.join(p for p in (data, os.environ.get("JUPYTER_PATH")) if p)}
+            if self.config_path:  # the local DuckDB kernel's `duck` registers the SQL tab's connectors
+                env["DUCKDUCK_CONFIG"] = self.config_path
             self.process = subprocess.Popen(
                 [sys.executable, "-m", "jupyterlab", f"--config={config}"],
                 stdout=self._log, stderr=subprocess.STDOUT, cwd=self.root_dir, env=env)
@@ -243,24 +251,31 @@ class NotebookServer:
     # ---- notebooks ----------------------------------------------------------------------------------------------
 
     def new_notebook(self, name: Optional[str] = None, kernel: Optional[str] = None) -> str:
-        """A notebook from the Glue template in ``root_dir`` → its path relative to it (never overwrites)."""
-        from ..glue_session import notebook_template
+        """A notebook from the template in ``root_dir`` → its path relative to it (never overwrites). The local
+        DuckDB kernel gets the local template (``duck.sql``); the Glue kernels get the Glue one."""
+        from .kernel import LOCAL_DUCK_KERNEL, local_notebook_template
 
-        name = (name or "glue-session").strip()
+        kernel = kernel or next((k for k in self.kernels if k in self.available_kernels()), self.kernels[0])
+        if kernel not in self.kernels:
+            raise NotebookError(f"kernel {kernel!r} isn't offered here ({', '.join(self.kernels)})")
+        name = (name or ("duckduck" if kernel == LOCAL_DUCK_KERNEL else "glue-session")).strip()
         if name.endswith(".ipynb"):
             name = name[:-6]
         if not _NAME.match(name) or ".." in name:
             raise NotebookError("a notebook name is letters, digits, spaces, '-', '_' or '.'")
-        kernel = kernel or next((k for k in self.kernels if k in self.available_kernels()), self.kernels[0])
-        if kernel not in self.kernels:
-            raise NotebookError(f"kernel {kernel!r} isn't offered here ({', '.join(self.kernels)})")
+        if kernel == LOCAL_DUCK_KERNEL:
+            template = local_notebook_template(kernel)
+        else:
+            from ..glue_session import notebook_template
+
+            template = notebook_template(self.glue, kernel=kernel)
         os.makedirs(self.root_dir, exist_ok=True)
         path, n = f"{name}.ipynb", 1
         while os.path.exists(os.path.join(self.root_dir, path)):
             n += 1
             path = f"{name}-{n}.ipynb"
         with open(os.path.join(self.root_dir, path), "w", encoding="utf-8") as fh:
-            json.dump(notebook_template(self.glue, kernel=kernel), fh, indent=1)
+            json.dump(template, fh, indent=1)
         return path
 
     def notebooks(self) -> List[str]:
