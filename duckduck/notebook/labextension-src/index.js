@@ -128,6 +128,36 @@ function escAttr(s) {
   return escText(s).replace(/"/g, '&quot;');
 }
 
+// embedded in the duckduck app's iframe (there's a parent window) vs. a standalone JupyterLab window
+const EMBEDDED = typeof window !== 'undefined' && window.parent && window.parent !== window;
+let gApp = null;  // the JupyterLab app, for inserting a cell locally in a standalone window
+
+// a /api/tables row → the shape the panel shows (same flattening the page's nbTables() does)
+function flattenTables(rows) {
+  return (rows || []).map(t => ({
+    name: t.saved_name || t.name,
+    label: t.saved_name || t.address || t.name,
+    kind: t.kind || 'table',
+    service: t.service || 'other',
+    saved: !!t.saved,
+    sql: t.usage || ('SELECT * FROM ' + (t.saved_name || t.name) + ' LIMIT 100')
+  }));
+}
+
+// a clicked table: embedded → ask the page to insert it; standalone → fetch the cell code and insert it here
+function useTable(sql) {
+  if (EMBEDDED) {
+    post({ type: 'duckduck:use-table', sql });
+    return;
+  }
+  fetch('/api/notebook/code', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sql })
+  })
+    .then(r => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+    .then(res => { if (gApp && gTracker) { insert(gApp, gTracker, res.code, res.sql); } })
+    .catch(() => {});
+}
+
 class TablesPanel extends Widget {
   constructor() {
     super();
@@ -151,7 +181,7 @@ class TablesPanel extends Widget {
     });
     this.empty = document.createElement('div');
     this.empty.className = 'duckduck-tp-empty';
-    this.empty.textContent = 'Open the Notebook tab in the duckduck app to see your tables here.';
+    this.empty.textContent = 'Loading tables…';
     this.list = document.createElement('div');
     this.list.className = 'duckduck-tp-list';
     this.list.addEventListener('click', event => {
@@ -168,11 +198,28 @@ class TablesPanel extends Widget {
       }
       const row = event.target.closest('[data-sql]');
       if (row) {
-        post({ type: 'duckduck:use-table', sql: row.getAttribute('data-sql') });
+        useTable(row.getAttribute('data-sql'));
       }
     });
     this.node.append(head, search, this.empty, this.list);
-    post({ type: 'duckduck:tables?' });
+    this.requestTables();
+  }
+
+  // embedded: the page pushes the catalog (duckduck:tables); standalone: fetch /api/tables directly (same origin)
+  requestTables() {
+    if (EMBEDDED) {
+      post({ type: 'duckduck:tables?' });
+      return;
+    }
+    fetch('/api/tables', { headers: { 'Content-Type': 'application/json' } })
+      .then(r => (r.ok ? r.json() : Promise.reject(new Error(r.status === 401 ? 'token' : String(r.status)))))
+      .then(rows => this.setTables(flattenTables(rows)))
+      .catch(err => {
+        this.empty.textContent = err && err.message === 'token'
+          ? 'This server needs a token — open the Notebook tab in the duckduck app to see your tables.'
+          : 'Couldn’t load tables here — open the Notebook tab in the duckduck app.';
+        this.setTables([]);
+      });
   }
 
   setTables(tables) {
@@ -228,7 +275,7 @@ class TablesPanel extends Widget {
   }
 
   onAfterShow() {
-    post({ type: 'duckduck:tables?' });  // in case the catalog changed while the panel was hidden
+    this.requestTables();  // in case the catalog changed while the panel was hidden
   }
 }
 
@@ -598,6 +645,7 @@ const plugin = {
     const tablesPanel = new TablesPanel();
     app.shell.add(tablesPanel, 'left', { rank: 1000 });
     // inline autocomplete in SQL cells: a CodeMirror source fed by the notebook's DataFrames + the catalog
+    gApp = app;
     gTracker = tracker;
     gPanel = tablesPanel;
     extensions.addExtension({
