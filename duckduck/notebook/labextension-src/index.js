@@ -13,6 +13,8 @@
 // ("duckduck": {language: "sql", engine, name}) makes it SQL, and the duckduck kernel runs it as
 // name = spark.sql(...). SQL cells are highlighted as SQL and marked "SQL → name". A table clicked in the page
 // arrives as SQL ({sql}) when the cell it goes to is an SQL cell, or the switch was last set to SQL.
+import { autocompletion } from '@codemirror/autocomplete';
+import { EditorExtensionRegistry, IEditorExtensionRegistry } from '@jupyterlab/codemirror';
 import { INotebookTracker, NotebookActions } from '@jupyterlab/notebook';
 import { LabIcon } from '@jupyterlab/ui-components';
 import { Widget } from '@lumino/widgets';
@@ -228,6 +230,67 @@ class TablesPanel extends Widget {
   onAfterShow() {
     post({ type: 'duckduck:tables?' });  // in case the catalog changed while the panel was hidden
   }
+}
+
+// ---- inline autocomplete in SQL cells: the DataFrames the notebook's SQL cells leave + the catalog tables -------
+// A CodeMirror 6 completion source, scoped to SQL cells (model mimeType text/x-sql). It reads the names live: the
+// other SQL cells' DataFrame names (their metadata) and the Tables panel's catalog, so `FROM `/`JOIN ` offers them.
+let gTracker = null;  // the notebook tracker, for the current notebook's SQL-cell names
+let gPanel = null;    // the Tables panel, for the catalog names
+
+const SQL_KEYWORDS = ['SELECT', 'FROM', 'WHERE', 'JOIN', 'LEFT JOIN', 'INNER JOIN', 'GROUP BY', 'ORDER BY',
+  'LIMIT', 'UNION ALL', 'UNION', 'ON', 'USING', 'AS', 'AND', 'OR', 'NOT', 'IN', 'DISTINCT', 'COUNT(*)',
+  'HAVING', 'WITH'];
+
+// the names you can read in an SQL cell now: the DataFrames the notebook's SQL cells leave, then the catalog tables
+function sqlNames() {
+  const items = [];
+  const seen = new Set();
+  const panel = gTracker && gTracker.currentWidget;
+  if (panel && panel.content) {
+    panel.content.widgets.forEach(cell => {
+      if (!cell.model || cell.model.type !== 'code') {
+        return;
+      }
+      const meta = cell.model.getMetadata ? cell.model.getMetadata(KEY) : undefined;
+      if (meta && meta.language === 'sql' && meta.name && !seen.has(meta.name)) {
+        seen.add(meta.name);
+        items.push({ label: meta.name, type: 'variable', detail: 'DataFrame', boost: 2 });
+      }
+    });
+  }
+  if (gPanel && Array.isArray(gPanel.tables)) {
+    gPanel.tables.forEach(t => {
+      const label = t.label || t.name;
+      if (label && !seen.has(label)) {
+        seen.add(label);
+        items.push({ label, type: 'class', detail: t.service || 'table', boost: 1 });
+      }
+    });
+  }
+  return items;
+}
+
+// the completion source for one editor (its model is captured so we only fire on SQL cells)
+function sqlCompletionSource(model) {
+  return context => {
+    if (!model || model.mimeType !== 'text/x-sql') {
+      return null;  // only SQL cells
+    }
+    const word = context.matchBefore(/[\w]+/);
+    const before = context.state.sliceDoc(Math.max(0, context.pos - 200), context.pos);
+    const afterRef = /(?:\bfrom\b|\bjoin\b|,)\s*[\w]*$/i.test(before);  // a table position
+    if (!context.explicit && !afterRef && (!word || word.from === word.to)) {
+      return null;
+    }
+    const names = sqlNames();
+    // after FROM/JOIN only names; elsewhere names + keywords
+    const options = afterRef ? names : names.concat(SQL_KEYWORDS.map(k => ({ label: k, type: 'keyword' })));
+    if (!options.length) {
+      return null;
+    }
+    return { from: word ? word.from : context.pos, options, validFor: /^[\w]*$/ };
+  };
 }
 
 function metaOf(cell) {
@@ -529,11 +592,20 @@ const plugin = {
   id: 'duckduck-notebook:bridge',
   description: 'Adds the cells the duckduck page sends to the open notebook.',
   autoStart: true,
-  requires: [INotebookTracker],
-  activate: (app, tracker) => {
+  requires: [INotebookTracker, IEditorExtensionRegistry],
+  activate: (app, tracker, extensions) => {
     // the duckduck catalog, as a panel in JupyterLab's own left sidebar (not a second list beside the IDE)
     const tablesPanel = new TablesPanel();
     app.shell.add(tablesPanel, 'left', { rank: 1000 });
+    // inline autocomplete in SQL cells: a CodeMirror source fed by the notebook's DataFrames + the catalog
+    gTracker = tracker;
+    gPanel = tablesPanel;
+    extensions.addExtension({
+      name: 'duckduck:sql-autocomplete',
+      factory: options => EditorExtensionRegistry.createImmutableExtension(
+        autocompletion({ activateOnTyping: true, override: [sqlCompletionSource(options.model)] })
+      )
+    });
     window.addEventListener('message', async event => {
       if (event.origin !== window.location.origin || event.source !== window.parent) {
         return;
