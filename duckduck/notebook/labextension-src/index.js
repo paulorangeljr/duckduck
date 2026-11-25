@@ -18,11 +18,37 @@ import { LabIcon } from '@jupyterlab/ui-components';
 import { Widget } from '@lumino/widgets';
 import { KEY, NAME, autoNames, convert, isAuto, modeOf, nameOf } from './toggle';
 
-const MODES = [
+// the cell-language switch differs per kernel. The local DuckDB kernel is plain Python + DuckDB SQL (pandas);
+// the Glue kernels have PySpark, Spark SQL, and duckduck (reader.sql). modesFor(panel) picks the set.
+const GLUE_MODES = [
   ['python', 'PySpark', 'Python code, run in the session'],
   ['sql', 'SQL', 'Spark SQL in the session, the result kept as a DataFrame (df = spark.sql(...))'],
   ['duckduck', 'SQL · duckduck', 'read through duckduck (reader.sql), the result kept as a DataFrame']
 ];
+const LOCAL_MODES = [
+  ['python', 'Python', 'Python with pandas — an SQL cell becomes name = duck.sql(...).df()'],
+  ['duckdb', 'SQL', 'DuckDB SQL (duck.sql), the result kept as a pandas DataFrame — like the SQL tab']
+];
+const ALL_MODES = ['python', 'sql', 'duckduck', 'duckdb'];
+
+function kernelName(panel) {
+  const session = panel && panel.sessionContext && panel.sessionContext.session;
+  return (session && session.kernel && session.kernel.name) || '';
+}
+// the local DuckDB kernel (not duckduck_local_pyspark, which is Spark)
+function isLocalDuck(panel) {
+  return kernelName(panel) === 'duckduck_local';
+}
+function modesFor(panel) {
+  return isLocalDuck(panel) ? LOCAL_MODES : GLUE_MODES;
+}
+// map a mode to one this kernel offers (a notebook's kept choice, or a clicked table's engine, may be the other set)
+function modeForPanel(panel, mode) {
+  if (isLocalDuck(panel)) {
+    return mode === 'sql' || mode === 'duckduck' ? 'duckdb' : mode;
+  }
+  return mode === 'duckdb' ? 'duckduck' : mode;
+}
 // SQL cells in their own colour (amber, readable in light and dark themes): a tinted editor, an amber edge, and
 // "SQL → df" by the prompt; the change animates when the switch turns a cell into SQL
 const STYLE = `
@@ -53,11 +79,18 @@ const STYLE = `
 .duckduck-tp-search:focus { outline: none; border-color: var(--jp-brand-color1); }
 .duckduck-tp-empty { padding: 8px 12px; color: var(--jp-ui-font-color2); font-size: var(--jp-ui-font-size0); }
 .duckduck-tp-list { flex: 1; overflow: auto; padding-bottom: 8px; }
-.duckduck-tp-group { padding: 6px 12px 2px; font-size: var(--jp-ui-font-size0); font-weight: 600;
+.duckduck-tp-group { display: flex; align-items: center; gap: 6px; width: 100%; border: 0; cursor: pointer;
+  padding: 5px 10px 3px; font-size: var(--jp-ui-font-size0); font-weight: 600; text-align: left;
   color: var(--jp-ui-font-color2); position: sticky; top: 0; background: var(--jp-layout-color1); }
+.duckduck-tp-group:hover { color: var(--jp-ui-font-color1); }
+.duckduck-tp-caret { width: 10px; font-size: 9px; color: var(--jp-ui-font-color2); }
+.duckduck-tp-svc { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.duckduck-tp-count { font-weight: 400; color: var(--jp-ui-font-color3); background: var(--jp-layout-color2);
+  border-radius: 8px; padding: 0 6px; font-size: var(--jp-ui-font-size0); }
 .duckduck-tp-row { display: block; width: 100%; text-align: left; border: 0; background: transparent;
-  color: var(--jp-ui-font-color1); font-size: var(--jp-ui-font-size1); padding: 3px 12px 3px 18px; cursor: pointer;
+  color: var(--jp-ui-font-color1); font-size: var(--jp-ui-font-size1); padding: 3px 12px 3px 26px; cursor: pointer;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.duckduck-tp-row::before { content: '▦'; margin-right: 6px; color: var(--jp-brand-color1); font-size: 11px; opacity: .75; }
 .duckduck-tp-row:hover { background: var(--jp-layout-color2); }
 .duckduck-tp-kind { color: var(--jp-ui-font-color3); font-size: var(--jp-ui-font-size0); }
 `;
@@ -77,8 +110,13 @@ function addStyle() {
 // (duckduck:use-table → the page's notebookInsert); works only embedded in the duckduck app (it has the catalog).
 const tablesIcon = new LabIcon({
   name: 'duckduck:tables',
+  // a database cylinder (three stacked discs), so the sidebar tab doesn't read as the Table of Contents icon
   svgstr: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
-    + '<g class="jp-icon3" fill="#616161"><path d="M2 3h12v2H2zM2 7h12v2H2zM2 11h12v2H2z"/></g></svg>'
+    + '<g class="jp-icon3" fill="#616161">'
+    + '<path d="M8 1.5c-2.76 0-5 .95-5 2.12S5.24 5.75 8 5.75s5-.96 5-2.13S10.76 1.5 8 1.5Z"/>'
+    + '<path d="M3 6.1v2.4c0 1.17 2.24 2.12 5 2.12s5-.95 5-2.12V6.1c-1.06.82-3.05 1.15-5 1.15S4.06 6.92 3 6.1Z"/>'
+    + '<path d="M3 10.1v2.3c0 1.17 2.24 2.1 5 2.1s5-.93 5-2.1v-2.3c-1.06.82-3.05 1.15-5 1.15S4.06 10.92 3 10.1Z"/>'
+    + '</g></svg>'
 });
 
 function escText(s) {
@@ -97,6 +135,7 @@ class TablesPanel extends Widget {
     this.addClass('duckduck-tables-panel');
     this.tables = [];
     this.filter = '';
+    this.collapsed = new Set();  // services folded shut (by name)
     const head = document.createElement('div');
     head.className = 'duckduck-tp-head';
     head.textContent = 'Tables';
@@ -114,6 +153,17 @@ class TablesPanel extends Widget {
     this.list = document.createElement('div');
     this.list.className = 'duckduck-tp-list';
     this.list.addEventListener('click', event => {
+      const group = event.target.closest('[data-group]');
+      if (group) {
+        const svc = group.getAttribute('data-group');
+        if (this.collapsed.has(svc)) {
+          this.collapsed.delete(svc);
+        } else {
+          this.collapsed.add(svc);
+        }
+        this.renderList();
+        return;
+      }
       const row = event.target.closest('[data-sql]');
       if (row) {
         post({ type: 'duckduck:use-table', sql: row.getAttribute('data-sql') });
@@ -128,6 +178,16 @@ class TablesPanel extends Widget {
     this.renderList();
   }
 
+  // a plain registered name is "<service>_<table>"; the group header already shows the service, so drop the prefix
+  shortLabel(t) {
+    const label = t.label || t.name || '';
+    const svc = t.service || '';
+    if (svc && label.toLowerCase().startsWith(svc.toLowerCase() + '_')) {
+      return label.slice(svc.length + 1);
+    }
+    return label;
+  }
+
   renderList() {
     this.empty.style.display = this.tables.length ? 'none' : '';
     const f = this.filter;
@@ -140,17 +200,27 @@ class TablesPanel extends Widget {
     });
     const html = Object.keys(groups)
       .sort()
-      .map(svc =>
-        `<div class="duckduck-tp-group">${escText(svc)}</div>` +
-        groups[svc]
-          .map(t =>
-            `<button type="button" class="duckduck-tp-row" data-sql="${escAttr(t.sql)}" ` +
-            `title="${escAttr(t.sql)}">${escText(t.label || t.name)}` +
-            (t.kind && t.kind !== 'table' ? ` <span class="duckduck-tp-kind">${escText(t.kind)}</span>` : '') +
-            '</button>'
-          )
-          .join('')
-      )
+      .map(svc => {
+        const open = !!f || !this.collapsed.has(svc);  // a filter force-opens every matching group
+        const rows = open
+          ? groups[svc]
+              .map(t =>
+                `<button type="button" class="duckduck-tp-row" data-sql="${escAttr(t.sql)}" ` +
+                `title="${escAttr(t.sql)}">${escText(this.shortLabel(t))}` +
+                (t.kind && t.kind !== 'table' ? ` <span class="duckduck-tp-kind">${escText(t.kind)}</span>` : '') +
+                '</button>'
+              )
+              .join('')
+          : '';
+        return (
+          `<button type="button" class="duckduck-tp-group${open ? '' : ' collapsed'}" ` +
+          `data-group="${escAttr(svc)}" aria-expanded="${open}">` +
+          `<span class="duckduck-tp-caret">${open ? '▾' : '▸'}</span>` +
+          `<span class="duckduck-tp-svc">${escText(svc)}</span>` +
+          `<span class="duckduck-tp-count">${groups[svc].length}</span></button>` +
+          rows
+        );
+      })
       .join('');
     this.list.innerHTML = html || (f && this.tables.length ? '<div class="duckduck-tp-empty">Nothing matches.</div>' : '');
   }
@@ -223,9 +293,9 @@ class LanguageSwitch extends Widget {
     node.className = 'duckduck-langswitch';
     const select = document.createElement('select');
     select.className = 'jp-Notebook-toolbarCellTypeDropdown';
-    select.title = 'The active cell: PySpark or SQL (an SQL cell keeps its result as a DataFrame)';
+    select.title = 'The active cell: code or SQL (an SQL cell keeps its result as a DataFrame)';
     select.setAttribute('aria-label', 'Cell language');
-    MODES.forEach(([value, label, title]) => {
+    modesFor(panel).forEach(([value, label, title]) => {
       const option = document.createElement('option');
       option.value = value;
       option.textContent = label;
@@ -271,14 +341,36 @@ class LanguageSwitch extends Widget {
     panel.context.ready.then(() => {
       // the language this notebook's new cells start in: the last one picked, kept in the notebook's metadata
       const kept = panel.model && panel.model.getMetadata ? panel.model.getMetadata(KEY) : undefined;
-      if (kept && ['python', 'sql', 'duckduck'].includes(kept.cell_language)) {
-        panel.__duckduckMode = kept.cell_language;
+      if (kept && ALL_MODES.includes(kept.cell_language)) {
+        panel.__duckduckMode = modeForPanel(panel, kept.cell_language);
       }
       panel.model.cells.changed.connect((_, change) => this.newCells(change));
       this.refresh();
       decorate(panel);
     });
-    panel.sessionContext.kernelChanged.connect(() => setTimeout(() => decorate(panel), 500));
+    // the kernel decides which languages the switch offers; rebuild them (and the decoration) when it changes
+    panel.sessionContext.kernelChanged.connect(() => setTimeout(() => {
+      this.fillModes();
+      this.refresh();
+      decorate(panel);
+    }, 500));
+  }
+
+  // (re)populate the dropdown from the kernel's language set
+  fillModes() {
+    const want = modesFor(this.panel);
+    if (this.select.options.length === want.length
+        && [...this.select.options].every((o, i) => o.value === want[i][0])) {
+      return;  // already the right set
+    }
+    this.select.textContent = '';
+    want.forEach(([value, label, title]) => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      option.title = title;
+      this.select.appendChild(option);
+    });
   }
 
   // a new, empty code cell starts in the language picked last (Shift+Enter at the end, b, the + button…)
@@ -305,12 +397,13 @@ class LanguageSwitch extends Widget {
   }
 
   refresh() {
+    this.fillModes();  // keep the dropdown's languages in step with the current kernel
     const cell = this.panel.content.activeCell;
     const code = cell && cell.model.type === 'code';
     const source = code ? cell.model.sharedModel.getSource() : '';
     const mode = code ? modeOf(source, metaOf(cell)) : 'python';
     this.select.disabled = !cell;
-    this.select.value = mode;
+    this.select.value = modeForPanel(this.panel, mode);  // show it in this kernel's own set
     const sql = mode !== 'python';
     this.select.classList.toggle('duckduck-on', sql);
     this.name.hidden = this.arrow.hidden = !sql;
@@ -419,7 +512,8 @@ async function insert(app, tracker, code, sql) {
   // the page's SQL starts with %%sql [name] [--duckduck]: that line becomes the cell's metadata
   let result = { source: code, meta: null };
   if (sql && wanted !== 'python') {
-    result = convert(sql, undefined, undefined);
+    // the local DuckDB kernel has one SQL engine (duck.sql); on Glue keep the engine the page's SQL named
+    result = convert(sql, undefined, isLocalDuck(panel) ? 'duckdb' : undefined);
     result.meta.auto = true; // named after its table, like a typed one
   }
   setCell(cell, result);

@@ -1,9 +1,10 @@
 // A cell's language, and turning it from PySpark into SQL and back (the toolbar's PySpark / SQL switch).
 //
 // An SQL cell holds only its SQL; what makes it SQL is the cell's metadata:
-//   "duckduck": {"language": "sql", "engine": "spark" | "duckduck", "name": "proxy_logs", "auto": true}
+//   "duckduck": {"language": "sql", "engine": "spark" | "duckduck" | "duckdb", "name": "proxy_logs", "auto": true}
 // JupyterLab sends a cell's metadata with each execution, and the duckduck kernel runs such a cell as
-// name = spark.sql(<the SQL>) (reader.sql with engine duckduck). A cell whose first line is %%sql (the older
+// name = spark.sql(<the SQL>) (reader.sql with engine duckduck; duck.sql(...).df() → pandas with engine duckdb,
+// the local DuckDB kernel). A cell whose first line is %%sql (the older
 // form, still run as such) counts as SQL too, and loses that line when switched.
 // To PySpark, the cell becomes the code it stood for:   name = spark.sql("""\n<sql>\n""")\nname.show(20)
 // and such a cell (or reader.sql's) goes back to SQL as it was.
@@ -47,10 +48,10 @@ function isSql(meta) {
   return !!meta && meta.language === 'sql';
 }
 
-// 'python' | 'sql' | 'duckduck'
+// 'python' | 'sql' | 'duckduck' | 'duckdb' (duckdb = the local DuckDB kernel: duck.sql(...).df() → pandas)
 export function modeOf(source, meta) {
   if (isSql(meta)) {
-    return meta.engine === 'duckduck' ? 'duckduck' : 'sql';
+    return meta.engine === 'duckduck' ? 'duckduck' : meta.engine === 'duckdb' ? 'duckdb' : 'sql';
   }
   const found = headerLine(source || '');
   if (!found) {
@@ -69,7 +70,12 @@ export function nameOf(source, meta) {
 }
 
 const CALL =
-  /^\s*([A-Za-z_]\w*)\s*=\s*(spark|reader)\.sql\(\s*[rR]?("""|''')([\s\S]*?)\3\s*\)[ \t]*(?:#[^\n]*)?(?:\n[ \t]*\1\.show\([^)\n]*\)[ \t]*(?:#[^\n]*)?)?\s*$/;
+  /^\s*([A-Za-z_]\w*)\s*=\s*(spark|reader|duck)\.sql\(\s*[rR]?("""|''')([\s\S]*?)\3\s*\)(?:\.df\(\))?[ \t]*(?:#[^\n]*)?(?:\n[ \t]*\1(?:\.(?:show|head)\([^)\n]*\))?[ \t]*(?:#[^\n]*)?)?\s*$/;
+
+// the engine a `<name> = <x>.sql(...)` call stands for
+function callEngine(x) {
+  return x === 'reader' ? 'duckduck' : x === 'duck' ? 'duckdb' : 'spark';
+}
 
 function trimmed(text) {
   return text.replace(/^\n+|\s+$/g, '');
@@ -97,11 +103,12 @@ export function toSql(source, meta, engine) {
     if (call) {
       name = call[1];
       auto = false;
-      was = call[2] === 'reader' ? 'duckduck' : 'spark';
+      was = callEngine(call[2]);
       text = trimmed(call[4]);
     }
   }
-  const wanted = engine === undefined ? was || 'spark' : engine === 'duckduck' ? 'duckduck' : 'spark';
+  const wanted = engine === undefined ? was || 'spark'
+    : engine === 'duckduck' ? 'duckduck' : engine === 'duckdb' ? 'duckdb' : 'spark';
   if (auto) {
     // a first guess: decorate() makes it unique in the notebook
     name = name || baseName(text) || 'df_1';
@@ -124,7 +131,7 @@ export function toPython(source, meta) {
     text = found.lines.slice(found.index + 1).join('\n');
   } else if (isSql(meta)) {
     name = meta.name || DEFAULT_NAME;
-    engine = meta.engine === 'duckduck' ? 'duckduck' : 'spark';
+    engine = meta.engine === 'duckduck' ? 'duckduck' : meta.engine === 'duckdb' ? 'duckdb' : 'spark';
   } else {
     return { source: text, meta: null };
   }
@@ -133,8 +140,10 @@ export function toPython(source, meta) {
     return { source: before, meta: null };
   }
   const quote = sql.includes('"""') ? "'''" : '"""';
-  const call = engine === 'duckduck' ? 'reader' : 'spark';
-  const code = `${name} = ${call}.sql(${quote}\n${sql}\n${quote})\n${name}.show(20)`;
+  // the local DuckDB kernel: pandas via duck.sql(...).df(), the DataFrame shown as the last expression
+  const code = engine === 'duckdb'
+    ? `${name} = duck.sql(${quote}\n${sql}\n${quote}).df()\n${name}`
+    : `${name} = ${engine === 'duckduck' ? 'reader' : 'spark'}.sql(${quote}\n${sql}\n${quote})\n${name}.show(20)`;
   return { source: before ? before + '\n' + code : code, meta: null };
 }
 

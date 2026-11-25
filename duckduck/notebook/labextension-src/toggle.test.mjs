@@ -20,6 +20,16 @@ assert.deepEqual(toSql('%%sql hosts --duckduck\nSELECT 1', null).meta,
   { language: 'sql', engine: 'duckduck', name: 'hosts', auto: false });
 assert.equal(modeOf('x = 1', null), 'python');
 
+// the local DuckDB kernel: pandas via duck.sql(...).df(), round-tripping both ways
+const duckCell = toSql('SELECT * FROM events', null, 'duckdb');
+assert.deepEqual(duckCell.meta, { language: 'sql', engine: 'duckdb', name: 'events_df', auto: true });
+assert.equal(modeOf(duckCell.source, duckCell.meta), 'duckdb');
+assert.equal(toPython(duckCell.source, { ...duckCell.meta, name: 'events', auto: false }).source,
+  'events = duck.sql("""\nSELECT * FROM events\n""").df()\nevents');
+const duckCode = 'ev = duck.sql("""\nSELECT 1 AS a\n""").df()\nev';
+assert.deepEqual(toSql(duckCode, null, undefined).meta,
+  { language: 'sql', engine: 'duckdb', name: 'ev', auto: false });
+
 // names: after the table, never the table read itself, df_N without one, unique, stable
 assert.equal(baseName('SELECT * FROM security.proxy_logs'), 'proxy_logs');
 assert.equal(baseName('select a from hosts'), 'hosts_df');
