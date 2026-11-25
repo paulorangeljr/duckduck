@@ -210,8 +210,12 @@ def _kernel_class() -> Any:
                 return super()._send_output(output)
             for kind, piece in sqlcells.split_output(text):
                 if kind == "result":
+                    # tag the output with the result's columns, so SQL-cell autocomplete can offer them
                     self.send_response(self.iopub_socket, "display_data",
-                                       {"data": sqlcells.render(piece), "metadata": {}})
+                                       {"data": sqlcells.render(piece),
+                                        "metadata": {sqlcells.METADATA_KEY: {
+                                            "name": piece.get("name"),
+                                            "columns": [c[0] for c in (piece.get("columns") or [])]}}})
                 elif piece.strip():
                     super()._send_output(piece.rstrip("\n"))
 
@@ -301,7 +305,11 @@ def _install_sql_magic(shell: Any, duck_getter: Any) -> None:
         except sqlcells.SqlCellError as exc:
             print(str(exc), file=sys.stderr)
             return
-        publish_display_data(sqlcells.render(result))
+        # tag the output with the result's columns (the name + each column), so SQL-cell autocomplete can offer them
+        publish_display_data(
+            sqlcells.render(result),
+            metadata={sqlcells.METADATA_KEY: {"name": result.get("name"),
+                                              "columns": [c[0] for c in (result.get("columns") or [])]}})
 
     shell.register_magic_function(duckduck_sql, "cell", "sql")
 

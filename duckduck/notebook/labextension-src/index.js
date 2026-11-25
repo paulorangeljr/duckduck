@@ -280,8 +280,10 @@ class TablesPanel extends Widget {
 }
 
 // ---- inline autocomplete in SQL cells: the DataFrames the notebook's SQL cells leave + the catalog tables -------
-// A CodeMirror 6 completion source, scoped to SQL cells (model mimeType text/x-sql). It reads the names live: the
-// other SQL cells' DataFrame names (their metadata) and the Tables panel's catalog, so `FROM `/`JOIN ` offers them.
+// A CodeMirror 6 completion source, scoped to SQL cells (model mimeType text/x-sql). It reads live: the other SQL
+// cells' DataFrame names (their metadata) and the Tables panel's catalog, so `FROM `/`JOIN ` offers them; and the
+// columns of the tables this query reads — learned from the SQL cells' result outputs, which the kernel tags with
+// each result's columns (so a column shows up once its cell has run, the same as the SQL tab's column memory).
 let gTracker = null;  // the notebook tracker, for the current notebook's SQL-cell names
 let gPanel = null;    // the Tables panel, for the catalog names
 
@@ -318,6 +320,106 @@ function sqlNames() {
   return items;
 }
 
+// a SQL string's single-quoted literals and comments blanked (same length), so a word inside one isn't matched
+// (double-quoted names are kept — in DuckDB "My Table" is an identifier, which FROM/JOIN may name)
+function maskSql(s) {
+  return (s || '')
+    .replace(/'(?:[^']|'')*'/g, m => ' '.repeat(m.length))
+    .replace(/--[^\n]*/g, m => ' '.repeat(m.length))
+    .replace(/\/\*[\s\S]*?\*\//g, m => ' '.repeat(m.length));
+}
+
+// {DataFrame name: [columns]} learned from the notebook's SQL-cell outputs — the kernel tags each result's
+// display_data with its columns, so columns appear once a cell has run (like the SQL tab's own column memory)
+function sqlColumns() {
+  const map = {};
+  const panel = gTracker && gTracker.currentWidget;
+  if (!panel || !panel.content) {
+    return map;
+  }
+  panel.content.widgets.forEach(cell => {
+    if (!cell.model || cell.model.type !== 'code') {
+      return;
+    }
+    const outputs = cell.model.outputs;
+    const meta = cell.model.getMetadata ? cell.model.getMetadata(KEY) : undefined;
+    for (let i = 0; outputs && i < outputs.length; i++) {
+      const out = outputs.get(i);
+      const dd = out && out.metadata && out.metadata[KEY];
+      if (dd && Array.isArray(dd.columns) && dd.columns.length) {
+        const name = dd.name || (meta && meta.name);
+        if (name) {
+          map[name] = dd.columns.slice();
+        }
+      }
+    }
+  });
+  return map;
+}
+
+// aliases that are really keywords, never the name after a table (FROM t WHERE …)
+const ALIAS_STOP = new Set(['where', 'on', 'using', 'group', 'order', 'limit', 'having', 'join', 'inner', 'left',
+  'right', 'full', 'cross', 'natural', 'union', 'and', 'or', 'select', 'as', 'offset', 'window', 'qualify']);
+const FROM_REF = new RegExp(
+  '\\b(?:from|join)\\s+' +
+  '("[^"]+"|`[^`]+`|[A-Za-z_][\\w$]*(?:\\s*\\.\\s*(?:"[^"]+"|`[^`]+`|[A-Za-z_][\\w$]*))*)' +  // the table
+  '(?:\\s+(?:as\\s+)?("[^"]+"|`[^`]+`|[A-Za-z_]\\w*))?',                                       // an optional alias
+  'gi');
+
+// the tables/DataFrames an SQL query reads → {alias or name (lowercased): the name}. `FROM a.b c` → the last part
+function refMap(query) {
+  const masked = maskSql(query);
+  const map = {};
+  let m;
+  FROM_REF.lastIndex = 0;
+  while ((m = FROM_REF.exec(masked))) {
+    const parts = m[1].split('.').map(p => p.trim().replace(/^["`]|["`]$/g, ''));
+    const name = parts[parts.length - 1];
+    if (!name) {
+      continue;
+    }
+    map[name.toLowerCase()] = name;
+    if (m[2]) {
+      const alias = m[2].replace(/^["`]|["`]$/g, '');
+      if (!ALIAS_STOP.has(alias.toLowerCase())) {
+        map[alias.toLowerCase()] = name;
+      }
+    }
+  }
+  return map;
+}
+
+// a name's columns in the learned map, matched case-insensitively
+function columnsOf(name, cols) {
+  if (cols[name]) {
+    return cols[name];
+  }
+  const lc = name.toLowerCase();
+  const key = Object.keys(cols).find(k => k.toLowerCase() === lc);
+  return key ? cols[key] : null;
+}
+
+// the columns for a reference used in the query (an alias or a table name)
+function columnsForRef(ref, query) {
+  return columnsOf(refMap(query)[ref.toLowerCase()] || ref, sqlColumns());
+}
+
+// every column of the tables this query reads (that we've learned)
+function queryColumns(query) {
+  const cols = sqlColumns();
+  const out = [];
+  const seen = new Set();
+  new Set(Object.values(refMap(query))).forEach(name => {
+    (columnsOf(name, cols) || []).forEach(c => {
+      if (!seen.has(c)) {
+        seen.add(c);
+        out.push(c);
+      }
+    });
+  });
+  return out;
+}
+
 // the completion source for one editor (its model is captured so we only fire on SQL cells)
 function sqlCompletionSource(model) {
   return context => {
@@ -326,13 +428,32 @@ function sqlCompletionSource(model) {
     }
     const word = context.matchBefore(/[\w]+/);
     const before = context.state.sliceDoc(Math.max(0, context.pos - 200), context.pos);
+    // `alias.`/`name.` → that table's columns (only; an unresolved dotted name offers nothing, rather than table
+    // names that would double the prefix into security.security.proxy_logs)
+    const dot = /([\w"`]+)\s*\.\s*[\w]*$/.exec(before);
+    if (dot) {
+      const cols = columnsForRef(dot[1].replace(/["`]/g, ''), context.state.doc.toString());
+      if (!cols || !cols.length) {
+        return null;
+      }
+      return {
+        from: word ? word.from : context.pos,
+        options: cols.map(c => ({ label: c, type: 'property', detail: 'column' })),
+        validFor: /^[\w]*$/
+      };
+    }
     const afterRef = /(?:\bfrom\b|\bjoin\b|,)\s*[\w]*$/i.test(before);  // a table position
     if (!context.explicit && !afterRef && (!word || word.from === word.to)) {
       return null;
     }
     const names = sqlNames();
-    // after FROM/JOIN only names; elsewhere names + keywords
-    const options = afterRef ? names : names.concat(SQL_KEYWORDS.map(k => ({ label: k, type: 'keyword' })));
+    // after FROM/JOIN only names; elsewhere names + the columns of the tables this query reads + keywords
+    const options = afterRef
+      ? names
+      : names
+          .concat(queryColumns(context.state.doc.toString())
+            .map(c => ({ label: c, type: 'property', detail: 'column', boost: 1 })))
+          .concat(SQL_KEYWORDS.map(k => ({ label: k, type: 'keyword' })));
     if (!options.length) {
       return null;
     }
