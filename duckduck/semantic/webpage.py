@@ -4222,9 +4222,23 @@ window.addEventListener("message", (e) => {
   } else if (m.type === "duckduck:current") { NB.current = m; }
   else if (m.type === "duckduck:tables?") nbPushTables();  // the panel asked for the catalog
   else if (m.type === "duckduck:use-table" && typeof m.sql === "string") notebookInsert(m.sql);  // a table clicked in the panel
+  else if (m.type === "duckduck:present") notebookPresent(m);  // ▣ Present in JupyterLab's toolbar
   else if (m.type === "duckduck:inserted") toast(m.ok ? `Added to ${m.path}` : `Not added: ${m.error}`);
   else if (m.type === "duckduck:opened" && !m.ok) toast(`Couldn't open it: ${m.error}`);
 });
+// the notebook's tables and charts → one self-contained presentation page, opened in a new window.
+// It is written into the window (not a blob: URL) so it keeps this origin and can remember the
+// descriptions typed into it; a blocked popup falls back to downloading the same file.
+async function notebookPresent(m) {
+  try {
+    const r = await api("/api/notebook/present", {items: m.items, title: m.title, notebook: m.notebook});
+    const w = window.open("", "_blank");
+    if (w) { w.document.open(); w.document.write(r.html); w.document.close(); return; }
+    const name = (m.title || "presentation").replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 80);
+    saveFile(`${name}.html`, r.html, "text/html");
+    toast("The browser blocked the new window — the presentation was downloaded instead");
+  } catch (e) { toast(e.message); }
+}
 // the iframe reloaded (a new page inside it): wait for the extension again
 $("#nbframe").addEventListener("load", () => {
   NB.ready = false;

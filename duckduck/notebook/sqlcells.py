@@ -271,11 +271,17 @@ function sel(){var s=document.createElement('select');
 s.style.cssText='font:inherit;font-size:12px;padding:2px 4px;border:1px solid var(--jp-border-color2);'+
 'border-radius:4px;background:var(--jp-layout-color0);color:var(--jp-ui-font-color1)';return s;}
 function opt(s,v,t){var o=document.createElement('option');o.value=v;o.textContent=t;s.appendChild(o);}
-// one setting per row in the right-hand panel: its name on the left, its control on the right
-function row(t,el,tip){var w=document.createElement('label');
-w.style.cssText='display:flex;gap:8px;align-items:center;justify-content:space-between;'+
-'font-size:11px;color:var(--jp-ui-font-color1);margin:0 0 6px';
-var s=document.createElement('span');s.textContent=t;w.appendChild(s);w.appendChild(el);
+// one setting per row in the right-hand panel: a checkbox sits inline with its name, anything else gets a
+// small caption above a full-width control — so a name and its control are never half a panel apart and a
+// long one ('Count/agg') can't wrap into the row below it
+function row(t,el,tip){var w=document.createElement('label');var box=(el.type==='checkbox');
+w.style.cssText=box?'display:flex;gap:7px;align-items:center;font-size:11.5px;'+
+'color:var(--jp-ui-font-color1);margin:0 0 9px;cursor:pointer':'display:block;margin:0 0 10px';
+var s=document.createElement('span');s.textContent=t;
+if(box){w.appendChild(el);s.style.cssText='white-space:nowrap';w.appendChild(s);}
+else{s.style.cssText='display:block;margin:0 0 3px;white-space:nowrap;font-size:10px;font-weight:600;'+
+'letter-spacing:.05em;text-transform:uppercase;color:var(--jp-ui-font-color2)';
+w.appendChild(s);w.appendChild(el);}
 if(tip)w.title=tip;return w;}
 function group(t){var g=document.createElement('div');g.style.cssText='margin:0 0 14px';
 var hh=document.createElement('div');
@@ -301,9 +307,10 @@ var palSel=sel();[['default','Default'],['warm','Warm'],['cool','Cool'],['green'
 var bktSel=sel();[['none','None'],['hour','Hour'],['day','Day'],['week','Week'],
 ['month','Month'],['year','Year']].forEach(function(b){opt(bktSel,b[0],b[1]);});
 var thr=document.createElement('input');thr.type='number';thr.step='any';thr.placeholder='none';
-thr.style.cssText='font:inherit;font-size:12px;width:74px;padding:2px 4px;border:1px solid '+
+thr.style.cssText='font:inherit;font-size:12px;width:100%;padding:3px 5px;border:1px solid '+
 'var(--jp-border-color2);border-radius:4px;background:var(--jp-layout-color0);color:var(--jp-ui-font-color1)';
-[tSel,aSel,xSel,ySel,palSel,bktSel].forEach(function(s){s.style.width='118px';s.style.maxWidth='118px';});
+// every control fills its row, so the panel reads as one column of settings
+[tSel,aSel,xSel,ySel,palSel,bktSel].forEach(function(s){s.style.width='100%';s.style.padding='3px 4px';});
 var dBtn=btn(CJ?'⬇ PNG':'⬇ SVG');
 var ePin=window.__duckduckChartImage?btn('📌 Add to notebook'):null;  // persist as an image in a markdown cell
 if(ePin)ePin.title='Save this exact chart as an image cell in the notebook';

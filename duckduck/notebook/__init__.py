@@ -343,6 +343,19 @@ def mount(app: Any, server: "NotebookServer", duck: Any = None) -> None:
         except GlueError as exc:
             raise HTTPException(400, str(exc))
 
+    @app.post("/api/notebook/present")
+    def notebook_present(body: Dict[str, Any] = Body(default={})):
+        """The tables and charts the labextension collected from the open notebook → one
+        self-contained presentation page, which the app opens in a new window."""
+        from .present import PresentError, present_html
+
+        try:
+            html = present_html(body.get("items"), title=str(body.get("title") or ""),
+                                notebook=str(body.get("notebook") or ""))
+        except PresentError as exc:
+            raise HTTPException(400, str(exc))
+        return JSONResponse({"html": html})
+
     @app.api_route(PREFIX + "/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
     async def notebook_proxy(path: str, request: Request):
         if not allowed(request.cookies):

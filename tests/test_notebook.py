@@ -714,3 +714,96 @@ def test_the_switch_conversions_and_automatic_names_in_javascript():
     folder = os.path.join(os.path.dirname(__file__), "..", "duckduck", "notebook", "labextension-src")
     done = subprocess.run([node, "toggle.test.mjs"], cwd=folder, capture_output=True, text=True, timeout=60)
     assert done.returncode == 0 and done.stdout.strip() == "ok", done.stderr
+
+
+# ---- a notebook as a presentation --------------------------------------------------------------------------------
+
+from duckduck.notebook import present  # noqa: E402
+
+
+def _items():
+    return [
+        {"kind": "table", "title": "assets_df", "columns": [["host", "VARCHAR"], ["risk", "BIGINT"]],
+         "rows": [["web-01", 91], ["db-02", None], ["<script>alert(1)</script>", 3]], "more": True},
+        {"kind": "image", "title": "Risk by host", "src": "data:image/png;base64,iVBORw0KGgo="},
+    ]
+
+
+def test_a_notebooks_tables_and_charts_become_slides():
+    """One slide per rendered table and chart, a cover first, in notebook order."""
+    deck = present.deck(_items(), title="Inventory review", notebook="notebooks/inv.ipynb")
+    assert [s["kind"] for s in deck["slides"]] == ["cover", "table", "image"]
+    assert deck["title"] == "Inventory review" and deck["notebook"] == "notebooks/inv.ipynb"
+    cover, table, chart = deck["slides"]
+    assert cover["title"] == "Inventory review"
+    # every slide carries the empty descriptions the user fills in above and below it
+    for slide in deck["slides"]:
+        assert slide["above"] == "" and slide["below"] == ""
+    assert table["title"] == "assets_df" and table["more"] is True
+    assert table["columns"] == [["host", "VARCHAR"], ["risk", "BIGINT"]]
+    assert table["rows"][0] == ["web-01", 91] and table["rows"][1][1] is None  # numbers stay numbers, NULL stays NULL
+    assert table["shown"] == 3  # a slide shows a handful of rows, not the whole result
+    assert chart["src"].startswith("data:image/png;base64,")
+
+
+def test_a_presentation_only_embeds_what_it_can_show():
+    """A chart that isn't an embedded image, an oversize one and an unknown kind are left out, never fetched."""
+    items = [{"kind": "image", "src": "https://example.test/chart.png"},           # a URL the deck would fetch
+             {"kind": "image", "src": "data:image/png;base64," + "A" * present.MAX_IMAGE_CHARS},
+             {"kind": "table", "columns": [], "rows": [[1]]},                      # nothing to show
+             {"kind": "elephant"}, "not an object",
+             {"kind": "table", "columns": [["a", "BIGINT"]], "rows": [[1]]}]
+    slides = present.slides_from_items(items, "x")
+    assert [s["kind"] for s in slides] == ["cover", "table"]
+    # the slide cap holds
+    many = [{"kind": "table", "columns": [["a", "BIGINT"]], "rows": [[1]]}] * (present.MAX_SLIDES + 10)
+    assert len(present.slides_from_items(many, "x")) == present.MAX_SLIDES + 1
+
+
+def test_an_empty_presentation_says_what_to_do():
+    with pytest.raises(present.PresentError) as bad:
+        present.present_html([], title="Empty")
+    assert "pin a chart" in str(bad.value) and "📌" in str(bad.value)
+
+
+def test_the_presentation_page_is_self_contained_and_editable():
+    html = present.present_html(_items(), title="Inventory review", notebook="notebooks/inv.ipynb")
+    assert html.startswith("<!doctype html>") and 'id="duckduck-deck"' in html
+    # the rows travel as JSON, never as HTML: a cell holding a script tag cannot close ours
+    assert "<script>alert(1)</script>" not in html
+    assert "\\u003cscript>alert(1)" in html
+    assert json.loads(html.split('id="duckduck-deck">')[1].split("</script>")[0]
+                      .replace("\\u003c", "<"))["slides"][1]["rows"][2][0] == "<script>alert(1)</script>"
+    # the story controls the user asked for, and nothing loaded from the network
+    for control in ("＋ Slide", "▶ Present", "⬇ Download", "✕ Remove", "contenteditable"):
+        assert control in html
+    assert "http://" not in html and "https://" not in html
+    assert "@media print" in html and 'prefers-color-scheme:dark' in html
+
+
+def test_the_presentation_pages_own_script_parses():
+    """The deck carries its editor inline; a syntax error there would only show in a browser."""
+    import re
+    import shutil
+    import subprocess
+    import tempfile
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("no node")
+    script = re.findall(r"<script>(.*?)</script>", present._TEMPLATE, re.S)[-1]
+    with tempfile.TemporaryDirectory() as folder:
+        path = os.path.join(folder, "deck.js")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(script)
+        done = subprocess.run([node, "--check", path], capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+
+
+def test_the_page_builds_a_presentation_from_what_the_notebook_rendered(app_client):
+    made = app_client.post("/api/notebook/present",
+                           json={"items": _items(), "title": "Inventory review", "notebook": "inv.ipynb"})
+    assert made.status_code == 200
+    assert "Inventory review" in made.json()["html"]
+    empty = app_client.post("/api/notebook/present", json={"items": [], "title": "Nothing"})
+    assert empty.status_code == 400 and "pin a chart" in empty.json()["detail"]

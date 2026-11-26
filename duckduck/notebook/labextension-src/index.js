@@ -869,6 +869,143 @@ function insertChartImage(dataUrl) {
   return true;
 }
 
+// ---- the notebook as a presentation --------------------------------------------------------------------------
+// Walk the open notebook in order and collect what it has *rendered*: every result table (our outputs embed
+// their rows as a JSON block) and every chart (a pinned chart's markdown image, a matplotlib image/png or
+// image/svg+xml output). The page turns them into slides — one each, with a description above and below — via
+// POST /api/notebook/present (duckduck/notebook/present.py). Nothing is read from a kernel: only what is on
+// screen, so the deck matches the notebook as it stands.
+
+// a markdown cell that is nothing but an embedded image = a chart pinned with 📌
+const MD_IMAGE = /^\s*!\[[^\]]*\]\(\s*(data:image\/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+?)\s*\)\s*$/;
+
+function rowsOfOutput(html) {
+  try {
+    const doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
+    const node = doc.querySelector('script.duckduck-rows');
+    if (!node) {
+      return null;
+    }
+    const data = JSON.parse(node.textContent || '');
+    return data && Array.isArray(data.columns) && Array.isArray(data.rows) && data.rows.length ? data : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function collectSlides() {
+  const panel = gTracker && gTracker.currentWidget;
+  const items = [];
+  if (!panel || !panel.content) {
+    return items;
+  }
+  let charts = 0;
+  const chart = src => {
+    charts += 1;
+    items.push({ kind: 'image', title: 'Chart ' + charts, src });
+  };
+  panel.content.widgets.forEach(cell => {
+    const model = cell.model;
+    if (!model) {
+      return;
+    }
+    if (model.type === 'markdown') {
+      const found = MD_IMAGE.exec((model.sharedModel && model.sharedModel.getSource()) || '');
+      if (found) {
+        chart(found[1].replace(/\s+/g, ''));
+      }
+      return;
+    }
+    if (model.type !== 'code') {
+      return;
+    }
+    const meta = model.getMetadata ? model.getMetadata(KEY) : undefined;
+    const outputs = model.outputs;
+    for (let i = 0; outputs && i < outputs.length; i++) {
+      const out = outputs.get(i);
+      const data = (out && out.data) || {};
+      const dd = (out && out.metadata && out.metadata[KEY]) || null;
+      const table = rowsOfOutput(data['text/html']);
+      if (table) {
+        items.push({
+          kind: 'table',
+          title: (dd && dd.name) || (meta && meta.name) || table.name || 'Table',
+          columns: table.columns, rows: table.rows, more: !!table.more
+        });
+      } else if (typeof data['image/png'] === 'string' && data['image/png']) {
+        chart('data:image/png;base64,' + data['image/png'].replace(/\s+/g, ''));
+      } else if (typeof data['image/svg+xml'] === 'string' && data['image/svg+xml']) {
+        try {
+          chart('data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(data['image/svg+xml']))));
+        } catch (e) { /* an SVG we can't encode is simply left out */ }
+      }
+    }
+  });
+  return items;
+}
+
+// standalone (/notebook/lab in its own window, no duckduck page to ask): build the deck ourselves
+async function openPresentation(body) {
+  const res = await fetch('/api/notebook/present', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.detail || res.statusText || 'the presentation could not be built');
+  }
+  const win = window.open('', '_blank');
+  if (!win) {
+    throw new Error('the browser blocked the new window');
+  }
+  win.document.open();
+  win.document.write(data.html);
+  win.document.close();
+}
+
+// a ▣ Present button in every notebook's toolbar
+class PresentButton extends Widget {
+  constructor(panel) {
+    super();
+    this.panel = panel;
+    this.node.style.display = 'flex';
+    this.node.style.alignItems = 'center';
+    const button = document.createElement('button');
+    button.className = 'jp-ToolbarButtonComponent jp-Button';
+    button.style.cssText = 'font-size:12px;cursor:pointer';
+    button.textContent = '▣ Present';
+    button.title = "Turn this notebook's tables and charts into a presentation";
+    button.onclick = () => this.run(button);
+    this.button = button;
+    this.node.appendChild(button);
+  }
+
+  say(text, hold) {
+    const button = this.button;
+    button.textContent = text;
+    window.setTimeout(() => { button.textContent = '▣ Present'; }, hold || 2400);
+  }
+
+  run() {
+    const items = collectSlides();
+    if (!items.length) {
+      this.say('Nothing rendered yet', 3000);
+      return;
+    }
+    const path = (this.panel.context && this.panel.context.path) || '';
+    const title = (path.split('/').pop() || '').replace(/\.ipynb$/, '') || 'Presentation';
+    const body = { items, title, notebook: path };
+    if (EMBEDDED) {
+      post({ type: 'duckduck:present', ...body });
+      this.say('▣ Opening…');
+      return;
+    }
+    this.button.textContent = '▣ Building…';
+    openPresentation(body).then(() => this.say('▣ Present', 1), err => {
+      this.say('✕ ' + String(err.message || err).slice(0, 40), 5000);
+    });
+  }
+}
+
 // insert a plain Python code cell below the active one
 function insertCodeCell(code) {
   const panel = gTracker && gTracker.currentWidget;
@@ -1123,6 +1260,16 @@ const plugin = {
         const widget = new LanguageSwitch(panel);
         if (!panel.toolbar.insertAfter('cellType', 'duckduckLanguage', widget)) {
           panel.toolbar.addItem('duckduckLanguage', widget);
+        }
+        return widget;
+      }
+    });
+    // ▣ Present: the notebook's tables and charts as a presentation (see PresentButton / present.py)
+    app.docRegistry.addWidgetExtension('Notebook', {
+      createNew: panel => {
+        const widget = new PresentButton(panel);
+        if (!panel.toolbar.insertAfter('duckduckLanguage', 'duckduckPresent', widget)) {
+          panel.toolbar.addItem('duckduckPresent', widget);
         }
         return widget;
       }
