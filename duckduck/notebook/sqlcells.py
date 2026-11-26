@@ -142,14 +142,21 @@ def _value(v: Any) -> str:
 def render(result: Dict[str, Any]) -> Dict[str, str]:
     """One SQL cell's answer → ``{"text/html": …, "text/plain": …}``."""
     name, columns, rows = result.get("name", DEFAULT_NAME), result.get("columns") or [], result.get("rows") or []
-    via = {"duckduck": "reader.sql", "duckdb": "duck.sql"}.get(result.get("engine"), "spark.sql")
-    note = [f"<code>{html.escape(name)}</code> = {via}(…)" + ("" if name == "_sqldf" else " · also <code>_sqldf</code>")]
-    if result.get("views"):
-        note.append("temp views from DataFrames: " + ", ".join(f"<code>{html.escape(v)}</code>" for v in result["views"]))
-    if not columns:
-        note.append("no columns (a statement, not a query)")
-    elif result.get("show"):
-        note.append(f"first {len(rows)} rows" if result.get("more") else f"{len(rows)} row{'s' if len(rows) != 1 else ''}")
+    if result.get("plain"):
+        # a pandas DataFrame shown in the kernel (not an SQL cell): a neutral note, no "= duck.sql(…)".
+        total = int(result.get("total", len(rows)))
+        ncols = len(columns)
+        note = [f"{total:,} row{'s' if total != 1 else ''} × {ncols} column{'s' if ncols != 1 else ''}"
+                + (f" · first {len(rows)} shown" if result.get("more") else "")]
+    else:
+        via = {"duckduck": "reader.sql", "duckdb": "duck.sql"}.get(result.get("engine"), "spark.sql")
+        note = [f"<code>{html.escape(name)}</code> = {via}(…)" + ("" if name == "_sqldf" else " · also <code>_sqldf</code>")]
+        if result.get("views"):
+            note.append("temp views from DataFrames: " + ", ".join(f"<code>{html.escape(v)}</code>" for v in result["views"]))
+        if not columns:
+            note.append("no columns (a statement, not a query)")
+        elif result.get("show"):
+            note.append(f"first {len(rows)} rows" if result.get("more") else f"{len(rows)} row{'s' if len(rows) != 1 else ''}")
     head = "".join(f'<th title="{html.escape(t)}">{html.escape(c)}<div class="duckduck-type">{html.escape(t)}</div></th>'
                    for c, t in columns)
     body = "".join("<tr>" + "".join(f"<td>{_value(v)}</td>" for v in r) + "</tr>" for r in rows)
@@ -173,7 +180,8 @@ def render(result: Dict[str, Any]) -> Dict[str, str]:
         data_json = json.dumps(data, default=str).replace("<", "\\u003c")
         extras = f'<script type="application/json" class="duckduck-rows">{data_json}</script><script>{_VIEWER_JS}</script>'
     markup = f'{style}<div class="duckduck-sqlres"><div class="duckduck-note">{" · ".join(note)}</div>{table}{extras}</div>'
-    plain = [f"{name} = {via}(…)", "\t".join(c for c, _ in columns)]
+    plain_head = note[0] if result.get("plain") else f"{name} = {via}(…)"
+    plain = [plain_head, "\t".join(c for c, _ in columns)]
     plain += ["\t".join("null" if v is None else str(v) for v in r) for r in rows]
     return {"text/html": markup, "text/plain": "\n".join(plain)}
 
@@ -440,5 +448,26 @@ def frame_result(frame: Any, options: Dict[str, Any]) -> Dict[str, Any]:
             "more": len(rows) > show, "show": show, "views": list(options.get("views") or [])}
 
 
-__all__ = ["DEFAULT_NAME", "END", "HEADER", "MARK", "METADATA_KEY", "SqlCellError", "frame_result", "from_metadata",
-           "header_for", "parse_header", "render", "session_code", "split_cell", "split_output"]
+def dataframe_display(frame: Any, rows: int = 200) -> Optional[Dict[str, str]]:
+    """A pandas DataFrame shown in the kernel → the same HTML table + toolbar (Expand / Chart / CSV / Excel / Edit)
+    that SQL-cell results get, instead of pandas' plain repr. Returns ``None`` for anything that isn't a
+    DataFrame with columns, so the caller keeps pandas' own ``_repr_html_`` (never raises — display must not fail)."""
+    try:
+        columns = [[str(c), str(dt)] for c, dt in zip(list(frame.columns), list(frame.dtypes))]
+    except Exception:  # noqa: BLE001 — not a DataFrame-shaped object
+        return None
+    if not columns:
+        return None
+    try:
+        total = int(len(frame))
+        head = frame.head(rows)
+        data = [[_frame_cell(v) for v in row] for row in head.itertuples(index=False, name=None)]
+    except Exception:  # noqa: BLE001 — an odd frame (object columns, a broken __len__…): leave it to pandas
+        return None
+    return render({"name": DEFAULT_NAME, "columns": columns, "rows": data, "show": len(data),
+                   "more": total > len(data), "total": total, "plain": True})
+
+
+__all__ = ["DEFAULT_NAME", "END", "HEADER", "MARK", "METADATA_KEY", "SqlCellError", "dataframe_display",
+           "frame_result", "from_metadata", "header_for", "parse_header", "render", "session_code", "split_cell",
+           "split_output"]

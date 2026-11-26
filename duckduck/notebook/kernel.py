@@ -362,6 +362,38 @@ def _install_sql_magic(shell: Any, duck_getter: Any) -> None:
     shell.register_magic_function(duckduck_sql, "cell", "sql")
 
 
+def _install_df_display(shell: Any) -> None:
+    """Show every pandas DataFrame in this kernel with the duckduck toolbar (⤢ Expand / ⬇ CSV / ⬇ Excel / ▦ Chart /
+    ✎ Edit) — the same one SQL-cell results get — instead of pandas' plain HTML. A DataFrame shown in a Python cell
+    (the last expression, ``display(df)``, a bare ``df``) then carries the toolbar too. Falls back to pandas' own
+    repr on anything odd, and never raises (a failing display formatter would break every cell's output)."""
+    try:
+        import pandas as pd
+
+        formatter = shell.display_formatter.formatters.get("text/html")
+    except Exception:  # noqa: BLE001 — pandas missing, or no HTML formatter: leave the kernel as it is
+        return
+    if formatter is None:
+        return
+
+    def to_html(frame: Any) -> Optional[str]:
+        try:
+            shown = sqlcells.dataframe_display(frame)
+            if shown:
+                return shown["text/html"]
+        except Exception:  # noqa: BLE001 — never break display; fall through to pandas' own repr
+            pass
+        try:
+            return frame._repr_html_()
+        except Exception:  # noqa: BLE001
+            return None
+
+    try:
+        formatter.for_type(pd.DataFrame, to_html)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _local_kernel_class() -> Any:
     from ipykernel.ipkernel import IPythonKernel
 
@@ -376,6 +408,7 @@ def _local_kernel_class() -> Any:
             super().__init__(**kwargs)
             _bootstrap_duck(self.shell)
             _install_sql_magic(self.shell, lambda: self.shell.user_ns.get("duck"))
+            _install_df_display(self.shell)
 
         async def do_execute(self, code: str, silent: bool, store_history: bool = True,
                              user_expressions: Any = None, allow_stdin: bool = False, *,
