@@ -204,9 +204,12 @@ if(v===null||v===undefined||v==='')continue;if(isNaN(Number(v)))return false;any
 var bar=document.createElement('div');bar.className='duckduck-bar';
 var more=data.more?' (shown rows only — df.to_csv(...) for all)':'';
 var eExp=btn('⤢ Expand'),eChart=btn('▦ Chart'),eCsv=btn('⬇ CSV'),eXls=btn('⬇ Excel');
+var eEdit=window.__duckduckEditGrid?btn('✎ Edit'):null;  // only in the embedded JupyterLab extension
 eCsv.title=eXls.title='Download the '+rows.length+' shown row'+(rows.length===1?'':'s')+more;
-bar.appendChild(eExp);bar.appendChild(eChart);bar.appendChild(eCsv);bar.appendChild(eXls);
+bar.appendChild(eExp);bar.appendChild(eChart);if(eEdit)bar.appendChild(eEdit);bar.appendChild(eCsv);bar.appendChild(eXls);
 box.insertBefore(bar,box.firstChild);
+if(eEdit){eEdit.title='Edit these rows into a new DataFrame';
+eEdit.onclick=function(){window.__duckduckEditGrid({name:name,columns:cols,rows:rows});};}
 function cell(v){if(v===null||v===undefined)return '';v=String(v);return /[",\n\r]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;}
 eCsv.onclick=function(){var o=[cols.map(cell).join(',')];rows.forEach(function(r){o.push(r.map(cell).join(','));});
 dl('﻿'+o.join('\r\n'),'text/csv;charset=utf-8',name+'.csv');};

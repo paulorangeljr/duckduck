@@ -82,6 +82,10 @@ const STYLE = `
   border: 1px solid var(--jp-border-color2); border-radius: 3px; }
 .duckduck-tp-search:focus { outline: none; border-color: var(--jp-brand-color1); }
 .duckduck-tp-empty { padding: 8px 12px; color: var(--jp-ui-font-color2); font-size: var(--jp-ui-font-size0); }
+.duckduck-tp-new { margin: 0 10px 6px; padding: 4px 8px; font-size: var(--jp-ui-font-size1); cursor: pointer;
+  background: var(--jp-layout-color1); color: var(--jp-ui-font-color1); border: 1px solid var(--jp-border-color2);
+  border-radius: 3px; text-align: left; }
+.duckduck-tp-new:hover { border-color: var(--jp-brand-color1); color: var(--jp-brand-color1); }
 .duckduck-tp-list { flex: 1; overflow: auto; padding-bottom: 8px; }
 .duckduck-tp-group { display: flex; align-items: center; gap: 6px; width: 100%; border: 0; cursor: pointer;
   padding: 5px 10px 3px; font-size: var(--jp-ui-font-size0); font-weight: 600; text-align: left;
@@ -181,6 +185,14 @@ class TablesPanel extends Widget {
       this.filter = search.value.trim().toLowerCase();
       this.renderList();
     });
+    const newBtn = document.createElement('button');
+    newBtn.type = 'button';
+    newBtn.className = 'duckduck-tp-new';
+    newBtn.textContent = '＋ New table';
+    newBtn.title = 'Build a new table in a grid and insert it as a DataFrame';
+    newBtn.addEventListener('click', () => openGridEditor({
+      title: 'New table', columns: ['col1', 'col2', 'col3'], rows: [], suggestName: 'new_table'
+    }));
     this.empty = document.createElement('div');
     this.empty.className = 'duckduck-tp-empty';
     this.empty.textContent = 'Loading tables…';
@@ -203,7 +215,7 @@ class TablesPanel extends Widget {
         useTable(row.getAttribute('data-sql'));
       }
     });
-    this.node.append(head, search, this.empty, this.list);
+    this.node.append(head, search, newBtn, this.empty, this.list);
     this.requestTables();
   }
 
@@ -758,6 +770,214 @@ async function insert(app, tracker, code, sql) {
   return { path: panel.context.path, index: notebook.activeCellIndex };
 }
 
+// ---- the editable grid: edit a result's shown rows into a new DataFrame, or build a new table from scratch —
+// both insert a `name = pd.DataFrame(...)` cell for the user to run. The output's ✎ Edit calls the global
+// window.__duckduckEditGrid (set in activate); the Tables panel's ＋ New table calls openGridEditor directly.
+// Plain JS, no dependency, like the chart builder. Only the shown rows (≤ the output's limit) travel here.
+
+function pyStr(s) {
+  return "'" + String(s == null ? '' : s)
+    .replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t') + "'";
+}
+// a column is numeric when every non-empty cell parses as a number
+function columnIsNumeric(rows, ci) {
+  let any = false;
+  for (const r of rows) {
+    const v = r[ci];
+    if (v === '' || v == null) {
+      continue;
+    }
+    if (isNaN(Number(v))) {
+      return false;
+    }
+    any = true;
+  }
+  return any;
+}
+function pyCell(v, isNum) {
+  if (v === '' || v == null) {
+    return 'None';
+  }
+  return isNum ? String(Number(v)) : pyStr(v);
+}
+// Python for `name = pd.DataFrame([...rows...], columns=[...])` (an all-number column → numeric, empty → None)
+function dataframeCode(name, columns, rows) {
+  const nums = columns.map((_, ci) => columnIsNumeric(rows, ci));
+  const body = rows.map(r => '    [' + columns.map((_, ci) => pyCell(r[ci], nums[ci])).join(', ') + ']').join(',\n');
+  const data = rows.length ? '[\n' + body + '\n]' : '[]';
+  return `import pandas as pd\n\n${name} = pd.DataFrame(${data}, columns=[${columns.map(pyStr).join(', ')}])\n${name}`;
+}
+
+// insert a plain Python code cell below the active one
+function insertCodeCell(code) {
+  const panel = gTracker && gTracker.currentWidget;
+  if (!panel) {
+    return false;
+  }
+  if (gApp) {
+    gApp.shell.activateById(panel.id);
+  }
+  const notebook = panel.content;
+  NotebookActions.insertBelow(notebook);
+  if (notebook.activeCell && notebook.activeCell.model.type !== 'code') {
+    NotebookActions.changeCellType(notebook, 'code');
+  }
+  const cell = notebook.activeCell;
+  if (cell.model.getMetadata(KEY) !== undefined) {
+    cell.model.deleteMetadata(KEY);  // a plain Python cell, never SQL
+  }
+  cell.model.sharedModel.setSource(code);  // synchronous, so newCells() sees it filled and skips it
+  decorate(panel);
+  notebook.mode = 'command';
+  if (cell.node && cell.node.scrollIntoView) {
+    cell.node.scrollIntoView({ block: 'nearest' });
+  }
+  return true;
+}
+
+function gridButton(label) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.textContent = label;
+  b.style.cssText = 'font:inherit;font-size:11px;padding:3px 9px;cursor:pointer;border:1px solid var(--jp-border-color2);'
+    + 'border-radius:4px;background:var(--jp-layout-color1);color:var(--jp-ui-font-color1)';
+  return b;
+}
+
+// a modal shell for the extension's own dialogs (the output has its own in _VIEWER_JS)
+function appModal(titleText) {
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.45);display:flex;'
+    + 'align-items:center;justify-content:center;padding:24px';
+  const md = document.createElement('div');
+  md.style.cssText = 'background:var(--jp-layout-color1);color:var(--jp-ui-font-color1);border-radius:8px;'
+    + 'max-width:95vw;max-height:90vh;min-width:360px;display:flex;flex-direction:column;box-shadow:0 10px 40px rgba(0,0,0,.4)';
+  const head = document.createElement('div');
+  head.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 12px;'
+    + 'border-bottom:1px solid var(--jp-border-color2)';
+  const title = document.createElement('strong');
+  title.style.cssText = 'font-size:13px;margin-right:auto';
+  title.textContent = titleText;
+  head.appendChild(title);
+  const body = document.createElement('div');
+  body.style.cssText = 'overflow:auto;padding:12px';
+  md.append(head, body);
+  ov.appendChild(md);
+  function close() {
+    document.removeEventListener('keydown', onkey);
+    ov.remove();
+  }
+  function onkey(e) {
+    if (e.key === 'Escape') {
+      close();
+    }
+  }
+  const closeBtn = gridButton('✕ Close');
+  closeBtn.onclick = close;
+  ov.addEventListener('click', e => {
+    if (e.target === ov) {
+      close();
+    }
+  });
+  document.addEventListener('keydown', onkey);
+  return { overlay: ov, head, title, body, close, closeBtn, open: () => document.body.appendChild(ov) };
+}
+
+// the editable grid. columns: string[], rows: any[][]. "Use as DataFrame" inserts a pd.DataFrame cell.
+function openGridEditor(opts) {
+  const columns = opts.columns && opts.columns.length ? opts.columns.map(String) : ['col1', 'col2'];
+  const rows = opts.rows && opts.rows.length
+    ? opts.rows.map(r => columns.map((_, ci) => (r[ci] == null ? '' : r[ci])))
+    : [columns.map(() => ''), columns.map(() => ''), columns.map(() => '')];
+  const m = appModal(opts.title || 'Table editor');
+  const name = document.createElement('input');
+  name.type = 'text';
+  name.value = /^[A-Za-z_]\w*$/.test(opts.suggestName || '') ? opts.suggestName : 'df';
+  name.style.cssText = 'font:inherit;font-size:12px;padding:3px 6px;border:1px solid var(--jp-border-color2);'
+    + 'border-radius:4px;background:var(--jp-layout-color0);color:var(--jp-ui-font-color1);width:160px';
+  const nameLab = document.createElement('label');
+  nameLab.style.cssText = 'font-size:11px;color:var(--jp-ui-font-color2);display:flex;gap:4px;align-items:center;margin-right:auto';
+  nameLab.append(document.createTextNode('DataFrame'), name);
+  const addRow = gridButton('＋ Row');
+  const addCol = gridButton('＋ Column');
+  const use = gridButton('Use as DataFrame');
+  use.style.borderColor = use.style.color = 'var(--jp-brand-color1)';
+  m.head.append(nameLab, addRow, addCol, use, m.closeBtn);
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'overflow:auto;max-height:64vh';
+  const table = document.createElement('table');
+  table.style.cssText = 'border-collapse:collapse;font-size:12px';
+  wrap.appendChild(table);
+  const note = document.createElement('div');
+  note.style.cssText = 'font-size:11px;color:var(--jp-ui-font-color2);margin-top:8px';
+  note.textContent = 'Edit cells, rename headers, add/remove rows and columns. A column whose values are all numbers '
+    + 'becomes numeric; empty cells become None. "Use as DataFrame" inserts a pd.DataFrame cell to run.';
+  m.body.append(wrap, note);
+  const cellStyle = 'border:1px solid var(--jp-border-color2);padding:0';
+  const inp = 'width:140px;border:0;background:transparent;color:inherit;font:inherit;font-size:12px;padding:3px 6px;box-sizing:border-box';
+  function render() {
+    let html = '<thead><tr><th style="' + cellStyle + ';background:var(--jp-layout-color2)"></th>';
+    columns.forEach((c, ci) => {
+      html += '<th style="' + cellStyle + ';background:var(--jp-layout-color2)"><div style="display:flex;align-items:center">'
+        + '<input data-col="' + ci + '" value="' + escAttr(c) + '" style="' + inp + ';font-weight:600" />'
+        + '<button data-delcol="' + ci + '" title="Remove column" style="border:0;background:transparent;cursor:pointer;'
+        + 'color:var(--jp-ui-font-color3);padding:0 6px">✕</button></div></th>';
+    });
+    html += '</tr></thead><tbody>';
+    rows.forEach((r, ri) => {
+      html += '<tr><td style="' + cellStyle + ';background:var(--jp-layout-color2);text-align:center;padding:0 6px">'
+        + '<button data-delrow="' + ri + '" title="Remove row" style="border:0;background:transparent;cursor:pointer;'
+        + 'color:var(--jp-ui-font-color3)">✕</button></td>';
+      columns.forEach((_, ci) => {
+        html += '<td style="' + cellStyle + '"><input data-r="' + ri + '" data-c="' + ci + '" value="'
+          + escAttr(r[ci] == null ? '' : r[ci]) + '" style="' + inp + '" /></td>';
+      });
+      html += '</tr>';
+    });
+    table.innerHTML = html + '</tbody>';
+  }
+  render();
+  table.addEventListener('input', e => {
+    const t = e.target;
+    if (t.hasAttribute('data-r')) {
+      rows[+t.getAttribute('data-r')][+t.getAttribute('data-c')] = t.value;
+    } else if (t.hasAttribute('data-col')) {
+      columns[+t.getAttribute('data-col')] = t.value;
+    }
+  });
+  table.addEventListener('click', e => {
+    const dc = e.target.closest('[data-delcol]');
+    const dr = e.target.closest('[data-delrow]');
+    if (dc && columns.length > 1) {
+      const ci = +dc.getAttribute('data-delcol');
+      columns.splice(ci, 1);
+      rows.forEach(r => r.splice(ci, 1));
+      render();
+    } else if (dr) {
+      rows.splice(+dr.getAttribute('data-delrow'), 1);
+      render();
+    }
+  });
+  addRow.onclick = () => {
+    rows.push(columns.map(() => ''));
+    render();
+  };
+  addCol.onclick = () => {
+    columns.push('col' + (columns.length + 1));
+    rows.forEach(r => r.push(''));
+    render();
+  };
+  use.onclick = () => {
+    const cols = columns.map((c, i) => String(c).trim() || ('col' + (i + 1)));
+    const nm = /^[A-Za-z_]\w*$/.test(String(name.value).trim()) ? String(name.value).trim() : 'df';
+    if (insertCodeCell(dataframeCode(nm, cols, rows))) {
+      m.close();
+    }
+  };
+  m.open();
+  name.focus();
+}
+
 const plugin = {
   id: 'duckduck-notebook:bridge',
   description: 'Adds the cells the duckduck page sends to the open notebook.',
@@ -771,6 +991,17 @@ const plugin = {
     gApp = app;
     gTracker = tracker;
     gPanel = tablesPanel;
+    // the output's ✎ Edit button (in _VIEWER_JS, sandboxed from this module) reaches the editable grid through
+    // this global — the extension runs in the JupyterLab page, so it can read the kernel's rows and insert a cell
+    window.__duckduckEditGrid = payload => {
+      const p = payload || {};
+      openGridEditor({
+        title: 'Edit — ' + (p.name || 'result'),
+        columns: Array.isArray(p.columns) ? p.columns : [],
+        rows: Array.isArray(p.rows) ? p.rows : [],
+        suggestName: (/^[A-Za-z_]\w*$/.test(p.name || '') ? p.name : 'df') + '_edited'
+      });
+    };
     extensions.addExtension({
       name: 'duckduck:sql-autocomplete',
       factory: options => EditorExtensionRegistry.createImmutableExtension([
