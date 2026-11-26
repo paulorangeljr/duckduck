@@ -296,11 +296,9 @@ def test_clicking_a_table_adds_a_cell_in_jupyterlab(jupyter, glue_duck):
             browser = p.chromium.launch(executable_path=chrome) if chrome else p.chromium.launch()
             page = browser.new_page(viewport={"width": 1500, "height": 900})
             page.goto(f"http://127.0.0.1:{port}/")
+            jupyter.new_notebook("browser")  # no New-notebook button any more: the newest notebook opens on tab switch
             page.click('nav button[data-tab="notebook"]')
-            page.fill("#nbname", "browser")
-            page.click("#nbnew")
-            page.wait_for_function("document.querySelector('#nbcurrent').textContent.includes('browser')",
-                                   timeout=90000)
+            page.wait_for_selector("#nbframe:not([hidden])", timeout=90000)
             # the duckduck catalog is now a panel in JupyterLab's own left sidebar — open it and click a table
             frame = page.frame_locator("#nbframe")
             frame.locator('.lm-TabBar-tab[data-id="duckduck-tables"]').click()
@@ -346,11 +344,9 @@ def test_a_cell_switched_to_sql_leaves_a_dataframe_for_pyspark(tmp_path, glue_du
             browser = p.chromium.launch(executable_path=chrome) if chrome else p.chromium.launch()
             page = browser.new_page(viewport={"width": 1500, "height": 1000})
             page.goto(f"http://127.0.0.1:{port}/")
+            server.new_notebook("sqlmode")  # no New-notebook button any more: the newest notebook opens on tab switch
             page.click('nav button[data-tab="notebook"]')
-            page.fill("#nbname", "sqlmode")
-            page.click("#nbnew")
-            page.wait_for_function("document.querySelector('#nbcurrent').textContent.includes('sqlmode')",
-                                   timeout=90000)
+            page.wait_for_selector("#nbframe:not([hidden])", timeout=90000)
             frame = page.frame_locator("#nbframe")
             frame.locator(".jp-StatusBar-TextItem", has_text="| Idle").first.wait_for(timeout=90000)
             frame.locator(".jp-Notebook .jp-Cell").last.locator(".cm-content").click()

@@ -180,9 +180,7 @@ textarea { width: 100%; min-height: 60px; }
 /* Notebook tab: the SQL tab's table list next to an embedded JupyterLab */
 .nbpane { display: flex; flex-direction: column; gap: 8px; padding: 6px 0 0; min-height: calc(100vh - 110px);
   background: transparent; border: 0; box-shadow: none; }
-.nbbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.nbbar input { width: 200px; }
-#nbframe { flex: 1; width: 100%; min-height: calc(100vh - 190px); border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+#nbframe { flex: 1; width: 100%; min-height: calc(100vh - 130px); border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 #nbstart { padding: 24px 8px; }
 #nbproblems ul { margin: 4px 0 0 18px; padding: 0; }
 
@@ -746,10 +744,6 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
   <section id="tab-dashboard" hidden><div id="dashboard"></div></section>
   <section id="tab-notebook" hidden>
       <div class="card nbpane">
-        <div class="nbbar"><span class="muted small" id="nbcurrent" aria-live="polite">Starting JupyterLab…</span><span class="grow"></span>
-          <input id="nbname" type="text" placeholder="name" aria-label="New notebook's name">
-          <button class="secondary" type="button" id="nbnew" title="A new notebook for the configured kernel — the local DuckDB kernel (duck is ready, switch a cell to SQL) by default, or Glue when that's the kernel">New notebook</button>
-          <a class="linkish small" id="nbpop" href="/notebook/lab" target="_blank" rel="noopener" hidden title="JupyterLab in a window of its own (the Tables panel there adds cells to it)">Open in a new window ↗</a></div>
         <div id="nbproblems" class="muted small" hidden></div>
         <div id="nbstart" class="muted" hidden></div>
         <iframe id="nbframe" title="JupyterLab" hidden></iframe>
@@ -4212,12 +4206,6 @@ function nbProblems(status) {
   $("#nbproblems").hidden = !p.length;
   $("#nbproblems").innerHTML = p.length ? `<strong>Not ready yet:</strong><ul>${p.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : "";
 }
-function nbCurrent() {
-  const c = NB.current;
-  $("#nbcurrent").textContent = !NB.ready ? "Starting JupyterLab…"
-    : c?.path ? `Tables (left sidebar) add a cell to ${c.path}${c.kernel ? " · " + c.kernel : ""}`
-    : "Open or create a notebook — then a table from the Tables sidebar adds a cell to it";
-}
 function openNotebook() { return NB.opening ||= startNotebook().finally(() => { if (!NB.opened) NB.opening = null; }); }
 async function startNotebook() {
   $("#nbstart").hidden = false; $("#nbstart").innerHTML = `<span class="spin" aria-hidden="true"></span> Starting JupyterLab…`;
@@ -4225,7 +4213,7 @@ async function startNotebook() {
     const status = await api("/api/notebook/open", {});
     nbProblems(status);
     NB.opened = true;
-    $("#nbstart").hidden = true; $("#nbframe").hidden = false; $("#nbpop").hidden = false;
+    $("#nbstart").hidden = true; $("#nbframe").hidden = false;
     const first = status.notebooks?.[0];
     $("#nbframe").src = first ? `/notebook/lab/tree/${encodeURI(first)}` : status.url;
   } catch (e) {
@@ -4237,10 +4225,10 @@ window.addEventListener("message", (e) => {
   if (e.origin !== location.origin || e.source !== $("#nbframe").contentWindow) return;
   const m = e.data || {};
   if (m.type === "duckduck:ready") {
-    NB.ready = true; nbCurrent();
+    NB.ready = true;
     NB.queue.splice(0).forEach(nbPost);
     nbPushTables();  // the panel inside JupyterLab gets the catalog as soon as it is up
-  } else if (m.type === "duckduck:current") { NB.current = m; nbCurrent(); }
+  } else if (m.type === "duckduck:current") { NB.current = m; }
   else if (m.type === "duckduck:tables?") nbPushTables();  // the panel asked for the catalog
   else if (m.type === "duckduck:use-table" && typeof m.sql === "string") notebookInsert(m.sql);  // a table clicked in the panel
   else if (m.type === "duckduck:inserted") toast(m.ok ? `Added to ${m.path}` : `Not added: ${m.error}`);
@@ -4248,7 +4236,7 @@ window.addEventListener("message", (e) => {
 });
 // the iframe reloaded (a new page inside it): wait for the extension again
 $("#nbframe").addEventListener("load", () => {
-  NB.ready = false; nbCurrent();
+  NB.ready = false;
   setTimeout(() => { if (!NB.ready) $("#nbframe").contentWindow?.postMessage({type: "duckduck:hello"}, location.origin); }, 3000);
 });
 async function notebookInsert(sql) {
@@ -4259,19 +4247,6 @@ async function notebookInsert(sql) {
     if (!NB.ready) toast("JupyterLab is still loading — the cell goes in once it's up");
   } catch (e) { toast(e.message); }
 }
-$("#nbnew").addEventListener("click", async () => {
-  try {
-    const r = await api("/api/notebook/new", {name: $("#nbname").value.trim() || null});
-    await openNotebook();  // the iframe needs the cookie JupyterLab's start sets
-    if (!NB.opened) return;
-    const target = `/notebook/lab/tree/${encodeURI(r.path)}`;
-    if (NB.ready) nbPost({type: "duckduck:open", id: ++NB.seq, path: r.path});
-    // still loading: it may already be loading this one (the newest notebook) — loading it again would drop
-    // the JupyterLab that is starting
-    else if (!$("#nbframe").src.endsWith(target)) $("#nbframe").src = target;
-    toast(`Created ${r.path}`);
-  } catch (e) { toast(e.message); }
-});
 
 const ASK_TABS = ["ask", "history", "dashboard", "suggestions"];
 function showFeatures() {
