@@ -200,10 +200,14 @@ button:disabled:hover{border-color:var(--line);color:var(--ink)}
   text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto}
 .thumb .ic{font-size:11px;opacity:.75}
 .stagewrap{flex:1 1 auto;overflow:auto;padding:22px;display:flex;flex-direction:column;align-items:center}
+/* the stage carries the width: as a centred flex item it would otherwise shrink to its content,
+   and a slide holding only a title would end up a narrow column */
+#stage{width:100%;max-width:940px}
 
 /* a slide */
-.slide{width:100%;max-width:940px;background:var(--surface);border:1px solid var(--line);border-radius:12px;
-  box-shadow:var(--shadow);padding:34px 38px;display:flex;flex-direction:column;gap:14px;min-height:420px}
+.slide{width:100%;background:var(--surface);border:1px solid var(--line);border-radius:12px;
+  box-shadow:var(--shadow);padding:34px 38px;display:flex;flex-direction:column;gap:14px;
+  min-height:min(620px,calc(100vh - 200px))}
 .slide h2{margin:0;font-size:25px;line-height:1.25;font-weight:650;letter-spacing:-.01em}
 .slide .body{flex:1 1 auto;display:flex;flex-direction:column;justify-content:center;min-height:0}
 .ed{outline:none;color:var(--ink2);font-size:14.5px;white-space:pre-wrap;word-wrap:break-word;
@@ -242,6 +246,7 @@ td.null{color:var(--ink3);font-style:italic}
 /* present mode: the slide alone, full screen */
 body.show .top,body.show .rail,body.show .ctl{display:none}
 body.show .stagewrap{padding:0;justify-content:center;height:100vh}
+body.show #stage{max-width:none;width:100vw}
 body.show .slide{max-width:none;width:100vw;height:100vh;min-height:0;border:none;border-radius:0;
   box-shadow:none;justify-content:center;padding:6vh 7vw}
 body.show .slide h2{font-size:min(5.2vw,46px)}
@@ -259,6 +264,7 @@ body.show .showbar{display:flex}
   body{background:#fff}
   .top,.rail,.ctl,.showbar{display:none!important}
   .stagewrap{padding:0;display:block;overflow:visible}
+  #stage{max-width:none}
   .slide{box-shadow:none;border:none;max-width:none;width:100%;min-height:92vh;break-after:page;page-break-after:always}
   .ed:empty{display:none}
   .tw{overflow:visible}
