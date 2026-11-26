@@ -158,13 +158,91 @@ def render(result: Dict[str, Any]) -> Dict[str, str]:
              "{border-bottom:1px solid var(--jp-border-color2);padding:3px 10px;text-align:left;white-space:nowrap;"
              "max-width:420px;overflow:hidden;text-overflow:ellipsis}.duckduck-type{font-weight:normal;"
              "color:var(--jp-ui-font-color2);font-size:11px}.duckduck-null{color:var(--jp-ui-font-color3);"
-             "font-style:italic}.duckduck-scroll{max-height:420px;overflow:auto}</style>")
+             "font-style:italic}.duckduck-scroll{max-height:420px;overflow:auto}"
+             ".duckduck-bar{display:flex;gap:6px;margin:2px 0 6px}.duckduck-bar button{font:inherit;font-size:11px;"
+             "padding:2px 8px;cursor:pointer;border:1px solid var(--jp-border-color2);border-radius:4px;"
+             "background:var(--jp-layout-color1);color:var(--jp-ui-font-color1)}.duckduck-bar button:hover"
+             "{border-color:var(--jp-brand-color1)}</style>")
     table = (f'<div class="duckduck-scroll"><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
              if columns and result.get("show") else "")
-    markup = f'{style}<div class="duckduck-sqlres"><div class="duckduck-note">{" · ".join(note)}</div>{table}</div>'
+    # the result data for the Expand modal / CSV / Excel buttons (the viewer script injects the toolbar). Only the
+    # shown rows travel here (the full DataFrame lives in the kernel) — the buttons say so when there are more.
+    extras = ""
+    if columns and rows:
+        data = {"name": name, "columns": columns, "rows": rows, "more": bool(result.get("more"))}
+        data_json = json.dumps(data, default=str).replace("<", "\\u003c")
+        extras = f'<script type="application/json" class="duckduck-rows">{data_json}</script><script>{_VIEWER_JS}</script>'
+    markup = f'{style}<div class="duckduck-sqlres"><div class="duckduck-note">{" · ".join(note)}</div>{table}{extras}</div>'
     plain = [f"{name} = {via}(…)", "\t".join(c for c, _ in columns)]
     plain += ["\t".join("null" if v is None else str(v) for v in r) for r in rows]
     return {"text/html": markup, "text/plain": "\n".join(plain)}
+
+
+# The Expand modal + CSV/Excel download, injected into a result's output by JupyterLab when the notebook is trusted
+# (it evaluates <script> in trusted HTML outputs; untrusted → the plain table stays, the toolbar simply never
+# appears). Self-contained, defensive, finds its own result via document.currentScript. Downloads cover the rows
+# shown in the output (the full DataFrame lives in the kernel: `df.to_csv(...)` for everything). Excel is an
+# HTML-table .xls (opens in Excel, no dependency). Theming uses JupyterLab's own CSS variables.
+_VIEWER_JS = r"""
+(function(){try{
+var s=document.currentScript,box=s&&s.closest?s.closest('.duckduck-sqlres'):null;
+if(!box){var a=document.querySelectorAll('.duckduck-sqlres:not([data-ddwired])');box=a[a.length-1];}
+if(!box||box.getAttribute('data-ddwired'))return;box.setAttribute('data-ddwired','1');
+var d=box.querySelector('script.duckduck-rows');if(!d)return;var data=JSON.parse(d.textContent);
+var cols=(data.columns||[]).map(function(c){return c[0];}),rows=data.rows||[],name=data.name||'result';
+if(!cols.length)return;
+function h(v){return v===null||v===undefined?'':String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function dl(t,m,f){var b=new Blob([t],{type:m}),u=URL.createObjectURL(b),a=document.createElement('a');
+a.href=u;a.download=f;document.body.appendChild(a);a.click();document.body.removeChild(a);
+setTimeout(function(){URL.revokeObjectURL(u);},1000);}
+function btn(l){var b=document.createElement('button');b.type='button';b.textContent=l;return b;}
+var bar=document.createElement('div');bar.className='duckduck-bar';
+var more=data.more?' (shown rows only — df.to_csv(...) for all)':'';
+var eExp=btn('⤢ Expand'),eCsv=btn('⬇ CSV'),eXls=btn('⬇ Excel');
+eCsv.title=eXls.title='Download the '+rows.length+' shown row'+(rows.length===1?'':'s')+more;
+bar.appendChild(eExp);bar.appendChild(eCsv);bar.appendChild(eXls);box.insertBefore(bar,box.firstChild);
+function cell(v){if(v===null||v===undefined)return '';v=String(v);return /[",\n\r]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;}
+eCsv.onclick=function(){var o=[cols.map(cell).join(',')];rows.forEach(function(r){o.push(r.map(cell).join(','));});
+dl('﻿'+o.join('\r\n'),'text/csv;charset=utf-8',name+'.csv');};
+eXls.onclick=function(){var t='<table><thead><tr>'+cols.map(function(c){return '<th>'+h(c)+'</th>';}).join('')+
+'</tr></thead><tbody>'+rows.map(function(r){return '<tr>'+r.map(function(v){return '<td>'+h(v)+'</td>';}).join('')+
+'</tr>';}).join('')+'</tbody></table>';
+dl('<html><head><meta charset="utf-8"></head><body>'+t+'</body></html>','application/vnd.ms-excel',name+'.xls');};
+eExp.onclick=function(){
+var ov=document.createElement('div');
+ov.style.cssText='position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.45);display:flex;'+
+'align-items:center;justify-content:center;padding:24px';
+var md=document.createElement('div');
+md.style.cssText='background:var(--jp-layout-color1);color:var(--jp-ui-font-color1);border-radius:8px;'+
+'max-width:95vw;max-height:90vh;min-width:320px;display:flex;flex-direction:column;box-shadow:0 10px 40px rgba(0,0,0,.4)';
+var hd=document.createElement('div');
+hd.style.cssText='display:flex;gap:8px;align-items:center;padding:10px 12px;border-bottom:1px solid var(--jp-border-color2)';
+var tt=document.createElement('strong');tt.style.cssText='flex:1;font-size:13px';
+tt.textContent=name+' — '+rows.length+' row'+(rows.length===1?'':'s')+(data.more?' (shown)':'');
+var q=document.createElement('input');q.type='search';q.placeholder='Filter';
+q.style.cssText='font:inherit;font-size:12px;padding:3px 6px;border:1px solid var(--jp-border-color2);'+
+'border-radius:4px;background:var(--jp-layout-color0);color:var(--jp-ui-font-color1)';
+var cx=btn('✕ Close');cx.className='';cx.style.cssText='font:inherit;font-size:12px;padding:3px 8px;cursor:pointer;'+
+'border:1px solid var(--jp-border-color2);border-radius:4px;background:var(--jp-layout-color1);color:var(--jp-ui-font-color1)';
+hd.appendChild(tt);hd.appendChild(q);hd.appendChild(cx);
+var sc=document.createElement('div');sc.style.cssText='overflow:auto;padding:0 12px 12px';
+var tb=document.createElement('table');tb.style.cssText='border-collapse:collapse;font-size:12px;width:100%';
+sc.appendChild(tb);md.appendChild(hd);md.appendChild(sc);ov.appendChild(md);
+function draw(f){f=(f||'').toLowerCase();var b=rows;
+if(f)b=rows.filter(function(r){return r.some(function(v){return v!==null&&v!==undefined&&String(v).toLowerCase().indexOf(f)>=0;});});
+tb.innerHTML='<thead><tr>'+cols.map(function(c){return '<th style="position:sticky;top:0;background:var(--jp-layout-color1);'+
+'border-bottom:1px solid var(--jp-border-color1);padding:4px 10px;text-align:left;white-space:nowrap">'+h(c)+'</th>';}).join('')+
+'</tr></thead><tbody>'+b.map(function(r){return '<tr>'+r.map(function(v){return '<td style="border-bottom:1px solid '+
+'var(--jp-border-color2);padding:3px 10px;white-space:nowrap;max-width:480px;overflow:hidden;text-overflow:ellipsis">'+
+(v===null||v===undefined?'<span style="opacity:.5;font-style:italic">null</span>':h(v))+'</td>';}).join('')+'</tr>';}).join('')+
+'</tbody>';}
+draw('');q.addEventListener('input',function(){draw(q.value);});
+function close(){document.removeEventListener('keydown',onkey);ov.remove();}
+function onkey(e){if(e.key==='Escape')close();}
+cx.onclick=close;ov.addEventListener('click',function(e){if(e.target===ov)close();});
+document.addEventListener('keydown',onkey);document.body.appendChild(ov);q.focus();};
+}catch(e){}})();
+"""
 
 
 #: the cell metadata key the notebook's PySpark / SQL switch writes: {"language": "sql", "engine", "name"}
