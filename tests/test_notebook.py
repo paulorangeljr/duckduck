@@ -653,7 +653,7 @@ def test_the_local_kernel_is_offered_and_has_a_python_template():
     tmpl = nbkernel.local_notebook_template()
     assert tmpl["metadata"]["kernelspec"]["name"] == "duckduck_local"
     assert tmpl["metadata"]["kernelspec"]["language"] == "python"
-    sql_cell = tmpl["cells"][1]
+    sql_cell = tmpl["cells"][0]  # no intro cell any more — the SQL cell is first
     assert sql_cell["metadata"]["duckduck"]["language"] == "sql"
     assert "SHOW TABLES" in "".join(sql_cell["source"])
     if importlib.util.find_spec("ipykernel"):  # offered whenever ipykernel is installed — no AWS, no Spark

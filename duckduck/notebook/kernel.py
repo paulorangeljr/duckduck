@@ -432,27 +432,16 @@ def _local_kernel_class() -> Any:
 
 
 def local_notebook_template(kernel: str = LOCAL_DUCK_KERNEL) -> Dict[str, Any]:
-    """A notebook for the local DuckDB kernel (nbformat 4): an intro, an SQL cell listing the tables, an empty cell."""
+    """A notebook for the local DuckDB kernel (nbformat 4): an SQL cell listing the tables, then an empty cell.
+
+    No intro cell — it only took room at the top; the SQL tab and the Tables panel explain the rest."""
     def cell(kind: str, src: str, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         out: Dict[str, Any] = {"cell_type": kind, "metadata": meta or {}, "source": src.splitlines(keepends=True) or [""]}
         if kind == "code":
             out.update({"execution_count": None, "outputs": []})
         return out
 
-    intro = ("# duckduck — local DuckDB\n\n"
-             "This notebook runs **locally**, with no Spark and no AWS. `duck` is a duckduck `DuckAPI` with your "
-             "connectors already registered — query it just like the SQL tab.\n\n"
-             "**SQL cells**: the toolbar's language switch turns a cell into SQL. It runs as "
-             "`df = duck.sql(...).df()` (the same push-down as the SQL tab) and keeps the result as a pandas "
-             "DataFrame — `%%sql name` names it, `_sqldf` is always the last one — so the next Python cell goes on "
-             "from it. A DataFrame from an earlier cell, named in the SQL, is read as a table.\n\n"
-             "**Python values in SQL**: write `{{ my_var }}` (double braces) anywhere in an SQL cell and the "
-             "kernel puts that Python variable in as a SQL literal — `WHERE severity = {{ sev }}` becomes "
-             "`WHERE severity = 'high'` (unquoted: text brings its own quotes; a list becomes `(a, b, c)` for "
-             "`IN`). A whole DataFrame goes in by its name directly, not in `{{ }}`.\n\n"
-             "Click a table in the list on the left to add a cell that reads it.")
-    cells = [cell("markdown", intro),
-             cell("code", "SHOW TABLES",
+    cells = [cell("code", "SHOW TABLES",
                   {"duckduck": {"language": "sql", "engine": "duckduck", "name": "tables", "auto": False}}),
              cell("code", "")]
     return {"nbformat": 4, "nbformat_minor": 5, "cells": cells,
