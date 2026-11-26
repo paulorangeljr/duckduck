@@ -264,6 +264,7 @@ tb.innerHTML='<thead><tr>'+cols.map(function(c){return '<th style="position:stic
 '</tbody>';}
 draw('');q.addEventListener('input',function(){draw(q.value);});m.open();q.focus();};
 eChart.onclick=function(){
+var CJ=window.__duckduckChart;  // Chart.js if the extension bundled it (richer); else the inline-SVG fallback
 var m=modal('Chart — '+name+(data.more?' (shown rows)':''));
 var nums=cols.map(function(_,i){return numCol(i);});
 function sel(){var s=document.createElement('select');
@@ -274,7 +275,10 @@ function lab(t,el){var w=document.createElement('label');
 w.style.cssText='font-size:11px;color:var(--jp-ui-font-color2);display:flex;gap:4px;align-items:center';
 w.appendChild(document.createTextNode(t));w.appendChild(el);return w;}
 var tSel=sel(),aSel=sel(),xSel=sel(),ySel=sel();
-['bar','line','area','scatter','pie'].forEach(function(t){opt(tSel,t,t.charAt(0).toUpperCase()+t.slice(1));});
+var TYPES=CJ?[['bar','Bar'],['hbar','Horizontal bar'],['line','Line'],['area','Area'],['scatter','Scatter'],
+['pie','Pie'],['doughnut','Doughnut'],['radar','Radar'],['polarArea','Polar area']]
+:[['bar','Bar'],['line','Line'],['area','Area'],['scatter','Scatter'],['pie','Pie']];
+TYPES.forEach(function(t){opt(tSel,t[0],t[1]);});
 [['count','Count'],['sum','Sum'],['avg','Average'],['none','None (raw)']].forEach(function(a){opt(aSel,a[0],a[1]);});
 cols.forEach(function(c,i){opt(xSel,String(i),c);});
 cols.forEach(function(c,i){if(nums[i])opt(ySel,String(i),c);});
@@ -282,10 +286,14 @@ if(!ySel.options.length){cols.forEach(function(c,i){opt(ySel,String(i),c);});}
 var hasNum=nums.indexOf(true)>=0;
 var firstCat=nums.indexOf(false);xSel.value=String(firstCat>=0?firstCat:0);
 ySel.selectedIndex=0;aSel.value=hasNum?'none':'count';  // all-text data → count rows per category by default
-var dSvg=btn('⬇ SVG');
+var logCb=document.createElement('input');logCb.type='checkbox';
+var dBtn=btn(CJ?'⬇ PNG':'⬇ SVG');
+var ePin=window.__duckduckChartCell?btn('📌 Add to notebook'):null;  // persist as a matplotlib cell (a real output)
+if(ePin)ePin.title='Insert a matplotlib cell that redraws this chart — a saved cell output';
 m.head.appendChild(lab('Type',tSel));m.head.appendChild(lab('Count/agg',aSel));
 m.head.appendChild(lab('X',xSel));m.head.appendChild(lab('Y',ySel));
-m.head.appendChild(dSvg);m.head.appendChild(m.close);
+if(CJ)m.head.appendChild(lab('Log Y',logCb));
+m.head.appendChild(dBtn);if(ePin)m.head.appendChild(ePin);m.head.appendChild(m.close);
 var cap=document.createElement('div');cap.style.cssText='font-size:11px;color:var(--jp-ui-font-color2);margin:0 0 6px';
 var host=document.createElement('div');host.style.cssText='width:76vw;max-width:900px;min-width:280px';
 m.body.appendChild(cap);m.body.appendChild(host);
@@ -299,7 +307,55 @@ m2[k].c++;if(agg==='sum'||agg==='avg'){var n=Number(r[yi]);if(!isNaN(n))m2[k].s+
 return order.map(function(k){var gg=m2[k];return {k:k,v:agg==='count'?gg.c:agg==='avg'?(gg.c?gg.s/gg.c:0):gg.s};});}
 function fmt(v){if(v===null||!isFinite(v))return '';var a=Math.abs(v);
 if(a!==0&&(a>=1e5||a<1e-3))return v.toExponential(1);return (Math.round(v*1000)/1000).toString();}
-function draw(){try{
+function capText(type,agg,xi,yi){return type==='scatter'?'Raw '+cols[yi]+' vs '+cols[xi]
+:agg==='none'?'Raw '+cols[yi]+' by '+cols[xi]
+:(agg==='count'?'Count of rows':(agg==='avg'?'Average of ':'Sum of ')+cols[yi])+' by '+cols[xi];}
+function themeVar(v,f){var c=getComputedStyle(document.body).getPropertyValue(v);return (c&&c.trim())||f;}
+var chart=null;
+// Chart.js render (when the extension bundled it): more types, native tooltips/legend, log scale, PNG export
+function drawCjs(){try{
+var type=tSel.value,xi=Number(xSel.value),yi=selY()[0],agg=aSel.value;
+cap.textContent=capText(type,agg,xi,yi);
+var grid=themeVar('--jp-border-color2','rgba(128,128,128,.3)');
+CJ.defaults.color=themeVar('--jp-ui-font-color1','#333');
+var isCat=(type==='pie'||type==='doughnut'||type==='polarArea'||type==='radar');
+var cjsType=type==='hbar'?'bar':type==='area'?'line':type;
+function cart(){var o={responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+scales:{x:{grid:{color:grid}},y:{grid:{color:grid}}}};
+if(type==='hbar')o.indexAxis='y';
+if(logCb.checked)o.scales[type==='hbar'?'x':'y']={type:'logarithmic',grid:{color:grid}};
+return o;}
+var cfg;
+if(type==='scatter'){
+var pts=rows.map(function(r){return {x:Number(r[xi]),y:Number(r[yi])};}).filter(function(p){return !isNaN(p.x)&&!isNaN(p.y);});
+cfg={type:'scatter',data:{datasets:[{label:cols[yi]+' vs '+cols[xi],data:pts,backgroundColor:PAL[0]}]},options:cart()};
+}else if(isCat){
+var gp=grouped(xi,yi,agg==='none'?'count':agg).filter(function(o){return isFinite(o.v);});
+if(type!=='radar')gp.sort(function(a,b){return b.v-a.v;});
+if(gp.length>12){if(type==='radar'){gp=gp.slice(0,12);}
+else{var rest=gp.slice(11).reduce(function(s,o){return s+o.v;},0);gp=gp.slice(0,11);gp.push({k:'(others)',v:rest});}}
+var colors=gp.map(function(_,i){return PAL[i%PAL.length];});
+cfg={type:cjsType,data:{labels:gp.map(function(o){return o.k;}),datasets:[{label:cols[yi],
+data:gp.map(function(o){return o.v;}),backgroundColor:type==='radar'?'rgba(37,99,235,.2)':colors,
+borderColor:type==='radar'?PAL[0]:colors,borderWidth:1}]},
+options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:type!=='radar',position:'right'}}}};
+}else{
+var labels,vals;
+if(agg!=='none'){var g2=grouped(xi,yi,agg);labels=g2.map(function(o){return o.k;});vals=g2.map(function(o){return o.v;});}
+else{labels=rows.map(function(r){return String(r[xi]==null?'':r[xi]);});
+vals=rows.map(function(r){var n=Number(r[yi]);return isNaN(n)?null:n;});}
+var isBar=(type==='bar'||type==='hbar');
+cfg={type:cjsType,data:{labels:labels,datasets:[{label:cols[yi],data:vals,
+backgroundColor:isBar?labels.map(function(_,i){return PAL[i%PAL.length];}):'rgba(37,99,235,.2)',
+borderColor:PAL[0],borderWidth:isBar?0:2,fill:type==='area',tension:.25,
+pointRadius:(type==='line'||type==='area')?2:0}]},options:cart()};
+}
+host.innerHTML='';host.style.position='relative';host.style.height='440px';
+var cv=document.createElement('canvas');host.appendChild(cv);
+if(chart)chart.destroy();
+chart=new CJ(cv.getContext('2d'),cfg);
+}catch(e){host.textContent='Couldn’t draw this — try other columns.';}}
+function drawSvg(){try{
 var type=tSel.value,xi=Number(xSel.value),yis=selY(),agg=aSel.value;
 cap.textContent=type==='scatter'?'Raw '+cols[yis[0]]+' vs '+cols[xi]
 :agg==='none'?'Raw '+cols[yis[0]]+' by '+cols[xi]
@@ -360,8 +416,16 @@ if(series.length>1){var lx=L+6;yis.forEach(function(yi,si){g+='<rect x="'+lx+'" 
 PAL[si%PAL.length]+'"/>'+tx(lx+14,T+11,cols[yi],ink,'start');lx+=cols[yi].length*7+34;});}
 host.innerHTML=g+'</svg>';
 }catch(e){host.textContent='Couldn’t draw this — try other columns.';}}
-[tSel,aSel,xSel,ySel].forEach(function(el){el.addEventListener('change',draw);el.addEventListener('input',draw);});
-dSvg.onclick=function(){var sv=host.querySelector('svg');if(sv)dl('<?xml version="1.0"?>\n'+sv.outerHTML,'image/svg+xml',name+'.svg');};
+function draw(){if(CJ){drawCjs();}else{drawSvg();}}
+[tSel,aSel,xSel,ySel,logCb].forEach(function(el){el.addEventListener('change',draw);el.addEventListener('input',draw);});
+dBtn.onclick=function(){
+if(CJ){if(chart){var a=document.createElement('a');a.href=chart.toBase64Image();a.download=name+'.png';
+document.body.appendChild(a);a.click();document.body.removeChild(a);}}
+else{var sv=host.querySelector('svg');if(sv)dl('<?xml version="1.0"?>\n'+sv.outerHTML,'image/svg+xml',name+'.svg');}};
+if(ePin)ePin.onclick=function(){window.__duckduckChartCell({name:name,type:tSel.value,agg:aSel.value,
+x:cols[Number(xSel.value)],y:cols[selY()[0]],title:cap.textContent});
+var t0=ePin.textContent;ePin.textContent='✓ Added';setTimeout(function(){ePin.textContent=t0;},1400);};
+m.close.addEventListener('click',function(){if(chart)chart.destroy();});
 draw();m.open();};
 }catch(e){}})();
 """

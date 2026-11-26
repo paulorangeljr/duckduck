@@ -22,7 +22,8 @@
     "@jupyterlab/codemirror": "^4.0.0",
     "@jupyterlab/notebook": "^4.0.0",
     "@jupyterlab/ui-components": "^4.0.0",
-    "@lumino/widgets": "^2.0.0"
+    "@lumino/widgets": "^2.0.0",
+    "chart.js": "^4.4.0"
   },
   "devDependencies": {
     "@jupyterlab/builder": "^4.5.0"
@@ -37,7 +38,7 @@
       }
     },
     "_build": {
-      "load": "static/remoteEntry.56188e4b411a62d1b846.js",
+      "load": "static/remoteEntry.aa63e88e071ac67c5cca.js",
       "extension": "./extension"
     }
   }
