@@ -271,9 +271,17 @@ function sel(){var s=document.createElement('select');
 s.style.cssText='font:inherit;font-size:12px;padding:2px 4px;border:1px solid var(--jp-border-color2);'+
 'border-radius:4px;background:var(--jp-layout-color0);color:var(--jp-ui-font-color1)';return s;}
 function opt(s,v,t){var o=document.createElement('option');o.value=v;o.textContent=t;s.appendChild(o);}
-function lab(t,el){var w=document.createElement('label');
-w.style.cssText='font-size:11px;color:var(--jp-ui-font-color2);display:flex;gap:4px;align-items:center';
-w.appendChild(document.createTextNode(t));w.appendChild(el);return w;}
+// one setting per row in the right-hand panel: its name on the left, its control on the right
+function row(t,el,tip){var w=document.createElement('label');
+w.style.cssText='display:flex;gap:8px;align-items:center;justify-content:space-between;'+
+'font-size:11px;color:var(--jp-ui-font-color1);margin:0 0 6px';
+var s=document.createElement('span');s.textContent=t;w.appendChild(s);w.appendChild(el);
+if(tip)w.title=tip;return w;}
+function group(t){var g=document.createElement('div');g.style.cssText='margin:0 0 14px';
+var hh=document.createElement('div');
+hh.style.cssText='font-size:10px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;'+
+'color:var(--jp-ui-font-color2);margin:0 0 7px;padding-bottom:3px;border-bottom:1px solid var(--jp-border-color2)';
+hh.textContent=t;g.appendChild(hh);return g;}
 var tSel=sel(),aSel=sel(),xSel=sel(),ySel=sel();
 var TYPES=CJ?[['bar','Bar'],['hbar','Horizontal bar'],['line','Line'],['area','Area'],['time','Time series'],['scatter','Scatter'],
 ['pie','Pie'],['doughnut','Doughnut'],['radar','Radar'],['polarArea','Polar area']]
@@ -286,29 +294,59 @@ if(!ySel.options.length){cols.forEach(function(c,i){opt(ySel,String(i),c);});}
 var hasNum=nums.indexOf(true)>=0;
 var firstCat=nums.indexOf(false);xSel.value=String(firstCat>=0?firstCat:0);
 ySel.selectedIndex=0;aSel.value=hasNum?'none':'count';  // all-text data → count rows per category by default
-function chk(on){var c=document.createElement('input');c.type='checkbox';c.checked=!!on;return c;}
+function chk(on){var c=document.createElement('input');c.type='checkbox';c.checked=!!on;c.style.margin='0';return c;}
 var logCb=chk(false),valCb=chk(false),legCb=chk(true),gridCb=chk(true),zeroCb=chk(true),smoothCb=chk(true);
 var palSel=sel();[['default','Default'],['warm','Warm'],['cool','Cool'],['green','Green'],
 ['purple','Purple'],['gray','Gray'],['rainbow','Rainbow']].forEach(function(p){opt(palSel,p[0],p[1]);});
 var bktSel=sel();[['none','None'],['hour','Hour'],['day','Day'],['week','Week'],
 ['month','Month'],['year','Year']].forEach(function(b){opt(bktSel,b[0],b[1]);});
-var bktLab=lab('Bucket',bktSel);  // time series only: group timestamps by hour/day/week/month/year
 var thr=document.createElement('input');thr.type='number';thr.step='any';thr.placeholder='none';
-thr.style.cssText='font:inherit;font-size:12px;width:80px;padding:2px 4px;border:1px solid '+
+thr.style.cssText='font:inherit;font-size:12px;width:74px;padding:2px 4px;border:1px solid '+
 'var(--jp-border-color2);border-radius:4px;background:var(--jp-layout-color0);color:var(--jp-ui-font-color1)';
+[tSel,aSel,xSel,ySel,palSel,bktSel].forEach(function(s){s.style.width='118px';s.style.maxWidth='118px';});
 var dBtn=btn(CJ?'⬇ PNG':'⬇ SVG');
 var ePin=window.__duckduckChartImage?btn('📌 Add to notebook'):null;  // persist as an image in a markdown cell
 if(ePin)ePin.title='Save this exact chart as an image cell in the notebook';
-m.head.appendChild(lab('Type',tSel));m.head.appendChild(lab('Count/agg',aSel));
-m.head.appendChild(lab('X',xSel));m.head.appendChild(lab('Y',ySel));
-if(CJ){m.head.appendChild(bktLab);m.head.appendChild(lab('Colors',palSel));m.head.appendChild(lab('Values',valCb));
-m.head.appendChild(lab('Legend',legCb));m.head.appendChild(lab('Grid',gridCb));
-m.head.appendChild(lab('Y from 0',zeroCb));m.head.appendChild(lab('Smooth',smoothCb));
-m.head.appendChild(lab('Log Y',logCb));m.head.appendChild(lab('Threshold',thr));}
 m.head.appendChild(dBtn);if(ePin)m.head.appendChild(ePin);m.head.appendChild(m.close);
 var cap=document.createElement('div');cap.style.cssText='font-size:11px;color:var(--jp-ui-font-color2);margin:0 0 6px';
-var host=document.createElement('div');host.style.cssText='width:76vw;max-width:900px;min-width:280px';
-m.body.appendChild(cap);m.body.appendChild(host);
+var host=document.createElement('div');host.style.cssText='width:100%;min-width:0';
+// the chart on the left, every setting in a panel on the right (the header keeps only the actions)
+var wrap=document.createElement('div');
+wrap.style.cssText='display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap;width:90vw;max-width:1060px';
+var left=document.createElement('div');left.style.cssText='flex:1 1 420px;min-width:290px';
+var side=document.createElement('div');
+side.style.cssText='flex:0 0 212px;width:212px;border:1px solid var(--jp-border-color2);border-radius:6px;'+
+'padding:11px 12px;background:var(--jp-layout-color0);max-height:470px;overflow:auto';
+left.appendChild(cap);left.appendChild(host);
+wrap.appendChild(left);wrap.appendChild(side);m.body.appendChild(wrap);
+var gData=group('Data'),rType=row('Type',tSel),rX=row('X',xSel),rY=row('Y',ySel),
+rAgg=row('Count/agg',aSel,'Collapse the rows by X: count them, or sum / average Y'),
+rBkt=row('Bucket',bktSel,'Group the timestamps by hour, day, week, month or year');
+[rType,rX,rY,rAgg,rBkt].forEach(function(r){gData.appendChild(r);});
+side.appendChild(gData);
+var gLook=null,gAxis=null,rPal,rVal,rLeg,rGrid,rSmooth,rZero,rLog,rThr;
+if(CJ){gLook=group('Look');
+rPal=row('Colors',palSel);rVal=row('Values',valCb,'Draw each value on the chart, not only on hover');
+rLeg=row('Legend',legCb);rGrid=row('Grid',gridCb);rSmooth=row('Smooth',smoothCb,'Curved or straight lines');
+[rPal,rVal,rLeg,rGrid,rSmooth].forEach(function(r){gLook.appendChild(r);});
+gAxis=group('Scale');
+rZero=row('Y from 0',zeroCb,'Start the value axis at zero');rLog=row('Log Y',logCb,'Logarithmic value axis');
+rThr=row('Threshold',thr,'Draw a dashed reference line at this value');
+[rZero,rLog,rThr].forEach(function(r){gAxis.appendChild(r);});
+side.appendChild(gLook);side.appendChild(gAxis);}
+// show only the settings this chart really uses: a counted chart has no Y column, a pie has no axes,
+// Bucket is time-only, Smooth is for lines, and Y-from-0 means nothing on a log axis
+function shown(el,on){if(el)el.style.display=on?'':'none';}
+function relevant(){var t=tSel.value;
+var cartesian=(t==='bar'||t==='hbar'||t==='line'||t==='area'||t==='scatter'||t==='time');
+var eagg=(t==='time'&&bktSel.value!=='none'&&aSel.value==='none')?'count':aSel.value;
+shown(rAgg,t!=='scatter');                 // scatter is always raw X vs Y
+shown(rY,t==='scatter'||eagg!=='count');   // counting rows needs no Y column
+shown(rBkt,t==='time');
+shown(rSmooth,t==='line'||t==='area'||t==='time');
+shown(rGrid,cartesian);shown(rLog,cartesian);shown(rThr,cartesian);shown(rZero,cartesian);
+if(gAxis)gAxis.style.display=cartesian?'':'none';
+if(rZero){zeroCb.disabled=logCb.checked;rZero.style.opacity=logCb.checked?'.45':'';}}
 var PAL=['#2563eb','#d97706','#059669','#db2777','#7c3aed','#0891b2','#ca8a04','#dc2626'];
 // selectable palettes (the Colors control): categorical for Default/Warm/Cool/Rainbow,
 // single-hue light→dark shades for Green/Purple/Gray (so one-hue charts stay distinguishable)
@@ -511,8 +549,7 @@ if(series.length>1){var lx=L+6;yis.forEach(function(yi,si){g+='<rect x="'+lx+'" 
 PAL[si%PAL.length]+'"/>'+tx(lx+14,T+11,cols[yi],ink,'start');lx+=cols[yi].length*7+34;});}
 host.innerHTML=g+'</svg>';
 }catch(e){host.textContent='Couldn’t draw this — try other columns.';}}
-function draw(){if(bktLab)bktLab.style.display=(CJ&&tSel.value==='time')?'':'none';  // Bucket is time-series only
-if(CJ){drawCjs();}else{drawSvg();}}
+function draw(){relevant();if(CJ){drawCjs();}else{drawSvg();}}
 [tSel,aSel,xSel,ySel,logCb,valCb,legCb,gridCb,palSel,zeroCb,smoothCb,thr,bktSel].forEach(function(el){el.addEventListener('change',draw);el.addEventListener('input',draw);});
 dBtn.onclick=function(){
 if(CJ){if(chart){var a=document.createElement('a');a.href=chart.toBase64Image();a.download=name+'.png';
