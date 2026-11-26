@@ -290,6 +290,9 @@ function chk(on){var c=document.createElement('input');c.type='checkbox';c.check
 var logCb=chk(false),valCb=chk(false),legCb=chk(true),gridCb=chk(true),zeroCb=chk(true),smoothCb=chk(true);
 var palSel=sel();[['default','Default'],['warm','Warm'],['cool','Cool'],['green','Green'],
 ['purple','Purple'],['gray','Gray'],['rainbow','Rainbow']].forEach(function(p){opt(palSel,p[0],p[1]);});
+var bktSel=sel();[['none','None'],['hour','Hour'],['day','Day'],['week','Week'],
+['month','Month'],['year','Year']].forEach(function(b){opt(bktSel,b[0],b[1]);});
+var bktLab=lab('Bucket',bktSel);  // time series only: group timestamps by hour/day/week/month/year
 var thr=document.createElement('input');thr.type='number';thr.step='any';thr.placeholder='none';
 thr.style.cssText='font:inherit;font-size:12px;width:80px;padding:2px 4px;border:1px solid '+
 'var(--jp-border-color2);border-radius:4px;background:var(--jp-layout-color0);color:var(--jp-ui-font-color1)';
@@ -298,7 +301,7 @@ var ePin=window.__duckduckChartImage?btn('📌 Add to notebook'):null;  // persi
 if(ePin)ePin.title='Save this exact chart as an image cell in the notebook';
 m.head.appendChild(lab('Type',tSel));m.head.appendChild(lab('Count/agg',aSel));
 m.head.appendChild(lab('X',xSel));m.head.appendChild(lab('Y',ySel));
-if(CJ){m.head.appendChild(lab('Colors',palSel));m.head.appendChild(lab('Values',valCb));
+if(CJ){m.head.appendChild(bktLab);m.head.appendChild(lab('Colors',palSel));m.head.appendChild(lab('Values',valCb));
 m.head.appendChild(lab('Legend',legCb));m.head.appendChild(lab('Grid',gridCb));
 m.head.appendChild(lab('Y from 0',zeroCb));m.head.appendChild(lab('Smooth',smoothCb));
 m.head.appendChild(lab('Log Y',logCb));m.head.appendChild(lab('Threshold',thr));}
@@ -336,6 +339,11 @@ var m=s.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2})(?:[.,](
 if(m){var ms=m[7]?Number((m[7]+'000').slice(0,3)):0;
 return Date.UTC(+m[1],+m[2]-1,+m[3],+(m[4]||0),+(m[5]||0),+(m[6]||0),ms);}}
 var t=Date.parse(s);return isNaN(t)?NaN:t;}
+// floor a UTC epoch ms to the start of its hour/day/week(Mon)/month/year — time-series bucketing
+function bucketStart(ts,u){var d=new Date(ts);var Y=d.getUTCFullYear(),M=d.getUTCMonth(),D=d.getUTCDate(),H=d.getUTCHours();
+if(u==='hour')return Date.UTC(Y,M,D,H);if(u==='day')return Date.UTC(Y,M,D);
+if(u==='week'){var t0=Date.UTC(Y,M,D),dow=(new Date(t0).getUTCDay()+6)%7;return t0-dow*864e5;}
+if(u==='month')return Date.UTC(Y,M,1);if(u==='year')return Date.UTC(Y,0,1);return ts;}
 function capText(type,agg,xi,yi){return type==='scatter'?'Raw '+cols[yi]+' vs '+cols[xi]
 :type==='time'?(agg==='none'?cols[yi]+' over time ('+cols[xi]+')'
 :(agg==='count'?'Count of rows':(agg==='avg'?'Average of ':'Sum of ')+cols[yi])+' over time ('+cols[xi]+')')
@@ -385,15 +393,21 @@ msg+'</div>';cap.textContent='';if(chart){chart.destroy();chart=null;}}
 var xr=rows.map(function(r){return toTime(r[xi]);});
 if(!xr.some(function(t){return !isNaN(t);})){
 warn('Couldn’t read dates in <b>'+h(cols[xi])+'</b> — pick a date/time column for X.');return;}
+var unit=bktSel.value,eagg=(agg==='none')?'count':agg,doAgg=(agg!=='none'||unit!=='none');
 var pts;
-if(agg!=='none'){var tg=grouped(xi,yi,agg);  // group rows by the timestamp, then count / sum / avg
-pts=tg.map(function(o){return {x:toTime(o.k),y:o.v};})
-.filter(function(p){return !isNaN(p.x)&&isFinite(p.y);}).sort(function(a,b){return a.x-b.x;});}
+if(doAgg){var gm={},order=[];  // group rows into time buckets (or the exact timestamp), then count / sum / avg
+rows.forEach(function(r){var t=toTime(r[xi]);if(isNaN(t))return;var b=unit==='none'?t:bucketStart(t,unit);
+if(!Object.prototype.hasOwnProperty.call(gm,b)){gm[b]={s:0,c:0};order.push(b);}
+gm[b].c++;if(eagg==='sum'||eagg==='avg'){var n=Number(r[yi]);if(!isNaN(n))gm[b].s+=n;}});
+pts=order.map(function(b){var g=gm[b];return {x:Number(b),y:eagg==='count'?g.c:eagg==='avg'?(g.c?g.s/g.c:0):g.s};})
+.filter(function(p){return isFinite(p.y);}).sort(function(a,b){return a.x-b.x;});}
 else{pts=rows.map(function(r,i){return {x:xr[i],y:Number(r[yi])};})
 .filter(function(p){return !isNaN(p.x)&&!isNaN(p.y);}).sort(function(a,b){return a.x-b.x;});}
-if(!pts.length){warn(agg==='none'
-?'<b>'+h(cols[yi])+'</b> has no numbers — pick a numeric Y, or set <b>Count/agg = Count</b> to plot rows over time.'
+if(!pts.length){warn(!doAgg
+?'<b>'+h(cols[yi])+'</b> has no numbers — pick a numeric Y, or set <b>Count/agg = Count</b> (or a Bucket) to plot rows over time.'
 :'Nothing to plot over time.');return;}
+var per=(unit==='none')?'':' per '+unit;
+cap.textContent=(!doAgg?cols[yi]:(eagg==='count'?'Count of rows':(eagg==='avg'?'Average of ':'Sum of ')+cols[yi]))+per+' over time ('+cols[xi]+')';
 var span=pts[pts.length-1].x-pts[0].x;
 function tfmt(v){var d=new Date(v);if(isNaN(d))return '';
 return span<=2*864e5?d.toLocaleString(undefined,{timeZone:'UTC',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})
@@ -401,7 +415,7 @@ return span<=2*864e5?d.toLocaleString(undefined,{timeZone:'UTC',month:'short',da
 var o=cart();o.scales.x={type:'linear',grid:{display:gridCb.checked,color:grid},
 ticks:{maxRotation:0,autoSkip:true,maxTicksLimit:8,callback:function(v){return tfmt(v);}}};
 o.plugins.tooltip={callbacks:{title:function(it){return it.length?tfmt(it[0].parsed.x):'';}}};
-cfg={type:'line',data:{datasets:[{label:agg==='count'?'Count':cols[yi],data:pts,borderColor:PAL[0],
+cfg={type:'line',data:{datasets:[{label:(doAgg&&eagg==='count')?'Count':cols[yi],data:pts,borderColor:PAL[0],
 backgroundColor:'rgba(37,99,235,.18)',borderWidth:2,pointRadius:2,fill:false,tension:smoothCb.checked?.35:0}]},options:o};
 }else if(type==='scatter'){
 var sp=rows.map(function(r){return {x:Number(r[xi]),y:Number(r[yi])};}).filter(function(p){return !isNaN(p.x)&&!isNaN(p.y);});
@@ -497,8 +511,9 @@ if(series.length>1){var lx=L+6;yis.forEach(function(yi,si){g+='<rect x="'+lx+'" 
 PAL[si%PAL.length]+'"/>'+tx(lx+14,T+11,cols[yi],ink,'start');lx+=cols[yi].length*7+34;});}
 host.innerHTML=g+'</svg>';
 }catch(e){host.textContent='Couldn’t draw this — try other columns.';}}
-function draw(){if(CJ){drawCjs();}else{drawSvg();}}
-[tSel,aSel,xSel,ySel,logCb,valCb,legCb,gridCb,palSel,zeroCb,smoothCb,thr].forEach(function(el){el.addEventListener('change',draw);el.addEventListener('input',draw);});
+function draw(){if(bktLab)bktLab.style.display=(CJ&&tSel.value==='time')?'':'none';  // Bucket is time-series only
+if(CJ){drawCjs();}else{drawSvg();}}
+[tSel,aSel,xSel,ySel,logCb,valCb,legCb,gridCb,palSel,zeroCb,smoothCb,thr,bktSel].forEach(function(el){el.addEventListener('change',draw);el.addEventListener('input',draw);});
 dBtn.onclick=function(){
 if(CJ){if(chart){var a=document.createElement('a');a.href=chart.toBase64Image();a.download=name+'.png';
 document.body.appendChild(a);a.click();document.body.removeChild(a);}}
