@@ -13,7 +13,9 @@
 // ("duckduck": {language: "sql", engine, name}) makes it SQL, and the duckduck kernel runs it as
 // name = spark.sql(...). SQL cells are highlighted as SQL and marked "SQL → name". A table clicked in the page
 // arrives as SQL ({sql}) when the cell it goes to is an SQL cell, or the switch was last set to SQL.
-import { autocompletion } from '@codemirror/autocomplete';
+import { autocompletion, moveCompletionSelection } from '@codemirror/autocomplete';
+import { Prec } from '@codemirror/state';
+import { keymap } from '@codemirror/view';
 import { EditorExtensionRegistry, IEditorExtensionRegistry } from '@jupyterlab/codemirror';
 import { INotebookTracker, NotebookActions } from '@jupyterlab/notebook';
 import { LabIcon } from '@jupyterlab/ui-components';
@@ -771,9 +773,16 @@ const plugin = {
     gPanel = tablesPanel;
     extensions.addExtension({
       name: 'duckduck:sql-autocomplete',
-      factory: options => EditorExtensionRegistry.createImmutableExtension(
-        autocompletion({ activateOnTyping: true, override: [sqlCompletionSource(options.model)] })
-      )
+      factory: options => EditorExtensionRegistry.createImmutableExtension([
+        autocompletion({ activateOnTyping: true, override: [sqlCompletionSource(options.model)] }),
+        // keep ↑/↓ on the open dropdown — at the highest precedence, so JupyterLab's "arrow at the edge of the
+        // editor moves to the next/previous cell" doesn't steal them. moveCompletionSelection acts only while a
+        // completion is showing; with the dropdown closed it returns false and the arrow falls through as usual.
+        Prec.highest(keymap.of([
+          { key: 'ArrowDown', run: moveCompletionSelection(true) },
+          { key: 'ArrowUp', run: moveCompletionSelection(false) }
+        ]))
+      ])
     });
     window.addEventListener('message', async event => {
       if (event.origin !== window.location.origin || event.source !== window.parent) {
