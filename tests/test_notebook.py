@@ -613,6 +613,31 @@ def test_run_local_ignores_a_name_inside_a_string_or_comment():
     assert duck.conn.registered == {}  # the only mentions of `prior` are a literal and a comment
 
 
+def test_run_local_interpolates_python_values_with_double_braces():
+    import datetime
+
+    import pandas as pd
+
+    duck = _FakeDuck(pd.DataFrame({"x": [1]}))
+    ns = {"sev": "hi'gh", "n": 5, "flag": True, "ids": [1, 2, 3], "nothing": None,
+          "day": datetime.date(2026, 1, 2), "duck": duck}
+    nbkernel.run_local(duck, ns, "%%sql q",
+                       "SELECT * FROM t WHERE s = {{ sev }} AND a = {{ flag }} AND id IN {{ ids }} "
+                       "AND o IS {{ nothing }} AND d = {{ day }} LIMIT {{ n }}")
+    assert duck.queries == ["SELECT * FROM t WHERE s = 'hi''gh' AND a = TRUE AND id IN (1, 2, 3) "
+                            "AND o IS NULL AND d = '2026-01-02' LIMIT 5"]
+    # a DuckDB struct literal (single braces) is left alone
+    duck.queries.clear()
+    nbkernel.run_local(duck, ns, "%%sql q", "SELECT {'a': 1} AS s")
+    assert duck.queries == ["SELECT {'a': 1} AS s"]
+    # an unknown name and an unsupported value both raise, not silently wrong SQL
+    with pytest.raises(sqlcells.SqlCellError, match="missing_var"):
+        nbkernel.run_local(duck, ns, "%%sql q", "SELECT {{ missing_var }}")
+    with pytest.raises(sqlcells.SqlCellError):
+        nbkernel.run_local(duck, {"frame": pd.DataFrame({"a": [1]}), "duck": duck},
+                           "%%sql q", "SELECT * FROM {{ frame }}")
+
+
 def test_run_local_needs_sql_and_a_duck():
     import pandas as pd
 

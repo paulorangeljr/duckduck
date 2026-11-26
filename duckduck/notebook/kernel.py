@@ -256,6 +256,53 @@ def _register_frames(duck: Any, user_ns: Dict[str, Any], query: str) -> List[str
     return views
 
 
+def _sql_literal(value: Any) -> str:
+    """A Python value rendered as a SQL literal, for ``{{ … }}`` interpolation in an SQL cell."""
+    import datetime as _dt
+
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return "NULL" if value != value else repr(value)  # NaN → NULL
+    if isinstance(value, str):
+        return "'" + value.replace("'", "''") + "'"
+    if isinstance(value, (_dt.date, _dt.datetime)):
+        return "'" + value.isoformat() + "'"
+    if isinstance(value, (list, tuple, set)):
+        return "(" + ", ".join(_sql_literal(v) for v in value) + ")"
+    if hasattr(value, "columns") and hasattr(value, "iloc"):  # a DataFrame
+        raise sqlcells.SqlCellError("a DataFrame goes in the query by its name directly (FROM my_df), not in {{ }}")
+    if hasattr(value, "isoformat"):  # a pandas Timestamp and the like
+        return "'" + value.isoformat() + "'"
+    raise sqlcells.SqlCellError(
+        f"a {type(value).__name__} isn't a value {{ }} can put in SQL — use a number, text, True/False, None, "
+        "a date, or a list of those (a DataFrame goes in the FROM by its name)")
+
+
+_INTERPOLATE = re.compile(r"\{\{\s*(.+?)\s*\}\}", re.S)
+
+
+def _interpolate(sql: str, user_ns: Dict[str, Any]) -> str:
+    """Replace each ``{{ expr }}`` in the cell with its Python value (evaluated in the kernel's namespace) as a SQL
+    literal — so ``WHERE severity = {{ sev }}`` becomes ``WHERE severity = 'high'`` (write it unquoted: the value
+    brings its own quotes). A DuckDB struct literal ``{...}`` (single braces) is left alone."""
+    def repl(match: "re.Match[str]") -> str:
+        expr = match.group(1)
+        try:
+            value = eval(expr, {**user_ns})  # noqa: S307 — the user's own kernel namespace, like any cell
+        except sqlcells.SqlCellError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise sqlcells.SqlCellError(f"couldn't read {{{{ {expr} }}}}: {exc}")
+        return _sql_literal(value)
+
+    return _INTERPOLATE.sub(repl, sql)
+
+
 def run_local(duck: Any, user_ns: Dict[str, Any], header: str, sql: str) -> Dict[str, Any]:
     """Run one ``%%sql`` cell on a local ``DuckAPI``: ``name = duck.sql(<sql>).df()``, the DataFrame kept in
     ``user_ns`` under its name and ``_sqldf``. Returns the result dict ``sqlcells.render`` shows. Pure (no
@@ -267,6 +314,7 @@ def run_local(duck: Any, user_ns: Dict[str, Any], header: str, sql: str) -> Dict
     if duck is None:
         raise NameError("duck isn't defined: this kernel sets it up automatically — restart the kernel, or run "
                         "duck = DuckAPI().auto_register()")
+    query = _interpolate(query, user_ns)  # {{ python_var }} → its value as a SQL literal
     views = _register_frames(duck, user_ns, query)
     frame = duck.sql(query).df()
     user_ns[options["name"]] = frame
@@ -359,6 +407,10 @@ def local_notebook_template(kernel: str = LOCAL_DUCK_KERNEL) -> Dict[str, Any]:
              "`df = duck.sql(...).df()` (the same push-down as the SQL tab) and keeps the result as a pandas "
              "DataFrame — `%%sql name` names it, `_sqldf` is always the last one — so the next Python cell goes on "
              "from it. A DataFrame from an earlier cell, named in the SQL, is read as a table.\n\n"
+             "**Python values in SQL**: write `{{ my_var }}` (double braces) anywhere in an SQL cell and the "
+             "kernel puts that Python variable in as a SQL literal — `WHERE severity = {{ sev }}` becomes "
+             "`WHERE severity = 'high'` (unquoted: text brings its own quotes; a list becomes `(a, b, c)` for "
+             "`IN`). A whole DataFrame goes in by its name directly, not in `{{ }}`.\n\n"
              "Click a table in the list on the left to add a cell that reads it.")
     cells = [cell("markdown", intro),
              cell("code", "SHOW TABLES",
