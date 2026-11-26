@@ -262,21 +262,20 @@ function opt(s,v,t){var o=document.createElement('option');o.value=v;o.textConte
 function lab(t,el){var w=document.createElement('label');
 w.style.cssText='font-size:11px;color:var(--jp-ui-font-color2);display:flex;gap:4px;align-items:center';
 w.appendChild(document.createTextNode(t));w.appendChild(el);return w;}
-var tSel=sel(),xSel=sel(),ySel=sel();ySel.multiple=true;ySel.size=1;ySel.style.minWidth='90px';
+var tSel=sel(),xSel=sel(),ySel=sel();
 ['bar','line','area','scatter','pie'].forEach(function(t){opt(tSel,t,t.charAt(0).toUpperCase()+t.slice(1));});
 cols.forEach(function(c,i){opt(xSel,String(i),c);});
 cols.forEach(function(c,i){if(nums[i])opt(ySel,String(i),c);});
 if(!ySel.options.length){cols.forEach(function(c,i){opt(ySel,String(i),c);});}
 var firstCat=nums.indexOf(false);xSel.value=String(firstCat>=0?firstCat:0);
-if(ySel.options.length)ySel.options[0].selected=true;
+ySel.selectedIndex=0;
 var dSvg=btn('⬇ SVG');
 m.head.appendChild(lab('Type',tSel));m.head.appendChild(lab('X',xSel));m.head.appendChild(lab('Y',ySel));
 m.head.appendChild(dSvg);m.head.appendChild(m.close);
 var host=document.createElement('div');host.style.cssText='width:76vw;max-width:900px;min-width:280px';
 m.body.appendChild(host);
 var PAL=['#2563eb','#d97706','#059669','#db2777','#7c3aed','#0891b2','#ca8a04','#dc2626'];
-function selY(){var o=[];for(var i=0;i<ySel.options.length;i++)if(ySel.options[i].selected)o.push(Number(ySel.options[i].value));
-return o.length?o:[Number((ySel.options[0]||{}).value||0)];}
+function selY(){return [Number(ySel.value||(ySel.options[0]||{}).value||0)];}
 function fmt(v){if(v===null||!isFinite(v))return '';var a=Math.abs(v);
 if(a!==0&&(a>=1e5||a<1e-3))return v.toExponential(1);return (Math.round(v*1000)/1000).toString();}
 function draw(){try{
@@ -333,7 +332,7 @@ if(series.length>1){var lx=L+6;yis.forEach(function(yi,si){g+='<rect x="'+lx+'" 
 PAL[si%PAL.length]+'"/>'+tx(lx+14,T+11,cols[yi],ink,'start');lx+=cols[yi].length*7+34;});}
 host.innerHTML=g+'</svg>';
 }catch(e){host.textContent='Couldn’t draw this — try other columns.';}}
-tSel.onchange=xSel.onchange=ySel.onchange=draw;
+[tSel,xSel,ySel].forEach(function(el){el.addEventListener('change',draw);el.addEventListener('input',draw);});
 dSvg.onclick=function(){var sv=host.querySelector('svg');if(sv)dl('<?xml version="1.0"?>\n'+sv.outerHTML,'image/svg+xml',name+'.svg');};
 draw();m.open();};
 }catch(e){}})();
