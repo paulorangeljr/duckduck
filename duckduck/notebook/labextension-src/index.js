@@ -73,10 +73,6 @@ const STYLE = `
 .duckduck-langswitch select { height: 24px; }
 .duckduck-langswitch input { width: 90px; height: 20px; font-family: var(--jp-code-font-family); font-size: 12px; }
 .duckduck-langswitch .duckduck-arrow { color: var(--jp-ui-font-color2); font-size: 12px; }
-.duckduck-langswitch .duckduck-chartbtn { height: 24px; font-size: 11px; padding: 0 8px; cursor: pointer;
-  border: 1px solid var(--jp-border-color2); border-radius: 4px; background: var(--jp-layout-color1);
-  color: var(--jp-ui-font-color1); white-space: nowrap; }
-.duckduck-langswitch .duckduck-chartbtn:hover { border-color: var(--jp-brand-color1); }
 .duckduck-tables-panel { display: flex; flex-direction: column; min-width: 240px; overflow: hidden;
   background: var(--jp-layout-color1); color: var(--jp-ui-font-color1); }
 .duckduck-tp-head { font-size: var(--jp-ui-font-size0); font-weight: 600; text-transform: uppercase;
@@ -524,26 +520,6 @@ function decorate(panel) {
   });
 }
 
-// a ready matplotlib cell for an SQL cell's DataFrame. The local kernel's result is already pandas; a Glue result
-// is a Spark DataFrame, so .toPandas() first. If the cell has run we know its columns (sqlColumns) and pre-fill x.
-function chartCode(spark, name, cols) {
-  const frame = spark ? `${name}.toPandas()` : name;
-  const has = Array.isArray(cols) && cols.length;
-  const xarg = has ? `x=${JSON.stringify(cols[0])}, ` : '';
-  const note = has
-    ? `# columns: ${cols.join(', ')} — change x / y / kind as you like`
-    : '# run the SQL cell first to see its columns, then set x / y / kind';
-  return [
-    'import matplotlib.pyplot as plt',
-    '',
-    `df = ${frame}`,
-    note,
-    `df.plot(${xarg}kind="bar")`,
-    'plt.tight_layout()',
-    'plt.show()'
-  ].join('\n');
-}
-
 class LanguageSwitch extends Widget {
   constructor(panel) {
     const node = document.createElement('div');
@@ -569,19 +545,12 @@ class LanguageSwitch extends Widget {
     name.title = 'The DataFrame this SQL cell leaves, for the PySpark cells after it — named after its table '
       + 'until you type a name (empty: automatic again)';
     name.setAttribute('aria-label', 'DataFrame name');
-    const chart = document.createElement('button');
-    chart.type = 'button';
-    chart.className = 'duckduck-chartbtn';
-    chart.textContent = '📊 Chart';
-    chart.title = "Insert a Python cell that charts this SQL cell's DataFrame (matplotlib)";
-    node.append(select, arrow, name, chart);
+    node.append(select, arrow, name);
     super({ node });
     this.select = select;
     this.name = name;
     this.arrow = arrow;
-    this.chart = chart;
     this.panel = panel;
-    chart.addEventListener('click', () => this.insertChart());
     this.addClass('jp-HTMLSelect');
     this.addClass('jp-DefaultStyle');
     select.addEventListener('change', () => this.apply(select.value));
@@ -670,7 +639,7 @@ class LanguageSwitch extends Widget {
     this.select.value = modeForPanel(this.panel, mode);  // show it in this kernel's own set
     const sql = mode !== 'python';
     this.select.classList.toggle('duckduck-on', sql);
-    this.name.hidden = this.arrow.hidden = this.chart.hidden = !sql;
+    this.name.hidden = this.arrow.hidden = !sql;
     if (sql && document.activeElement !== this.name) {
       const meta = metaOf(cell);
       this.name.value = nameOf(source, meta) || '';
@@ -722,37 +691,6 @@ class LanguageSwitch extends Widget {
     setCell(cell, sql);
     decorate(this.panel);
     this.refresh();
-  }
-
-  // 📊 Chart: insert a plain Python cell below that plots the active SQL cell's DataFrame (matplotlib)
-  insertChart() {
-    const notebook = this.panel.content;
-    const cell = notebook.activeCell;
-    if (!cell || cell.model.type !== 'code') {
-      return;
-    }
-    const source = cell.model.sharedModel.getSource();
-    const meta = metaOf(cell);
-    if (modeOf(source, meta) === 'python') {
-      return;  // only for SQL cells
-    }
-    const name = nameOf(source, meta) || '_sqldf';
-    const code = chartCode(!isLocalDuck(this.panel), name, sqlColumns()[name]);
-    NotebookActions.insertBelow(notebook);
-    if (notebook.activeCell && notebook.activeCell.model.type !== 'code') {
-      NotebookActions.changeCellType(notebook, 'code');
-    }
-    const target = notebook.activeCell;
-    if (target.model.getMetadata(KEY) !== undefined) {
-      target.model.deleteMetadata(KEY);  // a plain Python cell, never SQL
-    }
-    target.model.sharedModel.setSource(code);  // set now, so newCells() (setTimeout 0) sees it filled and skips it
-    decorate(this.panel);
-    this.refresh();
-    notebook.mode = 'command';
-    if (target.node && target.node.scrollIntoView) {
-      target.node.scrollIntoView({ block: 'nearest' });
-    }
   }
 }
 
