@@ -333,6 +333,12 @@ def _bootstrap_duck(shell: Any) -> None:
         print(f"duckduck couldn't be imported ({exc}); `duck` isn't set up", file=sys.stderr)
         return
     shell.user_ns.setdefault("DuckAPI", DuckAPI)
+    try:  # pandas is a duckduck dependency, so it's here — put `pd` ready in the namespace, like `duck`,
+        import pandas as pd  # so a `name = pd.DataFrame(...)` cell (the grid's, or the user's own) needs no import
+        shell.user_ns.setdefault("pandas", pd)
+        shell.user_ns.setdefault("pd", pd)
+    except Exception:  # noqa: BLE001 — never stop the kernel over this
+        pass
     duck = DuckAPI()
     try:
         duck.auto_register(config_path=os.environ.get("DUCKDUCK_CONFIG"), on_error="warn")

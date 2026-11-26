@@ -830,12 +830,13 @@ function pyCell(v, isNum) {
   }
   return isNum ? String(Number(v)) : pyStr(v);
 }
-// Python for `name = pd.DataFrame([...rows...], columns=[...])` (an all-number column → numeric, empty → None)
+// Python for `name = pd.DataFrame([...rows...], columns=[...])` (an all-number column → numeric, empty → None).
+// No `import pandas as pd`: the local DuckDB kernel puts `pd` in the namespace at startup (like `duck`).
 function dataframeCode(name, columns, rows) {
   const nums = columns.map((_, ci) => columnIsNumeric(rows, ci));
   const body = rows.map(r => '    [' + columns.map((_, ci) => pyCell(r[ci], nums[ci])).join(', ') + ']').join(',\n');
   const data = rows.length ? '[\n' + body + '\n]' : '[]';
-  return `import pandas as pd\n\n${name} = pd.DataFrame(${data}, columns=[${columns.map(pyStr).join(', ')}])\n${name}`;
+  return `${name} = pd.DataFrame(${data}, columns=[${columns.map(pyStr).join(', ')}])\n${name}`;
 }
 
 // insert a plain Python code cell below the active one
