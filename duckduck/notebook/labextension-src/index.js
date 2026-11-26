@@ -305,7 +305,36 @@ const SQL_KEYWORDS = ['SELECT', 'FROM', 'WHERE', 'JOIN', 'LEFT JOIN', 'INNER JOI
   'LIMIT', 'UNION ALL', 'UNION', 'ON', 'USING', 'AS', 'AND', 'OR', 'NOT', 'IN', 'DISTINCT', 'COUNT(*)',
   'HAVING', 'WITH'];
 
-// the names you can read in an SQL cell now: the DataFrames the notebook's SQL cells leave, then the catalog tables
+// a top-level `name = <rhs>` in a Python cell whose rhs looks like it yields a DataFrame — so a df built in a
+// Python cell (duck.sql(...).df(), pd.DataFrame(...), .toPandas()…) is offered too, not only SQL cells' DataFrames
+const PY_ASSIGN = /^([A-Za-z_]\w*)\s*=\s*(.*)$/;
+const PY_DATAFRAME = /\b(?:duck|reader|spark)\s*\.\s*sql\(|\.df\(\)|\.toPandas\(\)|\b(?:pd|pandas)\s*\.\s*(?:DataFrame|read_\w+|concat|merge|json_normalize)\b/;
+
+function pythonDataFrames(seen, items) {
+  const panel = gTracker && gTracker.currentWidget;
+  if (!panel || !panel.content) {
+    return;
+  }
+  panel.content.widgets.forEach(cell => {
+    if (!cell.model || cell.model.type !== 'code') {
+      return;
+    }
+    const meta = cell.model.getMetadata ? cell.model.getMetadata(KEY) : undefined;
+    if (meta && meta.language === 'sql') {
+      return;  // SQL cells are handled by their metadata
+    }
+    cell.model.sharedModel.getSource().split('\n').forEach(line => {
+      const m = PY_ASSIGN.exec(line);  // top-level (no indent): a module-level name, not a local inside a def
+      if (m && !m[1].startsWith('_') && !seen.has(m[1]) && PY_DATAFRAME.test(m[2])) {
+        seen.add(m[1]);
+        items.push({ label: m[1], type: 'variable', detail: 'DataFrame', boost: 2 });
+      }
+    });
+  });
+}
+
+// the names you can read in an SQL cell now: the DataFrames the notebook's SQL cells leave (metadata) and the ones
+// Python cells build, then the catalog tables
 function sqlNames() {
   const items = [];
   const seen = new Set();
@@ -322,6 +351,7 @@ function sqlNames() {
       }
     });
   }
+  pythonDataFrames(seen, items);
   if (gPanel && Array.isArray(gPanel.tables)) {
     gPanel.tables.forEach(t => {
       const label = t.label || t.name;
