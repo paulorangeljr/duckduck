@@ -309,6 +309,17 @@ m2[k].c++;if(agg==='sum'||agg==='avg'){var n=Number(r[yi]);if(!isNaN(n))m2[k].s+
 return order.map(function(k){var gg=m2[k];return {k:k,v:agg==='count'?gg.c:agg==='avg'?(gg.c?gg.s/gg.c:0):gg.s};});}
 function fmt(v){if(v===null||!isFinite(v))return '';var a=Math.abs(v);
 if(a!==0&&(a>=1e5||a<1e-3))return v.toExponential(1);return (Math.round(v*1000)/1000).toString();}
+// parse a date/time value to a UTC epoch ms — deterministic, so Safari and pandas' space-separated,
+// 6-digit-microsecond strings ('2026-11-26 10:30:00.123456') parse the same as Chrome. tz-aware
+// strings (Z or ±hh:mm) fall through to the engine's own Date.parse so their offset is honoured.
+function toTime(x){if(x==null||x==='')return NaN;
+if(typeof x==='number'&&isFinite(x))return x<1e12?x*1000:x;  // epoch seconds vs ms (best effort)
+var s=String(x).trim();
+if(!/(Z|[+\-]\d{2}:?\d{2})$/.test(s)){
+var m=s.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2})(?:[.,](\d+))?)?)?$/);
+if(m){var ms=m[7]?Number((m[7]+'000').slice(0,3)):0;
+return Date.UTC(+m[1],+m[2]-1,+m[3],+(m[4]||0),+(m[5]||0),+(m[6]||0),ms);}}
+var t=Date.parse(s);return isNaN(t)?NaN:t;}
 function capText(type,agg,xi,yi){return type==='scatter'?'Raw '+cols[yi]+' vs '+cols[xi]
 :type==='time'?cols[yi]+' over time ('+cols[xi]+')'
 :agg==='none'?'Raw '+cols[yi]+' by '+cols[xi]
@@ -339,15 +350,18 @@ var cfg;
 if(type==='time'){
 // Y over a real, proportional time axis: parse X as dates, feed numeric timestamps to a linear scale
 // and format the ticks ourselves — a true time axis with no Chart.js date-adapter dependency
-var pts=rows.map(function(r){return {x:Date.parse(r[xi]),y:Number(r[yi])};})
+function warn(msg){host.innerHTML='<div style="padding:18px;color:var(--jp-ui-font-color2);font-size:12px">'+
+msg+'</div>';cap.textContent='';if(chart){chart.destroy();chart=null;}}
+var xr=rows.map(function(r){return toTime(r[xi]);});
+if(!xr.some(function(t){return !isNaN(t);})){
+warn('Couldn’t read dates in <b>'+h(cols[xi])+'</b> — pick a date/time column for X.');return;}
+var pts=rows.map(function(r,i){return {x:xr[i],y:Number(r[yi])};})
 .filter(function(p){return !isNaN(p.x)&&!isNaN(p.y);}).sort(function(a,b){return a.x-b.x;});
-if(!pts.length){host.innerHTML='<div style="padding:18px;color:var(--jp-ui-font-color2);font-size:12px">'+
-'Couldn’t read dates in <b>'+cols[xi]+'</b> — pick a date/time column for X.</div>';
-cap.textContent='';if(chart){chart.destroy();chart=null;}return;}
+if(!pts.length){warn('<b>'+h(cols[yi])+'</b> has no numbers to plot — pick a numeric column for Y.');return;}
 var span=pts[pts.length-1].x-pts[0].x;
 function tfmt(v){var d=new Date(v);if(isNaN(d))return '';
-return span<=2*864e5?d.toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})
-:d.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'});}
+return span<=2*864e5?d.toLocaleString(undefined,{timeZone:'UTC',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})
+:d.toLocaleDateString(undefined,{timeZone:'UTC',year:'numeric',month:'short',day:'numeric'});}
 var o=cart();o.scales.x={type:'linear',grid:{display:gridCb.checked,color:grid},
 ticks:{maxRotation:0,autoSkip:true,maxTicksLimit:8,callback:function(v){return tfmt(v);}}};
 o.plugins.tooltip={callbacks:{title:function(it){return it.length?tfmt(it[0].parsed.x):'';}}};
