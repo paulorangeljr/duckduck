@@ -275,7 +275,7 @@ function lab(t,el){var w=document.createElement('label');
 w.style.cssText='font-size:11px;color:var(--jp-ui-font-color2);display:flex;gap:4px;align-items:center';
 w.appendChild(document.createTextNode(t));w.appendChild(el);return w;}
 var tSel=sel(),aSel=sel(),xSel=sel(),ySel=sel();
-var TYPES=CJ?[['bar','Bar'],['hbar','Horizontal bar'],['line','Line'],['area','Area'],['scatter','Scatter'],
+var TYPES=CJ?[['bar','Bar'],['hbar','Horizontal bar'],['line','Line'],['area','Area'],['time','Time series'],['scatter','Scatter'],
 ['pie','Pie'],['doughnut','Doughnut'],['radar','Radar'],['polarArea','Polar area']]
 :[['bar','Bar'],['line','Line'],['area','Area'],['scatter','Scatter'],['pie','Pie']];
 TYPES.forEach(function(t){opt(tSel,t[0],t[1]);});
@@ -286,13 +286,15 @@ if(!ySel.options.length){cols.forEach(function(c,i){opt(ySel,String(i),c);});}
 var hasNum=nums.indexOf(true)>=0;
 var firstCat=nums.indexOf(false);xSel.value=String(firstCat>=0?firstCat:0);
 ySel.selectedIndex=0;aSel.value=hasNum?'none':'count';  // all-text data → count rows per category by default
-var logCb=document.createElement('input');logCb.type='checkbox';
+function chk(on){var c=document.createElement('input');c.type='checkbox';c.checked=!!on;return c;}
+var logCb=chk(false),valCb=chk(false),legCb=chk(true),gridCb=chk(true);
 var dBtn=btn(CJ?'⬇ PNG':'⬇ SVG');
 var ePin=window.__duckduckChartImage?btn('📌 Add to notebook'):null;  // persist as an image in a markdown cell
 if(ePin)ePin.title='Save this exact chart as an image cell in the notebook';
 m.head.appendChild(lab('Type',tSel));m.head.appendChild(lab('Count/agg',aSel));
 m.head.appendChild(lab('X',xSel));m.head.appendChild(lab('Y',ySel));
-if(CJ)m.head.appendChild(lab('Log Y',logCb));
+if(CJ){m.head.appendChild(lab('Values',valCb));m.head.appendChild(lab('Legend',legCb));
+m.head.appendChild(lab('Grid',gridCb));m.head.appendChild(lab('Log Y',logCb));}
 m.head.appendChild(dBtn);if(ePin)m.head.appendChild(ePin);m.head.appendChild(m.close);
 var cap=document.createElement('div');cap.style.cssText='font-size:11px;color:var(--jp-ui-font-color2);margin:0 0 6px';
 var host=document.createElement('div');host.style.cssText='width:76vw;max-width:900px;min-width:280px';
@@ -308,6 +310,7 @@ return order.map(function(k){var gg=m2[k];return {k:k,v:agg==='count'?gg.c:agg==
 function fmt(v){if(v===null||!isFinite(v))return '';var a=Math.abs(v);
 if(a!==0&&(a>=1e5||a<1e-3))return v.toExponential(1);return (Math.round(v*1000)/1000).toString();}
 function capText(type,agg,xi,yi){return type==='scatter'?'Raw '+cols[yi]+' vs '+cols[xi]
+:type==='time'?cols[yi]+' over time ('+cols[xi]+')'
 :agg==='none'?'Raw '+cols[yi]+' by '+cols[xi]
 :(agg==='count'?'Count of rows':(agg==='avg'?'Average of ':'Sum of ')+cols[yi])+' by '+cols[xi];}
 function themeVar(v,f){var c=getComputedStyle(document.body).getPropertyValue(v);return (c&&c.trim())||f;}
@@ -317,18 +320,42 @@ function drawCjs(){try{
 var type=tSel.value,xi=Number(xSel.value),yi=selY()[0],agg=aSel.value;
 cap.textContent=capText(type,agg,xi,yi);
 var grid=themeVar('--jp-border-color2','rgba(128,128,128,.3)');
-CJ.defaults.color=themeVar('--jp-ui-font-color1','#333');
+var ink=themeVar('--jp-ui-font-color1','#333');CJ.defaults.color=ink;
+var fam=themeVar('--jp-ui-font-family','sans-serif');
+// draw each value onto the chart (bars, points, slices) — Chart.js shows them only on hover otherwise
+var valuePlugin={id:'ddvals',afterDatasetsDraw:function(ch){var c=ch.ctx;c.save();
+c.fillStyle=ink;c.textAlign='center';c.textBaseline='bottom';c.font='11px '+fam;
+ch.data.datasets.forEach(function(ds,di){var meta=ch.getDatasetMeta(di);if(meta.hidden)return;
+meta.data.forEach(function(el,i){var raw=ds.data[i];var v=(raw&&typeof raw==='object')?raw.y:raw;
+if(v==null||!isFinite(v))return;var p=el.tooltipPosition();c.fillText(fmt(v),p.x,p.y-2);});});c.restore();}};
 var isCat=(type==='pie'||type==='doughnut'||type==='polarArea'||type==='radar');
-var cjsType=type==='hbar'?'bar':type==='area'?'line':type;
-function cart(){var o={responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
-scales:{x:{grid:{color:grid}},y:{grid:{color:grid}}}};
+var cjsType=type==='hbar'?'bar':(type==='area'||type==='time')?'line':type;
+function cart(){var o={responsive:true,maintainAspectRatio:false,plugins:{legend:{display:legCb.checked}},
+scales:{x:{grid:{display:gridCb.checked,color:grid}},y:{grid:{display:gridCb.checked,color:grid}}}};
 if(type==='hbar')o.indexAxis='y';
-if(logCb.checked)o.scales[type==='hbar'?'x':'y']={type:'logarithmic',grid:{color:grid}};
+if(logCb.checked)o.scales[type==='hbar'?'x':'y']={type:'logarithmic',grid:{display:gridCb.checked,color:grid}};
 return o;}
 var cfg;
-if(type==='scatter'){
-var pts=rows.map(function(r){return {x:Number(r[xi]),y:Number(r[yi])};}).filter(function(p){return !isNaN(p.x)&&!isNaN(p.y);});
-cfg={type:'scatter',data:{datasets:[{label:cols[yi]+' vs '+cols[xi],data:pts,backgroundColor:PAL[0]}]},options:cart()};
+if(type==='time'){
+// Y over a real, proportional time axis: parse X as dates, feed numeric timestamps to a linear scale
+// and format the ticks ourselves — a true time axis with no Chart.js date-adapter dependency
+var pts=rows.map(function(r){return {x:Date.parse(r[xi]),y:Number(r[yi])};})
+.filter(function(p){return !isNaN(p.x)&&!isNaN(p.y);}).sort(function(a,b){return a.x-b.x;});
+if(!pts.length){host.innerHTML='<div style="padding:18px;color:var(--jp-ui-font-color2);font-size:12px">'+
+'Couldn’t read dates in <b>'+cols[xi]+'</b> — pick a date/time column for X.</div>';
+cap.textContent='';if(chart){chart.destroy();chart=null;}return;}
+var span=pts[pts.length-1].x-pts[0].x;
+function tfmt(v){var d=new Date(v);if(isNaN(d))return '';
+return span<=2*864e5?d.toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})
+:d.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'});}
+var o=cart();o.scales.x={type:'linear',grid:{display:gridCb.checked,color:grid},
+ticks:{maxRotation:0,autoSkip:true,maxTicksLimit:8,callback:function(v){return tfmt(v);}}};
+o.plugins.tooltip={callbacks:{title:function(it){return it.length?tfmt(it[0].parsed.x):'';}}};
+cfg={type:'line',data:{datasets:[{label:cols[yi],data:pts,borderColor:PAL[0],
+backgroundColor:'rgba(37,99,235,.18)',borderWidth:2,pointRadius:2,fill:false,tension:.25}]},options:o};
+}else if(type==='scatter'){
+var sp=rows.map(function(r){return {x:Number(r[xi]),y:Number(r[yi])};}).filter(function(p){return !isNaN(p.x)&&!isNaN(p.y);});
+cfg={type:'scatter',data:{datasets:[{label:cols[yi]+' vs '+cols[xi],data:sp,backgroundColor:PAL[0]}]},options:cart()};
 }else if(isCat){
 var gp=grouped(xi,yi,agg==='none'?'count':agg).filter(function(o){return isFinite(o.v);});
 if(type!=='radar')gp.sort(function(a,b){return b.v-a.v;});
@@ -338,7 +365,7 @@ var colors=gp.map(function(_,i){return PAL[i%PAL.length];});
 cfg={type:cjsType,data:{labels:gp.map(function(o){return o.k;}),datasets:[{label:cols[yi],
 data:gp.map(function(o){return o.v;}),backgroundColor:type==='radar'?'rgba(37,99,235,.2)':colors,
 borderColor:type==='radar'?PAL[0]:colors,borderWidth:1}]},
-options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:type!=='radar',position:'right'}}}};
+options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:legCb.checked,position:'right'}}}};
 }else{
 var labels,vals;
 if(agg!=='none'){var g2=grouped(xi,yi,agg);labels=g2.map(function(o){return o.k;});vals=g2.map(function(o){return o.v;});}
@@ -350,6 +377,7 @@ backgroundColor:isBar?labels.map(function(_,i){return PAL[i%PAL.length];}):'rgba
 borderColor:PAL[0],borderWidth:isBar?0:2,fill:type==='area',tension:.25,
 pointRadius:(type==='line'||type==='area')?2:0}]},options:cart()};
 }
+if(valCb.checked)cfg.plugins=(cfg.plugins||[]).concat([valuePlugin]);
 host.innerHTML='';host.style.position='relative';host.style.height='440px';
 var cv=document.createElement('canvas');host.appendChild(cv);
 if(chart)chart.destroy();
@@ -417,7 +445,7 @@ PAL[si%PAL.length]+'"/>'+tx(lx+14,T+11,cols[yi],ink,'start');lx+=cols[yi].length
 host.innerHTML=g+'</svg>';
 }catch(e){host.textContent='Couldn’t draw this — try other columns.';}}
 function draw(){if(CJ){drawCjs();}else{drawSvg();}}
-[tSel,aSel,xSel,ySel,logCb].forEach(function(el){el.addEventListener('change',draw);el.addEventListener('input',draw);});
+[tSel,aSel,xSel,ySel,logCb,valCb,legCb,gridCb].forEach(function(el){el.addEventListener('change',draw);el.addEventListener('input',draw);});
 dBtn.onclick=function(){
 if(CJ){if(chart){var a=document.createElement('a');a.href=chart.toBase64Image();a.download=name+'.png';
 document.body.appendChild(a);a.click();document.body.removeChild(a);}}
