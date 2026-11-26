@@ -790,6 +790,11 @@ async function insert(app, tracker, code, sql) {
     // the local DuckDB kernel has one SQL engine (duck.sql); on Glue keep the engine the page's SQL named
     result = convert(sql, undefined, isLocalDuck(panel) ? 'duckdb' : undefined);
     result.meta.auto = true; // named after its table, like a typed one
+  } else if (sql && isLocalDuck(panel)) {
+    // local kernel, Python mode: the page's `code` is the Spark form (reader.sql) — build the duck.sql(...).df()
+    // one from the SQL instead (force the duckdb engine, then to Python), so pandas cells read through duck
+    const asSql = convert(sql, undefined, 'duckdb');
+    result = convert(asSql.source, asSql.meta, 'python');
   }
   setCell(cell, result);
   decorate(panel);
