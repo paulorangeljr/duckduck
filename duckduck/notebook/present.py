@@ -218,7 +218,7 @@ button:disabled:hover{border-color:var(--line);color:var(--ink)}
 h2.ed{color:var(--ink)}
 
 /* a table on a slide */
-.tw{overflow:auto;max-width:100%;border:1px solid var(--line);border-radius:8px}
+.tw{overflow:auto;max-width:100%;max-height:46vh;border:1px solid var(--line);border-radius:8px}
 table{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:tabular-nums}
 th,td{padding:6px 12px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap;
   max-width:340px;overflow:hidden;text-overflow:ellipsis}
@@ -253,6 +253,7 @@ body.show .slide h2{font-size:min(5.2vw,46px)}
 body.show .slide .ed{font-size:min(2.4vw,21px)}
 body.show .slide.cover h2{font-size:min(7vw,64px)}
 body.show .slide img{max-height:62vh}
+body.show .tw{max-height:62vh}
 body.show .ed:empty{display:none}
 body.show .showbar{display:flex}
 .showbar{display:none;position:fixed;right:16px;bottom:14px;gap:8px;align-items:center;
@@ -267,7 +268,7 @@ body.show .showbar{display:flex}
   #stage{max-width:none}
   .slide{box-shadow:none;border:none;max-width:none;width:100%;min-height:92vh;break-after:page;page-break-after:always}
   .ed:empty{display:none}
-  .tw{overflow:visible}
+  .tw{overflow:visible;max-height:none}
 }
 </style>
 </head>
@@ -373,7 +374,7 @@ var s=DECK.slides[at];
 var up=el('button',null,'↑');up.title='Move this slide earlier';up.disabled=at<=0;up.onclick=function(){move(-1);};
 var dn=el('button',null,'↓');dn.title='Move this slide later';dn.disabled=at>=DECK.slides.length-1;
 dn.onclick=function(){move(1);};
-var rm=el('button',null,'✕ Remove');rm.title='Remove this slide from the deck';
+var rm=el('button',null,'✕ Remove');rm.title='Remove this slide (Del) — Ctrl+Z puts it back';
 rm.disabled=DECK.slides.length<=1;rm.onclick=remove;
 c.appendChild(up);c.appendChild(dn);c.appendChild(rm);
 if(s&&s.kind==='table'&&(s.rows||[]).length>1){
@@ -381,7 +382,10 @@ var inp=document.createElement('input');inp.type='number';inp.min='1';inp.max=St
 inp.value=String(Math.min(s.shown||s.rows.length,s.rows.length));
 inp.onchange=function(){var v=parseInt(inp.value,10);
 s.shown=Math.max(1,Math.min(isNaN(v)?1:v,s.rows.length));save();stageDraw();};
-var l=el('label');l.appendChild(el('span',null,'Rows'));l.appendChild(inp);c.appendChild(l);}
+var l=el('label');l.appendChild(el('span',null,'Rows'));l.appendChild(inp);c.appendChild(l);
+var all=el('button',null,'All');all.title='Show every row — the table scrolls inside the slide';
+all.disabled=(s.shown||0)>=s.rows.length;
+all.onclick=function(){s.shown=s.rows.length;save();stageDraw();};c.appendChild(all);}
 c.appendChild(el('span','count',(at+1)+' / '+DECK.slides.length));}
 
 function nameDraw(){
@@ -396,8 +400,13 @@ function countDraw(){document.getElementById('scount').textContent=(at+1)+' / '+
 function go(i){at=Math.max(0,Math.min(i,DECK.slides.length-1));railDraw();stageDraw();countDraw();}
 function move(d){var j=at+d;if(j<0||j>=DECK.slides.length)return;
 var s=DECK.slides.splice(at,1)[0];DECK.slides.splice(j,0,s);at=j;save();draw();}
+var undone=null;  // the slide last removed, so a stray Del never costs what was typed on it
 function remove(){if(DECK.slides.length<=1)return;
+undone={at:at,slide:DECK.slides[at]};
 DECK.slides.splice(at,1);if(at>=DECK.slides.length)at=DECK.slides.length-1;save();draw();}
+function undo(){if(!undone)return;
+var i=Math.min(undone.at,DECK.slides.length);DECK.slides.splice(i,0,undone.slide);
+undone=null;save();go(i);}
 function add(){DECK.slides.splice(at+1,0,{kind:'text',title:'',above:'',below:''});save();go(at+1);
 var f=document.querySelector('.slide .ed');if(f&&f.focus)f.focus();}
 
@@ -430,12 +439,15 @@ document.getElementById('sprev').onclick=function(){go(at-1);};
 document.getElementById('snext').onclick=function(){go(at+1);};
 document.getElementById('sexit').onclick=function(){present(false);};
 document.addEventListener('keydown',function(e){
-var typing=document.activeElement&&document.activeElement.isContentEditable;
+var on=document.activeElement,tag=(on&&on.tagName)||'';
+var typing=!!on&&(on.isContentEditable||tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT');
 if(e.key==='Escape'){if(showing)present(false);return;}
 if(typing)return;  // while writing a description the arrows belong to the text
 if(e.key==='ArrowRight'||e.key==='PageDown'||e.key===' '){go(at+1);e.preventDefault();}
 else if(e.key==='ArrowLeft'||e.key==='PageUp'){go(at-1);e.preventDefault();}
-else if(e.key==='Home'){go(0);}else if(e.key==='End'){go(DECK.slides.length-1);}});
+else if(e.key==='Home'){go(0);}else if(e.key==='End'){go(DECK.slides.length-1);}
+else if(!showing&&(e.key==='Delete'||e.key==='Backspace')){remove();e.preventDefault();}
+else if(!showing&&(e.ctrlKey||e.metaKey)&&(e.key==='z'||e.key==='Z')){undo();e.preventDefault();}});
 document.addEventListener('fullscreenchange',function(){
 if(!document.fullscreenElement&&showing)present(false);});
 draw();
