@@ -288,8 +288,8 @@ var firstCat=nums.indexOf(false);xSel.value=String(firstCat>=0?firstCat:0);
 ySel.selectedIndex=0;aSel.value=hasNum?'none':'count';  // all-text data → count rows per category by default
 var logCb=document.createElement('input');logCb.type='checkbox';
 var dBtn=btn(CJ?'⬇ PNG':'⬇ SVG');
-var ePin=window.__duckduckChartCell?btn('📌 Add to notebook'):null;  // persist as a matplotlib cell (a real output)
-if(ePin)ePin.title='Insert a matplotlib cell that redraws this chart — a saved cell output';
+var ePin=window.__duckduckChartImage?btn('📌 Add to notebook'):null;  // persist as an image in a markdown cell
+if(ePin)ePin.title='Save this exact chart as an image cell in the notebook';
 m.head.appendChild(lab('Type',tSel));m.head.appendChild(lab('Count/agg',aSel));
 m.head.appendChild(lab('X',xSel));m.head.appendChild(lab('Y',ySel));
 if(CJ)m.head.appendChild(lab('Log Y',logCb));
@@ -422,8 +422,13 @@ dBtn.onclick=function(){
 if(CJ){if(chart){var a=document.createElement('a');a.href=chart.toBase64Image();a.download=name+'.png';
 document.body.appendChild(a);a.click();document.body.removeChild(a);}}
 else{var sv=host.querySelector('svg');if(sv)dl('<?xml version="1.0"?>\n'+sv.outerHTML,'image/svg+xml',name+'.svg');}};
-if(ePin)ePin.onclick=function(){window.__duckduckChartCell({name:name,type:tSel.value,agg:aSel.value,
-x:cols[Number(xSel.value)],y:cols[selY()[0]],title:cap.textContent});
+if(ePin)ePin.onclick=function(){
+var url=null;
+if(CJ&&chart){try{url=chart.toBase64Image();}catch(e){}}  // Chart.js canvas → a PNG data URL
+else{var sv=host.querySelector('svg');  // the SVG fallback → an svg data URL
+if(sv)url='data:image/svg+xml;base64,'+btoa(unescape(encodeURIComponent(sv.outerHTML)));}
+if(!url)return;
+window.__duckduckChartImage(url);
 var t0=ePin.textContent;ePin.textContent='✓ Added';setTimeout(function(){ePin.textContent=t0;},1400);};
 m.close.addEventListener('click',function(){if(chart)chart.destroy();});
 draw();m.open();};

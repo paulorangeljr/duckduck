@@ -182,7 +182,6 @@ textarea { width: 100%; min-height: 60px; }
   background: transparent; border: 0; box-shadow: none; }
 #nbframe { flex: 1; width: 100%; min-height: calc(100vh - 130px); border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 #nbstart { padding: 24px 8px; }
-#nbproblems ul { margin: 4px 0 0 18px; padding: 0; }
 
 /* SQL and Config tabs */
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
@@ -744,7 +743,6 @@ dialog.modal[open] { animation: pop .18s ease-out both; }
   <section id="tab-dashboard" hidden><div id="dashboard"></div></section>
   <section id="tab-notebook" hidden>
       <div class="card nbpane">
-        <div id="nbproblems" class="muted small" hidden></div>
         <div id="nbstart" class="muted" hidden></div>
         <iframe id="nbframe" title="JupyterLab" hidden></iframe>
       </div>
@@ -4201,24 +4199,17 @@ function nbTables() {
     sql: t.usage || ("SELECT * FROM " + (t.saved_name || t.name) + " LIMIT 100")}));
 }
 function nbPushTables() { nbPost({type: "duckduck:tables", tables: nbTables()}); }
-function nbProblems(status) {
-  const p = status?.problems || [];
-  $("#nbproblems").hidden = !p.length;
-  $("#nbproblems").innerHTML = p.length ? `<strong>Not ready yet:</strong><ul>${p.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : "";
-}
 function openNotebook() { return NB.opening ||= startNotebook().finally(() => { if (!NB.opened) NB.opening = null; }); }
 async function startNotebook() {
   $("#nbstart").hidden = false; $("#nbstart").innerHTML = `<span class="spin" aria-hidden="true"></span> Starting JupyterLab…`;
   try {
     const status = await api("/api/notebook/open", {});
-    nbProblems(status);
     NB.opened = true;
     $("#nbstart").hidden = true; $("#nbframe").hidden = false;
     const first = status.notebooks?.[0];
     $("#nbframe").src = first ? `/notebook/lab/tree/${encodeURI(first)}` : status.url;
   } catch (e) {
     $("#nbstart").innerHTML = `<strong>JupyterLab didn't start.</strong> ${esc(e.message)}`;
-    api("/api/notebook").then(nbProblems).catch(() => {});
   }
 }
 window.addEventListener("message", (e) => {

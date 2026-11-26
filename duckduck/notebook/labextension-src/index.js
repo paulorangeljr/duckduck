@@ -845,43 +845,28 @@ function dataframeCode(name, columns, rows) {
   return `${name} = pd.DataFrame(${data}, columns=[${columns.map(pyStr).join(', ')}])\n${name}`;
 }
 
-// Python for the chart the user built, with matplotlib (pandas .plot) — the "📌 Add to notebook" button inserts
-// this so the chart becomes a real, saved cell output. It reads the result's DataFrame by name (so it's tied to
-// the live data, not a snapshot); matplotlib must be installed (not a duckduck dependency).
-const MPL_KIND = { bar: 'bar', hbar: 'barh', line: 'line', area: 'area', scatter: 'scatter',
-  pie: 'pie', doughnut: 'pie', radar: 'line', polarArea: 'bar' };
-function chartCode(spec) {
-  const nm = spec.name || 'df';
-  const x = pyStr(spec.x);
-  const y = spec.y != null && spec.y !== '' ? pyStr(spec.y) : null;
-  const kind = MPL_KIND[spec.type] || 'bar';
-  const agg = spec.agg || 'none';
-  let plot;
-  if (spec.type === 'scatter' && y) {
-    plot = `${nm}.plot(kind="scatter", x=${x}, y=${y}, figsize=(8, 5))`;
-  } else if (agg === 'count') {
-    const s = `${nm}[${x}].value_counts()`;
-    plot = kind === 'pie'
-      ? `${s}.plot(kind="pie", autopct="%1.0f%%", ylabel="", figsize=(6, 6))`
-      : `${s}.plot(kind=${pyStr(kind)}, figsize=(8, 5))`;
-  } else if ((agg === 'sum' || agg === 'avg') && y) {
-    const s = `${nm}.groupby(${x})[${y}].${agg === 'sum' ? 'sum' : 'mean'}()`;
-    plot = kind === 'pie'
-      ? `${s}.plot(kind="pie", autopct="%1.0f%%", ylabel="", figsize=(6, 6))`
-      : `${s}.plot(kind=${pyStr(kind)}, figsize=(8, 5))`;
-  } else if (kind === 'pie' && y) {
-    plot = `${nm}.set_index(${x})[${y}].plot(kind="pie", ylabel="", figsize=(6, 6))`;
-  } else {
-    plot = `${nm}.plot(kind=${pyStr(kind)}, x=${x}${y ? ', y=' + y : ''}, figsize=(8, 5))`;
+// The chart's "📌 Add to notebook" button persists the exact chart the user built as a snapshot — a markdown
+// cell holding the image as a data URL (`![chart](data:image/png…)` from Chart.js, or the inline SVG of the
+// fallback). No code, no libraries, no matplotlib: it matches the preview exactly and survives reopening.
+function insertChartImage(dataUrl) {
+  const panel = gTracker && gTracker.currentWidget;
+  if (!panel || !dataUrl) {
+    return false;
   }
-  const lines = ['import matplotlib.pyplot as plt', '',
-    `# chart of ${nm} — change ${nm} if your DataFrame has another name`,
-    'ax = ' + plot];
-  if (spec.title) {
-    lines.push('ax.set_title(' + pyStr(spec.title) + ')');
+  if (gApp) {
+    gApp.shell.activateById(panel.id);
   }
-  lines.push('plt.tight_layout()', 'plt.show()');
-  return lines.join('\n');
+  const notebook = panel.content;
+  NotebookActions.insertBelow(notebook);
+  NotebookActions.changeCellType(notebook, 'markdown');
+  const cell = notebook.activeCell;
+  cell.model.sharedModel.setSource('![chart](' + dataUrl + ')');
+  try { cell.rendered = true; } catch (e) { /* if it can't auto-render, the user presses Shift+Enter */ }
+  notebook.mode = 'command';
+  if (cell.node && cell.node.scrollIntoView) {
+    cell.node.scrollIntoView({ block: 'nearest' });
+  }
+  return true;
 }
 
 // insert a plain Python code cell below the active one
@@ -1080,12 +1065,12 @@ const plugin = {
     };
     // Chart.js, bundled: expose it so the output's ▦ Chart builder (in _VIEWER_JS) draws with it instead of the
     // inline-SVG fallback — many more chart types, real tooltips and legends. And the chart's "📌 Add to notebook"
-    // button reaches chartCode() through __duckduckChartCell, inserting a matplotlib cell that persists the chart.
+    // button reaches insertChartImage() through __duckduckChartImage, saving the chart as a markdown image cell.
     try {
       Chart.register(...registerables);
       window.__duckduckChart = Chart;
     } catch (e) { /* the SVG fallback stays */ }
-    window.__duckduckChartCell = spec => insertCodeCell(chartCode(spec || {}));
+    window.__duckduckChartImage = dataUrl => insertChartImage(dataUrl);
     extensions.addExtension({
       name: 'duckduck:sql-autocomplete',
       factory: options => EditorExtensionRegistry.createImmutableExtension([
