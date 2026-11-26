@@ -262,24 +262,37 @@ function opt(s,v,t){var o=document.createElement('option');o.value=v;o.textConte
 function lab(t,el){var w=document.createElement('label');
 w.style.cssText='font-size:11px;color:var(--jp-ui-font-color2);display:flex;gap:4px;align-items:center';
 w.appendChild(document.createTextNode(t));w.appendChild(el);return w;}
-var tSel=sel(),xSel=sel(),ySel=sel();
+var tSel=sel(),aSel=sel(),xSel=sel(),ySel=sel();
 ['bar','line','area','scatter','pie'].forEach(function(t){opt(tSel,t,t.charAt(0).toUpperCase()+t.slice(1));});
+[['count','Count'],['sum','Sum'],['avg','Average'],['none','None (raw)']].forEach(function(a){opt(aSel,a[0],a[1]);});
 cols.forEach(function(c,i){opt(xSel,String(i),c);});
 cols.forEach(function(c,i){if(nums[i])opt(ySel,String(i),c);});
 if(!ySel.options.length){cols.forEach(function(c,i){opt(ySel,String(i),c);});}
+var hasNum=nums.indexOf(true)>=0;
 var firstCat=nums.indexOf(false);xSel.value=String(firstCat>=0?firstCat:0);
-ySel.selectedIndex=0;
+ySel.selectedIndex=0;aSel.value=hasNum?'none':'count';  // all-text data → count rows per category by default
 var dSvg=btn('⬇ SVG');
-m.head.appendChild(lab('Type',tSel));m.head.appendChild(lab('X',xSel));m.head.appendChild(lab('Y',ySel));
+m.head.appendChild(lab('Type',tSel));m.head.appendChild(lab('Count/agg',aSel));
+m.head.appendChild(lab('X',xSel));m.head.appendChild(lab('Y',ySel));
 m.head.appendChild(dSvg);m.head.appendChild(m.close);
+var cap=document.createElement('div');cap.style.cssText='font-size:11px;color:var(--jp-ui-font-color2);margin:0 0 6px';
 var host=document.createElement('div');host.style.cssText='width:76vw;max-width:900px;min-width:280px';
-m.body.appendChild(host);
+m.body.appendChild(cap);m.body.appendChild(host);
 var PAL=['#2563eb','#d97706','#059669','#db2777','#7c3aed','#0891b2','#ca8a04','#dc2626'];
 function selY(){return [Number(ySel.value||(ySel.options[0]||{}).value||0)];}
+// group the rows by the X value → one point per category: count rows, or sum/avg a numeric Y
+function grouped(xi,yi,agg){var m2={},order=[];
+rows.forEach(function(r){var k=String(r[xi]==null?'':r[xi]);
+if(!Object.prototype.hasOwnProperty.call(m2,k)){m2[k]={s:0,c:0};order.push(k);}
+m2[k].c++;if(agg==='sum'||agg==='avg'){var n=Number(r[yi]);if(!isNaN(n))m2[k].s+=n;}});
+return order.map(function(k){var gg=m2[k];return {k:k,v:agg==='count'?gg.c:agg==='avg'?(gg.c?gg.s/gg.c:0):gg.s};});}
 function fmt(v){if(v===null||!isFinite(v))return '';var a=Math.abs(v);
 if(a!==0&&(a>=1e5||a<1e-3))return v.toExponential(1);return (Math.round(v*1000)/1000).toString();}
 function draw(){try{
-var type=tSel.value,xi=Number(xSel.value),yis=selY();
+var type=tSel.value,xi=Number(xSel.value),yis=selY(),agg=aSel.value;
+cap.textContent=type==='scatter'?'Raw '+cols[yis[0]]+' vs '+cols[xi]
+:agg==='none'?'Raw '+cols[yis[0]]+' by '+cols[xi]
+:(agg==='count'?'Count of rows':(agg==='avg'?'Average of ':'Sum of ')+cols[yis[0]])+' by '+cols[xi];
 var W=760,H=420,L=56,R=16,T=16,B=78,pw=W-L-R,ph=H-T-B;
 var ink='var(--jp-ui-font-color1)',mut='var(--jp-ui-font-color2)',ax='var(--jp-border-color1)',gd='var(--jp-border-color2)';
 function ln(x1,y1,x2,y2,c){return '<line x1="'+x1+'" y1="'+y1+'" x2="'+x2+'" y2="'+y2+'" style="stroke:'+c+'"/>';}
@@ -288,21 +301,25 @@ function tx(x,y,t,c,an,rot){return '<text x="'+x+'" y="'+y+'" style="fill:'+(c||
 var g='<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:auto;font:11px var(--jp-ui-font-family,sans-serif)" '+
 'xmlns="http://www.w3.org/2000/svg">';
 if(type==='pie'){
-var yi=yis[0];
-var it=rows.map(function(r){return {k:String(r[xi]==null?'':r[xi]),v:Math.abs(Number(r[yi])||0)};})
-.filter(function(o){return o.v>0;}).sort(function(a,b){return b.v-a.v;});
-if(it.length>12){var rest=it.slice(11).reduce(function(s,o){return s+o.v;},0);it=it.slice(0,11);it.push({k:'(others)',v:rest});}
-var tot=it.reduce(function(s,o){return s+o.v;},0)||1,cx=L+ph/2,cy=T+ph/2,rr=ph/2-4,an=-Math.PI/2;
-it.forEach(function(o,i){var a2=an+o.v/tot*2*Math.PI,x1=cx+rr*Math.cos(an),y1=cy+rr*Math.sin(an),
+var pv=grouped(xi,yis[0],agg==='none'?'count':agg).filter(function(o){return o.v>0;}).sort(function(a,b){return b.v-a.v;});
+if(!pv.length){host.innerHTML='<div style="padding:18px;color:var(--jp-ui-font-color2);font-size:12px">Nothing to chart '+
+'here. Text columns have no values to sum — set <b>Count/agg = Count</b> to chart how many rows per category.</div>';
+cap.textContent='';return;}
+if(pv.length>12){var rest=pv.slice(11).reduce(function(s,o){return s+o.v;},0);pv=pv.slice(0,11);pv.push({k:'(others)',v:rest});}
+var tot=pv.reduce(function(s,o){return s+o.v;},0)||1,cx=L+ph/2,cy=T+ph/2,rr=ph/2-4,an=-Math.PI/2;
+pv.forEach(function(o,i){var a2=an+o.v/tot*2*Math.PI,x1=cx+rr*Math.cos(an),y1=cy+rr*Math.sin(an),
 x2=cx+rr*Math.cos(a2),y2=cy+rr*Math.sin(a2),big=(a2-an)>Math.PI?1:0;
 g+='<path d="M'+cx+' '+cy+' L'+x1+' '+y1+' A'+rr+' '+rr+' 0 '+big+' 1 '+x2+' '+y2+' Z" fill="'+PAL[i%PAL.length]+
 '" style="stroke:var(--jp-layout-color1);stroke-width:1"/>';an=a2;});
 var lx=L+ph+24,ly=T+12;
-it.forEach(function(o,i){g+='<rect x="'+lx+'" y="'+(ly-9)+'" width="10" height="10" fill="'+PAL[i%PAL.length]+'"/>'+
+pv.forEach(function(o,i){g+='<rect x="'+lx+'" y="'+(ly-9)+'" width="10" height="10" fill="'+PAL[i%PAL.length]+'"/>'+
 tx(lx+15,ly,o.k+' ('+Math.round(o.v/tot*100)+'%)',ink,'start');ly+=16;});
 host.innerHTML=g+'</svg>';return;}
-var labels=rows.map(function(r){return String(r[xi]==null?'':r[xi]);});
-var series=yis.map(function(yi){return rows.map(function(r){var n=Number(r[yi]);return isNaN(n)?null:n;});});
+var labels,series;
+if(agg!=='none'&&type!=='scatter'){var gp=grouped(xi,yis[0],agg);
+labels=gp.map(function(d){return d.k;});series=[gp.map(function(d){return d.v;})];}
+else{labels=rows.map(function(r){return String(r[xi]==null?'':r[xi]);});
+series=yis.map(function(yi){return rows.map(function(r){var n=Number(r[yi]);return isNaN(n)?null:n;});});}
 var vals=[].concat.apply([],series).filter(function(v){return v!==null;});
 var ymax=Math.max.apply(null,vals.concat([0])),ymin=Math.min.apply(null,vals.concat([0]));if(ymax===ymin)ymax=ymin+1;
 function Y(v){return T+ph-(v-ymin)/(ymax-ymin)*ph;}
@@ -332,7 +349,7 @@ if(series.length>1){var lx=L+6;yis.forEach(function(yi,si){g+='<rect x="'+lx+'" 
 PAL[si%PAL.length]+'"/>'+tx(lx+14,T+11,cols[yi],ink,'start');lx+=cols[yi].length*7+34;});}
 host.innerHTML=g+'</svg>';
 }catch(e){host.textContent='Couldn’t draw this — try other columns.';}}
-[tSel,xSel,ySel].forEach(function(el){el.addEventListener('change',draw);el.addEventListener('input',draw);});
+[tSel,aSel,xSel,ySel].forEach(function(el){el.addEventListener('change',draw);el.addEventListener('input',draw);});
 dSvg.onclick=function(){var sv=host.querySelector('svg');if(sv)dl('<?xml version="1.0"?>\n'+sv.outerHTML,'image/svg+xml',name+'.svg');};
 draw();m.open();};
 }catch(e){}})();
