@@ -1,6 +1,7 @@
 // node toggle.test.mjs — the switch's conversions and the automatic DataFrame names (run by tests/test_notebook.py)
 import assert from 'node:assert/strict';
-import { autoNames, baseName, modeOf, toPython, toSql } from './toggle.js';
+import { autoNames, baseName, convert, modeOf, nameOf, parseTableCode, tableCell, tableCode,
+  toPython, toSql } from './toggle.js';
 
 const sql = (source, extra) => ({ source, meta: { language: 'sql', engine: 'spark', name: null, auto: true, ...extra } });
 
@@ -42,4 +43,28 @@ assert.deepEqual(autoNames([sql('SELECT * FROM b.t', { name: 't_2' }), sql('SELE
 assert.deepEqual(autoNames([sql('SELECT * FROM a.t', { name: 'x' }), sql('SELECT 1', { name: 't', auto: false })]),
   ['t_2', 't']);
 assert.deepEqual(autoNames([sql('SELECT 1', { name: 'df', auto: undefined })]), ['df_1']);
+
+// a table cell: the rows live in the metadata, the source is one short line
+const grid = tableCell('owners', ['host', 'risk', 'note'],
+  [['web-01', '91', "O'Brien"], ['db-02', '', 'x\ty'], ['api-03', '7', '']]);
+assert.equal(grid.source, '# \u25a6 owners \u2014 3 rows \u00d7 3 columns');
+assert.equal(grid.meta.language, 'table');
+assert.equal(modeOf(grid.source, grid.meta), 'table');
+assert.equal(nameOf(grid.source, grid.meta), 'owners');
+// "Show the code" writes the pandas that builds it — a column of numbers is numeric, empty cells are None
+const shown = convert(grid.source, grid.meta, 'python');
+assert.equal(shown.meta, null);
+assert.match(shown.source, /^owners = pd\.DataFrame\(\[/);
+assert.match(shown.source, /\['web-01', 91, 'O\\'Brien'\]/);
+assert.match(shown.source, /\['db-02', None, 'x\\ty'\]/);
+assert.ok(shown.source.endsWith("columns=['host', 'risk', 'note'])\nowners"));
+// and back again, exactly
+assert.deepEqual(convert(shown.source, shown.meta, 'table').meta, grid.meta);
+// a table cell is never turned into SQL, and ordinary code is never turned into a table
+assert.deepEqual(convert(grid.source, grid.meta, 'duckdb').meta, grid.meta);
+assert.deepEqual(convert('x = 1', undefined, 'table'), { source: 'x = 1', meta: null });
+assert.equal(parseTableCode('df = pd.DataFrame(open("x"), columns=["a"])'), null);
+assert.equal(parseTableCode("df = pd.DataFrame([['a]], columns=['a'])"), null);
+assert.equal(tableCode('t', [], []), "t = pd.DataFrame([], columns=[])\nt");
+
 console.log('ok');

@@ -807,3 +807,27 @@ def test_the_page_builds_a_presentation_from_what_the_notebook_rendered(app_clie
     assert "Inventory review" in made.json()["html"]
     empty = app_client.post("/api/notebook/present", json={"items": [], "title": "Nothing"})
     assert empty.status_code == 400 and "pin a chart" in empty.json()["detail"]
+
+
+def test_a_table_cell_keeps_its_rows_in_the_cell_and_the_kernel_rebuilds_them():
+    """The grid's table: the rows live in the cell's metadata, never as a wall of pandas code. The kernel turns
+    them back into the DataFrame, with the same typing the cell's "Show the code" writes."""
+    import pandas as pd
+
+    meta = {sqlcells.METADATA_KEY: {"language": sqlcells.TABLE_LANGUAGE, "name": "owners",
+                                    "columns": ["host", "risk", "note"],
+                                    "rows": [["web-01", "91", "O'Brien"], ["db-02", "", "x"], ["api-03", "7", ""]]}}
+    code = sqlcells.from_metadata("# a short line the user reads", meta)
+    namespace = {"pd": pd}
+    exec(code, namespace)  # noqa: S102 — the code this very function wrote
+    frame = namespace["owners"]
+    assert list(frame.columns) == ["host", "risk", "note"]
+    assert frame["host"].tolist() == ["web-01", "db-02", "api-03"]
+    assert frame["risk"].tolist()[0] == 91 and pd.isna(frame["risk"].tolist()[1])  # all numbers → a number column
+    assert frame["note"].tolist()[0] == "O'Brien"  # quotes survive
+    # a name that isn't an identifier falls back, an empty table still builds, and a plain cell is untouched
+    empty = sqlcells.from_metadata("", {sqlcells.METADATA_KEY: {"language": "table", "name": "not a name",
+                                                               "columns": ["a"], "rows": []}})
+    assert empty.startswith("df = pd.DataFrame([], columns=['a'])")
+    assert sqlcells.from_metadata("x = 1", None) == "x = 1"
+    assert sqlcells.from_metadata("x = 1", {sqlcells.METADATA_KEY: {"language": "python"}}) == "x = 1"

@@ -601,10 +601,56 @@ draw();m.open();};
 METADATA_KEY = "duckduck"
 
 
+#: a cell whose rows live in its metadata, edited in the grid instead of written as pandas code
+TABLE_LANGUAGE = "table"
+
+
+def _numeric_column(rows: Any, index: int) -> bool:
+    """A column is numeric when every value it has reads as a number (the grid's own rule, in toggle.js)."""
+    seen = False
+    for row in rows:
+        value = row[index] if index < len(row) else None
+        if value is None or value == "":
+            continue
+        try:
+            float(value)
+        except (TypeError, ValueError):
+            return False
+        seen = True
+    return seen
+
+
+def _py_value(value: Any, numeric: bool) -> str:
+    """One grid cell as a Python literal: a number in a numeric column, None when empty, else text."""
+    if value is None or value == "":
+        return "None"
+    if numeric:
+        number = float(value)
+        return repr(int(number) if number.is_integer() else number)
+    return repr(str(value))
+
+
+def table_code(name: str, columns: Any, rows: Any) -> str:
+    """A table cell's metadata → the pandas that rebuilds it. The same frame the cell's "Show the code" writes,
+    so what runs and what the code says are one thing."""
+    names = [str(c) for c in (columns or [])]
+    body = [list(r) if isinstance(r, (list, tuple)) else [r] for r in (rows or [])]
+    numeric = [_numeric_column(body, i) for i in range(len(names))]
+    lines = ",\n".join("    [" + ", ".join(_py_value(row[i] if i < len(row) else None, numeric[i])
+                                           for i in range(len(names))) + "]" for row in body)
+    data = "[\n" + lines + "\n]" if body else "[]"
+    return f"{name} = pd.DataFrame({data}, columns=[{', '.join(repr(c) for c in names)}])\n{name}"
+
+
 def from_metadata(code: str, cell_meta: Optional[Dict[str, Any]]) -> str:
     """A cell made SQL by its metadata (the switch keeps only the SQL in the cell) → the cell as ``%%sql`` code;
-    anything else as it is. JupyterLab sends a cell's metadata with its execution (``cell_meta``)."""
+    a table cell → the pandas that rebuilds its rows; anything else as it is. JupyterLab sends a cell's metadata
+    with its execution (``cell_meta``)."""
     options = (cell_meta or {}).get(METADATA_KEY)
+    if isinstance(options, dict) and options.get("language") == TABLE_LANGUAGE:
+        name = options.get("name")
+        name = name if isinstance(name, str) and _NAME.match(name) else DEFAULT_NAME
+        return table_code(name, options.get("columns"), options.get("rows"))
     if not isinstance(options, dict) or options.get("language") != "sql":
         return code
     lines = code.splitlines()

@@ -21,7 +21,7 @@ import { INotebookTracker, NotebookActions } from '@jupyterlab/notebook';
 import { LabIcon } from '@jupyterlab/ui-components';
 import { Widget } from '@lumino/widgets';
 import { Chart, registerables } from 'chart.js';
-import { KEY, NAME, autoNames, convert, isAuto, modeOf, nameOf } from './toggle';
+import { KEY, NAME, autoNames, convert, isAuto, isTable, modeOf, nameOf, tableCell } from './toggle';
 
 // the cell-language switch differs per kernel. The local DuckDB kernel is plain Python + DuckDB SQL (pandas);
 // the Glue kernels have PySpark, Spark SQL, and duckduck (reader.sql). modesFor(panel) picks the set.
@@ -32,9 +32,10 @@ const GLUE_MODES = [
 ];
 const LOCAL_MODES = [
   ['python', 'Python', 'Python with pandas — an SQL cell becomes name = duck.sql(...).df()'],
-  ['duckdb', 'SQL', 'DuckDB SQL (duck.sql), the result kept as a pandas DataFrame — like the SQL tab']
+  ['duckdb', 'SQL', 'DuckDB SQL (duck.sql), the result kept as a pandas DataFrame — like the SQL tab'],
+  ['table', 'Table', 'rows you edit in a grid, kept in the cell itself instead of a wall of pandas code']
 ];
-const ALL_MODES = ['python', 'sql', 'duckduck', 'duckdb'];
+const ALL_MODES = ['python', 'sql', 'duckduck', 'duckdb', 'table'];
 
 function kernelName(panel) {
   const session = panel && panel.sessionContext && panel.sessionContext.session;
@@ -52,7 +53,8 @@ function modeForPanel(panel, mode) {
   if (isLocalDuck(panel)) {
     return mode === 'sql' || mode === 'duckduck' ? 'duckdb' : mode;
   }
-  return mode === 'duckdb' ? 'duckduck' : mode;
+  // a table cell is the local kernel's (it rebuilds the frame with pandas): elsewhere it reads as Python
+  return mode === 'table' ? 'python' : mode === 'duckdb' ? 'duckduck' : mode;
 }
 // SQL cells in their own colour (amber, readable in light and dark themes): a tinted editor, an amber edge, and
 // "SQL → df" by the prompt; the change animates when the switch turns a cell into SQL
@@ -69,6 +71,14 @@ const STYLE = `
   font-size: 9px; color: var(--duckduck-sql); font-weight: 700; white-space: nowrap; overflow: hidden;
   text-overflow: ellipsis; }
 .jp-CodeCell .jp-InputArea-editor { transition: background-color 0.25s ease, border-color 0.25s ease; }
+.jp-CodeCell.duckduck-table .jp-InputArea-editor { background: var(--jp-layout-color2) !important;
+  border: 1px dashed var(--jp-border-color1) !important; opacity: 0.75; }
+.jp-CodeCell.duckduck-table .jp-InputArea-editor .cm-editor,
+.jp-CodeCell.duckduck-table .jp-InputArea-editor .cm-gutters { background: transparent !important; }
+.duckduck-tablebar { display: flex; gap: 6px; padding: 2px 0 4px 0; flex-wrap: wrap; }
+.duckduck-tablebtn { font: inherit; font-size: 11px; padding: 2px 9px; cursor: pointer; border-radius: 4px;
+  border: 1px solid var(--jp-border-color2); background: var(--jp-layout-color1); color: var(--jp-ui-font-color1); }
+.duckduck-tablebtn:hover { border-color: var(--jp-brand-color1); color: var(--jp-brand-color1); }
 .duckduck-langswitch select.duckduck-on { border-color: #d97706; color: #d97706; font-weight: 600; }
 .duckduck-langswitch { display: flex; align-items: center; gap: 4px; }
 .duckduck-langswitch select { height: 24px; }
@@ -540,6 +550,42 @@ function nameCells(notebook) {
 
 // SQL cells: their names, a class, the DataFrame's name by the prompt, SQL highlighting (the notebook may set the
 // kernel's mime type back: done again on change)
+// the buttons a table cell carries: open the grid, or swap the cell for the pandas code that builds it
+function tableBar(cell, panel) {
+  const wrap = cell.node && cell.node.querySelector('.jp-Cell-inputWrapper');
+  if (!wrap) {
+    return;
+  }
+  let bar = wrap.querySelector('.duckduck-tablebar');
+  const meta = metaOf(cell);
+  if (!isTable(meta)) {
+    if (bar) {
+      bar.remove();
+    }
+    return;
+  }
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.className = 'duckduck-tablebar';
+    const edit = document.createElement('button');
+    edit.className = 'duckduck-tablebtn';
+    edit.title = 'Edit this table in a grid';
+    edit.onclick = () => editTableCell(cell);
+    const code = document.createElement('button');
+    code.className = 'duckduck-tablebtn';
+    code.textContent = '{ } Show the code';
+    code.title = 'Replace this cell with the pandas code that builds the table';
+    code.onclick = () => {
+      setCell(cell, convert(cell.model.sharedModel.getSource(), metaOf(cell), 'python'));
+      decorate(panel);
+    };
+    bar.append(edit, code);
+    wrap.insertBefore(bar, wrap.firstChild);
+  }
+  const rows = (meta.rows || []).length;
+  bar.firstChild.textContent = `▦ Edit ${meta.name || 'table'} · ${rows} row${rows === 1 ? '' : 's'}`;
+}
+
 function decorate(panel) {
   const notebook = panel.content;
   const python = notebook.codeMimetype || 'text/x-ipython';
@@ -550,8 +596,11 @@ function decorate(panel) {
     }
     const source = cell.model.sharedModel.getSource();
     const meta = metaOf(cell);
-    const sql = modeOf(source, meta) !== 'python';
+    const table = isTable(meta);
+    const sql = !table && modeOf(source, meta) !== 'python';
     cell.toggleClass('duckduck-sql', sql);
+    cell.toggleClass('duckduck-table', table);
+    tableBar(cell, panel);
     const prompt = cell.node.querySelector('.jp-InputPrompt');
     if (prompt) {
       prompt.setAttribute('data-duckduck-df', sql ? nameOf(source, meta) : '');
@@ -652,7 +701,8 @@ class LanguageSwitch extends Widget {
   // a new, empty code cell starts in the language picked last (Shift+Enter at the end, b, the + button…)
   newCells(change) {
     const mode = this.panel.__duckduckMode;
-    if (change.type !== 'add' || !mode || mode === 'python') {
+    // 'table' is not a language an empty cell can start in: a table cell needs rows, which ▦ New table gives it
+    if (change.type !== 'add' || !mode || mode === 'python' || mode === 'table') {
       return;
     }
     const models = change.newValues || [];
@@ -811,39 +861,6 @@ async function insert(app, tracker, code, sql) {
 // window.__duckduckEditGrid (set in activate); the Tables panel's ＋ New table calls openGridEditor directly.
 // Plain JS, no dependency, like the chart builder. Only the shown rows (≤ the output's limit) travel here.
 
-function pyStr(s) {
-  return "'" + String(s == null ? '' : s)
-    .replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t') + "'";
-}
-// a column is numeric when every non-empty cell parses as a number
-function columnIsNumeric(rows, ci) {
-  let any = false;
-  for (const r of rows) {
-    const v = r[ci];
-    if (v === '' || v == null) {
-      continue;
-    }
-    if (isNaN(Number(v))) {
-      return false;
-    }
-    any = true;
-  }
-  return any;
-}
-function pyCell(v, isNum) {
-  if (v === '' || v == null) {
-    return 'None';
-  }
-  return isNum ? String(Number(v)) : pyStr(v);
-}
-// Python for `name = pd.DataFrame([...rows...], columns=[...])` (an all-number column → numeric, empty → None).
-// No `import pandas as pd`: the local DuckDB kernel puts `pd` in the namespace at startup (like `duck`).
-function dataframeCode(name, columns, rows) {
-  const nums = columns.map((_, ci) => columnIsNumeric(rows, ci));
-  const body = rows.map(r => '    [' + columns.map((_, ci) => pyCell(r[ci], nums[ci])).join(', ') + ']').join(',\n');
-  const data = rows.length ? '[\n' + body + '\n]' : '[]';
-  return `${name} = pd.DataFrame(${data}, columns=[${columns.map(pyStr).join(', ')}])\n${name}`;
-}
 
 // The chart's "📌 Add to notebook" button persists the exact chart the user built as a snapshot — a markdown
 // cell holding the image as a data URL (`![chart](data:image/png…)` from Chart.js, or the inline SVG of the
@@ -1007,6 +1024,39 @@ class PresentButton extends Widget {
 }
 
 // insert a plain Python code cell below the active one
+// a table cell: the rows go into the cell's metadata, the source is the one short line (see toggle.js)
+function insertTableCell(name, columns, rows) {
+  const panel = gTracker && gTracker.currentWidget;
+  if (!panel) {
+    return false;
+  }
+  if (gApp) {
+    gApp.shell.activateById(panel.id);
+  }
+  const notebook = panel.content;
+  NotebookActions.insertBelow(notebook);
+  if (notebook.activeCell && notebook.activeCell.model.type !== 'code') {
+    NotebookActions.changeCellType(notebook, 'code');
+  }
+  const cell = notebook.activeCell;
+  setCell(cell, tableCell(name, columns, rows));
+  decorate(panel);
+  notebook.mode = 'command';
+  if (cell.node && cell.node.scrollIntoView) {
+    cell.node.scrollIntoView({ block: 'nearest' });
+  }
+  return true;
+}
+
+// the ▦ button on a table cell: the grid opens on its rows and saves back into that same cell
+function editTableCell(cell) {
+  const meta = metaOf(cell) || {};
+  openGridEditor({
+    title: 'Edit table', columns: meta.columns || [], rows: meta.rows || [],
+    suggestName: meta.name || 'df', cell
+  });
+}
+
 function insertCodeCell(code) {
   const panel = gTracker && gTracker.currentWidget;
   if (!panel) {
@@ -1098,7 +1148,7 @@ function openGridEditor(opts) {
   nameLab.append(document.createTextNode('DataFrame'), name);
   const addRow = gridButton('＋ Row');
   const addCol = gridButton('＋ Column');
-  const use = gridButton('Use as DataFrame');
+  const use = gridButton(opts.cell ? 'Save' : 'Use as DataFrame');
   use.style.borderColor = use.style.color = 'var(--jp-brand-color1)';
   m.head.append(nameLab, addRow, addCol, use, m.closeBtn);
   const wrap = document.createElement('div');
@@ -1168,7 +1218,16 @@ function openGridEditor(opts) {
   use.onclick = () => {
     const cols = columns.map((c, i) => String(c).trim() || ('col' + (i + 1)));
     const nm = /^[A-Za-z_]\w*$/.test(String(name.value).trim()) ? String(name.value).trim() : 'df';
-    if (insertCodeCell(dataframeCode(nm, cols, rows))) {
+    if (opts.cell) {  // editing a table cell: the same cell takes the new rows, nothing is inserted
+      setCell(opts.cell, tableCell(nm, cols, rows));
+      const panel = gTracker && gTracker.currentWidget;
+      if (panel) {
+        decorate(panel);
+      }
+      m.close();
+      return;
+    }
+    if (insertTableCell(nm, cols, rows)) {
       m.close();
     }
   };

@@ -50,6 +50,9 @@ function isSql(meta) {
 
 // 'python' | 'sql' | 'duckduck' | 'duckdb' (duckdb = the local DuckDB kernel: duck.sql(...).df() → pandas)
 export function modeOf(source, meta) {
+  if (isTable(meta)) {
+    return TABLE;
+  }
   if (isSql(meta)) {
     return meta.engine === 'duckduck' ? 'duckduck' : meta.engine === 'duckdb' ? 'duckdb' : 'sql';
   }
@@ -62,6 +65,9 @@ export function modeOf(source, meta) {
 
 // the DataFrame an SQL cell leaves (null for a PySpark cell)
 export function nameOf(source, meta) {
+  if (isTable(meta)) {
+    return meta.name || DEFAULT_NAME;
+  }
   if (isSql(meta)) {
     return meta.name || DEFAULT_NAME;
   }
@@ -216,5 +222,155 @@ export function autoNames(cells) {
 }
 
 export function convert(source, meta, mode) {
+  if (mode === TABLE) {
+    return toTable(source, meta);
+  }
+  if (isTable(meta)) {
+    // a table cell has two readings only: itself, or the pandas code that builds it
+    return mode === 'python'
+      ? { source: tableCode(meta.name || DEFAULT_NAME, meta.columns || [], meta.rows || []), meta: null }
+      : { source: source || '', meta };
+  }
   return mode === 'python' ? toPython(source, meta) : toSql(source, meta, mode);
+}
+
+
+// ---- table cells: the rows live in the cell, not in a wall of code ---------------------------------------------
+// A table cell keeps its rows in the cell's metadata and shows one short line of source, so a notebook reads
+// "▦ owners — 3 rows × 2 columns" instead of a screenful of pd.DataFrame literals. The kernel rebuilds the frame
+// from that metadata (sqlcells.table_code), the ▦ button opens the grid on it, and "Show the code" turns it back
+// into the plain pandas cell — the same conversion the language switch does.
+export const TABLE = 'table';
+
+export function isTable(meta) {
+  return !!meta && meta.language === TABLE;
+}
+
+export function tableSource(name, columns, rows) {
+  const r = (rows || []).length;
+  const c = (columns || []).length;
+  return `# ▦ ${name} — ${r} row${r === 1 ? '' : 's'} × ${c} column${c === 1 ? '' : 's'}`;
+}
+
+export function tableCell(name, columns, rows) {
+  const nm = NAME.test(String(name || '')) ? String(name) : DEFAULT_NAME;
+  const cols = (columns || []).map(String);
+  const body = (rows || []).map(r => cols.map((_, ci) => (r[ci] == null ? '' : String(r[ci]))));
+  return { source: tableSource(nm, cols, body), meta: { language: TABLE, name: nm, columns: cols, rows: body } };
+}
+
+// a column is numeric when every value it has reads as a number (empty cells become None)
+export function columnIsNumeric(rows, ci) {
+  let any = false;
+  for (const r of rows || []) {
+    const v = r[ci];
+    if (v === '' || v == null) {
+      continue;
+    }
+    if (isNaN(Number(v))) {
+      return false;
+    }
+    any = true;
+  }
+  return any;
+}
+
+export function pyStr(s) {
+  return "'" + String(s == null ? '' : s)
+    .replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t') + "'";
+}
+
+function pyCell(v, isNum) {
+  if (v === '' || v == null) {
+    return 'None';
+  }
+  return isNum ? String(Number(v)) : pyStr(v);
+}
+
+export function tableCode(name, columns, rows) {
+  const cols = (columns || []).map(String);
+  const body = rows || [];
+  const nums = cols.map((_, ci) => columnIsNumeric(body, ci));
+  const lines = body.map(r => '    [' + cols.map((_, ci) => pyCell(r[ci], nums[ci])).join(', ') + ']').join(',\n');
+  const data = body.length ? '[\n' + lines + '\n]' : '[]';
+  return `${name} = pd.DataFrame(${data}, columns=[${cols.map(pyStr).join(', ')}])\n${name}`;
+}
+
+// a Python list literal as tableCode writes it → the value, or null for anything else (never an eval)
+function pyLiteral(text) {
+  const s = String(text || '');
+  let out = '';
+  let i = 0;
+  while (i < s.length) {
+    const ch = s[i];
+    if (ch === "'" || ch === '"') {
+      let value = '';
+      i += 1;
+      while (i < s.length && s[i] !== ch) {
+        if (s[i] === '\\') {
+          const next = s[i + 1];
+          value += next === 'n' ? '\n' : next === 'r' ? '\r' : next === 't' ? '\t' : next;
+          i += 2;
+        } else {
+          value += s[i];
+          i += 1;
+        }
+      }
+      if (i >= s.length) {
+        return null;  // unterminated
+      }
+      i += 1;
+      out += JSON.stringify(value);
+    } else if (/[A-Za-z_]/.test(ch)) {
+      let word = '';
+      while (i < s.length && /\w/.test(s[i])) {
+        word += s[i];
+        i += 1;
+      }
+      if (word === 'None') {
+        out += 'null';
+      } else if (word === 'True') {
+        out += 'true';
+      } else if (word === 'False') {
+        out += 'false';
+      } else {
+        return null;  // a name we did not write
+      }
+    } else {
+      out += ch;
+      i += 1;
+    }
+  }
+  try {
+    return JSON.parse(out);
+  } catch (e) {
+    return null;
+  }
+}
+
+export function parseTableCode(source) {
+  const text = String(source || '').trim();
+  const m = /^([A-Za-z_]\w*)\s*=\s*pd\.DataFrame\(([\s\S]*),\s*columns\s*=\s*(\[[\s\S]*?\])\s*\)\s*(?:\n\s*\1\s*)?$/.exec(text);
+  if (!m) {
+    return null;
+  }
+  const rows = pyLiteral(m[2]);
+  const columns = pyLiteral(m[3]);
+  if (!Array.isArray(rows) || !Array.isArray(columns) || !columns.length || !rows.every(r => Array.isArray(r))) {
+    return null;
+  }
+  return {
+    name: m[1],
+    columns: columns.map(String),
+    rows: rows.map(r => columns.map((_, ci) => (r[ci] == null ? '' : String(r[ci]))))
+  };
+}
+
+// only the code a table cell writes can become one again; anything else is left exactly as it is
+export function toTable(source, meta) {
+  if (isTable(meta)) {
+    return { source: source || '', meta };
+  }
+  const read = parseTableCode(source);
+  return read ? tableCell(read.name, read.columns, read.rows) : { source: source || '', meta: meta || null };
 }
