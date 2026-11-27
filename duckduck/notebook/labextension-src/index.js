@@ -83,6 +83,9 @@ const STYLE = `
 .duckduck-tablebtn { font: inherit; font-size: 11px; padding: 3px 10px; cursor: pointer; border-radius: 4px;
   border: 1px solid var(--jp-border-color2); background: var(--jp-layout-color1); color: var(--jp-ui-font-color1); }
 .duckduck-tablebtn:hover { border-color: var(--jp-brand-color1); color: var(--jp-brand-color1); }
+/* the cell you are on, drawn inside its borders — the browser's default ring spills over the grid lines */
+.duckduck-grid input:focus { outline: 2px solid var(--jp-brand-color1); outline-offset: -2px; }
+.duckduck-grid input:focus::selection { background: var(--jp-brand-color1); color: var(--jp-layout-color1); }
 .duckduck-langswitch select.duckduck-on { border-color: #d97706; color: #d97706; font-weight: 600; }
 .duckduck-langswitch { display: flex; align-items: center; gap: 4px; }
 .duckduck-langswitch select { height: 24px; }
@@ -1140,8 +1143,38 @@ function appModal(titleText) {
   body.style.cssText = 'overflow:auto;padding:12px';
   md.append(head, body);
   ov.appendChild(md);
+  // Focus trap. JupyterLab reclaims the keyboard when its notebook panel is activated (onActivateRequest →
+  // _ensureFocus → the active cell's node), which lands focus outside a modal of ours seconds after it opened —
+  // the grid's arrows then drove the notebook instead of the grid. A modal keeps its focus, with a guard so this
+  // never ping-pongs with another focus manager.
+  let last = null;
+  let bounces = 0;
+  let bounceAt = 0;
+  function trap(e) {
+    if (!ov.isConnected || ov.contains(e.target)) {
+      return;
+    }
+    const now = Date.now();
+    if (now - bounceAt > 1000) {
+      bounces = 0;  // a one-off steal, not a fight
+    }
+    bounceAt = now;
+    bounces += 1;
+    if (bounces > 10) {
+      return;
+    }
+    const back = last && ov.contains(last) ? last : (md.querySelector('input, button, select, textarea') || md);
+    if (back && back.focus) {
+      back.focus();
+    }
+  }
+  ov.addEventListener('focusin', e => { last = e.target; });
+  document.addEventListener('focusin', trap, true);
+  const cleanups = [];
   function close() {
+    document.removeEventListener('focusin', trap, true);
     document.removeEventListener('keydown', onkey);
+    cleanups.forEach(f => f());
     ov.remove();
   }
   function onkey(e) {
@@ -1157,7 +1190,11 @@ function appModal(titleText) {
     }
   });
   document.addEventListener('keydown', onkey);
-  return { overlay: ov, head, title, body, close, closeBtn, open: () => document.body.appendChild(ov) };
+  return {
+    overlay: ov, head, title, body, close, closeBtn,
+    onClose: f => cleanups.push(f),  // runs whichever way the modal is closed
+    open: () => document.body.appendChild(ov)
+  };
 }
 
 // the editable grid. columns: string[], rows: any[][]. "Use as DataFrame" inserts a pd.DataFrame cell.
@@ -1183,12 +1220,14 @@ function openGridEditor(opts) {
   const wrap = document.createElement('div');
   wrap.style.cssText = 'overflow:auto;max-height:64vh';
   const table = document.createElement('table');
+  table.className = 'duckduck-grid';
   table.style.cssText = 'border-collapse:collapse;font-size:12px';
   wrap.appendChild(table);
   const note = document.createElement('div');
   note.style.cssText = 'font-size:11px;color:var(--jp-ui-font-color2);margin-top:8px';
-  note.textContent = 'Edit cells, rename headers, add/remove rows and columns. A column whose values are all numbers '
-    + 'becomes numeric; empty cells become None. "Use as DataFrame" inserts a pd.DataFrame cell to run.';
+  note.textContent = 'Edit cells, rename headers, add/remove rows and columns. ↑ ↓ ← → Tab and Enter move between '
+    + 'cells, Enter on the last row adds one, Ctrl/\u2318+Enter saves. A column whose values are all numbers becomes '
+    + 'numeric; empty cells become None.';
   m.body.append(wrap, note);
   const cellStyle = 'border:1px solid var(--jp-border-color2);padding:0';
   const inp = 'width:140px;border:0;background:transparent;color:inherit;font:inherit;font-size:12px;padding:3px 6px;box-sizing:border-box';
@@ -1222,6 +1261,95 @@ function openGridEditor(opts) {
       columns[+t.getAttribute('data-col')] = t.value;
     }
   });
+  // Keyboard navigation — a grid you fill in without reaching for the mouse. An <input> does nothing with ↓ or
+  // Enter by itself, so every move is wired here; row -1 is the header row, so ↑ from the first row renames a column.
+  function fieldAt(ri, ci) {
+    return table.querySelector(ri < 0
+      ? 'input[data-col="' + ci + '"]'
+      : 'input[data-r="' + ri + '"][data-c="' + ci + '"]');
+  }
+  function focusAt(ri, ci) {
+    const el = ci < 0 || ci > columns.length - 1 ? null : fieldAt(ri, ci);
+    if (!el) {
+      return false;
+    }
+    el.focus();
+    el.select();  // like a spreadsheet: landing on a cell, typing replaces it
+    return true;
+  }
+  function grow(ci) {  // Enter or Tab past the last row adds one and goes on typing in it
+    rows.push(columns.map(() => ''));
+    render();
+    focusAt(rows.length - 1, ci);
+  }
+  function onKey(e) {
+    const t = e.target;
+    if (!t || !table.contains(t)) {
+      if (t === name && e.key === 'Enter') {  // the DataFrame name: Enter drops into the grid, Ctrl+Enter saves
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.ctrlKey || e.metaKey) {
+          use.click();
+        } else {
+          focusAt(0, 0);
+        }
+      }
+      return;
+    }
+    const head = t.hasAttribute && t.hasAttribute('data-col');
+    const cell = t.hasAttribute && t.hasAttribute('data-r');
+    if (!head && !cell) {
+      return;
+    }
+    const ri = cell ? +t.getAttribute('data-r') : -1;
+    const ci = cell ? +t.getAttribute('data-c') : +t.getAttribute('data-col');
+    const last = rows.length - 1;
+    const caret = t.selectionStart === t.selectionEnd;  // ← → only leave the cell from its edge, never mid-word
+    let done = true;
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      use.click();
+    } else if (e.key === 'Enter') {
+      if (e.shiftKey) {
+        done = focusAt(ri - 1, ci);
+      } else if (ri >= last) {
+        grow(ci);
+      } else {
+        done = focusAt(ri + 1, ci);
+      }
+    } else if (e.key === 'ArrowDown') {
+      done = ri < last && focusAt(ri + 1, ci);
+    } else if (e.key === 'ArrowUp') {
+      done = ri > -1 && focusAt(ri - 1, ci);
+    } else if (e.key === 'ArrowLeft') {
+      done = caret && t.selectionStart === 0 && focusAt(ri, ci - 1);
+    } else if (e.key === 'ArrowRight') {
+      done = caret && t.selectionStart === t.value.length && focusAt(ri, ci + 1);
+    } else if (e.key === 'Tab') {
+      const step = e.shiftKey ? -1 : 1;
+      let r = ri;
+      let c = ci + step;
+      if (c < 0) {
+        r = ri - 1;
+        c = columns.length - 1;
+      } else if (c > columns.length - 1) {
+        r = ri + 1;
+        c = 0;
+      }
+      if (r > last) {
+        grow(0);
+      } else {
+        done = focusAt(r, c);  // off the top: the browser's own order takes over
+      }
+    } else {
+      done = false;
+    }
+    if (done) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }
+  window.addEventListener('keydown', onKey, true);
+  m.onClose(() => window.removeEventListener('keydown', onKey, true));
   table.addEventListener('click', e => {
     const dc = e.target.closest('[data-delcol]');
     const dr = e.target.closest('[data-delrow]');
@@ -1235,14 +1363,12 @@ function openGridEditor(opts) {
       render();
     }
   });
-  addRow.onclick = () => {
-    rows.push(columns.map(() => ''));
-    render();
-  };
+  addRow.onclick = () => grow(0);
   addCol.onclick = () => {
     columns.push('col' + (columns.length + 1));
     rows.forEach(r => r.push(''));
     render();
+    focusAt(-1, columns.length - 1);  // the new column's name is what you type next
   };
   use.onclick = () => {
     const cols = columns.map((c, i) => String(c).trim() || ('col' + (i + 1)));
