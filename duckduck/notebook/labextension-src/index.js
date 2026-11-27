@@ -71,12 +71,16 @@ const STYLE = `
   font-size: 9px; color: var(--duckduck-sql); font-weight: 700; white-space: nowrap; overflow: hidden;
   text-overflow: ellipsis; }
 .jp-CodeCell .jp-InputArea-editor { transition: background-color 0.25s ease, border-color 0.25s ease; }
-.jp-CodeCell.duckduck-table .jp-InputArea-editor { background: var(--jp-layout-color2) !important;
-  border: 1px dashed var(--jp-border-color1) !important; opacity: 0.75; }
-.jp-CodeCell.duckduck-table .jp-InputArea-editor .cm-editor,
-.jp-CodeCell.duckduck-table .jp-InputArea-editor .cm-gutters { background: transparent !important; }
-.duckduck-tablebar { display: flex; gap: 6px; padding: 2px 0 4px 0; flex-wrap: wrap; }
-.duckduck-tablebtn { font: inherit; font-size: 11px; padding: 2px 9px; cursor: pointer; border-radius: 4px;
+.jp-CodeCell.duckduck-table .jp-InputArea-editor { display: none !important; }
+.duckduck-tablecard { display: flex; align-items: center; gap: 9px; flex: 1 1 auto; min-width: 0;
+  padding: 6px 150px 6px 10px;
+  border: 1px solid var(--jp-border-color2); border-left: 3px solid var(--jp-brand-color1); border-radius: 6px;
+  background: var(--jp-layout-color2); }
+.duckduck-tc-icon { color: var(--jp-brand-color1); font-size: 14px; line-height: 1; }
+.duckduck-tc-name { font-family: var(--jp-code-font-family); font-size: 13px; font-weight: 600;
+  color: var(--jp-ui-font-color1); }
+.duckduck-tc-size { font-size: 11px; color: var(--jp-ui-font-color2); }
+.duckduck-tablebtn { font: inherit; font-size: 11px; padding: 3px 10px; cursor: pointer; border-radius: 4px;
   border: 1px solid var(--jp-border-color2); background: var(--jp-layout-color1); color: var(--jp-ui-font-color1); }
 .duckduck-tablebtn:hover { border-color: var(--jp-brand-color1); color: var(--jp-brand-color1); }
 .duckduck-langswitch select.duckduck-on { border-color: #d97706; color: #d97706; font-weight: 600; }
@@ -552,11 +556,12 @@ function nameCells(notebook) {
 // kernel's mime type back: done again on change)
 // the buttons a table cell carries: open the grid, or swap the cell for the pandas code that builds it
 function tableBar(cell, panel) {
-  const wrap = cell.node && cell.node.querySelector('.jp-Cell-inputWrapper');
-  if (!wrap) {
+  const area = cell.node
+    && (cell.node.querySelector('.jp-InputArea') || cell.node.querySelector('.jp-Cell-inputWrapper'));
+  if (!area) {
     return;
   }
-  let bar = wrap.querySelector('.duckduck-tablebar');
+  let bar = cell.node.querySelector('.duckduck-tablecard');
   const meta = metaOf(cell);
   if (!isTable(meta)) {
     if (bar) {
@@ -566,24 +571,34 @@ function tableBar(cell, panel) {
   }
   if (!bar) {
     bar = document.createElement('div');
-    bar.className = 'duckduck-tablebar';
+    bar.className = 'duckduck-tablecard';
+    const label = (cls, text) => {
+      const node = document.createElement('span');
+      node.className = cls;
+      node.textContent = text || '';
+      return node;
+    };
     const edit = document.createElement('button');
     edit.className = 'duckduck-tablebtn';
+    edit.textContent = '✎ Edit';
     edit.title = 'Edit this table in a grid';
     edit.onclick = () => editTableCell(cell);
     const code = document.createElement('button');
     code.className = 'duckduck-tablebtn';
-    code.textContent = '{ } Show the code';
+    code.textContent = '{ } Code';
     code.title = 'Replace this cell with the pandas code that builds the table';
     code.onclick = () => {
       setCell(cell, convert(cell.model.sharedModel.getSource(), metaOf(cell), 'python'));
       decorate(panel);
     };
-    bar.append(edit, code);
-    wrap.insertBefore(bar, wrap.firstChild);
+    bar.append(label('duckduck-tc-icon', '▦'), label('duckduck-tc-name'), label('duckduck-tc-size'), edit, code);
+    area.appendChild(bar);
   }
   const rows = (meta.rows || []).length;
-  bar.firstChild.textContent = `▦ Edit ${meta.name || 'table'} · ${rows} row${rows === 1 ? '' : 's'}`;
+  const cols = (meta.columns || []).length;
+  bar.querySelector('.duckduck-tc-name').textContent = meta.name || 'table';
+  bar.querySelector('.duckduck-tc-size').textContent =
+    `${rows} row${rows === 1 ? '' : 's'} × ${cols} column${cols === 1 ? '' : 's'}`;
 }
 
 function decorate(panel) {
@@ -1041,6 +1056,7 @@ function insertTableCell(name, columns, rows) {
   const cell = notebook.activeCell;
   setCell(cell, tableCell(name, columns, rows));
   decorate(panel);
+  runTableCell(panel, cell);
   notebook.mode = 'command';
   if (cell.node && cell.node.scrollIntoView) {
     cell.node.scrollIntoView({ block: 'nearest' });
@@ -1048,7 +1064,20 @@ function insertTableCell(name, columns, rows) {
   return true;
 }
 
-// the ▦ button on a table cell: the grid opens on its rows and saves back into that same cell
+// a table cell builds its frame from its own metadata, so running it has no side effect beyond the output
+// the user just asked to see — the grid's Save and ＋ New table both run it instead of leaving it unrun
+function runTableCell(panel, cell) {
+  try {
+    const notebook = panel.content;
+    const at = notebook.widgets.indexOf(cell);
+    if (at >= 0) {
+      notebook.activeCellIndex = at;
+      NotebookActions.run(notebook, panel.sessionContext);
+    }
+  } catch (e) { /* no kernel yet: the cell is there for the user to run */ }
+}
+
+// the ✎ button on a table cell: the grid opens on its rows and saves back into that same cell
 function editTableCell(cell) {
   const meta = metaOf(cell) || {};
   openGridEditor({
@@ -1223,6 +1252,7 @@ function openGridEditor(opts) {
       const panel = gTracker && gTracker.currentWidget;
       if (panel) {
         decorate(panel);
+        runTableCell(panel, opts.cell);  // the edited table shows its new rows at once
       }
       m.close();
       return;
